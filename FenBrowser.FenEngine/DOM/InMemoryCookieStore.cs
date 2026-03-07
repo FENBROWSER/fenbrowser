@@ -78,6 +78,7 @@ namespace FenBrowser.FenEngine.DOM
             };
 
             bool deleted = false;
+            bool domainAttributeSpecified = false;
 
             for (int i = 1; i < segments.Length; i++)
             {
@@ -104,7 +105,10 @@ namespace FenBrowser.FenEngine.DOM
                             bool isExact  = reqHost.Equals(candidateDomain, StringComparison.Ordinal);
                             bool isSuffix = reqHost.EndsWith("." + candidateDomain, StringComparison.Ordinal);
                             if (isExact || isSuffix)
+                            {
                                 entry.Domain = candidateDomain;
+                                domainAttributeSpecified = true;
+                            }
                             // else: silently ignore — entry keeps default domain (requestUri.Host)
                         }
                         break;
@@ -133,6 +137,23 @@ namespace FenBrowser.FenEngine.DOM
                     case "samesite":
                         entry.SameSite = string.IsNullOrEmpty(attrVal) ? "Lax" : attrVal;
                         break;
+                }
+            }
+
+            var isSecureRequest = string.Equals(requestUri?.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+            if (name.StartsWith("__Secure-", StringComparison.Ordinal))
+            {
+                if (!entry.Secure || !isSecureRequest)
+                {
+                    return;
+                }
+            }
+
+            if (name.StartsWith("__Host-", StringComparison.Ordinal))
+            {
+                if (!entry.Secure || !isSecureRequest || domainAttributeSpecified || !string.Equals(entry.Path, "/", StringComparison.Ordinal))
+                {
+                    return;
                 }
             }
 

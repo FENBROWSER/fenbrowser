@@ -207,6 +207,8 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Map WebDriver Element IDs to LiteElements
         private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
+        private readonly Stack<Element> _frameContextStack = new Stack<Element>();
+        private Element _currentFrameElement;
         private Action<string> _fontLoadedHandler;
 
         // External renderer reference: BrowserIntegration injects the actual renderer used for
@@ -827,6 +829,10 @@ namespace FenBrowser.FenEngine.Rendering
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
 
+                _currentFrameElement = null;
+                _frameContextStack.Clear();
+                _elementMap.Clear();
+
                 navigationId = _navigationLifecycle.BeginNavigation(url, requestKind == NavigationRequestKind.UserInput);
                 var previousNavigationId = Interlocked.Exchange(ref _latestNavigationId, navigationId);
                 if (previousNavigationId > 0 && previousNavigationId != navigationId)
@@ -1006,8 +1012,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Store X-Frame-Options policy for the current page.
-                // DENY / SAMEORIGIN means this page asked not to be framed; this will be
-                // enforced when iframe content loading is implemented in BuildIframePlaceholder.
+                // Frame-document enforcement now happens in ResourceManager when a document is
+                // fetched with secFetchDest=iframe; this copy is retained for diagnostics/UI state.
                 CurrentXFrameOptions = result.XFrameOptions;
                 if (CurrentXFrameOptions != FenBrowser.Core.XFrameOptionsPolicy.None)
                     Console.WriteLine($"[XFO] X-Frame-Options: {CurrentXFrameOptions}{(result.XFrameAllowFromUri != null ? " " + result.XFrameAllowFromUri : "")}");
@@ -1292,6 +1298,7 @@ pre {{
         public async Task<object> ExecuteScriptAsync(string script)
         {
             await Task.CompletedTask;
+            EnsureFrameExecutionContextAvailable();
             TryLogDebug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript);
             return _engine.Evaluate(script);
         }
@@ -1299,8 +1306,8 @@ pre {{
         public async Task<string> FindElementAsync(string strategy, string value)
         {
             await Task.CompletedTask;
-            var dom = _engine.GetActiveDom();
-            if (dom == null) throw new InvalidOperationException("No active DOM");
+            var searchRoot = ResolveSearchRoot();
+            if (searchRoot == null) throw new InvalidOperationException("No active frame DOM");
 
             Element found = null;
             if (strategy == "css selector")
@@ -1308,16 +1315,16 @@ pre {{
                 if (value.StartsWith("#"))
                 {
                     var id = value.Substring(1);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.Id == id);
+                    found = searchRoot.Descendants().OfType<Element>().FirstOrDefault(n => n.Id == id);
                 }
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => n.GetAttribute("class") != null && n.GetAttribute("class").Contains(cls));
+                    found = searchRoot.Descendants().OfType<Element>().FirstOrDefault(n => n.GetAttribute("class") != null && n.GetAttribute("class").Contains(cls));
                 }
                 else
                 {
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase));
+                    found = searchRoot.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase));
                 }
             }
             else if (strategy == "xpath")
@@ -1325,7 +1332,7 @@ pre {{
                 if (value.StartsWith("//"))
                 {
                     var tag = value.Substring(2);
-                    found = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase));
+                    found = searchRoot.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase));
                 }
             }
 
@@ -1340,7 +1347,8 @@ pre {{
 
         public async Task ClickElementAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var element))
+            var element = ResolveElementInActiveContext(elementId);
+            if (element != null)
             {
                 await HandleElementClick(element);
             }
@@ -1682,24 +1690,43 @@ pre {{
 
         public Task SwitchToFrameAsync(object frameId)
         {
-            // Frame support is limited in FenEngine
+            if (frameId == null)
+            {
+                _currentFrameElement = null;
+                _frameContextStack.Clear();
+                _elementMap.Clear();
+                return Task.CompletedTask;
+            }
+
+            var frameElement = ResolveFrameReference(frameId);
+            if (frameElement == null)
+            {
+                TryLogWarn($"[BrowserHost] SwitchToFrameAsync could not resolve frame reference '{frameId}'.", LogCategory.Navigation);
+                return Task.CompletedTask;
+            }
+
+            if (_currentFrameElement != null)
+            {
+                _frameContextStack.Push(_currentFrameElement);
+            }
+
+            _currentFrameElement = frameElement;
+            _elementMap.Clear();
             return Task.CompletedTask;
         }
 
         public Task SwitchToParentFrameAsync()
         {
+            _currentFrameElement = _frameContextStack.Count > 0 ? _frameContextStack.Pop() : null;
+            _elementMap.Clear();
             return Task.CompletedTask;
         }
 
         public async Task<string> FindElementAsync(string strategy, string value, string parentId = null)
         {
             await Task.CompletedTask;
-            var dom = _engine.GetActiveDom();
-            if (dom == null) return null;
-
-            Element searchRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
-            if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
-                searchRoot = parent;
+            Element searchRoot = ResolveSearchRoot(parentId);
+            if (searchRoot == null) return null;
 
             Element found = FindElementByStrategy(searchRoot, strategy, value);
             if (found != null)
@@ -1845,12 +1872,8 @@ pre {{
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
         {
             await Task.CompletedTask;
-            var dom = _engine.GetActiveDom();
-            if (dom == null) return Array.Empty<string>();
-
-            Element searchRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
-            if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
-                searchRoot = parent;
+            Element searchRoot = ResolveSearchRoot(parentId);
+            if (searchRoot == null) return Array.Empty<string>();
 
             var elements = FindElementsByStrategy(searchRoot, strategy, value);
             var ids = new List<string>();
@@ -1928,10 +1951,127 @@ pre {{
             return Enumerable.Empty<Element>();
         }
 
+        private Element ResolveSearchRoot(string parentId = null)
+        {
+            if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
+            {
+                return parent;
+            }
+
+            if (_currentFrameElement != null)
+            {
+                return ResolveFrameSearchRoot(_currentFrameElement);
+            }
+
+            var dom = _engine.GetActiveDom();
+            return (dom as Element) ?? (dom as Document)?.DocumentElement;
+        }
+
+        private Element ResolveFrameReference(object frameReference)
+        {
+            if (frameReference == null)
+            {
+                return null;
+            }
+
+            var searchRoot = ResolveSearchRoot();
+            if (frameReference is string stringReference)
+            {
+                if (_elementMap.TryGetValue(stringReference, out var mapped) && IsFrameElement(mapped))
+                {
+                    return mapped;
+                }
+
+                if (searchRoot == null)
+                {
+                    return null;
+                }
+
+                return searchRoot
+                    .Descendants()
+                    .OfType<Element>()
+                    .FirstOrDefault(element =>
+                        IsFrameElement(element) &&
+                        (string.Equals(element.GetAttribute("id"), stringReference, StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(element.GetAttribute("name"), stringReference, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            if (frameReference is int index)
+            {
+                if (index < 0 || searchRoot == null)
+                {
+                    return null;
+                }
+
+                return searchRoot
+                    .Descendants()
+                    .OfType<Element>()
+                    .Where(IsFrameElement)
+                    .Skip(index)
+                    .FirstOrDefault();
+            }
+
+            return null;
+        }
+
+        private static bool IsFrameElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(element.TagName, "frame", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private Element ResolveFrameSearchRoot(Element frameElement)
+        {
+            if (!IsFrameElement(frameElement))
+            {
+                return null;
+            }
+
+            if (FenBrowser.FenEngine.DOM.ElementWrapper.IsRemoteFrameElement(frameElement, _current?.AbsoluteUri))
+            {
+                return null;
+            }
+
+            var sandboxAttribute = frameElement.GetAttribute("sandbox");
+            if (FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute))
+            {
+                var flags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(sandboxAttribute);
+                if ((flags & FenBrowser.Core.IframeSandboxFlags.SameOrigin) == 0)
+                {
+                    return null;
+                }
+            }
+
+            return frameElement.ChildNodes?
+                .OfType<Element>()
+                .FirstOrDefault();
+        }
+
         public Task<string> GetActiveElementAsync()
         {
-            // No focus tracking in FenEngine - return first focusable or null
-            return Task.FromResult<string>(null);
+            var searchRoot = ResolveSearchRoot();
+            if (_currentFrameElement != null && searchRoot == null)
+            {
+                return Task.FromResult<string>(null);
+            }
+
+            var activeElement = _focusedElement ?? ElementStateManager.Instance.FocusedElement;
+            if (activeElement == null)
+            {
+                activeElement = searchRoot?.OwnerDocument?.ActiveElement;
+            }
+
+            if (searchRoot != null && activeElement != null && !IsElementWithinSearchRoot(searchRoot, activeElement))
+            {
+                activeElement = null;
+            }
+
+            return Task.FromResult(GetOrRegisterElementId(activeElement));
         }
 
         public Task<string> GetShadowRootAsync(string elementId)
@@ -1942,7 +2082,8 @@ pre {{
 
         public Task<bool> IsElementSelectedAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 if (el.Attr != null)
                 {
@@ -1955,7 +2096,8 @@ pre {{
 
         public Task<string> GetElementAttributeAsync(string elementId, string name)
         {
-            if (_elementMap.TryGetValue(elementId, out var el) && el.Attr != null)
+            var el = ResolveElementInActiveContext(elementId);
+            if (el?.Attr != null)
             {
                 if (el.Attr.TryGetValue(name, out var val))
                     return Task.FromResult(val);
@@ -1965,7 +2107,14 @@ pre {{
 
         public Task<object> GetElementPropertyAsync(string elementId, string name)
         {
-            return GetElementAttributeAsync(elementId, name).ContinueWith(t => (object)t.Result);
+            var el = ResolveElementInActiveContext(elementId);
+            if (el?.Attr != null)
+            {
+                if (el.Attr.TryGetValue(name, out var val))
+                    return Task.FromResult<object>(val);
+            }
+
+            return Task.FromResult<object>(null);
         }
 
         public Task<string> GetElementCssValueAsync(string elementId, string property)
@@ -1976,7 +2125,8 @@ pre {{
 
         public Task<string> GetElementTextAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 var sb = new System.Text.StringBuilder();
                 foreach (var n in el.SelfAndDescendants())
@@ -1991,7 +2141,8 @@ pre {{
 
         public Task<string> GetElementTagNameAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
                 return Task.FromResult(el.TagName?.ToLowerInvariant() ?? "");
             return Task.FromResult("");
         }
@@ -2004,7 +2155,8 @@ pre {{
 
         public Task<bool> IsElementEnabledAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 if (el.Attr != null && el.Attr.ContainsKey("disabled"))
                     return Task.FromResult(false);
@@ -2014,7 +2166,8 @@ pre {{
 
         public Task<string> GetElementComputedRoleAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 var doc = el.OwnerDocument;
                 var role = FenBrowser.Core.Accessibility.AccessibilityRole.ResolveRole(el, doc);
@@ -2029,7 +2182,8 @@ pre {{
 
         public Task<string> GetElementComputedLabelAsync(string elementId)
         {
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 var doc = el.OwnerDocument;
                 var name = FenBrowser.Core.Accessibility.AccNameCalculator.Compute(el, doc);
@@ -2041,7 +2195,8 @@ pre {{
         public Task ClearElementAsync(string elementId)
         {
             // Clear input/textarea value
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
@@ -2055,7 +2210,8 @@ pre {{
         public Task SendKeysToElementAsync(string elementId, string text)
         {
             // Set value on input/textarea elements
-            if (_elementMap.TryGetValue(elementId, out var el))
+            var el = ResolveElementInActiveContext(elementId);
+            if (el != null)
             {
                 var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
@@ -2070,17 +2226,75 @@ pre {{
         public Task<string> GetPageSourceAsync()
         {
             // Serialize DOM back to HTML using Element.OuterHTML
+            var searchRoot = ResolveSearchRoot();
+            if (_currentFrameElement != null && searchRoot == null)
+            {
+                return Task.FromResult(string.Empty);
+            }
+
+            if (searchRoot != null)
+            {
+                return Task.FromResult(searchRoot.OuterHTML ?? string.Empty);
+            }
+
             var dom = _engine.GetActiveDom();
             if (dom != null)
             {
                 return Task.FromResult((dom as Element)?.OuterHTML ?? (dom as Document)?.DocumentElement?.OuterHTML ?? "");
             }
+
             return Task.FromResult("<html></html>");
+        }
+
+        private static bool IsElementWithinSearchRoot(Element searchRoot, Element candidate)
+        {
+            if (searchRoot == null || candidate == null)
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(searchRoot, candidate))
+            {
+                return true;
+            }
+
+            var cursor = candidate.ParentNode;
+            while (cursor != null)
+            {
+                if (ReferenceEquals(cursor, searchRoot))
+                {
+                    return true;
+                }
+
+                cursor = cursor.ParentNode;
+            }
+
+            return false;
+        }
+
+        private Element ResolveElementInActiveContext(string elementId)
+        {
+            if (string.IsNullOrWhiteSpace(elementId) || !_elementMap.TryGetValue(elementId, out var element))
+            {
+                return null;
+            }
+
+            var searchRoot = ResolveSearchRoot();
+            if (_currentFrameElement != null)
+            {
+                if (searchRoot == null || !IsElementWithinSearchRoot(searchRoot, element))
+                {
+                    return null;
+                }
+            }
+
+            return element;
         }
 
         public async Task<object> ExecuteScriptAsync(string script, object[] args = null)
         {
             await Task.CompletedTask;
+            EnsureFrameExecutionContextAvailable();
             // WebDriver spec: scripts are executed as an anonymous function
             // So we wrap the script: (function() { <script> }).apply(null, arguments)
             string wrappedScript;
@@ -2123,6 +2337,7 @@ pre {{
 
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
         {
+            EnsureFrameExecutionContextAvailable();
             // Reset state
             lock (_asyncScriptLock)
             {
@@ -2540,7 +2755,7 @@ pre {{
                         else if (!string.IsNullOrEmpty(action.Origin))
                         {
                             // Move relative to element
-                            if (_elementMap.TryGetValue(action.Origin, out var el))
+                            if (ResolveElementInActiveContext(action.Origin) != null)
                             {
                                 var rect = await GetElementRectAsync(action.Origin);
                                 _pointerX = rect.X + rect.Width / 2 + action.X;
@@ -2656,6 +2871,49 @@ pre {{
         private int _cursorIndex = 0;
         private int _selectionAnchor = -1;
 
+        private void SetFocusedElementState(Element element, bool fromKeyboard = false)
+        {
+            var previousFocused = _focusedElement;
+            if (previousFocused != null && !ReferenceEquals(previousFocused, element))
+            {
+                var previousDocument = previousFocused.OwnerDocument;
+                if (previousDocument != null && ReferenceEquals(previousDocument.ActiveElement, previousFocused))
+                {
+                    previousDocument.ActiveElement = null;
+                }
+            }
+
+            _focusedElement = element;
+
+            var ownerDocument = element?.OwnerDocument;
+            if (ownerDocument != null)
+            {
+                ownerDocument.ActiveElement = element;
+            }
+
+            ElementStateManager.Instance.SetFocusedElement(element, fromKeyboard);
+        }
+
+        private string GetOrRegisterElementId(Element element)
+        {
+            if (element == null)
+            {
+                return null;
+            }
+
+            foreach (var entry in _elementMap)
+            {
+                if (ReferenceEquals(entry.Value, element))
+                {
+                    return entry.Key;
+                }
+            }
+
+            var id = Guid.NewGuid().ToString();
+            _elementMap[id] = element;
+            return id;
+        }
+
         private void SyncFocusFromPointerTarget(Element target)
         {
             if (target == null)
@@ -2681,8 +2939,7 @@ pre {{
 
             if (directFocusable)
             {
-                _focusedElement = target;
-                ElementStateManager.Instance.SetFocusedElement(target);
+                SetFocusedElementState(target);
                 if (directEditable)
                 {
                     bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
@@ -2705,8 +2962,7 @@ pre {{
 
             if (descendantEditable != null)
             {
-                _focusedElement = descendantEditable;
-                ElementStateManager.Instance.SetFocusedElement(descendantEditable);
+                SetFocusedElementState(descendantEditable);
                 bool descendantIsContentEditable = string.Equals(descendantEditable.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
                 var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : (descendantEditable.GetAttribute("value") ?? string.Empty);
                 _cursorIndex = val.Length;
@@ -2714,8 +2970,7 @@ pre {{
             }
             else
             {
-                _focusedElement = null;
-                ElementStateManager.Instance.SetFocusedElement(null);
+                SetFocusedElementState(null);
             }
         }
 
@@ -2788,8 +3043,7 @@ pre {{
             bool allowDefaultActivation = ConsumeClickDefaultActivationDecision(element);
             if (element == null) 
             {
-                _focusedElement = null;
-                ElementStateManager.Instance.SetFocusedElement(null);
+                SetFocusedElementState(null);
                 TryInvokeRepaintReady(_engine.GetActiveDom());
                 return;
             }
@@ -2864,6 +3118,15 @@ pre {{
                 }
                 return;
             }
+            if (tag == "label" && allowDefaultActivation)
+            {
+                var labelControl = FindAssociatedLabelControl(element);
+                if (labelControl != null && !ReferenceEquals(labelControl, element) && !IsDisabledControl(labelControl))
+                {
+                    await HandleElementClick(labelControl);
+                    return;
+                }
+            }
             // Handle anchor clicks
             if (tag == "a")
             {
@@ -2890,8 +3153,7 @@ pre {{
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
             {
-                _focusedElement = element;
-                ElementStateManager.Instance.SetFocusedElement(element);
+                SetFocusedElementState(element);
                 
                 // Set cursor to end on focus
                 var val = element.GetAttribute("value") ?? "";
@@ -2914,8 +3176,7 @@ pre {{
 
                 if (isFocusable)
                 {
-                    _focusedElement = element;
-                    ElementStateManager.Instance.SetFocusedElement(element);
+                    SetFocusedElementState(element);
                     TryLogDebug($"[BrowserApi] Element focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General);
                 }
                 else
@@ -2939,8 +3200,7 @@ pre {{
 
                     if (!keepFocus)
                     {
-                        _focusedElement = null;
-                        ElementStateManager.Instance.SetFocusedElement(null);
+                        SetFocusedElementState(null);
                     }
                 }
                 
@@ -2985,6 +3245,16 @@ pre {{
             return false;
         }
 
+        private void EnsureFrameExecutionContextAvailable()
+        {
+            if (_currentFrameElement == null)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException("Frame-scoped script execution is blocked until a dedicated per-frame execution context is available.");
+        }
+
         private static bool IsSubmitActivationControl(Element element, string loweredTag)
         {
             if (element == null) return false;
@@ -3025,6 +3295,12 @@ pre {{
                 return true;
             }
 
+            if (!IsIframeSandboxFormSubmissionAllowed(form))
+            {
+                TryLogWarn("[BrowserApi] Blocked form submission from sandboxed iframe without allow-forms.", LogCategory.Navigation);
+                return true;
+            }
+
             var actionUri = ResolveFormActionUri(form);
             if (actionUri == null) return false;
 
@@ -3056,6 +3332,28 @@ pre {{
                 cursor = cursor.ParentElement;
             }
             return null;
+        }
+
+        private static bool IsIframeSandboxFormSubmissionAllowed(Element form)
+        {
+            var cursor = form?.ParentNode;
+            while (cursor != null)
+            {
+                if (cursor is Element element &&
+                    string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sandboxAttribute = element.GetAttribute("sandbox");
+                    if (FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute))
+                    {
+                        var flags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(sandboxAttribute);
+                        return (flags & FenBrowser.Core.IframeSandboxFlags.Forms) != 0;
+                    }
+                }
+
+                cursor = cursor.ParentNode;
+            }
+
+            return true;
         }
 
         private Uri ResolveFormActionUri(Element form)
@@ -3263,6 +3561,99 @@ pre {{
             return false;
         }
 
+        private static Element FindAssociatedLabelControl(Element label)
+        {
+            if (label == null || !string.Equals(label.NodeName, "LABEL", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var forId = label.GetAttribute("for");
+            if (!string.IsNullOrWhiteSpace(forId))
+            {
+                var root = label.OwnerDocument?.DocumentElement;
+                var byId = root != null ? FindDescendantById(root, forId) : null;
+                if (IsLabelableControl(byId))
+                {
+                    return byId;
+                }
+            }
+
+            return FindFirstLabelableDescendant(label);
+        }
+
+        private static Element FindDescendantById(Node node, string id)
+        {
+            if (node is Element element &&
+                string.Equals(element.GetAttribute("id"), id, StringComparison.Ordinal))
+            {
+                return element;
+            }
+
+            if (node?.ChildNodes == null)
+            {
+                return null;
+            }
+
+            foreach (var child in node.ChildNodes)
+            {
+                var match = FindDescendantById(child, id);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+
+        private static Element FindFirstLabelableDescendant(Node node)
+        {
+            if (node?.ChildNodes == null)
+            {
+                return null;
+            }
+
+            foreach (var child in node.ChildNodes)
+            {
+                if (child is Element childElement && IsLabelableControl(childElement))
+                {
+                    return childElement;
+                }
+
+                var nested = FindFirstLabelableDescendant(child);
+                if (nested != null)
+                {
+                    return nested;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsLabelableControl(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.NodeName?.ToLowerInvariant() ?? string.Empty;
+            if (tag == "button" || tag == "meter" || tag == "output" || tag == "progress" ||
+                tag == "select" || tag == "textarea")
+            {
+                return true;
+            }
+
+            if (tag != "input")
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+            return type != "hidden";
+        }
+
         private static string GetSelectSubmissionValue(Element select)
         {
             if (select == null) return string.Empty;
@@ -3322,9 +3713,8 @@ pre {{
                         });
                     if (nestedEditable != null)
                     {
-                        _focusedElement = nestedEditable;
+                        SetFocusedElementState(nestedEditable);
                         tag = _focusedElement.NodeName?.ToLowerInvariant();
-                        ElementStateManager.Instance.SetFocusedElement(_focusedElement);
                     }
                 }
 

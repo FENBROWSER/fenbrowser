@@ -38,6 +38,13 @@ namespace FenBrowser.FenEngine.DOM
                 throw new InvalidOperationException("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event's initialized flag is not set.");
             }
 
+            // Event dispatch is a fresh JS entry point and must not inherit an expired
+            // execution budget from a previous long-running script on the same page.
+            if (context is FenBrowser.FenEngine.Core.ExecutionContext executionContext)
+            {
+                executionContext.Reset();
+            }
+
             var env = context?.Environment;
             var previousGlobalEvent = FenValue.Undefined;
             IObject windowObj = null;
@@ -192,9 +199,11 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
-            // 6. Reset/Finalize
+            // 6. Reset/Finalize (per DOM spec step 14: unset stop propagation flags)
             evt.EventPhase = DomEvent.NONE;
             evt.CurrentTarget = null;
+            evt.Path.Clear();
+            evt.ClearPropagationFlags(); // resets PropagationStopped/ImmediatePropagationStopped + cancelBubble JS property
             evt.UpdateJsProperties(context);
 
             if (windowObj != null)
@@ -243,7 +252,7 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     FenFunction callbackFn = null;
-                    var callbackThis = FenValue.FromObject(new ElementWrapper(element, context));
+                    var callbackThis = DomWrapperFactory.Wrap(element, context);
                     var callback = listener.Callback;
 
                     if (callback.IsFunction)
@@ -289,10 +298,52 @@ namespace FenBrowser.FenEngine.DOM
                 catch (Exception ex)
                 {
                     FenLogger.Error($"[EventTarget] Error in listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                    // Per spec, report the error to window.onerror
+                    TryReportErrorToWindow(context, ex);
+                }
+            }
+
+            if (!isCapturePhase && !evt.ImmediatePropagationStopped)
+            {
+                var wrappedTarget = DomWrapperFactory.Wrap(element, context);
+                if (wrappedTarget.IsObject)
+                {
+                    InvokeEventHandlerProperty(wrappedTarget.AsObject(), wrappedTarget, evt, context);
                 }
             }
         }
 
+
+        /// <summary>
+        /// Report an uncaught listener exception to window.onerror per the DOM spec.
+        /// </summary>
+        private static void TryReportErrorToWindow(IExecutionContext context, Exception ex)
+        {
+            try
+            {
+                var env = context?.Environment;
+                if (env == null) return;
+
+                var winVal = env.Get("window");
+                if (!winVal.IsObject) return;
+
+                var onerrorVal = winVal.AsObject().Get("onerror", context);
+                var func = (onerrorVal.IsFunction || onerrorVal.IsObject) ? onerrorVal.AsObject() as FenFunction : null;
+                if (func == null) return;
+
+                var message = ex.Message ?? "Script error.";
+                var args = new FenValue[]
+                {
+                    FenValue.FromString(message),
+                    FenValue.FromString(string.Empty),
+                    FenValue.FromNumber(0),
+                    FenValue.FromNumber(0),
+                    FenValue.FromObject(new FenObject()) // error object placeholder
+                };
+                func.Invoke(args, context, winVal);
+            }
+            catch { /* never let error reporting itself break dispatch */ }
+        }
 
         private static void InvokeFenRuntimeTopLevelListeners(IExecutionContext context, DomEvent evt, bool capturePhase)
         {
@@ -340,6 +391,7 @@ namespace FenBrowser.FenEngine.DOM
 
             int len = (int)arr.Get("length", context).ToNumber();
             evt.Set("currentTarget", FenValue.FromObject(targetObj), context);
+            evt.Set("eventPhase", FenValue.FromNumber(evt.EventPhase), context);
 
             for (int i = 0; i < len; i++)
             {
@@ -350,7 +402,23 @@ namespace FenBrowser.FenEngine.DOM
 
                 var entry = entryVal.AsObject();
                 var callback = entry.Get("callback", context);
-                if (!callback.IsFunction) continue;
+                FenFunction callbackFn = null;
+                var callbackThis = FenValue.FromObject(targetObj);
+                if (callback.IsFunction)
+                {
+                    callbackFn = callback.AsFunction() as FenFunction;
+                }
+                else if (callback.IsObject)
+                {
+                    var handleEvent = callback.AsObject().Get("handleEvent", context);
+                    if (handleEvent.IsFunction)
+                    {
+                        callbackFn = handleEvent.AsFunction() as FenFunction;
+                        callbackThis = callback;
+                    }
+                }
+
+                if (callbackFn == null) continue;
 
                 var capVal = entry.Get("capture", context);
                 var cap = capVal.IsBoolean && capVal.ToBoolean();
@@ -358,7 +426,7 @@ namespace FenBrowser.FenEngine.DOM
 
                 try
                 {
-                    callback.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, FenValue.FromObject(targetObj));
+                    callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
                 }
                 catch (Exception ex)
                 {
@@ -379,7 +447,50 @@ namespace FenBrowser.FenEngine.DOM
                     i--;
                 }
             }
+
+            if (!capturePhase && !evt.ImmediatePropagationStopped)
+            {
+                InvokeEventHandlerProperty(targetObj, FenValue.FromObject(targetObj), evt, context);
+            }
         }        // Shim to pass 'ThisBinding' correct for the listener
+
+        private static void InvokeEventHandlerProperty(IObject targetObj, FenValue thisArg, DomEvent evt, IExecutionContext context)
+        {
+            if (targetObj == null || evt == null)
+            {
+                return;
+            }
+
+            var onHandler = targetObj.Get("on" + evt.Type, context);
+            if (!onHandler.IsFunction)
+            {
+                return;
+            }
+
+            var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
+            if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+            {
+                evt.PreventDefault();
+            }
+
+            ApplyLegacyEventFlags(evt);
+        }
+
+        private static void ApplyLegacyEventFlags(DomEvent evt)
+        {
+            if (evt == null)
+            {
+                return;
+            }
+
+            var cancelBubbleVal = evt.Get("cancelBubble");
+            if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                evt.StopPropagation();
+            var returnValueVal = evt.Get("returnValue");
+            if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                evt.PreventDefault();
+        }
+
         private class ContextShim : IExecutionContext
         {
             private readonly IExecutionContext _inner;
@@ -417,4 +528,3 @@ namespace FenBrowser.FenEngine.DOM
         }
     }
 }
-

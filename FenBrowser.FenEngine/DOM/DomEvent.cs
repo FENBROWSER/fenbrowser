@@ -294,9 +294,9 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         public void ResetState()
         {
-            // Preserve canceled state set before dispatch (e.g. pre-canceled synthetic events).
-            PropagationStopped = false;
-            ImmediatePropagationStopped = false;
+            // Preserve pre-dispatch propagation flags for the first dispatch.
+            // They are cleared after dispatch finalization so the same event can
+            // be re-dispatched per DOM/WPT expectations.
             EventPhase = NONE;
             Target = null;
             CurrentTarget = null;
@@ -313,9 +313,11 @@ namespace FenBrowser.FenEngine.DOM
         {
             EventPhase = NONE;
             CurrentTarget = null;
+            PropagationStopped = false;
+            ImmediatePropagationStopped = false;
             Set("currentTarget", FenValue.Null);
             Set("eventPhase", FenValue.FromNumber(NONE));
-            Set("cancelBubble", FenValue.FromBoolean(PropagationStopped));
+            Set("cancelBubble", FenValue.FromBoolean(false));
             Set("defaultPrevented", FenValue.FromBoolean(DefaultPrevented));
             Set("returnValue", FenValue.FromBoolean(!DefaultPrevented));
         }

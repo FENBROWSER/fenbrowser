@@ -54,6 +54,7 @@ namespace FenBrowser.FenEngine.Testing
             public bool HarnessCompleted { get; set; }
             public bool TimedOut { get; set; }
             public string CompletionSignal { get; set; } = "none";
+            public string FatalError { get; set; }
         }
         
         public WPTTestRunner(string wptRootPath, Func<string, Task> navigator = null, int timeoutMs = 10000)
@@ -260,7 +261,9 @@ namespace FenBrowser.FenEngine.Testing
                 if (total == 0)
                 {
                     result.Success = false;
-                    result.Error = "No assertions executed by testharness.";
+                    result.Error = string.IsNullOrWhiteSpace(execution.FatalError)
+                        ? "No assertions executed by testharness."
+                        : execution.FatalError;
                 }
                 else if (execution.TimedOut)
                 {
@@ -349,7 +352,24 @@ namespace FenBrowser.FenEngine.Testing
             bool fallbackConsoleUsed = false;
             while (DateTime.UtcNow < timeoutAt)
             {
-                await Task.Delay(25);
+                await Task.Delay(10);
+
+                // Pump the event loop: drain pending tasks and microtasks so that
+                // async WPT tests (promise_test, async_test, setTimeout callbacks) can
+                // make progress between polls.
+                try
+                {
+                    var elc = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                    int pumps = 0;
+                    while ((elc.HasPendingTasks || elc.HasPendingMicrotasks) && pumps < 64)
+                    {
+                        elc.ProcessNextTask();
+                        pumps++;
+                    }
+                    if (elc.HasPendingMicrotasks)
+                        elc.PerformMicrotaskCheckpoint();
+                }
+                catch { /* event loop errors must not abort the poll */ }
 
                 var snapshot = WebAPIs.TestHarnessAPI.GetExecutionSnapshot();
                 if (snapshot.TestDone)
@@ -374,6 +394,20 @@ namespace FenBrowser.FenEngine.Testing
                     state.HarnessCompleted = true;
                     state.CompletionSignal = "testRunner.reportResult";
                     break;
+                }
+
+                if (snapshot.StructuredResultCount == 0)
+                {
+                    var fatalError = TryExtractFatalHarnessFailure(testFile);
+                    if (!string.IsNullOrWhiteSpace(fatalError))
+                    {
+                        WebAPIs.TestHarnessAPI.AddResult(Path.GetFileName(testFile), WebAPIs.TestHarnessAPI.TestStatus.Fail, fatalError);
+                        WebAPIs.TestHarnessAPI.ReportHarnessStatus("complete", fatalError);
+                        state.HarnessCompleted = true;
+                        state.CompletionSignal = "console.fatal-script";
+                        state.FatalError = fatalError;
+                        break;
+                    }
                 }
 
                 // Legacy compatibility path: only if structured signals never appeared.
@@ -407,6 +441,38 @@ namespace FenBrowser.FenEngine.Testing
             // Small settle delay for pending console flushes/results.
             await Task.Delay(50);
             return state;
+        }
+
+        private static string TryExtractFatalHarnessFailure(string testFile)
+        {
+            var entries = WebAPIs.TestConsoleCapture.GetEntries();
+            if (entries == null || entries.Count == 0)
+            {
+                return null;
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                var entry = entries[i];
+                if (!string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var message = entry.Message ?? string.Empty;
+                if (message.IndexOf("[WPT-NAV]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("GLOBAL JS ERROR:", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("Unhandled", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var trimmed = message.Trim();
+                    if (trimmed.Length > 0)
+                    {
+                        return $"{Path.GetFileName(testFile)}: {trimmed}";
+                    }
+                }
+            }
+
+            return null;
         }
         
         /// <summary>

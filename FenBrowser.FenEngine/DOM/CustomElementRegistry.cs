@@ -6,6 +6,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.EventLoop;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -141,7 +142,7 @@ namespace FenBrowser.FenEngine.DOM
                 // Create or return existing promise
                 if (!_whenDefinedPromises.TryGetValue(name, out var tcs))
                 {
-                    tcs = new TaskCompletionSource<bool>();
+                    tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                     _whenDefinedPromises[name] = tcs;
                 }
                 return tcs.Task;
@@ -282,22 +283,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (IsDefined(name))
                     return CreateResolvedPromise(FenValue.Undefined);
 
-                // Return a promise-like object
-                var promise = new FenObject();
-                promise.Set("__isPromise__", FenValue.FromBoolean(true));
-                promise.Set("__state__", FenValue.FromString("pending"));
-
-                // Store for later resolution
-                WhenDefined(name).ContinueWith(t =>
-                {
-                    promise.Set("__state__", FenValue.FromString("fulfilled"));
-                    promise.Set("__value__", FenValue.Undefined);
-                });
-
-                promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
-                    FenValue.FromObject(promise))));
-
-                return FenValue.FromObject(promise);
+                return CreatePendingWhenDefinedPromise(name);
             })));
 
             obj.Set("upgrade", FenValue.FromFunction(new FenFunction("upgrade", (args, thisVal) =>
@@ -312,40 +298,236 @@ namespace FenBrowser.FenEngine.DOM
             return obj;
         }
 
+        private FenValue CreatePendingWhenDefinedPromise(string name)
+        {
+            return CreatePromise(
+                "pending",
+                FenValue.Undefined,
+                string.Empty,
+                (resolve, reject) => _ = ObserveWhenDefinedPromiseAsync(name, resolve, reject));
+        }
+
         private FenValue CreateResolvedPromise(FenValue value)
         {
-            var promise = new FenObject();
-            promise.Set("__isPromise__", FenValue.FromBoolean(true));
-            promise.Set("__state__", FenValue.FromString("fulfilled"));
-            promise.Set("__value__", (FenValue)value);
-            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
-            {
-                if (args.Length > 0 && args[0].IsFunction)
-                {
-                    var fn = args[0].AsFunction() as FenFunction;
-                    return fn?.Invoke(new FenValue[] { value }, null) ?? FenValue.Undefined;
-                }
-                return (FenValue)value;
-            })));
-            return FenValue.FromObject(promise);
+            return CreatePromise("fulfilled", value, string.Empty);
         }
 
         private FenValue CreateRejectedPromise(string reason)
         {
+            return CreatePromise("rejected", FenValue.Undefined, reason ?? string.Empty);
+        }
+
+        private FenValue CreatePromise(
+            string initialState,
+            FenValue initialValue,
+            string initialReason,
+            Action<Action<FenValue>, Action<string>> subscribe = null)
+        {
             var promise = new FenObject();
+            var fulfillmentCallbacks = new List<FenFunction>();
+            var rejectionCallbacks = new List<FenFunction>();
+            var gate = new object();
+            var state = initialState;
+            var resolvedValue = initialValue;
+            var rejectionReason = initialReason ?? string.Empty;
+
             promise.Set("__isPromise__", FenValue.FromBoolean(true));
-            promise.Set("__state__", FenValue.FromString("rejected"));
-            promise.Set("__reason__", FenValue.FromString(reason));
+            promise.Set("__state__", FenValue.FromString(initialState));
+            if (string.Equals(initialState, "fulfilled", StringComparison.Ordinal))
+            {
+                promise.Set("__value__", initialValue);
+            }
+            else if (string.Equals(initialState, "rejected", StringComparison.Ordinal))
+            {
+                promise.Set("__reason__", FenValue.FromString(rejectionReason));
+            }
+
+            void Resolve(FenValue value)
+            {
+                FenFunction[] callbacks;
+                lock (gate)
+                {
+                    if (!string.Equals(state, "pending", StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    state = "fulfilled";
+                    resolvedValue = value;
+                    promise.Set("__state__", FenValue.FromString(state));
+                    promise.Set("__value__", value);
+                    callbacks = fulfillmentCallbacks.ToArray();
+                    fulfillmentCallbacks.Clear();
+                    rejectionCallbacks.Clear();
+                }
+
+                foreach (var callback in callbacks)
+                {
+                    SchedulePromiseCallback(() => callback.Invoke(new[] { value }, _context));
+                }
+            }
+
+            void Reject(string reason)
+            {
+                FenFunction[] callbacks;
+                lock (gate)
+                {
+                    if (!string.Equals(state, "pending", StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    state = "rejected";
+                    rejectionReason = reason ?? string.Empty;
+                    promise.Set("__state__", FenValue.FromString(state));
+                    promise.Set("__reason__", FenValue.FromString(rejectionReason));
+                    callbacks = rejectionCallbacks.ToArray();
+                    fulfillmentCallbacks.Clear();
+                    rejectionCallbacks.Clear();
+                }
+
+                foreach (var callback in callbacks)
+                {
+                    SchedulePromiseCallback(() => callback.Invoke(new[] { FenValue.FromString(rejectionReason) }, _context));
+                }
+            }
+
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisVal) =>
+            {
+                if (args.Length > 0 && args[0].IsFunction)
+                {
+                    var callback = args[0].AsFunction();
+                    if (callback != null)
+                    {
+                        FenValue callbackValue = FenValue.Undefined;
+                        bool runCallback = false;
+
+                        lock (gate)
+                        {
+                            if (string.Equals(state, "fulfilled", StringComparison.Ordinal))
+                            {
+                                callbackValue = resolvedValue;
+                                runCallback = true;
+                            }
+                            else if (string.Equals(state, "pending", StringComparison.Ordinal))
+                            {
+                                fulfillmentCallbacks.Add(callback);
+                            }
+                        }
+
+                        if (runCallback)
+                        {
+                            SchedulePromiseCallback(() => callback.Invoke(new[] { callbackValue }, _context));
+                        }
+                    }
+                }
+
+                if (args.Length > 1 && args[1].IsFunction)
+                {
+                    var rejectCallback = args[1].AsFunction();
+                    if (rejectCallback != null)
+                    {
+                        string callbackReason = string.Empty;
+                        bool runCallback = false;
+
+                        lock (gate)
+                        {
+                            if (string.Equals(state, "rejected", StringComparison.Ordinal))
+                            {
+                                callbackReason = rejectionReason;
+                                runCallback = true;
+                            }
+                            else if (string.Equals(state, "pending", StringComparison.Ordinal))
+                            {
+                                rejectionCallbacks.Add(rejectCallback);
+                            }
+                        }
+
+                        if (runCallback)
+                        {
+                            SchedulePromiseCallback(() => rejectCallback.Invoke(new[] { FenValue.FromString(callbackReason) }, _context));
+                        }
+                    }
+                }
+
+                return FenValue.FromObject(promise);
+            })));
+
             promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisVal) =>
             {
                 if (args.Length > 0 && args[0].IsFunction)
                 {
-                    var fn = args[0].AsFunction() as FenFunction;
-                    return fn?.Invoke(new FenValue[] { FenValue.FromString(reason) }, null) ?? FenValue.Undefined;
+                    var callback = args[0].AsFunction();
+                    if (callback != null)
+                    {
+                        string callbackReason = string.Empty;
+                        bool runCallback = false;
+
+                        lock (gate)
+                        {
+                            if (string.Equals(state, "rejected", StringComparison.Ordinal))
+                            {
+                                callbackReason = rejectionReason;
+                                runCallback = true;
+                            }
+                            else if (string.Equals(state, "pending", StringComparison.Ordinal))
+                            {
+                                rejectionCallbacks.Add(callback);
+                            }
+                        }
+
+                        if (runCallback)
+                        {
+                            SchedulePromiseCallback(() => callback.Invoke(new[] { FenValue.FromString(callbackReason) }, _context));
+                        }
+                    }
                 }
-                return FenValue.Undefined;
+
+                return FenValue.FromObject(promise);
             })));
+
+            if (string.Equals(initialState, "pending", StringComparison.Ordinal) && subscribe != null)
+            {
+                try
+                {
+                    subscribe(Resolve, Reject);
+                }
+                catch (Exception ex)
+                {
+                    SchedulePromiseCallback(() => Reject(ex.Message));
+                }
+            }
+
             return FenValue.FromObject(promise);
+        }
+
+        private async Task ObserveWhenDefinedPromiseAsync(string name, Action<FenValue> resolve, Action<string> reject)
+        {
+            try
+            {
+                await WhenDefined(name).ConfigureAwait(false);
+                SchedulePromiseCallback(() => resolve(FenValue.Undefined));
+            }
+            catch (Exception ex)
+            {
+                SchedulePromiseCallback(() => reject(ex.Message));
+            }
+        }
+
+        private void SchedulePromiseCallback(Action callback)
+        {
+            if (callback == null)
+            {
+                return;
+            }
+
+            if (_context?.ScheduleMicrotask != null)
+            {
+                _context.ScheduleMicrotask(callback);
+                return;
+            }
+
+            EventLoopCoordinator.Instance.ScheduleMicrotask(callback);
         }
     }
 

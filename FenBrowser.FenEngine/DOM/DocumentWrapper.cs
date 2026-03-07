@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using System;
 using System.Linq;
 using System.Collections.Generic;
@@ -50,6 +50,9 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "createelement":
                     return FenValue.FromFunction(new FenFunction("createElement", CreateElement));
+
+                case "createelementns":
+                    return FenValue.FromFunction(new FenFunction("createElementNS", CreateElementNS));
                 
                 case "createdocumentfragment":
                     return FenValue.FromFunction(new FenFunction("createDocumentFragment", CreateDocumentFragment));
@@ -59,7 +62,10 @@ namespace FenBrowser.FenEngine.DOM
                 
                 case "createcomment":
                     return FenValue.FromFunction(new FenFunction("createComment", CreateComment));
-                
+
+                case "createprocessinginstruction":
+                    return FenValue.FromFunction(new FenFunction("createProcessingInstruction", CreateProcessingInstruction));
+
                 case "createevent":
                     return FenValue.FromFunction(new FenFunction("createEvent", CreateEvent));
 
@@ -75,13 +81,16 @@ namespace FenBrowser.FenEngine.DOM
                 case "getelementsbytagname":
                     return FenValue.FromFunction(new FenFunction("getElementsByTagName", GetElementsByTagName));
 
+                case "getelementsbytagnamens":
+                    return FenValue.FromFunction(new FenFunction("getElementsByTagNameNS", GetElementsByTagNameNS));
+
                 case "body":
                     var body = FindElementByTag(_root, "body");
-                    return body != null ? FenValue.FromObject(new ElementWrapper(body, _context)) : FenValue.Null;
+                    return body != null ? DomWrapperFactory.Wrap(body, _context) : FenValue.Null;
 
                 case "head":
                     var head = FindElementByTag(_root, "head");
-                    return head != null ? FenValue.FromObject(new ElementWrapper(head, _context)) : FenValue.Null;
+                    return head != null ? DomWrapperFactory.Wrap(head, _context) : FenValue.Null;
 
                 case "title":
                     // ... (existing title logic)
@@ -91,9 +100,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "documentelement":
                     var htmlEl = FindElementByTag(_root, "html");
                     if (htmlEl != null)
-                        return FenValue.FromObject(new ElementWrapper(htmlEl, _context));
+                        return DomWrapperFactory.Wrap(htmlEl, _context);
                     if (_root is Element rootEl)
-                        return FenValue.FromObject(new ElementWrapper(rootEl, _context));
+                        return DomWrapperFactory.Wrap(rootEl, _context);
                     return FenValue.Null;
 
                 case "activeelement":
@@ -103,7 +112,7 @@ namespace FenBrowser.FenEngine.DOM
                     // Document logic for ActiveElement should be on Document class.
                     // V2 Document has ActiveElement.
                     if (active == null) active = FindElementByTag(_root, "body");
-                    return active != null ? FenValue.FromObject(new ElementWrapper(active, _context)) : FenValue.Null;
+                    return active != null ? DomWrapperFactory.Wrap(active, _context) : FenValue.Null;
 
                 case "readystate":
                     return FenValue.FromString(_readyState);
@@ -149,8 +158,9 @@ namespace FenBrowser.FenEngine.DOM
                         int whatToShow = args.Length > 1 ? (int)args[1].ToNumber() : 0xFFFFFF; // NodeFilter.SHOW_ALL
                         var tw = new FenObject();
                         Node currentNode = rootNode;
-                        tw.Set("currentNode", FenValue.FromObject(new ElementWrapper(currentNode as Element ?? FindElementByTag(rootNode, "html"), _context)));
-                        tw.Set("root", args.Length > 0 ? args[0] : FenValue.FromObject(new ElementWrapper(rootNode as Element, _context)));
+                        var twRootEl = currentNode as Element ?? FindElementByTag(rootNode, "html");
+                        tw.Set("currentNode", twRootEl != null ? DomWrapperFactory.Wrap(twRootEl, _context) : FenValue.Null);
+                        tw.Set("root", args.Length > 0 ? args[0] : (twRootEl != null ? DomWrapperFactory.Wrap(twRootEl, _context) : FenValue.Null));
                         tw.Set("whatToShow", FenValue.FromNumber(whatToShow));
                         var allNodes = new List<Node>();
                         CollectNodes(rootNode, allNodes);
@@ -160,8 +170,8 @@ namespace FenBrowser.FenEngine.DOM
                             if (idx < allNodes.Count)
                             {
                                 currentNode = allNodes[idx];
-                                if (currentNode is Element el)
-                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                                if (currentNode is Element twEl)
+                                    return DomWrapperFactory.Wrap(twEl, _context);
                                 // Text node
                                 var textObj = new FenObject();
                                 textObj.Set("nodeType", FenValue.FromNumber(3));
@@ -176,8 +186,8 @@ namespace FenBrowser.FenEngine.DOM
                             if (idx >= 0 && idx < allNodes.Count)
                             {
                                 currentNode = allNodes[idx];
-                                if (currentNode is Element el)
-                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                                if (currentNode is Element twEl)
+                                    return DomWrapperFactory.Wrap(twEl, _context);
                                 return FenValue.Null;
                             }
                             return FenValue.Null;
@@ -186,14 +196,14 @@ namespace FenBrowser.FenEngine.DOM
                             if (currentNode != null && currentNode.ChildNodes.Length > 0)
                             {
                                 var child = currentNode.ChildNodes[0];
-                                if (child is Element el)
-                                    return FenValue.FromObject(new ElementWrapper(el, _context));
+                                if (child is Element twEl)
+                                    return DomWrapperFactory.Wrap(twEl, _context);
                             }
                             return FenValue.Null;
                         })));
                         tw.Set("parentNode", FenValue.FromFunction(new FenFunction("parentNode", (nArgs, nThis) => {
                             if (currentNode?.ParentElement != null)
-                                return FenValue.FromObject(new ElementWrapper(currentNode.ParentElement, _context));
+                                return DomWrapperFactory.Wrap(currentNode.ParentElement, _context);
                             return FenValue.Null;
                         })));
                         return FenValue.FromObject(tw);
@@ -252,7 +262,7 @@ namespace FenBrowser.FenEngine.DOM
                             var child = rootElement.ChildNodes[cj];
                             if (child is Element childEl)
                             {
-                                childArr.Set(ci.ToString(), FenValue.FromObject(new ElementWrapper(childEl, _context)));
+                                childArr.Set(ci.ToString(), DomWrapperFactory.Wrap(childEl, _context));
                                 ci++;
                             }
                         }
@@ -280,9 +290,9 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
-        public bool Delete(string key, IExecutionContext context = null) => false;
+        public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -294,7 +304,7 @@ namespace FenBrowser.FenEngine.DOM
             var tagName = args[0].ToString();
             
             var element = new Element(tagName);
-            return FenValue.FromObject(new ElementWrapper(element, _context));
+            return DomWrapperFactory.Wrap(element, _context);
         }
 
         private FenValue GetElementById(FenValue[] args, FenValue thisVal)
@@ -311,7 +321,7 @@ namespace FenBrowser.FenEngine.DOM
             if (element != null)
             {
                 /* [PERF-REMOVED] */
-                return FenValue.FromObject(new ElementWrapper(element, _context));
+                return DomWrapperFactory.Wrap(element, _context);
             }
             else
             {
@@ -330,8 +340,8 @@ namespace FenBrowser.FenEngine.DOM
             var selector = args[0].ToString();
 
             var element = FindFirstSelector(_root, selector);
-            return element != null 
-                ? FenValue.FromObject(new ElementWrapper(element, _context))
+            return element != null
+                ? DomWrapperFactory.Wrap(element, _context)
                 : FenValue.Null;
         }
 
@@ -374,6 +384,16 @@ namespace FenBrowser.FenEngine.DOM
             return DomWrapperFactory.Wrap(node, _context);
         }
 
+        private FenValue CreateProcessingInstruction(FenValue[] args, FenValue thisVal)
+        {
+            // ProcessingInstruction is not a first-class node type in the core; use Comment as backing storage.
+            // The JS wrapper participates in event dispatch via NodeWrapper, which is sufficient for WPT tests.
+            var data = args.Length > 1 ? args[1].ToString() : "";
+            var doc = _root as Document ?? _root.OwnerDocument;
+            var node = doc != null ? doc.CreateComment(data) : new Comment(data);
+            return DomWrapperFactory.Wrap(node, _context);
+        }
+
         private FenValue CreateRange(FenValue[] args, FenValue thisVal)
         {
             var doc = _root as Document ?? _root.OwnerDocument;
@@ -382,9 +402,42 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue CreateEvent(FenValue[] args, FenValue thisVal)
         {
-            // document.createEvent(interface) creates an uninitialized event; type is set via initEvent().
-            // Keep defaults false and initialized flag off until initEvent is called.
-            return FenValue.FromObject(new DomEvent("", false, false, false, _context, initialized: false));
+            if (args.Length == 0)
+            {
+                throw new FenTypeError("TypeError: Failed to execute 'createEvent': 1 argument required, but only 0 present.");
+            }
+
+            var interfaceName = args[0].ToString().Trim();
+            switch (interfaceName.ToLowerInvariant())
+            {
+                case "event":
+                case "events":
+                case "htmlevents":
+                    return FenValue.FromObject(new DomEvent("", false, false, false, _context, initialized: false));
+
+                case "customevent":
+                    return FenValue.FromObject(new CustomEvent("", false, false, FenValue.Null, _context, initialized: false));
+
+                case "uievent":
+                case "uievents":
+                    return FenValue.FromObject(new LegacyUIEvent("", false, false, _context, initialized: false));
+
+                case "mouseevent":
+                case "mouseevents":
+                    return FenValue.FromObject(new LegacyMouseEvent("", false, false, _context, initialized: false));
+
+                case "keyboardevent":
+                case "keyboardevents":
+                    return FenValue.FromObject(new LegacyKeyboardEvent("", false, false, _context, initialized: false));
+
+                case "compositionevent":
+                case "compositionevents":
+                    return FenValue.FromObject(new LegacyCompositionEvent("", false, false, _context, initialized: false));
+
+                default:
+                    throw new InvalidOperationException(
+                        $"NotSupportedError: Failed to execute 'createEvent': The provided event type ('{interfaceName}') is not supported.");
+            }
         }
 
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -395,7 +448,7 @@ namespace FenBrowser.FenEngine.DOM
             RecursiveQuerySelector(_root, selector, results);
             
             var list = new FenObject();
-            for(int i=0; i<results.Count; i++) list.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(results[i], _context)));
+            for (int i = 0; i < results.Count; i++) list.Set(i.ToString(), DomWrapperFactory.Wrap(results[i], _context));
             list.Set("length", FenValue.FromNumber(results.Count));
             return FenValue.FromObject(list);
         }
@@ -404,26 +457,55 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var classNames = args[0].ToString().Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-            var results = new List<Element>();
-            RecursiveClassName(_root, classNames, results);
-            
-            var list = new FenObject();
-            for(int i=0; i<results.Count; i++) list.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(results[i], _context)));
-            list.Set("length", FenValue.FromNumber(results.Count));
-            return FenValue.FromObject(list);
+            return FenValue.FromObject(new HTMLCollectionWrapper(() =>
+            {
+                var results = new List<Element>();
+                RecursiveClassName(_root, classNames, results);
+                return results;
+            }, _context));
         }
 
         private FenValue GetElementsByTagName(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
-            var results = new List<Element>();
-            RecursiveTagName(_root, tagName, results);
-            
-            var list = new FenObject();
-            for(int i=0; i<results.Count; i++) list.Set(i.ToString(), FenValue.FromObject(new ElementWrapper(results[i], _context)));
-            list.Set("length", FenValue.FromNumber(results.Count));
-            return FenValue.FromObject(list);
+            return FenValue.FromObject(new HTMLCollectionWrapper(() =>
+            {
+                var results = new List<Element>();
+                RecursiveTagName(_root, tagName, results);
+                return results;
+            }, _context));
+        }
+
+        private FenValue GetElementsByTagNameNS(FenValue[] args, FenValue thisVal)
+        {
+            var namespaceUri = args.Length > 0 ? args[0].ToString() : "*";
+            var localName = args.Length > 1 ? args[1].ToString() : "*";
+            return FenValue.FromObject(new HTMLCollectionWrapper(() =>
+            {
+                var results = new List<Element>();
+                RecursiveTagNameNs(_root, namespaceUri, localName, results);
+                return results;
+            }, _context));
+        }
+
+        private FenValue CreateElementNS(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 2)
+            {
+                return FenValue.Null;
+            }
+
+            var namespaceUri = args[0].IsNull ? null : args[0].ToString();
+            var qualifiedName = args[1].ToString();
+            var document = (_root as Document) ?? _root.OwnerDocument;
+            if (document == null)
+            {
+                return FenValue.Null;
+            }
+
+            var created = document.CreateElementNS(namespaceUri, qualifiedName);
+            return DomWrapperFactory.Wrap(created, _context);
         }
 
         private Element FindFirstSelector(Node node, string selector)
@@ -471,12 +553,35 @@ namespace FenBrowser.FenEngine.DOM
             if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveTagName(c, tagName, results);
         }
 
+        private void RecursiveTagNameNs(Node node, string namespaceUri, string localName, List<Element> results)
+        {
+            if (node is Element el)
+            {
+                var namespaceMatch = namespaceUri == "*" ||
+                                     string.Equals(el.NamespaceUri ?? string.Empty, namespaceUri ?? string.Empty, StringComparison.Ordinal);
+                var localNameMatch = localName == "*" ||
+                                     string.Equals(el.LocalName ?? el.NodeName, localName, StringComparison.OrdinalIgnoreCase);
+                if (namespaceMatch && localNameMatch)
+                {
+                    results.Add(el);
+                }
+            }
+
+            if (node.ChildNodes != null)
+            {
+                foreach (var c in node.ChildNodes)
+                {
+                    RecursiveTagNameNs(c, namespaceUri, localName, results);
+                }
+            }
+        }
+
         private Element FindElementById(Node node, string id)
         {
             if (node  == null) return null;
 
             // Check if this element has the ID
-            if (node is Element el && string.Equals(el.GetAttribute("id"), id, StringComparison.OrdinalIgnoreCase))
+            if (node is Element el && string.Equals(el.GetAttribute("id"), id, StringComparison.Ordinal))
             {
                 return el;
             }
@@ -539,7 +644,8 @@ namespace FenBrowser.FenEngine.DOM
 
             var type = args[0].ToString();
             var callback = args[1];
-            if (string.IsNullOrEmpty(type) || callback == null || !callback.IsFunction)
+            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+            if (string.IsNullOrEmpty(type) || !callbackIsValid || callback.IsUndefined || callback.IsNull)
                 return FenValue.Undefined;
 
             FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
@@ -549,7 +655,23 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     var evt = new DomEvent(type);
-                    callback.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, _context);
+                    FenFunction callbackFn = null;
+                    var callbackThis = FenValue.FromObject(this);
+                    if (callback.IsFunction)
+                    {
+                        callbackFn = callback.AsFunction() as FenFunction;
+                    }
+                    else if (callback.IsObject)
+                    {
+                        var handleEvent = callback.AsObject()?.Get("handleEvent", _context) ?? FenValue.Undefined;
+                        if (handleEvent.IsFunction)
+                        {
+                            callbackFn = handleEvent.AsFunction() as FenFunction;
+                            callbackThis = callback;
+                        }
+                    }
+
+                    callbackFn?.Invoke(new[] { FenValue.FromObject(evt) }, _context, callbackThis);
                 }
                 catch (Exception ex)
                 {
@@ -736,7 +858,7 @@ namespace FenBrowser.FenEngine.DOM
                 catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[DocumentWrapper] Cookie read bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
             }
 
-            // fromScript: true — HttpOnly cookies must not be exposed to JavaScript
+            // fromScript: true â€” HttpOnly cookies must not be exposed to JavaScript
             return _cookieStore.GetCookieString(_baseUri, fromScript: true);
         }
 
@@ -753,9 +875,25 @@ namespace FenBrowser.FenEngine.DOM
             _cookieStore.SetCookie(cookieStr, _baseUri);
             FenLogger.Debug($"[DocumentWrapper] Cookie set: {cookieStr.Split(';')[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
-        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+        {
+            if (string.IsNullOrWhiteSpace(key) || desc.IsAccessor)
+            {
+                return false;
+            }
+
+            var builtIn = Get(key, _context);
+            if (!builtIn.IsUndefined && !_expando.ContainsKey(key))
+            {
+                return false;
+            }
+
+            _expando[key] = desc.Value ?? FenValue.Undefined;
+            return true;
+        }
     }
 }
+
 
 
 

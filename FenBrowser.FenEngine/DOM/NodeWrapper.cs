@@ -286,11 +286,68 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue AddEventListener(FenValue[] args, FenValue thisVal)
         {
+            if (args.Length < 2)
+            {
+                return FenValue.Undefined;
+            }
+
+            var type = args[0].ToString();
+            var callback = args[1];
+            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+            if (string.IsNullOrWhiteSpace(type) || !callbackIsValid || callback.IsUndefined || callback.IsNull)
+            {
+                return FenValue.Undefined;
+            }
+
+            var capture = false;
+            var once = false;
+            var passive = false;
+            if (args.Length >= 3)
+            {
+                if (args[2].IsBoolean)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else if (args[2].IsObject)
+                {
+                    var opts = args[2].AsObject();
+                    var cap = opts.Get("capture", _context);
+                    capture = cap.IsBoolean && cap.ToBoolean();
+                    var one = opts.Get("once", _context);
+                    once = one.IsBoolean && one.ToBoolean();
+                    var pas = opts.Get("passive", _context);
+                    passive = pas.IsBoolean && pas.ToBoolean();
+                }
+            }
+
+            EventTarget.Registry.Add(_node, type, callback, capture, once, passive);
             return FenValue.Undefined;
         }
 
         private FenValue RemoveEventListener(FenValue[] args, FenValue thisVal)
         {
+            if (args.Length < 2)
+            {
+                return FenValue.Undefined;
+            }
+
+            var type = args[0].ToString();
+            var callback = args[1];
+            var capture = false;
+            if (args.Length >= 3)
+            {
+                if (args[2].IsBoolean)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else if (args[2].IsObject)
+                {
+                    var cap = args[2].AsObject().Get("capture", _context);
+                    capture = cap.IsBoolean && cap.ToBoolean();
+                }
+            }
+
+            EventTarget.Registry.Remove(_node, type, callback, capture);
             return FenValue.Undefined;
         }
 
@@ -320,6 +377,13 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.FromBoolean(EventTarget.DispatchEvent(elementTarget, eventObj, _context));
             }
 
+            DispatchNodeTargetListeners(eventObj);
+            var defaultPrevented = eventObj.Get("defaultPrevented", _context);
+            if (eventObj.Get("cancelBubble", _context).IsBoolean && eventObj.Get("cancelBubble", _context).ToBoolean())
+            {
+                return FenValue.FromBoolean(!(defaultPrevented.IsBoolean && defaultPrevented.ToBoolean()));
+            }
+
             if (eventObj.Bubbles && _node.ParentNode is Element parentElement)
             {
                 var parentWrapped = DomWrapperFactory.Wrap(parentElement, _context);
@@ -336,6 +400,67 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return FenValue.FromBoolean(true);
+        }
+
+        private void DispatchNodeTargetListeners(DomEvent eventObj)
+        {
+            if (eventObj == null || string.IsNullOrWhiteSpace(eventObj.Type))
+            {
+                return;
+            }
+
+            eventObj.Set("target", FenValue.FromObject(this), _context);
+            eventObj.Set("srcElement", FenValue.FromObject(this), _context);
+            eventObj.Set("currentTarget", FenValue.FromObject(this), _context);
+            eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.AT_TARGET), _context);
+
+            InvokeNodeListeners(eventObj, capturePhase: true);
+            InvokeNodeListeners(eventObj, capturePhase: false);
+
+            eventObj.Set("currentTarget", FenValue.Null, _context);
+            eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.NONE), _context);
+        }
+
+        private void InvokeNodeListeners(DomEvent eventObj, bool capturePhase)
+        {
+            foreach (var listener in EventTarget.Registry.Get(_node, eventObj.Type, capturePhase))
+            {
+                FenFunction callbackFn = null;
+                var callbackThis = FenValue.FromObject(this);
+                var callback = listener.Callback;
+
+                if (callback.IsFunction)
+                {
+                    callbackFn = callback.AsFunction() as FenFunction;
+                }
+                else if (callback.IsObject)
+                {
+                    var handleEvent = callback.AsObject().Get("handleEvent", _context);
+                    if (handleEvent.IsFunction)
+                    {
+                        callbackFn = handleEvent.AsFunction() as FenFunction;
+                        callbackThis = callback;
+                    }
+                }
+
+                if (callbackFn == null)
+                {
+                    continue;
+                }
+
+                if (listener.Once)
+                {
+                    EventTarget.Registry.RemoveOnce(_node, eventObj.Type, listener);
+                }
+
+                callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+
+                var cancelBubbleVal = eventObj.Get("cancelBubble", _context);
+                if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                {
+                    break;
+                }
+            }
         }
 
         public virtual bool Has(string key, IExecutionContext context = null)

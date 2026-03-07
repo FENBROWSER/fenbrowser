@@ -6,10 +6,12 @@ using System.Text;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Security.Oopif;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Errors;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -21,7 +23,19 @@ namespace FenBrowser.FenEngine.DOM
     {
         private readonly Element _element;
         private static readonly ConditionalWeakTable<Element, FenObject> s_iframeWindowByElement = new ConditionalWeakTable<Element, FenObject>();
+        private static readonly ConditionalWeakTable<Element, IframeProcessAssignment> s_iframeAssignmentByElement = new ConditionalWeakTable<Element, IframeProcessAssignment>();
+        private static readonly OopifPolicy s_oopifPolicy = new OopifPolicy();
         // _context is in base
+
+        private sealed class IframeProcessAssignment
+        {
+            public string ParentUrl { get; set; }
+            public string TargetUrl { get; set; }
+            public bool IsRemote { get; set; }
+            public int RendererId { get; set; }
+            public string RemoteOrigin { get; set; }
+            public string Reason { get; set; }
+        }
 
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
         {
@@ -142,20 +156,21 @@ namespace FenBrowser.FenEngine.DOM
                 case "parentelement":
                 case "parentnode":
                     if (_element.ParentNode != null && _element.ParentNode is Element parentEl)
-                        return FenValue.FromObject(new ElementWrapper(parentEl, _context));
+                        return DomWrapperFactory.Wrap(parentEl, _context);
                     return FenValue.Null;
 
                 case "children":
-                    var childElements = _element.ChildNodes?.OfType<Element>(); // HTMLCollection is live ideally, but for now snapshot or wrap list
-                    return FenValue.FromObject(new HTMLCollectionWrapper(childElements ?? Enumerable.Empty<Element>(), _context));
+                    return FenValue.FromObject(new HTMLCollectionWrapper(
+                        () => _element.ChildNodes?.OfType<Element>() ?? Enumerable.Empty<Element>(),
+                        _context));
 
                 case "firstelementchild":
                     var firstChild = _element.ChildNodes?.OfType<Element>().FirstOrDefault();
-                    return firstChild != null ? FenValue.FromObject(new ElementWrapper(firstChild, _context)) : FenValue.Null;
+                    return firstChild != null ? DomWrapperFactory.Wrap(firstChild, _context) : FenValue.Null;
 
                 case "lastelementchild":
                     var lastChild = _element.ChildNodes?.OfType<Element>().LastOrDefault();
-                    return lastChild != null ? FenValue.FromObject(new ElementWrapper(lastChild, _context)) : FenValue.Null;
+                    return lastChild != null ? DomWrapperFactory.Wrap(lastChild, _context) : FenValue.Null;
                 
                 // DIALOG ELEMENT METHODS
                 case "show":
@@ -236,6 +251,15 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Null;
             }
 
+            var sandboxAttribute = _element.GetAttribute("sandbox");
+            var sandboxed = FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute);
+            var sandboxFlags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(sandboxAttribute);
+            var sandboxPolicy = FenBrowser.Core.SandboxPolicy.FromIframeSandboxAttribute(sandboxAttribute);
+            var allowSameOrigin = (sandboxFlags & FenBrowser.Core.IframeSandboxFlags.SameOrigin) != 0;
+            var allowScripts = sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Scripts);
+            var iframeAssignment = GetIframeProcessAssignment();
+            var isRemoteAssignedFrame = iframeAssignment?.IsRemote == true;
+
             if (!s_iframeWindowByElement.TryGetValue(_element, out var frameWindow))
             {
                 frameWindow = new FenObject();
@@ -309,18 +333,197 @@ namespace FenBrowser.FenEngine.DOM
                 })));
 
                 frameWindow.Set("AbortSignal", FenValue.FromObject(abortSignal));
+                frameWindow.Set("__fenSandboxed", FenValue.FromBoolean(sandboxed));
+                frameWindow.Set("__fenSandboxScriptsAllowed", FenValue.FromBoolean(allowScripts));
+                frameWindow.Set("__fenSandboxSameOrigin", FenValue.FromBoolean(allowSameOrigin));
+                frameWindow.Set("__fenSandboxFormsAllowed", FenValue.FromBoolean((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Forms) != 0));
+                frameWindow.Set("__fenSandboxPopupsAllowed", FenValue.FromBoolean((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Popups) != 0));
+                frameWindow.Set("__fenSandboxTopNavigationAllowed", FenValue.FromBoolean(sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Navigation)));
+                frameWindow.Set("window", FenValue.FromObject(frameWindow));
+                frameWindow.Set("self", FenValue.FromObject(frameWindow));
+                frameWindow.Set("top", FenValue.FromObject(frameWindow));
+                frameWindow.Set("parent", FenValue.FromObject(frameWindow));
+                frameWindow.Set("document", FenValue.Null);
+                frameWindow.Set("__fenSandboxLastBlockedAction", FenValue.Undefined);
 
-                var env = _context?.Environment;
-                if (env != null)
+                FenValue BlockedAction(string action)
                 {
-                    var doc = env.Get("document");
-                    if (doc.IsObject)
-                    {
-                        frameWindow.Set("document", doc);
-                    }
+                    frameWindow.Set("__fenSandboxLastBlockedAction", FenValue.FromString(action));
+                    return FenValue.Null;
                 }
 
+                bool IsRemoteFrameAccessBlocked() => GetIframeProcessAssignment()?.IsRemote == true;
+
+                var env = _context?.Environment;
+                var parentWindow = env != null ? env.Get("window") : FenValue.Undefined;
+                var parentLocation = env != null ? env.Get("location") : FenValue.Undefined;
+
+                frameWindow.Set("open", FenValue.FromFunction(new FenFunction("open", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        return BlockedAction("remote-frame");
+                    }
+
+                    if ((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Popups) == 0)
+                    {
+                        return BlockedAction("popup");
+                    }
+
+                    if (parentWindow.IsObject)
+                    {
+                        var parentOpen = parentWindow.AsObject().Get("open");
+                        if (parentOpen.IsFunction)
+                        {
+                            return parentOpen.AsFunction().Invoke(args, _context, parentWindow);
+                        }
+                    }
+
+                    return FenValue.Null;
+                })));
+
+                var frameLocation = new FenObject();
+                frameLocation.Set("href", FenValue.FromString(string.Empty));
+                frameLocation.Set("assign", FenValue.FromFunction(new FenFunction("assign", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        return BlockedAction("remote-frame");
+                    }
+
+                    if (!sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Navigation))
+                    {
+                        return BlockedAction("top-navigation");
+                    }
+
+                    if (parentLocation.IsObject)
+                    {
+                        var assign = parentLocation.AsObject().Get("assign");
+                        if (assign.IsFunction)
+                        {
+                            return assign.AsFunction().Invoke(args, _context, parentLocation);
+                        }
+                    }
+
+                    return FenValue.Undefined;
+                })));
+                frameLocation.Set("replace", FenValue.FromFunction(new FenFunction("replace", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        return BlockedAction("remote-frame");
+                    }
+
+                    if (!sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Navigation))
+                    {
+                        return BlockedAction("top-navigation");
+                    }
+
+                    if (parentLocation.IsObject)
+                    {
+                        var replace = parentLocation.AsObject().Get("replace");
+                        if (replace.IsFunction)
+                        {
+                            return replace.AsFunction().Invoke(args, _context, parentLocation);
+                        }
+                    }
+
+                    return FenValue.Undefined;
+                })));
+                frameWindow.Set("location", FenValue.FromObject(frameLocation));
+
+                frameWindow.Set("alert", FenValue.FromFunction(new FenFunction("alert", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        return BlockedAction("remote-frame");
+                    }
+
+                    if ((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Modals) == 0)
+                    {
+                        return BlockedAction("modal");
+                    }
+
+                    if (parentWindow.IsObject)
+                    {
+                        var alert = parentWindow.AsObject().Get("alert");
+                        if (alert.IsFunction)
+                        {
+                            return alert.AsFunction().Invoke(args, _context, parentWindow);
+                        }
+                    }
+
+                    return FenValue.Undefined;
+                })));
+
+                frameWindow.Set("confirm", FenValue.FromFunction(new FenFunction("confirm", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        BlockedAction("remote-frame");
+                        return FenValue.FromBoolean(false);
+                    }
+
+                    if ((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Modals) == 0)
+                    {
+                        BlockedAction("modal");
+                        return FenValue.FromBoolean(false);
+                    }
+
+                    if (parentWindow.IsObject)
+                    {
+                        var confirm = parentWindow.AsObject().Get("confirm");
+                        if (confirm.IsFunction)
+                        {
+                            return confirm.AsFunction().Invoke(args, _context, parentWindow);
+                        }
+                    }
+
+                    return FenValue.FromBoolean(false);
+                })));
+
+                frameWindow.Set("prompt", FenValue.FromFunction(new FenFunction("prompt", (args, thisVal) =>
+                {
+                    if (IsRemoteFrameAccessBlocked())
+                    {
+                        return BlockedAction("remote-frame");
+                    }
+
+                    if ((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.Modals) == 0)
+                    {
+                        return BlockedAction("modal");
+                    }
+
+                    if (parentWindow.IsObject)
+                    {
+                        var prompt = parentWindow.AsObject().Get("prompt");
+                        if (prompt.IsFunction)
+                        {
+                            return prompt.AsFunction().Invoke(args, _context, parentWindow);
+                        }
+                    }
+
+                    return FenValue.Null;
+                })));
+
                 s_iframeWindowByElement.Add(_element, frameWindow);
+            }
+
+            frameWindow.Set("__fenRemoteFrame", FenValue.FromBoolean(isRemoteAssignedFrame));
+            frameWindow.Set("__fenRemoteFrameRendererId", FenValue.FromNumber(iframeAssignment?.RendererId ?? 0));
+            frameWindow.Set("__fenRemoteFrameOrigin", string.IsNullOrWhiteSpace(iframeAssignment?.RemoteOrigin) ? FenValue.Null : FenValue.FromString(iframeAssignment.RemoteOrigin));
+            frameWindow.Set("__fenRemoteFrameUrl", string.IsNullOrWhiteSpace(iframeAssignment?.TargetUrl) ? FenValue.Null : FenValue.FromString(iframeAssignment.TargetUrl));
+            frameWindow.Set("__fenRemoteFrameReason", string.IsNullOrWhiteSpace(iframeAssignment?.Reason) ? FenValue.Null : FenValue.FromString(iframeAssignment.Reason));
+
+            var runtimeEnv = _context?.Environment;
+            if (isRemoteAssignedFrame || (sandboxed && !allowSameOrigin))
+            {
+                frameWindow.Set("document", FenValue.Null);
+            }
+            else if (runtimeEnv != null)
+            {
+                var doc = runtimeEnv.Get("document");
+                frameWindow.Set("document", doc.IsObject ? doc : FenValue.Null);
             }
 
             return FenValue.FromObject(frameWindow);
@@ -331,6 +534,21 @@ namespace FenBrowser.FenEngine.DOM
             if (!string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
             {
                 return FenValue.Null;
+            }
+
+            if (GetIframeProcessAssignment()?.IsRemote == true)
+            {
+                return FenValue.Null;
+            }
+
+            var sandboxAttribute = _element.GetAttribute("sandbox");
+            if (FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute))
+            {
+                var sandboxFlags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(sandboxAttribute);
+                if ((sandboxFlags & FenBrowser.Core.IframeSandboxFlags.SameOrigin) == 0)
+                {
+                    return FenValue.Null;
+                }
             }
 
             var frameWindow = GetContentWindow();
@@ -351,6 +569,117 @@ namespace FenBrowser.FenEngine.DOM
 
             var fallbackDoc = env.Get("document");
             return fallbackDoc.IsObject ? fallbackDoc : FenValue.Null;
+        }
+
+        internal static bool IsRemoteFrameElement(Element element, string currentUrl)
+        {
+            return ComputeIframeProcessAssignment(element, currentUrl)?.IsRemote == true;
+        }
+
+        private IframeProcessAssignment GetIframeProcessAssignment()
+        {
+            var currentUrl = _context?.CurrentUrl;
+            var targetUrl = _element.GetAttribute("src");
+            if (!s_iframeAssignmentByElement.TryGetValue(_element, out var assignment))
+            {
+                assignment = ComputeIframeProcessAssignment(_element, currentUrl) ?? new IframeProcessAssignment();
+                s_iframeAssignmentByElement.Add(_element, assignment);
+                return assignment;
+            }
+
+            if (!string.Equals(assignment.ParentUrl, currentUrl, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(assignment.TargetUrl, targetUrl, StringComparison.Ordinal))
+            {
+                var refreshed = ComputeIframeProcessAssignment(_element, currentUrl) ?? new IframeProcessAssignment();
+                assignment.ParentUrl = refreshed.ParentUrl;
+                assignment.TargetUrl = refreshed.TargetUrl;
+                assignment.IsRemote = refreshed.IsRemote;
+                assignment.RendererId = refreshed.RendererId;
+                assignment.RemoteOrigin = refreshed.RemoteOrigin;
+                assignment.Reason = refreshed.Reason;
+            }
+
+            return assignment;
+        }
+
+        private static IframeProcessAssignment ComputeIframeProcessAssignment(Element element, string currentUrl)
+        {
+            if (element == null || !string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var srcdoc = element.GetAttribute("srcdoc");
+            var src = element.GetAttribute("src");
+            var assignment = new IframeProcessAssignment
+            {
+                ParentUrl = currentUrl,
+                TargetUrl = src ?? string.Empty,
+                Reason = "same-process"
+            };
+
+            if (!string.IsNullOrWhiteSpace(srcdoc) || string.IsNullOrWhiteSpace(src))
+            {
+                return assignment;
+            }
+
+            if (!TryResolveIframeTargetUri(currentUrl, src, out var targetUri))
+            {
+                assignment.IsRemote = true;
+                assignment.Reason = "unresolvable-url";
+                return assignment;
+            }
+
+            assignment.TargetUrl = targetUri.AbsoluteUri;
+            if (!string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                assignment.Reason = "non-http-frame";
+                return assignment;
+            }
+
+            if (!Uri.TryCreate(currentUrl, UriKind.Absolute, out var parentUri) || !string.Equals(parentUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && !string.Equals(parentUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                assignment.IsRemote = true;
+                assignment.RemoteOrigin = $"{targetUri.Scheme}://{targetUri.Host}{(targetUri.IsDefaultPort ? string.Empty : ":" + targetUri.Port)}";
+                assignment.Reason = "missing-parent-origin";
+                assignment.RendererId = 2;
+                return assignment;
+            }
+
+            var frameTree = new FrameTree(s_oopifPolicy);
+            var parentFrame = frameTree.CreateMainFrame(parentUri.AbsoluteUri, rendererId: 1);
+            var (frame, decision) = frameTree.NavigateChildFrame(parentFrame, targetUri.AbsoluteUri);
+            assignment.IsRemote = decision.RequiresNewProcess;
+            assignment.RendererId = frame.RendererId;
+            assignment.RemoteOrigin = frame.SiteLock?.Origin;
+            assignment.Reason = decision.Reason;
+            return assignment;
+        }
+
+        private static bool TryResolveIframeTargetUri(string currentUrl, string src, out Uri resolved)
+        {
+            resolved = null;
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                return false;
+            }
+
+            var trimmed = src.Trim();
+            if (string.Equals(trimmed, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out resolved))
+            {
+                return true;
+            }
+
+            return Uri.TryCreate(currentUrl, UriKind.Absolute, out var baseUri) &&
+                   Uri.TryCreate(baseUri, trimmed, out resolved);
         }
 
 
@@ -1004,7 +1333,7 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     if (Rendering.CssLoader.MatchesSelector(current, selector))
                     {
-                        return FenValue.FromObject(new ElementWrapper(current, _context));
+                        return DomWrapperFactory.Wrap(current, _context);
                     }
                     current = current.ParentNode as Element;
                 }
@@ -1025,7 +1354,7 @@ namespace FenBrowser.FenEngine.DOM
             // Should probably use the DocumentWrapper implementation or a static helper
             // For now simplified recursive search
             var result = FindFirstDescendant(_element, selector);
-            return result != null ? FenValue.FromObject(new ElementWrapper(result, _context)) : FenValue.Null;
+            return result != null ? DomWrapperFactory.Wrap(result, _context) : FenValue.Null;
         }
         
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -1056,7 +1385,7 @@ namespace FenBrowser.FenEngine.DOM
              
              foreach (var child in parent.ChildNodes.OfType<Element>())
              {
-                 if (Rendering.CssLoader.MatchesSelector(child, selector)) results.Add(FenValue.FromObject(new ElementWrapper(child, _context)));
+                 if (Rendering.CssLoader.MatchesSelector(child, selector)) results.Add(DomWrapperFactory.Wrap(child, _context));
                  FindAllDescendants(child, selector, results);
              }
         }
@@ -1064,23 +1393,20 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue GetElementsByTagNameMethod(FenValue[] args, FenValue thisVal)
         {
             var tag = args.Length > 0 ? args[0].ToString() : "*";
-            var collection = _element.GetElementsByTagName(tag);
-            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => _element.GetElementsByTagName(tag), _context));
         }
 
         private FenValue GetElementsByTagNameNSMethod(FenValue[] args, FenValue thisVal)
         {
             // Namespace-aware matching is not yet implemented in the core DOM; delegate by local name.
             var localName = args.Length > 1 ? args[1].ToString() : "*";
-            var collection = _element.GetElementsByTagName(localName);
-            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => _element.GetElementsByTagName(localName), _context));
         }
 
         private FenValue GetElementsByClassNameMethod(FenValue[] args, FenValue thisVal)
         {
             var classNames = args.Length > 0 ? args[0].ToString() : string.Empty;
-            var collection = _element.GetElementsByClassName(classNames);
-            return FenValue.FromObject(new HTMLCollectionWrapper(collection, _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => _element.GetElementsByClassName(classNames), _context));
         }
         private FenValue ShowDialog(FenValue[] args, FenValue thisVal)
         {
@@ -1152,8 +1478,8 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null; // Needs {mode: 'open'|'closed'}
             
             var options = args[0].AsObject() as FenObject;
-            var modeVal = options?.Get("mode");
-            var mode = modeVal?.ToString() ?? "closed";
+            var modeVal = options != null ? options.Get("mode") : FenValue.Undefined;
+            var mode = modeVal.ToString() ?? "closed";
             
             var init = new ShadowRootInit
             {
@@ -1338,22 +1664,19 @@ namespace FenBrowser.FenEngine.DOM
             var shouldRunMouseActivation =
                 string.Equals(eventObj.Type, "click", StringComparison.OrdinalIgnoreCase) &&
                 IsMouseClickEvent(originalEventValue);
+            var activationTarget = shouldRunMouseActivation
+                ? FindClickActivationTarget(_element, eventObj.Bubbles)
+                : null;
 
-            var hadCheckablePreActivation = false;
-            var previouslyChecked = false;
-            if (shouldRunMouseActivation && TryGetCheckableInputType(_element, out var checkableType))
-            {
-                previouslyChecked = _element.HasAttribute("checked");
-                ApplyCheckablePreActivation(_element, checkableType);
-                hadCheckablePreActivation = _element.HasAttribute("checked") != previouslyChecked;
-            }
+            var checkableActivationState = activationTarget != null ? ApplyCheckablePreActivation(activationTarget) : null;
+            var hadCheckablePreActivation = checkableActivationState?.Changed == true;
 
             var notPrevented = EventTarget.DispatchEvent(_element, eventObj, _context);
 
             // Legacy fallback for runtimes that do not wire EventTarget top-level dispatch.
             if (eventObj.Bubbles && EventTarget.ExternalListenerInvoker == null)
             {
-                var windowVal = _context?.Environment?.Get("window") ?? FenValue.Undefined;
+                var windowVal = _context?.Environment != null ? _context.Environment.Get("window") : FenValue.Undefined;
                 if (windowVal.IsObject)
                 {
                     var windowDispatch = windowVal.AsObject().Get("dispatchEvent");
@@ -1375,18 +1698,19 @@ namespace FenBrowser.FenEngine.DOM
             {
                 if (!notPrevented && hadCheckablePreActivation)
                 {
-                    RestoreCheckableState(_element, previouslyChecked);
+                    RestoreCheckableState(checkableActivationState);
                 }
                 else
                 {
-                    if (hadCheckablePreActivation && _element.IsConnected)
+                    if (hadCheckablePreActivation && activationTarget != null && activationTarget.IsConnected)
                     {
-                        DispatchInputAndChangeEvents(_element);
+                        DispatchInputAndChangeEvents(activationTarget);
                     }
 
-                    if (notPrevented)
+                    if (notPrevented && activationTarget != null)
                     {
-                        RunSubmitActivation(_element);
+                        RunLabelActivation(activationTarget);
+                        RunSubmitActivation(activationTarget);
                     }
                 }
             }
@@ -1413,6 +1737,7 @@ namespace FenBrowser.FenEngine.DOM
                 ownerDocument.ActiveElement = _element;
             }
 
+            ElementStateManager.Instance.SetFocusedElement(_element);
             var focusEvent = new DomEvent("focus", bubbles: false, cancelable: false, composed: true, context: _context);
             EventTarget.DispatchEvent(_element, focusEvent, _context);
             return FenValue.Undefined;
@@ -1424,6 +1749,11 @@ namespace FenBrowser.FenEngine.DOM
             if (ownerDocument != null && ReferenceEquals(ownerDocument.ActiveElement, _element))
             {
                 ownerDocument.ActiveElement = null;
+            }
+
+            if (ElementStateManager.Instance.IsFocused(_element))
+            {
+                ElementStateManager.Instance.SetFocusedElement(null);
             }
 
             var blurEvent = new DomEvent("blur", bubbles: false, cancelable: false, composed: true, context: _context);
@@ -1443,14 +1773,8 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
             }
 
-            var hadCheckablePreActivation = false;
-            var previouslyChecked = false;
-            if (TryGetCheckableInputType(_element, out var checkableType))
-            {
-                previouslyChecked = _element.HasAttribute("checked");
-                ApplyCheckablePreActivation(_element, checkableType);
-                hadCheckablePreActivation = _element.HasAttribute("checked") != previouslyChecked;
-            }
+            var checkableActivationState = ApplyCheckablePreActivation(_element);
+            var hadCheckablePreActivation = checkableActivationState?.Changed == true;
 
             var clickEvent = new DomEvent("click", bubbles: true, cancelable: true, composed: true, context: _context);
             var notPrevented = EventTarget.DispatchEvent(_element, clickEvent, _context);
@@ -1459,7 +1783,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 if (hadCheckablePreActivation)
                 {
-                    RestoreCheckableState(_element, previouslyChecked);
+                    RestoreCheckableState(checkableActivationState);
                 }
                 return FenValue.Undefined;
             }
@@ -1469,6 +1793,7 @@ namespace FenBrowser.FenEngine.DOM
                 DispatchInputAndChangeEvents(_element);
             }
 
+            RunLabelActivation(_element);
             RunSubmitActivation(_element);
             return FenValue.Undefined;
         }
@@ -1523,24 +1848,200 @@ namespace FenBrowser.FenEngine.DOM
             return true;
         }
 
-        private static void ApplyCheckablePreActivation(Element element, string inputType)
+        private static Element FindClickActivationTarget(Element element, bool bubbles)
         {
-            var wasChecked = element.HasAttribute("checked");
+            if (element == null)
+            {
+                return null;
+            }
+
+            if (HasClickActivationBehavior(element))
+            {
+                return element;
+            }
+
+            if (!bubbles)
+            {
+                return null;
+            }
+
+            for (var ancestor = element.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+            {
+                if (HasClickActivationBehavior(ancestor))
+                {
+                    return ancestor;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool HasClickActivationBehavior(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
+            if (tag == "label" || tag == "button")
+            {
+                return true;
+            }
+
+            if (tag == "a")
+            {
+                return !string.IsNullOrEmpty(element.GetAttribute("href"));
+            }
+
+            if (tag != "input")
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+            return type == "checkbox" || type == "radio" || type == "submit" || type == "image" || type == "button";
+        }
+
+        private sealed class CheckableActivationState
+        {
+            public Element Element { get; init; }
+            public string InputType { get; init; }
+            public bool WasChecked { get; init; }
+            public bool Changed { get; set; }
+            public List<Element> PreviouslyCheckedRadios { get; } = new();
+        }
+
+        private static CheckableActivationState ApplyCheckablePreActivation(Element element)
+        {
+            if (!TryGetCheckableInputType(element, out var inputType))
+            {
+                return null;
+            }
+
+            var state = new CheckableActivationState
+            {
+                Element = element,
+                InputType = inputType,
+                WasChecked = element.HasAttribute("checked")
+            };
+
             if (inputType == "checkbox")
             {
-                if (wasChecked) element.RemoveAttribute("checked");
+                if (state.WasChecked) element.RemoveAttribute("checked");
                 else element.SetAttribute("checked", "");
+                state.Changed = element.HasAttribute("checked") != state.WasChecked;
+                return state;
             }
-            else if (inputType == "radio" && !wasChecked)
+
+            if (state.WasChecked)
             {
-                element.SetAttribute("checked", "");
+                return state;
+            }
+
+            foreach (var peer in EnumerateRadioGroup(element))
+            {
+                if (peer.HasAttribute("checked"))
+                {
+                    state.PreviouslyCheckedRadios.Add(peer);
+                    peer.RemoveAttribute("checked");
+                }
+            }
+
+            element.SetAttribute("checked", "");
+            state.Changed = true;
+            return state;
+        }
+
+        private static void RestoreCheckableState(CheckableActivationState state)
+        {
+            if (state == null || state.Element == null)
+            {
+                return;
+            }
+
+            if (state.InputType == "checkbox")
+            {
+                if (state.WasChecked) state.Element.SetAttribute("checked", "");
+                else state.Element.RemoveAttribute("checked");
+                return;
+            }
+
+            state.Element.RemoveAttribute("checked");
+            foreach (var peer in EnumerateRadioGroup(state.Element))
+            {
+                if (!ReferenceEquals(peer, state.Element))
+                {
+                    peer.RemoveAttribute("checked");
+                }
+            }
+
+            if (state.WasChecked)
+            {
+                state.Element.SetAttribute("checked", "");
+            }
+
+            foreach (var peer in state.PreviouslyCheckedRadios)
+            {
+                peer.SetAttribute("checked", "");
             }
         }
 
-        private static void RestoreCheckableState(Element element, bool shouldBeChecked)
+        private static IEnumerable<Element> EnumerateRadioGroup(Element element)
         {
-            if (shouldBeChecked) element.SetAttribute("checked", "");
-            else element.RemoveAttribute("checked");
+            if (element == null || !string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                yield break;
+            }
+
+            var root = element.OwnerDocument?.DocumentElement;
+            if (root == null)
+            {
+                yield return element;
+                yield break;
+            }
+
+            var groupName = element.GetAttribute("name") ?? string.Empty;
+            var ownerForm = FindAncestorForm(element);
+
+            foreach (var candidate in root.Descendants().OfType<Element>())
+            {
+                if (!string.Equals(candidate.TagName, "input", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var candidateType = (candidate.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+                if (candidateType != "radio")
+                {
+                    continue;
+                }
+
+                if (!string.Equals(candidate.GetAttribute("name") ?? string.Empty, groupName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!ReferenceEquals(FindAncestorForm(candidate), ownerForm))
+                {
+                    continue;
+                }
+
+                yield return candidate;
+            }
+        }
+
+        private static Element FindAncestorForm(Element element)
+        {
+            for (var current = element?.ParentElement; current != null; current = current.ParentElement)
+            {
+                if (string.Equals(current.TagName, "form", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current;
+                }
+            }
+
+            return null;
         }
 
         private void DispatchInputAndChangeEvents(Element element)
@@ -1598,6 +2099,11 @@ namespace FenBrowser.FenEngine.DOM
                         return;
                     }
 
+                    if (!IsIframeSandboxFormSubmissionAllowed(formElement))
+                    {
+                        return;
+                    }
+
                     var submitEvent = new DomEvent("submit", bubbles: true, cancelable: true, composed: false, context: _context);
                     EventTarget.DispatchEvent(formElement, submitEvent, _context);
                     return;
@@ -1605,6 +2111,134 @@ namespace FenBrowser.FenEngine.DOM
 
                 current = current.ParentNode;
             }
+        }
+
+        private void RunLabelActivation(Element element)
+        {
+            if (element == null ||
+                !string.Equals(element.TagName, "label", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var control = FindAssociatedLabelControl(element);
+            if (control == null || ReferenceEquals(control, element) || IsUserInteractionDisabledControl(control))
+            {
+                return;
+            }
+
+            var wrapper = new ElementWrapper(control, _context);
+            wrapper.ClickMethod(Array.Empty<FenValue>(), FenValue.Undefined);
+        }
+
+        private Element FindAssociatedLabelControl(Element label)
+        {
+            var forId = label.GetAttribute("for");
+            if (!string.IsNullOrWhiteSpace(forId))
+            {
+                var root = _element.OwnerDocument?.DocumentElement;
+                var byId = root != null ? FindDescendantById(root, forId) : null;
+                if (IsLabelableControl(byId))
+                {
+                    return byId;
+                }
+            }
+
+            return FindFirstLabelableDescendant(label);
+        }
+
+        private static Element FindDescendantById(Node node, string id)
+        {
+            if (node is Element element &&
+                string.Equals(element.GetAttribute("id"), id, StringComparison.Ordinal))
+            {
+                return element;
+            }
+
+            if (node?.ChildNodes == null)
+            {
+                return null;
+            }
+
+            foreach (var child in node.ChildNodes)
+            {
+                var match = FindDescendantById(child, id);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+
+        private static Element FindFirstLabelableDescendant(Node node)
+        {
+            if (node?.ChildNodes == null)
+            {
+                return null;
+            }
+
+            foreach (var child in node.ChildNodes)
+            {
+                if (child is Element childElement && IsLabelableControl(childElement))
+                {
+                    return childElement;
+                }
+
+                var nested = FindFirstLabelableDescendant(child);
+                if (nested != null)
+                {
+                    return nested;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsLabelableControl(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
+            if (tag == "button" || tag == "meter" || tag == "output" || tag == "progress" ||
+                tag == "select" || tag == "textarea")
+            {
+                return true;
+            }
+
+            if (tag != "input")
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+            return type != "hidden";
+        }
+
+        private static bool IsIframeSandboxFormSubmissionAllowed(Element formElement)
+        {
+            var cursor = formElement?.ParentNode;
+            while (cursor != null)
+            {
+                if (cursor is Element element &&
+                    string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sandboxAttribute = element.GetAttribute("sandbox");
+                    if (FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute))
+                    {
+                        var flags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(sandboxAttribute);
+                        return (flags & FenBrowser.Core.IframeSandboxFlags.Forms) != 0;
+                    }
+                }
+
+                cursor = cursor.ParentNode;
+            }
+
+            return true;
         }
         private static bool IsPotentiallyFocusable(Element element)
         {
@@ -1633,7 +2267,7 @@ namespace FenBrowser.FenEngine.DOM
             if (args.Length > 0 && args[0].IsBoolean) deep = args[0].ToBoolean();
             
             var clone = _element.CloneNode(deep) as Element;
-            return FenValue.FromObject(new ElementWrapper(clone, _context));
+            return clone != null ? DomWrapperFactory.Wrap(clone, _context) : FenValue.Null;
         }
         
         /// <summary>
@@ -1769,6 +2403,7 @@ namespace FenBrowser.FenEngine.DOM
         private readonly string _attrName;
         private readonly IExecutionContext _context;
         private IObject _prototype;
+        private readonly Dictionary<string, FenValue> _expandos = new(StringComparer.Ordinal);
         public object NativeObject { get; set; }
 
         public DOMTokenList(Element element, string attrName, IExecutionContext context)
@@ -1783,16 +2418,48 @@ namespace FenBrowser.FenEngine.DOM
             var val = _element.GetAttribute(_attrName) ?? "";
             var tokens = new List<string>(val.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
 
+            switch (key)
+            {
+                case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => Modify(tokens, args, (t, list) => { if (!list.Contains(t, StringComparer.Ordinal)) list.Add(t); })));
+                case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => Modify(tokens, args, (t, list) => list.RemoveAll(existing => string.Equals(existing, t, StringComparison.Ordinal)))));
+                case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => Toggle(tokens, args)));
+                case "contains": return FenValue.FromFunction(new FenFunction("contains", (args, _) => FenValue.FromBoolean(args.Length > 0 && tokens.Contains(args[0].ToString(), StringComparer.Ordinal))));
+                case "item": return FenValue.FromFunction(new FenFunction("item", (args, _) =>
+                {
+                    if (args.Length == 0) return FenValue.Null;
+                    var index = ToCollectionIndex(args[0]);
+                    return index < tokens.Count ? FenValue.FromString(tokens[index]) : FenValue.Null;
+                }));
+                case "forEach": return FenValue.FromFunction(new FenFunction("forEach", (args, _) =>
+                {
+                    if (args.Length > 0 && args[0].IsFunction)
+                    {
+                        var callback = args[0].AsFunction();
+                        for (var i = 0; i < tokens.Count; i++)
+                        {
+                            callback.Invoke(new[] { FenValue.FromString(tokens[i]), FenValue.FromNumber(i), FenValue.FromObject(this) }, _context);
+                        }
+                    }
+                    return FenValue.Undefined;
+                }));
+                case "values": return FenValue.FromFunction(new FenFunction("values", (args, _) => FenValue.FromObject(CreateIterator(tokens, IteratorProjection.Values))));
+                case "keys": return FenValue.FromFunction(new FenFunction("keys", (args, _) => FenValue.FromObject(CreateIterator(tokens, IteratorProjection.Keys))));
+                case "entries": return FenValue.FromFunction(new FenFunction("entries", (args, _) => FenValue.FromObject(CreateIterator(tokens, IteratorProjection.Entries))));
+                case "[Symbol.iterator]":
+                case "Symbol.iterator":
+                case "Symbol(Symbol.iterator)":
+                    return FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, _) => FenValue.FromObject(CreateIterator(tokens, IteratorProjection.Values))));
+            }
+
             switch (key.ToLowerInvariant())
             {
-                case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => Modify(tokens, args, (t, list) => { if (!list.Contains(t)) list.Add(t); })));
-                case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => Modify(tokens, args, (t, list) => list.Remove(t))));
-                case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => Toggle(tokens, args)));
-                case "contains": return FenValue.FromFunction(new FenFunction("contains", (args, _) => FenValue.FromBoolean(args.Length > 0 && tokens.Contains(args[0].ToString()))));
-                case "length": return FenValue.FromNumber(tokens.Count);
+                case "length":
+                    return FenValue.FromNumber(tokens.Count);
                 default: 
-                    if (int.TryParse(key, out int index) && index >= 0 && index < tokens.Count)
+                    if (TryParseCollectionIndex(key, out int index) && index < tokens.Count)
                         return FenValue.FromString(tokens[index]);
+                    if (_expandos.TryGetValue(key, out var expando))
+                        return expando;
                     return FenValue.Undefined;
             }
         }
@@ -1808,8 +2475,16 @@ namespace FenBrowser.FenEngine.DOM
         {
              if (args.Length == 0) return FenValue.FromBoolean(false);
              var token = args[0].ToString();
-             bool has = tokens.Contains(token);
-             if (has) tokens.Remove(token);
+             bool has = tokens.Contains(token, StringComparer.Ordinal);
+             if (args.Length >= 2 && args[1].IsBoolean)
+             {
+                 var force = args[1].ToBoolean();
+                 if (force && !has) tokens.Add(token);
+                 if (!force && has) tokens.RemoveAll(existing => string.Equals(existing, token, StringComparison.Ordinal));
+                 Update(tokens);
+                 return FenValue.FromBoolean(force);
+             }
+             if (has) tokens.RemoveAll(existing => string.Equals(existing, token, StringComparison.Ordinal));
              else tokens.Add(token);
              Update(tokens);
              return FenValue.FromBoolean(!has);
@@ -1821,13 +2496,128 @@ namespace FenBrowser.FenEngine.DOM
             _context?.RequestRender?.Invoke();
         }
 
-        public void Set(string key, FenValue value, IExecutionContext context = null) { }
+        public void Set(string key, FenValue value, IExecutionContext context = null)
+        {
+            var tokens = GetTokens();
+            if (TryParseCollectionIndex(key, out var index) && index < tokens.Count)
+            {
+                return;
+            }
+
+            _expandos[key] = value;
+        }
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
-        public bool Delete(string key, IExecutionContext context = null) => false;
-        public IEnumerable<string> Keys(IExecutionContext context = null) => new string[0];
+        public bool Delete(string key, IExecutionContext context = null)
+        {
+            var tokens = GetTokens();
+            if (TryParseCollectionIndex(key, out var index))
+            {
+                return index >= tokens.Count;
+            }
+
+            return _expandos.Remove(key) || !_expandos.ContainsKey(key);
+        }
+        public IEnumerable<string> Keys(IExecutionContext context = null)
+        {
+            var tokens = GetTokens();
+            return Enumerable.Range(0, tokens.Count).Select(i => i.ToString()).Concat(_expandos.Keys);
+        }
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
-        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+        {
+            if (key == "length" || key == "add" || key == "remove" || key == "toggle" || key == "contains" ||
+                key == "item" || key == "forEach" || key == "values" || key == "keys" || key == "entries" ||
+                key == "[Symbol.iterator]" || key == "Symbol.iterator" || key == "Symbol(Symbol.iterator)")
+            {
+                return false;
+            }
+
+            var tokens = GetTokens();
+            if (TryParseCollectionIndex(key, out var index))
+            {
+                return index >= tokens.Count;
+            }
+
+            if (desc.IsAccessor)
+            {
+                return false;
+            }
+
+            _expandos[key] = desc.Value ?? FenValue.Undefined;
+            return true;
+        }
+
+        private List<string> GetTokens()
+        {
+            var val = _element.GetAttribute(_attrName) ?? "";
+            return new List<string>(val.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        private enum IteratorProjection
+        {
+            Keys,
+            Values,
+            Entries
+        }
+
+        private FenObject CreateIterator(List<string> tokens, IteratorProjection projection)
+        {
+            var snapshot = tokens.ToList();
+            var iterator = new FenObject();
+            var index = 0;
+            iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (args, thisVal) =>
+            {
+                var step = new FenObject();
+                if (index >= snapshot.Count)
+                {
+                    step.Set("value", FenValue.Undefined);
+                    step.Set("done", FenValue.FromBoolean(true));
+                    return FenValue.FromObject(step);
+                }
+
+                FenValue value = projection switch
+                {
+                    IteratorProjection.Keys => FenValue.FromNumber(index),
+                    IteratorProjection.Values => FenValue.FromString(snapshot[index]),
+                    _ => CreateEntry(index, snapshot[index])
+                };
+
+                step.Set("value", value);
+                step.Set("done", FenValue.FromBoolean(false));
+                index++;
+                return FenValue.FromObject(step);
+            })));
+            iterator.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, thisVal) => FenValue.FromObject(iterator))));
+            iterator.Set("Symbol.iterator", iterator.Get("[Symbol.iterator]"));
+            iterator.Set("Symbol(Symbol.iterator)", iterator.Get("[Symbol.iterator]"));
+            return iterator;
+        }
+
+        private static FenValue CreateEntry(int index, string token)
+        {
+            var pair = FenObject.CreateArray();
+            pair.Set("0", FenValue.FromNumber(index));
+            pair.Set("1", FenValue.FromString(token));
+            pair.Set("length", FenValue.FromNumber(2));
+            return FenValue.FromObject(pair);
+        }
+
+        private static bool TryParseCollectionIndex(string key, out int index)
+        {
+            return int.TryParse(key, out index) && index >= 0;
+        }
+
+        private static int ToCollectionIndex(FenValue value)
+        {
+            var number = value.ToNumber();
+            if (double.IsNaN(number) || double.IsInfinity(number) || number < 0)
+            {
+                return int.MaxValue;
+            }
+
+            return (int)number;
+        }
     }
 
     public class DOMStringMap : IObject
@@ -1835,6 +2625,8 @@ namespace FenBrowser.FenEngine.DOM
         private readonly Element _element;
         private readonly IExecutionContext _context;
         private IObject _prototype;
+        private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
+        private readonly List<string> _expandoOrder = new();
         public object NativeObject { get; set; }
 
         public DOMStringMap(Element element, IExecutionContext context)
@@ -1845,6 +2637,18 @@ namespace FenBrowser.FenEngine.DOM
 
         public FenValue Get(string key, IExecutionContext context = null)
         {
+            if (_expandos.TryGetValue(key, out var expandoDesc))
+            {
+                if (expandoDesc.IsAccessor)
+                {
+                    return expandoDesc.Getter != null
+                        ? expandoDesc.Getter.Invoke(Array.Empty<FenValue>(), context ?? _context, FenValue.FromObject(this))
+                        : FenValue.Undefined;
+                }
+
+                return expandoDesc.Value ?? FenValue.Undefined;
+            }
+
             var attrName = "data-" + PropertyNameToAttributeSuffix(key);
             var val = _element.GetAttribute(attrName);
             if (val != null)
@@ -1854,6 +2658,24 @@ namespace FenBrowser.FenEngine.DOM
 
         public void Set(string key, FenValue value, IExecutionContext context = null)
         {
+            if (_expandos.TryGetValue(key, out var expandoDesc))
+            {
+                if (expandoDesc.IsAccessor)
+                {
+                    expandoDesc.Setter?.Invoke(new[] { value }, context ?? _context, FenValue.FromObject(this));
+                    return;
+                }
+
+                if (expandoDesc.Writable == false)
+                {
+                    return;
+                }
+
+                expandoDesc.Value = value;
+                _expandos[key] = expandoDesc;
+                return;
+            }
+
             var attrName = "data-" + PropertyNameToAttributeSuffix(key);
             _element.SetAttribute(attrName, value.ToString());
             _context?.RequestRender?.Invoke();
@@ -1861,11 +2683,23 @@ namespace FenBrowser.FenEngine.DOM
 
         public bool Has(string key, IExecutionContext context = null)
         {
-            return EnumerateSupportedPropertyNames().Contains(key, StringComparer.Ordinal);
+            return _expandos.ContainsKey(key) || EnumerateSupportedPropertyNames().Contains(key, StringComparer.Ordinal);
         }
 
         public bool Delete(string key, IExecutionContext context = null)
         {
+            if (_expandos.TryGetValue(key, out var expandoDesc))
+            {
+                if (expandoDesc.Configurable == false)
+                {
+                    return false;
+                }
+
+                _expandos.Remove(key);
+                _expandoOrder.Remove(key);
+                return true;
+            }
+
             var attrName = "data-" + PropertyNameToAttributeSuffix(key);
             if (_element.HasAttribute(attrName))
             {
@@ -1875,12 +2709,45 @@ namespace FenBrowser.FenEngine.DOM
             return true;
         }
 
-        public IEnumerable<string> Keys(IExecutionContext context = null) => EnumerateSupportedPropertyNames();
+        public IEnumerable<string> Keys(IExecutionContext context = null)
+        {
+            foreach (var name in EnumerateSupportedPropertyNames())
+            {
+                yield return name;
+            }
 
-        public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null) => EnumerateSupportedPropertyNames();
+            foreach (var expando in _expandoOrder)
+            {
+                if (_expandos.TryGetValue(expando, out var desc) && (desc.Enumerable ?? false))
+                {
+                    yield return expando;
+                }
+            }
+        }
+
+        public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null)
+        {
+            foreach (var name in EnumerateSupportedPropertyNames())
+            {
+                yield return name;
+            }
+
+            foreach (var expando in _expandoOrder)
+            {
+                if (_expandos.ContainsKey(expando))
+                {
+                    yield return expando;
+                }
+            }
+        }
 
         public PropertyDescriptor? GetOwnPropertyDescriptor(string key)
         {
+            if (_expandos.TryGetValue(key, out var expandoDesc))
+            {
+                return expandoDesc;
+            }
+
             if (!Has(key))
             {
                 return null;
@@ -1899,7 +2766,88 @@ namespace FenBrowser.FenEngine.DOM
 
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
-        public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+        public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+        {
+            if (EnumerateSupportedPropertyNames().Contains(key, StringComparer.Ordinal))
+            {
+                if (desc.IsAccessor)
+                {
+                    return false;
+                }
+
+                if (desc.Configurable == false)
+                {
+                    return false;
+                }
+
+                if (desc.Value.HasValue)
+                {
+                    Set(key, desc.Value.Value, _context);
+                }
+
+                return true;
+            }
+
+            if (_expandos.TryGetValue(key, out var current))
+            {
+                if (current.Configurable == false)
+                {
+                    if (desc.Configurable == true)
+                    {
+                        return false;
+                    }
+
+                    if (desc.Enumerable.HasValue && desc.Enumerable != current.Enumerable)
+                    {
+                        return false;
+                    }
+
+                    if (current.IsData && current.Writable == false)
+                    {
+                        if (desc.Writable == true)
+                        {
+                            return false;
+                        }
+
+                        if (desc.Value.HasValue && !desc.Value.Value.StrictEquals(current.Value))
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                if (desc.Value.HasValue) current.Value = desc.Value.Value;
+                if (desc.Writable.HasValue) current.Writable = desc.Writable;
+                if (desc.Enumerable.HasValue) current.Enumerable = desc.Enumerable;
+                if (desc.Configurable.HasValue) current.Configurable = desc.Configurable;
+                if (desc.Getter != null || desc.Setter != null)
+                {
+                    current.Getter = desc.Getter;
+                    current.Setter = desc.Setter;
+                    if (!desc.Value.HasValue)
+                    {
+                        current.Value = null;
+                        current.Writable = null;
+                    }
+                }
+
+                _expandos[key] = current;
+                return true;
+            }
+
+            var normalized = desc;
+            if (normalized.IsData)
+            {
+                if (!normalized.Value.HasValue) normalized.Value = FenValue.Undefined;
+                if (!normalized.Writable.HasValue) normalized.Writable = false;
+            }
+            if (!normalized.Enumerable.HasValue) normalized.Enumerable = false;
+            if (!normalized.Configurable.HasValue) normalized.Configurable = false;
+
+            _expandos[key] = normalized;
+            _expandoOrder.Add(key);
+            return true;
+        }
 
         private IEnumerable<string> EnumerateSupportedPropertyNames()
         {

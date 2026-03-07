@@ -20,8 +20,8 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Create a new CustomEvent.
         /// </summary>
-        public CustomEvent(string type, bool bubbles = false, bool cancelable = false, IValue detail = null)
-            : base(type, bubbles, cancelable)
+        public CustomEvent(string type, bool bubbles = false, bool cancelable = false, IValue detail = null, IExecutionContext context = null, bool initialized = true)
+            : base(type, bubbles, cancelable, false, context, initialized)
         {
             if (detail is FenValue fv)
             {

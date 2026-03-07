@@ -150,7 +150,8 @@ namespace FenBrowser.Core.Parsing
                             EmitCheckpoint(HtmlParseBuildPhase.Tokenizing, tokenCount, isFinal: false);
                         }
 
-                        if (useInterleavedBuild && tokenBuffer.Count >= tokenBatchSize)
+                        if (useInterleavedBuild &&
+                            (tokenBuffer.Count >= tokenBatchSize || RequiresImmediateTreeBuilderFeedback(token)))
                         {
                             tokenizingStageScope?.Dispose();
                             tokenizingStageScope = null;
@@ -167,6 +168,34 @@ namespace FenBrowser.Core.Parsing
                                 ref parsingCheckpointCount,
                                 ref documentReadyTokenCount);
                             interleavedBatchCount++;
+                            tokenBuffer.Clear();
+
+                            parsingStageScope?.Dispose();
+                            parsingStageScope = null;
+
+                            if (pipelineContext != null)
+                            {
+                                tokenizingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Tokenizing);
+                            }
+                        }
+                        else if (!useInterleavedBuild)
+                        {
+                            // The tokenizer depends on tree-builder feedback to enter RAWTEXT/RCDATA/ScriptData.
+                            // Process tokens immediately in the non-interleaved path so inline scripts/styles
+                            // cannot be tokenized ahead while the tokenizer is still in Data state.
+                            if (pipelineContext != null)
+                            {
+                                tokenizingStageScope?.Dispose();
+                                tokenizingStageScope = null;
+                                parsingStageScope = pipelineContext.BeginScopedStage(PipelineStage.Parsing);
+                            }
+
+                            ProcessTokenBatch(
+                                tokenBuffer,
+                                ref parsingTicks,
+                                ref parsedTokenCount,
+                                ref parsingCheckpointCount,
+                                ref documentReadyTokenCount);
                             tokenBuffer.Clear();
 
                             parsingStageScope?.Dispose();
@@ -270,6 +299,25 @@ namespace FenBrowser.Core.Parsing
             return ParseCheckpointTokenInterval > 0 &&
                 processedTokenCount > 0 &&
                 (processedTokenCount % ParseCheckpointTokenInterval) == 0;
+        }
+
+        private static bool RequiresImmediateTreeBuilderFeedback(HtmlToken token)
+        {
+            if (token is not StartTagToken startTag || string.IsNullOrWhiteSpace(startTag.TagName))
+            {
+                return false;
+            }
+
+            return startTag.TagName.Equals("script", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("style", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("title", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("textarea", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("xmp", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("iframe", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("noembed", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("noframes", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("noscript", StringComparison.OrdinalIgnoreCase) ||
+                startTag.TagName.Equals("plaintext", StringComparison.OrdinalIgnoreCase);
         }
 
         private void EmitCheckpoint(HtmlParseBuildPhase phase, int processedTokenCount, bool isFinal)
