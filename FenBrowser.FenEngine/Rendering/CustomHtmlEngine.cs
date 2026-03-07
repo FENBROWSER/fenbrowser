@@ -90,6 +90,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const int IncrementalParseRepaintMaxCount = 8;
         private const int IncrementalParseRepaintCheckpointStride = 2;
         private const int StreamingPreparseMinHtmlLength = 32768;
+        private const int StreamingPreparseMaxHtmlLength = 131072;
         private const int StreamingPreparseRepaintMaxCount = 4;
         private const int StreamingPreparseRepaintCheckpointStride = 3;
         private const int InterleavedPrimaryParseMinHtmlLength = 8192;
@@ -1706,7 +1707,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool ShouldRunStreamingParsePrepass(bool enabled, int htmlLength)
         {
-            return enabled && htmlLength >= StreamingPreparseMinHtmlLength;
+            // The streaming preparse is a progressive hint pass, not the source of truth.
+            // Bound it to mid-sized documents so it cannot stall first paint on very large pages.
+            return enabled &&
+                htmlLength >= StreamingPreparseMinHtmlLength &&
+                htmlLength <= StreamingPreparseMaxHtmlLength;
         }
 
         private static int ResolveInterleavedTokenBatchSize(bool enabled, int htmlLength)
