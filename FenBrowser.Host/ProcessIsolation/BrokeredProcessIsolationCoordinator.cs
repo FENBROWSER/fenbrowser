@@ -23,6 +23,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly RendererRestartPolicy _restartPolicy;
         private readonly RendererTabIsolationRegistry _isolationRegistry;
         private readonly string _assignmentPolicy = "origin-strict";
+        private readonly TimeSpan _rendererReadyTimeout;
         private volatile bool _isShuttingDown;
 
         public string Mode => "brokered";
@@ -42,6 +43,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 maxCrashCountInWindow: ParseIntEnv("FEN_RENDERER_MAX_CRASHES_IN_WINDOW", 4),
                 quarantineMs: ParseIntEnv("FEN_RENDERER_CRASH_QUARANTINE_MS", 30000));
             _isolationRegistry = new RendererTabIsolationRegistry(_restartPolicy);
+            _rendererReadyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv("FEN_RENDERER_READY_TIMEOUT_MS", 5000));
         }
 
         public void Initialize()
@@ -252,6 +254,17 @@ namespace FenBrowser.Host.ProcessIsolation
             process.Exited += (_, __) => HandleChildProcessExit(state.TabId, startedPid);
 
             session.AttachProcess(process);
+            var ready = session.WaitForReadyAsync(_rendererReadyTimeout).GetAwaiter().GetResult();
+            if (!ready)
+            {
+                FenLogger.Error(
+                    $"[ProcessIsolation] Renderer child failed startup contract for tab {state.TabId} (pid={startedPid}, readyTimeoutMs={(int)_rendererReadyTimeout.TotalMilliseconds}).",
+                    LogCategory.General);
+                StopSession(session, $"tab {state.TabId} startup contract failure");
+                sandbox?.Dispose();
+                return false;
+            }
+
             state.Session = session;
             state.ActivePid = startedPid;
             _isolationRegistry.MarkSessionStarted(state.TabId, startedPid);
@@ -350,6 +363,10 @@ namespace FenBrowser.Host.ProcessIsolation
             sandbox = null;
             try
             {
+                var allowUnsandboxedFallback = string.Equals(
+                    Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
+                    "1",
+                    StringComparison.OrdinalIgnoreCase);
                 var exePath = Environment.ProcessPath;
                 if (string.IsNullOrWhiteSpace(exePath))
                 {
@@ -384,16 +401,40 @@ namespace FenBrowser.Host.ProcessIsolation
                 try
                 {
                     var sandboxFactory = PlatformLayerFactory.GetInstance().CreateSandboxFactory();
+                    if (!allowUnsandboxedFallback && !sandboxFactory.IsSandboxingSupported)
+                    {
+                        FenLogger.Error(
+                            $"[ProcessIsolation] Refusing renderer launch for tab {tabId}: no supported OS sandbox factory is available on this host. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
+                            LogCategory.General);
+                        return null;
+                    }
+
                     rendererSandbox = sandboxFactory.Create(OsSandboxProfile.RendererMinimal);
+                    if (rendererSandbox is NullSandbox && !allowUnsandboxedFallback)
+                    {
+                        FenLogger.Error(
+                            $"[ProcessIsolation] Refusing renderer launch for tab {tabId}: renderer sandbox resolved to NullSandbox. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
+                            LogCategory.General);
+                        rendererSandbox.Dispose();
+                        return null;
+                    }
+
                     rendererSandbox.ApplyToProcessStartInfo(startInfo);
                 }
                 catch (Exception ex)
                 {
                     FenLogger.Warn(
-                        $"[ProcessIsolation] Sandbox creation failed for tab {tabId}; falling back to unsandboxed launch: {ex.Message}",
+                        $"[ProcessIsolation] Sandbox creation failed for tab {tabId}: {ex.Message}",
                         LogCategory.General);
                     rendererSandbox?.Dispose();
                     rendererSandbox = null;
+                    if (!allowUnsandboxedFallback)
+                    {
+                        FenLogger.Error(
+                            $"[ProcessIsolation] Refusing unsandboxed renderer launch for tab {tabId}. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
+                            LogCategory.General);
+                        return null;
+                    }
                 }
 
                 Process process;
@@ -408,16 +449,31 @@ namespace FenBrowser.Host.ProcessIsolation
                     catch (Exception ex)
                     {
                         FenLogger.Error(
-                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}; retrying without sandbox.",
+                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}",
                             LogCategory.General);
                         rendererSandbox.Dispose();
                         rendererSandbox = null;
+                        if (!allowUnsandboxedFallback)
+                        {
+                            FenLogger.Error(
+                                $"[ProcessIsolation] Refusing unsandboxed renderer retry for tab {tabId}. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
+                                LogCategory.General);
+                            return null;
+                        }
                         process = Process.Start(startInfo);
                     }
                 }
                 else
                 {
                     // Standard .NET process start (Job Object sandbox or NullSandbox).
+                    if (rendererSandbox == null && !allowUnsandboxedFallback)
+                    {
+                        FenLogger.Error(
+                            $"[ProcessIsolation] Refusing renderer launch for tab {tabId} because no sandbox is active. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
+                            LogCategory.General);
+                        return null;
+                    }
+
                     process = Process.Start(startInfo);
 
                     if (process != null && rendererSandbox != null)
@@ -431,6 +487,12 @@ namespace FenBrowser.Host.ProcessIsolation
                             FenLogger.Warn(
                                 $"[ProcessIsolation] Sandbox.AttachToProcess failed for tab {tabId} pid={process.Id}: {ex.Message}",
                                 LogCategory.General);
+                            if (!allowUnsandboxedFallback)
+                            {
+                                try { process.Kill(entireProcessTree: true); } catch { }
+                                rendererSandbox.Dispose();
+                                return null;
+                            }
                         }
                     }
                 }

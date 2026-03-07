@@ -42,6 +42,27 @@ namespace FenBrowser.Host.WebDriver
             return await RunOnMainThread(() => _tabs.ActiveTab?.Title ?? "");
         }
 
+        public async Task<string> GetWindowHandleAsync()
+        {
+            return await RunOnMainThread(() => _tabs.ActiveTab?.Id.ToString() ?? string.Empty);
+        }
+
+        public async Task<IReadOnlyList<string>> GetWindowHandlesAsync()
+        {
+            return await RunOnMainThread(() => (IReadOnlyList<string>)_tabs.Tabs.Select(tab => tab.Id.ToString()).ToList());
+        }
+
+        public async Task CloseWindowAsync()
+        {
+            await RunOnMainThread(() =>
+            {
+                if (_tabs.ActiveTab != null)
+                {
+                    _tabs.CloseActiveTab();
+                }
+            });
+        }
+
         public async Task GoBackAsync()
         {
             await RunOnMainThread(async () =>
@@ -352,14 +373,24 @@ namespace FenBrowser.Host.WebDriver
         {
             return await RunOnMainThread(async () =>
             {
+                var beforeActiveTabId = _tabs.ActiveTab?.Id;
                 var host = _tabs.ActiveTab?.Browser?.Host;
                 if (host != null)
                 {
                     await host.CreateNewTabAsync();
                 }
+                else
+                {
+                    _tabs.CreateTab();
+                }
 
-                // Host uses tab manager as source-of-truth; WebDriver session tracks handles independently.
-                return Guid.NewGuid().ToString("N");
+                var activeTab = _tabs.ActiveTab;
+                if (activeTab != null)
+                {
+                    return activeTab.Id.ToString();
+                }
+
+                return beforeActiveTabId?.ToString() ?? Guid.NewGuid().ToString("N");
             });
         }
 
