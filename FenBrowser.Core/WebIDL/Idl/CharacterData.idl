@@ -1,0 +1,90 @@
+// https://dom.spec.whatwg.org/#characterdata
+[Exposed=Window]
+interface CharacterData : Node {
+  [CEReactions, LegacyNullToEmptyString] attribute DOMString data;
+  readonly attribute unsigned long length;
+  DOMString substringData(unsigned long offset, unsigned long count);
+  [CEReactions] undefined appendData(DOMString data);
+  [CEReactions] undefined insertData(unsigned long offset, DOMString data);
+  [CEReactions] undefined deleteData(unsigned long offset, unsigned long count);
+  [CEReactions] undefined replaceData(unsigned long offset, unsigned long count, DOMString data);
+};
+
+CharacterData includes ChildNode;
+CharacterData includes NonDocumentTypeChildNode;
+
+// https://dom.spec.whatwg.org/#text
+[Exposed=Window]
+interface Text : CharacterData {
+  constructor(optional DOMString data = "");
+
+  [NewObject] Text splitText(unsigned long offset);
+  readonly attribute DOMString wholeText;
+};
+
+Text includes Slottable;
+
+// https://dom.spec.whatwg.org/#cdatasection
+[Exposed=Window]
+interface CDATASection : Text {};
+
+// https://dom.spec.whatwg.org/#comment
+[Exposed=Window]
+interface Comment : CharacterData {
+  constructor(optional DOMString data = "");
+};
+
+// https://dom.spec.whatwg.org/#processinginstruction
+[Exposed=Window]
+interface ProcessingInstruction : CharacterData {
+  readonly attribute DOMString target;
+};
+
+// https://dom.spec.whatwg.org/#documenttype
+[Exposed=Window]
+interface DocumentType : Node {
+  readonly attribute DOMString name;
+  readonly attribute DOMString publicId;
+  readonly attribute DOMString systemId;
+};
+
+DocumentType includes ChildNode;
+
+// https://dom.spec.whatwg.org/#documentfragment
+[Exposed=Window]
+interface DocumentFragment : Node {
+  constructor();
+};
+
+DocumentFragment includes NonElementParentNode;
+DocumentFragment includes ParentNode;
+
+// https://dom.spec.whatwg.org/#shadowroot
+[Exposed=Window]
+interface ShadowRoot : DocumentFragment {
+  readonly attribute ShadowRootMode mode;
+  readonly attribute boolean delegatesFocus;
+  readonly attribute SlotAssignmentMode slotAssignment;
+  readonly attribute boolean clonable;
+  readonly attribute boolean serializable;
+  readonly attribute Element host;
+  attribute EventHandler onslotchange;
+
+  undefined setHTMLUnsafe(DOMString html);
+  DOMString getHTML(optional GetHTMLOptions options = {});
+};
+
+ShadowRoot includes DocumentOrShadowRoot;
+
+dictionary GetHTMLOptions {
+  boolean serializableShadowRoots = false;
+  sequence<ShadowRoot> shadowRoots = [];
+};
+
+// Mixin stubs (bodies generated via includes)
+interface mixin ChildNode {};
+interface mixin NonDocumentTypeChildNode {};
+interface mixin Slottable {};
+interface mixin NonElementParentNode {};
+interface mixin ParentNode {};
+interface mixin DocumentOrShadowRoot {};

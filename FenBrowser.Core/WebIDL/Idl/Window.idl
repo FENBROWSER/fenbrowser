@@ -1,0 +1,144 @@
+// https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-window-object
+[Global=Window, Exposed=Window, LegacyUnenumerableNamedProperties]
+interface Window : EventTarget {
+  // the current browsing context
+  [LegacyUnforgeable] readonly attribute WindowProxy window;
+  [Replaceable] readonly attribute WindowProxy self;
+  [LegacyUnforgeable] readonly attribute Document document;
+  attribute DOMString name;
+  [LegacyUnforgeable] readonly attribute Location location;
+  readonly attribute History history;
+  readonly attribute Navigation navigation;
+  [Replaceable] readonly attribute CustomElementRegistry customElements;
+  readonly attribute BarProp locationbar;
+  readonly attribute BarProp menubar;
+  readonly attribute BarProp personalbar;
+  readonly attribute BarProp scrollbars;
+  readonly attribute BarProp statusbar;
+  readonly attribute BarProp toolbar;
+  attribute DOMString status;
+  undefined close();
+  readonly attribute boolean closed;
+  undefined stop();
+  undefined focus();
+  undefined blur();
+
+  // other browsing contexts
+  [Replaceable] readonly attribute WindowProxy frames;
+  [Replaceable] readonly attribute unsigned long length;
+  [LegacyUnforgeable] readonly attribute WindowProxy? top;
+  attribute any opener;
+  [Replaceable] readonly attribute WindowProxy? parent;
+  readonly attribute Element? frameElement;
+  WindowProxy? open(optional USVString url = "", optional DOMString target = "_blank", optional DOMString features = "");
+
+  // the user agent
+  readonly attribute Navigator navigator;
+  readonly attribute boolean originAgentCluster;
+
+  // user prompts
+  undefined alert(optional DOMString message = "");
+  boolean confirm(optional DOMString message = "");
+  DOMString? prompt(optional DOMString message = "", optional DOMString defaultValue = "");
+  undefined print();
+
+  undefined postMessage(any message, USVString targetOrigin, optional sequence<object> transfer = []);
+
+  // timers
+  long setTimeout(any handler, optional long timeout = 0);
+  undefined clearTimeout(optional long id = 0);
+  long setInterval(any handler, optional long timeout = 0);
+  undefined clearInterval(optional long id = 0);
+
+  // animation frames
+  unsigned long requestAnimationFrame(FrameRequestCallback callback);
+  undefined cancelAnimationFrame(unsigned long handle);
+
+  // micro/macro task scheduling
+  undefined queueMicrotask(VoidFunction callback);
+
+  // structured data
+  any structuredClone(any value, optional StructuredSerializeOptions options = {});
+
+  // base64
+  DOMString btoa(DOMString data);
+  ByteString atob(DOMString data);
+
+  // spatial navigation
+  undefined captureEvents();
+  undefined releaseEvents();
+
+  // performance
+  [Replaceable] readonly attribute Performance performance;
+
+  // screen
+  [Replaceable] readonly attribute Screen screen;
+
+  // geometry
+  [Replaceable] readonly attribute long innerWidth;
+  [Replaceable] readonly attribute long innerHeight;
+  [Replaceable] readonly attribute double scrollX;
+  [Replaceable] readonly attribute double pageXOffset;
+  [Replaceable] readonly attribute double scrollY;
+  [Replaceable] readonly attribute double pageYOffset;
+
+  undefined scroll(optional ScrollToOptions options = {});
+  undefined scrollTo(optional ScrollToOptions options = {});
+  undefined scrollBy(optional ScrollToOptions options = {});
+
+  [Replaceable] readonly attribute long screenX;
+  [Replaceable] readonly attribute long screenLeft;
+  [Replaceable] readonly attribute long screenY;
+  [Replaceable] readonly attribute long screenTop;
+  [Replaceable] readonly attribute long outerWidth;
+  [Replaceable] readonly attribute long outerHeight;
+  [Replaceable] readonly attribute double devicePixelRatio;
+};
+
+Window includes GlobalEventHandlers;
+Window includes WindowEventHandlers;
+
+interface mixin WindowEventHandlers {
+  attribute EventHandler onafterprint;
+  attribute EventHandler onbeforeprint;
+  attribute EventHandler onbeforeunload;
+  attribute EventHandler onhashchange;
+  attribute EventHandler onlanguagechange;
+  attribute EventHandler onmessage;
+  attribute EventHandler onmessageerror;
+  attribute EventHandler onoffline;
+  attribute EventHandler ononline;
+  attribute EventHandler onpagehide;
+  attribute EventHandler onpagereveal;
+  attribute EventHandler onpageshow;
+  attribute EventHandler onpageswap;
+  attribute EventHandler onpopstate;
+  attribute EventHandler onrejectionhandled;
+  attribute EventHandler onstorage;
+  attribute EventHandler onunhandledrejection;
+  attribute EventHandler onunload;
+};
+
+// Callbacks (simplified for binding generator compatibility)
+// callback TimerHandler = any (any... arguments);
+// callback FrameRequestCallback = undefined (DOMHighResTimeStamp time);
+// callback VoidFunction = undefined ();
+
+dictionary WindowPostMessageOptions : StructuredSerializeOptions {
+  USVString targetOrigin = "/";
+};
+
+dictionary StructuredSerializeOptions {
+  sequence<object> transfer = [];
+};
+
+dictionary ScrollToOptions : ScrollOptions {
+  unrestricted double left;
+  unrestricted double top;
+};
+
+dictionary ScrollOptions {
+  ScrollBehavior behavior = "auto";
+};
+
+enum ScrollBehavior { "auto", "instant", "smooth" };
