@@ -239,6 +239,26 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
   - Expanded driver adapters to implement the complete Phase-5 WebDriver command surface.
 
+### 4.7.1 WebDriver Window Context State Hardening (2026-03-07)
+
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Window-handle routes now await async window-state commands so command responses can synchronize against the live host tab model before returning.
+
+- `FenBrowser.WebDriver/Commands/WindowCommands.cs`
+  - Added browser-backed session synchronization for:
+    - current window handle,
+    - all window handles,
+    - close-window state,
+    - switch-window validation.
+  - Removed the remaining session-only window-context drift where WebDriver could report fabricated or stale handles after host tab changes.
+
+- `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+  - Added real current-window, window-list, and close adapters against `TabManager`.
+
+- Net effect:
+  - WebDriver window context commands now operate on real browser tabs instead of partially synthetic session bookkeeping.
+
 - Coverage snapshot after completion:
   - `RouteCommands=58`
   - `ImplementedCommands=58`
@@ -409,6 +429,102 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - completed with assertion accounting (`Assertions: 126`).
   - `dotnet run --project FenBrowser.Conformance -- run wpt dom --max 50 -o conformance_wpt50.md`
     - completed using the same harness path as WPT CLI.
+
+### 4.25 DevTools DOM/CSS Dispatcher Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/DevTools/DomDomainTests.cs`
+  - Added `GetDocumentAsync_AwaitsDispatcherAndBuildsDocumentSnapshot`.
+  - Added `SetAttributeValueAsync_AwaitsDispatcherBeforeMutatingElement`.
+- `FenBrowser.Tests/DevTools/CSSDomainTests.cs`
+  - Added `GetComputedStyleForNode_AwaitsDispatcherAndReturnsComputedStyles`.
+  - Added `SetStyleTexts_AwaitsDispatcherAndTriggersRepaint`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~DomDomainTests|FullyQualifiedName~CSSDomainTests|FullyQualifiedName~RuntimeDomainTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+### 4.26 Worker Bootstrap Async Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/Workers/WorkerTests.cs`
+  - Added `WorkerRuntime_AsyncBootstrapWaitsForFetchBeforeExecutingScript` to hold worker script fetch open, prove bootstrap does not execute early, and confirm startup completes once the fetch resolves.
+  - Re-ran startup error and import prefetch regressions alongside the new bootstrap gate coverage.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~WorkerRuntime_OnError_EventFires|FullyQualifiedName~WorkerRuntime_AsyncBootstrapWaitsForFetchBeforeExecutingScript|FullyQualifiedName~WorkerRuntime_ImportScripts_LoadsAndExecutesDependency|FullyQualifiedName~WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports" --logger "console;verbosity=minimal"`: pass (`4/4`).
+
+### 4.27 Host Entry Dispatch Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/Architecture/ProgramStartupModeTests.cs`
+  - Added startup-mode precedence coverage for renderer-child arg/env, Test262 CLI detection, WebDriver port detection, and default browser fallback.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~ProgramStartupModeTests --logger "console;verbosity=minimal"`: pass (`5/5`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+
+### 4.28 Custom Elements `whenDefined()` Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/DOM/CustomElementRegistryTests.cs`
+  - Added `WhenDefined_PendingPromise_ResolvesAtMicrotaskCheckpoint`.
+  - Added `WhenDefined_ThenAddedAfterFulfillment_RunsOnNextMicrotask`.
+  - Added `WhenDefined_AlreadyDefinedPromise_ThenRunsOnNextMicrotask`.
+  - Added `WhenDefined_MissingName_RejectedCatchRunsOnNextMicrotask`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~CustomElementRegistryTests --logger "console;verbosity=minimal"`: pass (`4/4`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CustomElementRegistryTests|FullyQualifiedName~ExecutionContextSchedulingTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
+
+
+### 4.29 BrowserHost Element Property Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/Rendering/BrowserHostElementPropertyTests.cs`
+  - Added `GetElementPropertyAsync_InMemoryAttributeLookup_CompletesSynchronously`.
+  - Added `GetElementPropertyAsync_MissingProperty_ReturnsCompletedNull`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrowserHostElementPropertyTests|FullyQualifiedName~BrowserHostFormSubmissionTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+
+### 4.30 Worker Bootstrap Completion Observer Verification (2026-03-06)
+- Re-ran existing worker bootstrap/error/import regressions against the new async observer path in `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~WorkerRuntime_OnError_EventFires|FullyQualifiedName~WorkerRuntime_AsyncBootstrapWaitsForFetchBeforeExecutingScript|FullyQualifiedName~WorkerRuntime_ImportScripts_LoadsAndExecutesDependency|FullyQualifiedName~WorkerRuntime_ImportScripts_ReusesPrefetchedSourceAcrossRepeatedImports" --logger "console;verbosity=minimal"`: pass (`4/4`).
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+
+### 4.31 Clipboard Retry Policy Verification (2026-03-06)
+- `FenBrowser.Tests/Architecture/ClipboardHelperTests.cs`
+  - Added `TryOpenClipboardWithRetry_RetriesUntilOpenSucceeds`.
+  - Added `TryOpenClipboardWithRetry_StopsAfterMaxAttempts`.
+  - Added `TryOpenClipboardWithRetry_DoesNotDelayAfterImmediateSuccess`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ClipboardHelperTests|FullyQualifiedName~BrowserHostElementPropertyTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+  - `rg -n "Thread\.Sleep\(" FenBrowser.Host -g '*.cs'`: no matches.
+
+
+### 4.32 JavaScriptEngine Background Task Fault Observation Verification (2026-03-06)
+- `FenBrowser.Tests/Engine/JavaScriptEngineModuleLoadingTests.cs`
+  - Added `SetDom_DeprecatedSyncWrapper_DoesNotThrowOnAsyncFetchFailure`.
+  - Re-ran deprecated non-blocking `SetDom(...)` wrapper coverage and async module graph prefetch coverage.
+- `FenBrowser.Tests/Engine/ExecutionContextSchedulingTests.cs`
+  - Re-ran timer callback queueing coverage alongside the scheduler observer cleanup.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JavaScriptEngineModuleLoadingTests|FullyQualifiedName~ExecutionContextSchedulingTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
+  - `rg -n "ContinueWith\(" FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`: no matches.
+
+
+### 4.33 JavaScriptEngine Geolocation Watch Verification (2026-03-06)
+- `FenBrowser.Tests/Engine/JavaScriptEngineGeolocationTests.cs`
+  - Added `WatchPosition_ReturnsDistinctIds`.
+  - Added `WatchPosition_SchedulesCallbacksUntilCleared`.
+  - Added `Reset_ClearsActiveGeolocationWatches`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JavaScriptEngineGeolocationTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+
+### 4.34 Static GeolocationAPI Verification (2026-03-06)
+- `FenBrowser.Tests/WebAPIs/GeolocationApiTests.cs`
+  - Added `WatchPosition_ReturnsDistinctIds`.
+  - Added `WatchPosition_FiresUntilCleared`.
+  - Added `WatchPosition_PermissionDenied_InvokesErrorCallback`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~GeolocationApiTests|FullyQualifiedName~WebApiPromiseTests" --logger "console;verbosity=minimal"`: pass (`16/16`).
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
+
 _End of Volume VI_
 
 
@@ -423,3 +539,248 @@ _End of Volume VI_
 - Operational impact:
   - Multiple watchdog instances can now run non-overlapping chunk ranges concurrently on multi-core machines without output collisions.
   - Example pattern: run 4 workers with distinct ranges and distinct `ResultsRoot` directories, then aggregate summaries.
+
+### 4.18 Test262 Runner Guardrail Update (2026-03-05)
+- `FenBrowser.Test262/Program.cs`
+  - Added `--max-memory-mb <N>` global flag to tune runner managed-heap cap (`Test262Runner.MemoryThresholdBytes`) from CLI.
+  - Extended `run_single` command path to honor memory cap for consistency with chunk/category runs.
+- Validation snapshot:
+  - 10-worker logical chunk-13 execution completed via subchunk strategy (`121..130` at `--chunk-size 100`) and aggregate output:
+    - `Results/test262_chunk13_10workers_20260305_212054/chunk13_10workers_aggregate.md`
+    - `Results/test262_chunk13_10workers_20260305_212054/chunk13_10workers_aggregate.json`
+  - Aggregate totals: `total=1000`, `passed=412`, `failed=588`, `passRate=41.2%`.
+
+### 4.19 Test262 Pending Recheck Blocker (2026-03-05)
+- Rechecked remaining size-1 pending chunk ids: 51812, 51865, 52412, 52623.
+- Result: all 4 still process-crash with stack overflow before JSON emission.
+- Recorded blocker artifacts:
+  - Results/test262_pending2919_10workers_20260305_212453/pending_recheck_blocked_stackoverflow.md`r
+  - Results/test262_pending2919_10workers_20260305_212453/pending_recheck_blocked_stackoverflow.json`r
+
+
+### 4.20 Test262 Isolated Child-Process Recheck Mode (2026-03-05)
+- `FenBrowser.Test262/Test262Config.cs`
+  - Added `IsolateProcess` option to enable crash-safe chunk execution.
+- `FenBrowser.Test262/Program.cs`
+  - Added global CLI flag `--isolate-process`.
+  - `run_chunk` now supports isolated execution where each test is executed by a child `run_single` invocation.
+  - Parent runner now persists JSON result files even when a child hard-crashes (for example stack overflow), classifying them as failed tests instead of hanging the parent process.
+- Recheck status refresh for pending2919 run:
+  - Rechecked ids: `51812`, `51865`, `52412`, `52623`.
+  - `51812`, `51865`, `52623`: child process stack-overflow crash captured as fail.
+  - `52412`: non-crash runtime failure (`ReferenceError: bareword is not defined`).
+  - Updated artifacts:
+    - `Results/test262_pending2919_10workers_20260305_212453/pending2919_10workers_FINAL.json`
+    - `Results/test262_pending2919_10workers_20260305_212453/pending2919_10workers_FINAL.md`
+    - `Results/test262_pending2919_10workers_20260305_212453/pending_recheck_blocked_stackoverflow.json`
+    - `Results/test262_pending2919_10workers_20260305_212453/pending_recheck_blocked_stackoverflow.md`
+
+### 4.21 Test262 Pending Recheck Recovery (2026-03-05)
+- Recheck wave for previous blocked size-1 IDs after runtime fixes:
+  - `51812` -> PASS
+  - `51865` -> PASS
+  - `52623` -> PASS
+  - `52412` -> FAIL (`ReferenceError: bareword is not defined`)
+- Updated result artifacts:
+  - `Results/test262_pending2919_10workers_20260305_212453/recheck_chunk_51812_isolated.json`
+  - `Results/test262_pending2919_10workers_20260305_212453/recheck_chunk_51865_isolated.json`
+  - `Results/test262_pending2919_10workers_20260305_212453/recheck_chunk_52412_isolated.json`
+  - `Results/test262_pending2919_10workers_20260305_212453/recheck_chunk_52623_isolated.json`
+  - `Results/test262_pending2919_10workers_20260305_212453/pending2919_10workers_FINAL.json`
+  - `Results/test262_pending2919_10workers_20260305_212453/pending_recheck_blocked_stackoverflow.json`
+- Aggregate delta from this recovery pass:
+  - `+3` pass, `-3` stack-overflow crash cases.
+  - Remaining from these four: `1` semantic/runtime failure (`global-receiver.js`).
+
+
+### 4.22 Event-Loop Scheduler Routing Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/Engine/ExecutionContextSchedulingTests.cs`
+  - Added `ScheduleMicrotask_DefaultScheduler_RunsOnlyAtCheckpoint` to prove default `ExecutionContext` microtasks stay queued until the microtask checkpoint and execute under `EnginePhase.Microtasks`.
+  - Added `ScheduleCallback_DefaultScheduler_EnqueuesTimerTaskBeforeExecution` to prove timer callbacks are marshaled through the event-loop task queue and execute under `EnginePhase.JSExecution`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~ExecutionContextSchedulingTests --logger "console;verbosity=minimal"`: pass (`2/2`).
+
+
+### 4.23 DevTools Runtime Evaluation Async Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/DevTools/RuntimeDomainTests.cs`
+  - Added `EvaluateAsync_AwaitsHostEvaluationAndReturnsResult` to prove `Runtime.evaluate` awaits asynchronous host execution instead of forcing synchronous completion.
+  - Added `EvaluateAsync_HostFailure_ReturnsProtocolFailure` to preserve protocol failure reporting when host evaluation throws.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~RuntimeDomainTests --logger "console;verbosity=minimal"`: pass (`2/2`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+
+### 4.24 Brokered Renderer Child Loop IO Regression Coverage (2026-03-06)
+- `FenBrowser.Tests/Architecture/RendererChildLoopIoTests.cs`
+  - Added `ReadLineWithTimeoutAsync_ReturnsLine_WhenReaderCompletesBeforeTimeout`.
+  - Added `ReadLineWithTimeoutAsync_ReturnsTimeout_WhenReaderDoesNotCompleteInTime`.
+  - Added `ReadLineWithTimeoutAsync_ReturnsEndOfStream_WhenReaderCompletesWithNull`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~RendererChildLoopIoTests --logger "console;verbosity=minimal"`: pass (`3/3`).
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
+
+### 4.35 Web Audio API Verification Tranche (2026-03-06)
+
+- Added `FenBrowser.Tests/WebAPIs/AudioApiTests.cs` coverage for:
+  - constructor correctness (`Audio` is constructor-capable and instantiates playable objects),
+  - MIME support responses via `canPlayType` (`probably` / `maybe` / unsupported empty string),
+  - promise rejection path for invalid schemes in `Audio.play()`,
+  - JavaScript runtime exposure (`Audio` available on both global and `window`).
+- Regression intent: validates migration from parser feature-gap fallback to runtime-backed `Audio` behavior and secures source-validation controls in the hot path.
+- Suggested verification command:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~AudioApiTests"`
+
+
+
+### 4.36 Notifications API Verification Tranche (2026-03-06)
+
+- Added `FenBrowser.Tests/WebAPIs/NotificationsApiTests.cs` coverage for:
+  - constructor semantics (`Notification` exposed as a constructor-capable function),
+  - permission denial enforcement on constructor invocation,
+  - `requestPermission()` callback + thenable behavior,
+  - JavaScript runtime exposure (`Notification` available on both global and `window`).
+- Regression intent: validates migration from object-shaped Notification API to runtime-backed constructor semantics and verifies permission-gated secure behavior.
+- Verification commands:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~NotificationsApiTests"`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WebApiPromiseTests|FullyQualifiedName~AudioApiTests"`
+
+
+### 4.37 WebRTC Constructor and ICE Hardening Verification (2026-03-06)
+- `FenBrowser.Tests/WebAPIs/WebRtcApiTests.cs`
+  - Added/validated coverage for:
+    - constructor semantics for `RTCPeerConnection`,
+    - ICE-scheme rejection path for unsupported URLs,
+    - constructor semantics for `MediaStream`,
+    - JavaScript runtime exposure on global and `window`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WebRtcApiTests"`: pass (`4/4`).
+
+### 4.38 Observer Constructor and Exposure Verification (2026-03-06)
+- `FenBrowser.Tests/WebAPIs/ObserverApiTests.cs`
+  - Added coverage for:
+    - constructor semantics for `IntersectionObserver` and `ResizeObserver`,
+    - option validation guard rails (out-of-range `IntersectionObserver` thresholds),
+    - runtime exposure on global and `window`.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ObserverApiTests|FullyQualifiedName~IntersectionObserverTests|FullyQualifiedName~ResizeObserverTests"`: pass (`18/18`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ObserverApiTests|FullyQualifiedName~WebRtcApiTests|FullyQualifiedName~NotificationsApiTests|FullyQualifiedName~AudioApiTests|FullyQualifiedName~WebApiPromiseTests"`: pass (`30/30`).
+
+### 4.39 Cache API Persistence and Match Verification (2026-03-06)
+- `FenBrowser.Tests/WebAPIs/ServiceWorkerCacheTests.cs`
+  - Added coverage for:
+    - `CacheStorage.match()` cross-cache lookup behavior,
+    - cached body persistence and `text()`/`json()` readers,
+    - rejection semantics for invalid `Cache.put(...)` argument sets,
+    - delete lifecycle stability after async cache initialization.
+- Verification snapshot:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ServiceWorkerCacheTests|FullyQualifiedName~WebApiPromiseTests"`: pass (`20/20`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ServiceWorkerCacheTests|FullyQualifiedName~ObserverApiTests|FullyQualifiedName~WebRtcApiTests|FullyQualifiedName~NotificationsApiTests|FullyQualifiedName~AudioApiTests|FullyQualifiedName~WebApiPromiseTests"`: pass (`37/37`).
+
+### 4.40 Conformance Milestone Gate Enforcement (2026-03-07)
+- `FenBrowser.Conformance/ConformanceGate.cs` (new)
+  - Added production-grade gate evaluation for Test262 and WPT result artifacts.
+  - Gate evaluation now supports:
+    - required-artifact validation,
+    - minimum pass-rate and minimum total-test thresholds,
+    - unexpected-failure budgets using expected-failure ledgers,
+    - baseline regression detection on a per-test-file basis,
+    - WPT `No assertions executed by testharness.` failure detection.
+- `FenBrowser.Conformance/Program.cs`
+  - Added `gate` command surface:
+    - `FenBrowser.Conformance gate default all`
+    - `FenBrowser.Conformance gate default test262`
+    - `FenBrowser.Conformance gate default wpt-c80`
+    - `FenBrowser.Conformance gate default wpt-c90`
+    - `FenBrowser.Conformance gate default wpt-d`
+    - `FenBrowser.Conformance gate default wpt-e`
+    - `FenBrowser.Conformance gate <policy-path>`
+  - Gate command now exits non-zero when milestone policy conditions fail, making it usable in CI/release enforcement.
+- `FenBrowser.Conformance/Gates/*.json` (new)
+  - Added built-in milestone policies for:
+    - Test262 production gate (`B3`)
+    - WPT DOM/event gates (`C` 80% and 90%)
+    - WPT CSS/layout artifact gate (`D`)
+    - WPT fetch/CORS artifact gate (`E`)
+- `FenBrowser.Conformance/Gates/*expected_failures.txt` (new)
+  - Added ledger entry points for explicitly accepted known failures.
+- `FenBrowser.Conformance/ConformanceReport.cs`
+  - Replaced the previous baseline-comparison placeholder with structured suite/category delta reporting when a JSON baseline report is supplied.
+- Net effect:
+  - WPT/Test262 milestone gating is no longer documentation-only.
+  - The repository now has enforceable, artifact-driven conformance gates that can fail CI/release workflows on regressions, missing evidence, or below-threshold milestone results.
+## 4.12 DOM regression-pack artifact workflow (2026-03-07)
+
+- `FenBrowser.WPT` now supports cluster-scoped DOM regression execution:
+  - `run_pack <pack>`
+  - `extract_pack <pack> [Results/wpt_results_latest.json]`
+  - `list_packs`
+- Built-in pack manifests live in `FenBrowser.WPT/RegressionPacks/` and currently cover the historical Milestone `C` buckets:
+  - no-assertion harness failures
+  - event-runtime `undefined is not a function` failures
+  - named-collection / property-descriptor failures
+- Default pack output now writes:
+  - a versioned JSON artifact in `Results/`
+  - a stable `*_latest.json` alias for the same pack
+- This makes the DOM/event recovery clusters rerunnable and separately retainable from the aggregate `Results/wpt_results_latest.json` report.
+### 3.14 IPC fuzz-baseline command (2026-03-07)
+- `FenBrowser.Conformance` now exposes `ipc-fuzz` as a first-class CLI command.
+- Usage:
+  - `dotnet run --project FenBrowser.Conformance -- ipc-fuzz`
+  - `dotnet run --project FenBrowser.Conformance -- ipc-fuzz -o Results/ipc_fuzz_baseline.json`
+- The command runs the host-side baseline mutator suite over renderer/network/target envelope serializers and writes a JSON artifact when `-o` is provided.
+- This provides the first operational Milestone `A3` baseline, but it does not replace broader live-channel fault injection or coverage-guided fuzzing.
+### 3.15 Accessibility platform snapshot validation (2026-03-07)
+- `FenBrowser.Conformance` now exposes `a11y-validate`.
+- Usage:
+  - `dotnet run --project FenBrowser.Conformance -- a11y-validate`
+  - `dotnet run --project FenBrowser.Conformance -- a11y-validate -o Results/a11y_platform_snapshot.json`
+- The command parses a built-in fixture document, builds the internal accessibility tree, exports normalized snapshots for Windows UIA / Linux AT-SPI / macOS NSAccessibility, and writes a JSON artifact.
+- This provides a concrete Milestone `F3` validation artifact path even though live platform bridge completeness is still partial.
+
+### 3.16 CORB validation artifact command (2026-03-07)
+- `FenBrowser.Conformance` now exposes `corb-validate`.
+- Usage:
+  - `dotnet run --project FenBrowser.Conformance -- corb-validate`
+  - `dotnet run --project FenBrowser.Conformance -- corb-validate -o Results/corb_validation.json`
+- The command runs bounded CORB classification cases over the broker-side `CorbFilter` and writes a JSON artifact capturing expected/actual verdicts.
+- This provides a concrete Milestone `F2` validation artifact path for the strengthened MIME/body analysis layer.
+
+### 3.17 Full Validation Pass Status (2026-03-07)
+- `dotnet build FenBrowser.sln -maxcpucount:1`: pass
+- `FenBrowser.Conformance ipc-fuzz`: pass
+- `FenBrowser.Conformance a11y-validate`: pass
+- `FenBrowser.Conformance corb-validate`: fail (`same-origin-json` blocked unexpectedly)
+- `FenBrowser.Conformance gate default all`: fail
+  - Test262 gate at 52.9% vs required 99%
+  - DOM/Event WPT gate at 31% with regressions and no-assertion failures
+  - CSS/Layout and Fetch/CORS required result artifacts still missing
+- Host 25-second diagnostic run produced `debug_screenshot.png` showing a socket/access-permission network failure page rather than a clean browser render
+
+## 6.18 Focused Validation Delta (2026-03-07)
+- `dotnet build FenBrowser.sln -maxcpucount:1`: passed after the CORB and transport patches.
+- `dotnet run --project FenBrowser.Conformance -- corb-validate`: passed all built-in cases, including `same-origin-json`.
+- 25-second host run:
+  - process stdout showed successful navigation and content rendering for `https://www.google.com/`
+  - `debug_screenshot.png` remained stale from an older error-page run, so the screenshot artifact is currently not trustworthy as a fresh post-run render signal
+  - no fresh `raw_source_*.html` artifacts were observed in the checked log roots
+- Conclusion: CORB regression is fixed; host transport no longer reproduced the earlier socket-permission failure in process stdout, but screenshot/raw-source artifact generation still needs its own diagnostic pass.
+## 6.19 Milestone D/E Dedicated WPT Artifact Packs (2026-03-07)
+- Added built-in WPT regression packs for milestone evidence generation:
+  - `css_layout`
+  - `fetch_cors`
+- These packs are intended to materialize the exact gate artifacts expected by:
+  - `Results/wpt_css_layout_results.json`
+  - `Results/wpt_css_layout_baseline.json`
+  - `Results/wpt_fetch_cors_results.json`
+  - `Results/wpt_fetch_cors_baseline.json`
+- The packs are intentionally bounded so milestone D/E evidence can be regenerated quickly without rerunning the full WPT tree.
+## 6.16 Milestone D/E Pack Recovery
+
+- The CSS WPT runner now uses microtask-first harness scheduling and exposes `assert_in_array`, removing a runner-side blocker for CSS parsing/computed-value packs.
+- The bounded fetch pack was re-scoped away from referrer-policy server fixtures and toward self-contained request/response coverage.
+- Binary body APIs required by `response-consume.html` are now present at a baseline compatibility level: `Blob`, `FormData`, `FileReader`, `Response.blob()`, `Response.formData()`, and blob URL fetch resolution.
+## 6.17 Milestone D Gap-Property Recovery
+
+- The CSS gap-family WPT failures moved from harness-level non-execution into concrete property-semantic failures.
+- The engine bridge now normalizes and canonicalizes the `gap` / `row-gap` / `column-gap` family and their legacy `grid-*` aliases in both inline style access and `getComputedStyle()`.
+- This specifically targets the bounded CSS parsing pack failures around default `normal` values and canonical `0px` serialization.

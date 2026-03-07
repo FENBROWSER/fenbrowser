@@ -162,4 +162,37 @@ Contains the generated CDP domain classes and DTOs.
 - `FenBrowser.Host/BrowserIntegration.cs`
   - DevTools `ScrollToElement` now routes through host adapter to viewport-centered scroll behavior in browser integration.
 
+
+
+### 5.7 Async Runtime Evaluation Wiring (2026-03-06)
+
+- `FenBrowser.DevTools/Core/IDevToolsHost.cs`
+  - DevTools host evaluation contract is now asynchronous (`EvaluateScriptAsync(...)`).
+- `FenBrowser.DevTools/Domains/RuntimeDomain.cs`
+  - `Runtime.evaluate` now awaits the host evaluation path instead of assuming a synchronous result.
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - Adapter now forwards `Runtime.evaluate` through the async host bridge, preserving non-blocking protocol handling.
+- Net effect:
+  - DevTools runtime evaluation no longer depends on a synchronous host timeout bridge.
+  - Protocol evaluation stays responsive while the page script executes asynchronously.
+
+
+### 5.8 Async DOM/CSS Access Dispatch (2026-03-06)
+
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+  - `InitializeDom(...)` and `InitializeCss(...)` now accept an optional async dispatcher for host-owned access.
+- `FenBrowser.DevTools/Domains/DomDomain.cs`
+  - All DOM reads and writes now execute through the injected dispatcher when present, covering:
+    - `getDocument`
+    - `highlightNode` / `hideHighlight`
+    - `requestChildNodes`
+    - `setAttributeValue`
+    - `removeAttribute`
+    - `setNodeValue`
+- `FenBrowser.DevTools/Domains/CSSDomain.cs`
+  - CSS inspection and style-edit requests now execute through the injected dispatcher before touching host-owned DOM/CSS state.
+- Net effect:
+  - DevTools domain handlers remain async end-to-end.
+  - Cross-thread DOM/CSS access from protocol requests is routed back to the owning host thread instead of executing directly on the transport thread.
+
 _End of Volume V_

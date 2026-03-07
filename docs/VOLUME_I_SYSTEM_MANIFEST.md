@@ -107,6 +107,14 @@ The executable wrapper.
     - disconnected-session IPC buffering for critical navigation/control envelopes
     - child startup capability/sandbox assertions
     - expanded frame metadata contract (`surface*` + dirty-region markers).
+  - PAL update (2026-03-07):
+    - Linux/macOS no longer route baseline PAL shared-memory operations through an unsupported-platform throw path.
+    - `PlatformLayerFactory` now resolves non-Windows hosts to `PosixPlatformLayer`, which provides deterministic file-backed mapped shared memory and process memory queries.
+    - OS-native sandbox enforcement on non-Windows remains an open hardening item; this tranche closes PAL/IPC baseline fallback behavior only.
+  - POSIX sandbox launcher update (2026-03-07):
+    - non-Windows sandbox factory creation now detects native helper-backed launch paths (`bwrap`, `sandbox-exec`) and uses them for child-process profiles when available,
+    - broker remains unsandboxed by design,
+    - helper absence still degrades explicitly to `NullSandbox`, so remaining unsupported hosts are visible rather than silently misreported.
 
 - **Navigation Lifecycle Baseline**:
   - Top-level navigation now flows through deterministic lifecycle states (`Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete`) via `NavigationLifecycleTracker`.
@@ -191,3 +199,7 @@ The executable wrapper.
 ---
 
 _End of Volume I_
+  - POSIX sandbox enforcement update (2026-03-07):
+    - native helper-backed Linux/macOS child sandboxes now generate capability-scoped filesystem and network rules instead of broad read-everything launch wrappers,
+    - renderer/network/utility profiles only receive working-directory, executable-directory, temp, home, and network access that is implied by their explicit `OsSandboxCapabilities`,
+    - macOS child sandboxes now deny `process-fork` unless spawning is explicitly granted.

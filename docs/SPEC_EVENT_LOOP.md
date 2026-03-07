@@ -209,6 +209,15 @@ public interface IEventLoopCoordinator
 }
 ```
 
+### 4.4 ExecutionContext Default Scheduling Contract
+
+`IExecutionContext.ScheduleCallback` and `IExecutionContext.ScheduleMicrotask` MUST integrate with the event loop:
+
+- `ScheduleCallback` may wait off-thread for timer latency, but the callback itself MUST re-enter through `TaskQueue` as `TaskSource.Timer` work.
+- `ScheduleMicrotask` MUST enqueue into `MicrotaskQueue` and MUST NOT execute inline or on a detached worker outside a checkpoint.
+- Default execution contexts MUST preserve phase tracking so callback bodies run under `JSExecution` or `Microtasks`, never outside the engine scheduler.
+
+
 ---
 
 ## 5. TaskSource Enumeration
@@ -278,6 +287,10 @@ The following scenarios MUST be tested:
 5. **Mutation batching**
    - Multiple DOM changes = single MutationObserver callback
 
+6. **ExecutionContext scheduler routing**
+   - `ScheduleCallback` enqueues timer work before execution
+   - `ScheduleMicrotask` runs only at a microtask checkpoint
+
 ---
 
 ## 8. Compliance Checklist
@@ -292,4 +305,4 @@ The following scenarios MUST be tested:
 ---
 
 **Document Status**: LOCKED
-**Last Updated**: 2025-12-22
+**Last Updated**: 2026-03-06

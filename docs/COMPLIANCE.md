@@ -36,7 +36,7 @@ The engine has undergone a massive **ES6+ Upgrade (Phases 1-10)** and architectu
 | **Layout**        | 10/10 | ✅ Complete | Grid Phase 3 complete (spec sizing). Flexbox full spec compliance with order property. Multi-column hardened. Intrinsic sizing implemented engine-wide.                          |
 | **CSS / Cascade** | 10/10 | ✅ Complete | Tokenizer/Syntax parser implemented. Media Query evaluation hardened. Cascade sorting (Specificity) is spec-compliant. `inherit`/`initial`/`unset` keywords supported.           |
 | **DOM / Events**  | 10/10 | ✅ Complete | Event system matches DOM Level 3. ReadyState transitions and readystatechange event hardened. Full `Attr`, `NamedNodeMap`, `TextContent`, and `CompareDocumentPosition` support. |
-| **Web APIs**      | 10/10 | ✅ Complete | `Fetch` hardened. `IndexedDB` (functional CRUD), `Web Audio`/`WebRTC` (harden with Promises) now spec-compliant.                                                                 |
+| **Web APIs**      | 10/10 | ✅ Complete | `Fetch` hardened. `IndexedDB` now provides versioned in-memory CRUD/transaction semantics, and Cache Storage now preserves response/header interop more accurately while `Web Audio`/`WebRTC` continue to harden toward fuller parity.                                                                 |
 | **Architecture**  | 4/10  | ❌ Fragile  | Pipeline stages defined and enforced. Event Loop matches WHATWG shape but macro/micro task draining needs strict isolation.                                                      |
 
 ---
@@ -455,7 +455,7 @@ When values are `auto`, solve according to spec precedence.
 
 | Feature              | Spec Reference | Current Status             |
 | -------------------- | -------------- | -------------------------- |
-| `Attr` objects       | §4.9           | ❌ Using string dictionary |
+| `Attr` objects       | DOM �4.9       | Partial wrapper parity |
 | `Node` interface     | §4.4           | ⚠️ Partial                 |
 | `nodeType` constants | §4.4           | ⚠️ Assumed                 |
 | `textContent`        | §4.4.3         | ⚠️ Verify                  |
@@ -922,3 +922,6 @@ Only after everything above is stable:
 
 _Last Updated: January 18, 2026_
 _Document Owner: FenBrowser Engineering_
+
+
+
