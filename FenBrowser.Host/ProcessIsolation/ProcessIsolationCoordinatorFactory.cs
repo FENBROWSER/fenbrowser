@@ -13,16 +13,14 @@ namespace FenBrowser.Host.ProcessIsolation
         public static IProcessIsolationCoordinator CreateFromEnvironment()
         {
             var mode = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
-            // Brokered mode is an incomplete architectural skeleton — frame pixel data is not
-            // transferred back from the child process, so the UI shows nothing.  Default to
-            // in-process until the shared-memory / texture-streaming path is implemented.
-            if (string.Equals(mode, "brokered", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(mode, "brokered", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(mode, "auto", StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Info("[ProcessIsolation] 'brokered' requested explicitly; enabling per-tab renderer child process model.", LogCategory.General);
+                FenLogger.Info($"[ProcessIsolation] '{mode}' requested; enabling per-tab renderer child process model.", LogCategory.General);
                 return new BrokeredProcessIsolationCoordinator();
             }
 
-            FenLogger.Info("[ProcessIsolation] Process Isolation defaults to 'in-process' (single-process rendering).", LogCategory.General);
+            FenLogger.Info("[ProcessIsolation] Process isolation defaults to 'in-process'. Set FEN_PROCESS_ISOLATION=brokered or auto to enable out-of-process renderer mode.", LogCategory.General);
             return new InProcessIsolationCoordinator();
         }
     }

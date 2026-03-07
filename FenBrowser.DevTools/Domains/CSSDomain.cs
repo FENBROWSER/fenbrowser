@@ -22,6 +22,7 @@ public class CSSDomain : IProtocolHandler
     private readonly Func<Node, List<CssLoader.MatchedRule>>? _getMatchedRules;
     private readonly Action<Node, string, string>? _setInlineStyle;
     private readonly Action? _triggerRepaint;
+    private readonly Func<Func<ProtocolResponse>, Task<ProtocolResponse>> _dispatchAsync;
 
     public string Domain => "CSS";
 
@@ -30,13 +31,15 @@ public class CSSDomain : IProtocolHandler
         Func<Node, CssComputed?> getComputedStyle, 
         Func<Node, List<CssLoader.MatchedRule>>? getMatchedRules = null,
         Action<Node, string, string>? setInlineStyle = null,
-        Action? triggerRepaint = null)
+        Action? triggerRepaint = null,
+        Func<Func<ProtocolResponse>, Task<ProtocolResponse>>? dispatchAsync = null)
     {
         _registry = registry;
         _getComputedStyle = getComputedStyle;
         _getMatchedRules = getMatchedRules;
         _setInlineStyle = setInlineStyle;
         _triggerRepaint = triggerRepaint;
+        _dispatchAsync = dispatchAsync ?? (operation => Task.FromResult(operation()));
     }
 
     public Task<ProtocolResponse> HandleAsync(string method, ProtocolRequest request)
@@ -57,23 +60,25 @@ public class CSSDomain : IProtocolHandler
         
         try
         {
-            // Get edits array
-            var edits = request.Params.Value.GetProperty("edits");
-            foreach (var edit in edits.EnumerateArray())
+            return DispatchAsync(() =>
             {
-                var nodeId = edit.GetProperty("nodeId").GetInt32();
-                var propertyName = edit.GetProperty("propertyName").GetString() ?? "";
-                var value = edit.GetProperty("value").GetString() ?? "";
-                
-                var node = _registry.GetNode(nodeId);
-                if (node != null && _setInlineStyle != null)
+                var edits = request.Params.Value.GetProperty("edits");
+                foreach (var edit in edits.EnumerateArray())
                 {
-                    _setInlineStyle(node, propertyName, value);
+                    var nodeId = edit.GetProperty("nodeId").GetInt32();
+                    var propertyName = edit.GetProperty("propertyName").GetString() ?? "";
+                    var value = edit.GetProperty("value").GetString() ?? "";
+
+                    var node = _registry.GetNode(nodeId);
+                    if (node != null && _setInlineStyle != null)
+                    {
+                        _setInlineStyle(node, propertyName, value);
+                    }
                 }
-            }
-            
-            _triggerRepaint?.Invoke();
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
+
+                _triggerRepaint?.Invoke();
+                return ProtocolResponse.Success(request.Id, new { });
+            });
         }
         catch (Exception ex)
         {
@@ -88,15 +93,19 @@ public class CSSDomain : IProtocolHandler
         try
         {
             var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
-            var node = _registry.GetNode(nodeId);
-            
-            if (node == null) return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found"));
-            
-            var styles = _getComputedStyle(node);
-            var computedStyle = new List<CssPropertyDto>();
-            
-            if (styles != null)
+            return DispatchAsync(() =>
             {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                var styles = _getComputedStyle(node);
+                var computedStyle = new List<CssPropertyDto>();
+
+                if (styles != null)
+                {
                 // 1. Helper to add properties
                 void Add(string name, string? val) {
                     if (!string.IsNullOrEmpty(val)) 
@@ -146,7 +155,8 @@ public class CSSDomain : IProtocolHandler
                 }
             }
             
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new { computedStyle = computedStyle }));
+                return ProtocolResponse.Success(request.Id, new { computedStyle = computedStyle });
+            });
         }
         catch (Exception ex)
         {
@@ -161,12 +171,15 @@ public class CSSDomain : IProtocolHandler
         try
         {
             var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
-            var node = _registry.GetNode(nodeId);
-            
-            if (node == null) return Task.FromResult(ProtocolResponse.Failure(request.Id, "Node not found"));
-            
-            // Inline styles
-            CssStyleDto? inlineStyle = null;
+            return DispatchAsync(() =>
+            {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                CssStyleDto? inlineStyle = null;
             if (node is Element element && (element.GetAttribute("style") is string styleStr))
             {
                 var cssProperties = new List<CssPropertyDto>();
@@ -288,16 +301,22 @@ public class CSSDomain : IProtocolHandler
                 }
             }
             
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new GetMatchedStylesResponse { 
-                InlineStyle = inlineStyle,
-                MatchedCSSRules = matchedRules,
-                Inherited = inherited
-            }));
+                return ProtocolResponse.Success(request.Id, new GetMatchedStylesResponse { 
+                    InlineStyle = inlineStyle,
+                    MatchedCSSRules = matchedRules,
+                    Inherited = inherited
+                });
+            });
         }
         catch (Exception ex)
         {
             return Task.FromResult(ProtocolResponse.Failure(request.Id, ex.Message));
         }
+    }
+
+    private Task<ProtocolResponse> DispatchAsync(Func<ProtocolResponse> operation)
+    {
+        return _dispatchAsync(operation);
     }
 
     // Removed ReconstructSelector as we utilize Raw selector string for now

@@ -778,10 +778,16 @@ public class BrowserIntegration
     /// </summary>
     public void FocusNode(Element element)
     {
-        // Internal engine focus logic (placeholder for now as engine doesn't track focus yet)
-        // But we can signal it if needed.
+        var ownerDocument = element?.OwnerDocument;
+        if (ownerDocument != null)
+        {
+            ownerDocument.ActiveElement = element;
+        }
+
+        ElementStateManager.Instance.SetFocusedElement(element);
         _highlightedElement = element; // For visual feedback in WebDriver
         _needsRepaint = true;
+        _wakeEvent.Set();
         NeedsRepaint?.Invoke();
     }
 

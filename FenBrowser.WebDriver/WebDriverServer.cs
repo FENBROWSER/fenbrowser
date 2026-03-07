@@ -35,6 +35,8 @@ namespace FenBrowser.WebDriver
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly int _port;
+        private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
+        private static readonly string[] AllowedCorsHeaders = { "content-type" };
         private Task _listenerTask;
         private bool _disposed;
         
@@ -129,14 +131,20 @@ namespace FenBrowser.WebDriver
                 if (!string.IsNullOrEmpty(origin))
                 {
                     response.Headers["Access-Control-Allow-Origin"] = origin;
-                    response.Headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
-                    response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                    response.Headers["Access-Control-Allow-Methods"] = string.Join(", ", AllowedCorsMethods);
                     response.Headers["Vary"] = "Origin";
                 }
                 
                 // Handle preflight
                 if (request.HttpMethod == "OPTIONS")
                 {
+                    if (!ValidatePreflightRequest(request, response))
+                    {
+                        Log($"Security Alert: Blocked invalid WebDriver preflight. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
+                        await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
+                        return;
+                    }
+
                     response.StatusCode = 204;
                     response.Close();
                     return;
@@ -216,6 +224,44 @@ namespace FenBrowser.WebDriver
         private void Log(string message)
         {
             OnLog?.Invoke($"[WebDriver] {message}");
+        }
+
+        private static bool ValidatePreflightRequest(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            var requestedMethod = request.Headers["Access-Control-Request-Method"];
+            if (string.IsNullOrWhiteSpace(requestedMethod) ||
+                !AllowedCorsMethods.Contains(requestedMethod, StringComparer.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var requestedHeaderValue = request.Headers["Access-Control-Request-Headers"];
+            if (string.IsNullOrWhiteSpace(requestedHeaderValue))
+            {
+                response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                return true;
+            }
+
+            var requestedHeaders = requestedHeaderValue
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(header => header.Trim())
+                .Where(header => !string.IsNullOrEmpty(header))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (requestedHeaders.Length == 0)
+            {
+                response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                return true;
+            }
+
+            if (requestedHeaders.Any(header => !AllowedCorsHeaders.Contains(header, StringComparer.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            response.Headers["Access-Control-Allow-Headers"] = string.Join(", ", requestedHeaders);
+            return true;
         }
 
         private void ValidateCommandCoverage()

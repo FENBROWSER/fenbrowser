@@ -65,16 +65,17 @@ public static class Program
             }
         }
 
+        var command = args[0].ToLowerInvariant();
+
         // Auto-default: save JSON results to Results/wpt_results.json
-        if (string.IsNullOrEmpty(config.OutputPath))
+        if (string.IsNullOrEmpty(config.OutputPath) &&
+            command is not "run_pack" and not "extract_pack" and not "discover" and not "get_chunk_count")
         {
             var repoRoot = Path.GetDirectoryName(config.WptRootPath ?? Directory.GetCurrentDirectory())
                            ?? Directory.GetCurrentDirectory();
             config.OutputPath = Path.Combine(repoRoot, "Results", "wpt_results.json");
             config.Format = OutputFormat.Json;
         }
-
-        var command = args[0].ToLowerInvariant();
 
         try
         {
@@ -83,6 +84,9 @@ public static class Program
                 "get_chunk_count" => RunGetChunkCount(config),
                 "run_chunk" => await RunChunkAsync(config, args),
                 "run_category" => await RunCategoryAsync(config, args),
+                "run_pack" => await RunPackAsync(config, args),
+                "extract_pack" => RunExtractPack(config, args),
+                "list_packs" => RunListPacks(config),
                 "run_single" => await RunSingleAsync(config, args),
                 "discover" => RunDiscover(config, args),
                 "--help" or "-h" or "help" => PrintUsage(),
@@ -294,6 +298,73 @@ public static class Program
         return results.Any(r => !r.Success) ? 1 : 0;
     }
 
+    private static async Task<int> RunPackAsync(WPTConfig config, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: run_pack <pack-name|path>");
+            return 1;
+        }
+
+        if (string.IsNullOrEmpty(config.WptRootPath))
+        {
+            Console.Error.WriteLine("[FATAL] WPT root path not found. Use --root <path> or set WPT_ROOT.");
+            return 1;
+        }
+
+        var repoRoot = DiscoverRepoRoot(config.WptRootPath);
+        var pack = WPTRegressionPack.Load(repoRoot, args[1]);
+        var tests = pack.ResolveTests(config.WptRootPath);
+
+        var navigator = new HeadlessNavigator(config.WptRootPath, config.TimeoutMs);
+        var runner = new WPTTestRunner(config.WptRootPath, navigator.GetNavigatorDelegate(), config.TimeoutMs);
+
+        Console.WriteLine($"[WPT] Running regression pack: {pack.Name} ({tests.Count} tests)");
+        var sw = Stopwatch.StartNew();
+        var results = await runner.RunSpecificTestsAsync(tests.ToList(), (name, count) =>
+        {
+            if (config.Verbose || count % 10 == 0)
+                Console.Write($"\r  [{count}/{tests.Count}] {name}    ");
+        });
+        sw.Stop();
+        Console.WriteLine();
+        Console.WriteLine(runner.GenerateSummary());
+
+        var output = ResultsExporter.Export(results, OutputFormat.Json, pack.Category, sw.Elapsed, 0, pack.Name, pack.Description);
+        WriteRegressionPackOutput(output, repoRoot, pack, HasExplicitOutput(args) ? config.OutputPath : null);
+
+        return results.Any(r => !r.Success) ? 1 : 0;
+    }
+
+    private static int RunExtractPack(WPTConfig config, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: extract_pack <pack-name|path> [source-artifact]");
+            return 1;
+        }
+
+        var repoRoot = DiscoverRepoRoot(config.WptRootPath);
+        var pack = WPTRegressionPack.Load(repoRoot, args[1]);
+        var sourceArtifact = args.Length >= 3 && !args[2].StartsWith("-", StringComparison.Ordinal)
+            ? args[2]
+            : Path.Combine(repoRoot, "Results", "wpt_results_latest.json");
+        if (!Path.IsPathRooted(sourceArtifact))
+        {
+            sourceArtifact = Path.Combine(repoRoot, sourceArtifact);
+        }
+
+        if (!File.Exists(sourceArtifact))
+        {
+            Console.Error.WriteLine($"[ERROR] Source artifact not found: {sourceArtifact}");
+            return 1;
+        }
+
+        var output = WPTRegressionArtifactBuilder.BuildFilteredArtifact(sourceArtifact, pack);
+        WriteRegressionPackOutput(output, repoRoot, pack, HasExplicitOutput(args) ? config.OutputPath : null);
+        return 0;
+    }
+
     /// <summary>
     /// Run a single WPT test file.
     /// </summary>
@@ -345,6 +416,20 @@ public static class Program
         }
 
         return result.Success ? 0 : 1;
+    }
+
+    private static int RunListPacks(WPTConfig config)
+    {
+        var repoRoot = DiscoverRepoRoot(config.WptRootPath);
+        var packPaths = WPTRegressionPack.ListBuiltInPackPaths(repoRoot);
+        Console.WriteLine("Built-in WPT regression packs:");
+        foreach (var packPath in packPaths)
+        {
+            var pack = WPTRegressionPack.Load(repoRoot, packPath);
+            Console.WriteLine($"  {pack.Name,-24} {pack.Category,-8} {pack.Selectors.Count,3} tests  {pack.Description}");
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -445,6 +530,62 @@ public static class Program
         }
     }
 
+    private static void WriteRegressionPackOutput(string content, string repoRoot, WPTRegressionPack pack, string? explicitOutputPath)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitOutputPath))
+        {
+            var explicitDir = Path.GetDirectoryName(explicitOutputPath);
+            if (!string.IsNullOrEmpty(explicitDir) && !Directory.Exists(explicitDir))
+                Directory.CreateDirectory(explicitDir);
+
+            File.WriteAllText(explicitOutputPath, content);
+            Console.WriteLine($"[WPT] Regression-pack artifact saved to {explicitOutputPath}");
+            return;
+        }
+
+        var resultsRoot = Path.Combine(repoRoot, "Results");
+        Directory.CreateDirectory(resultsRoot);
+
+        var versionedPath = Path.Combine(resultsRoot, pack.CreateVersionedArtifactFileName(DateTime.UtcNow));
+        var latestPath = Path.Combine(resultsRoot, pack.CreateLatestArtifactFileName());
+        File.WriteAllText(versionedPath, content);
+        File.WriteAllText(latestPath, content);
+
+        Console.WriteLine($"[WPT] Regression-pack artifact saved to {versionedPath}");
+        Console.WriteLine($"[WPT] Regression-pack latest alias updated at {latestPath}");
+    }
+
+    private static bool HasExplicitOutput(string[] args)
+    {
+        return args.Any(arg => string.Equals(arg, "--output", StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(arg, "-o", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string DiscoverRepoRoot(string? wptRootPath)
+    {
+        if (!string.IsNullOrWhiteSpace(wptRootPath))
+        {
+            var parent = Directory.GetParent(wptRootPath);
+            if (parent != null)
+            {
+                return parent.FullName;
+            }
+        }
+
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 10; i++)
+        {
+            if (File.Exists(Path.Combine(dir, "FenBrowser.sln")))
+                return dir;
+
+            var parent = Directory.GetParent(dir);
+            if (parent == null) break;
+            dir = parent.FullName;
+        }
+
+        return Directory.GetCurrentDirectory();
+    }
+
     private static int PrintUsage()
     {
         Console.WriteLine(@"
@@ -458,6 +599,9 @@ COMMANDS:
   get_chunk_count              Show total test count and chunk count
   run_chunk <N>                Run chunk N (1-indexed, 100 tests per chunk)
   run_category <name>          Run tests in a category (e.g., dom, css, html)
+  run_pack <pack>              Run a named/path-based regression pack and write a versioned artifact
+  extract_pack <pack> [json]   Extract a regression-pack artifact from an existing WPT JSON report
+  list_packs                   List built-in regression packs
   run_single <path>            Run a single .html test file
   discover [category]          List categories or tests in a category
   help                         Show this help message
@@ -478,6 +622,9 @@ EXAMPLES:
   FenBrowser.WPT get_chunk_count
   FenBrowser.WPT run_chunk 1
   FenBrowser.WPT run_chunk 5 --format json -o results/chunk5.json
+  FenBrowser.WPT list_packs
+  FenBrowser.WPT run_pack dom_no_assertion
+  FenBrowser.WPT extract_pack dom_event_api Results/wpt_results_latest.json
   FenBrowser.WPT discover
   FenBrowser.WPT discover dom
   FenBrowser.WPT run_category dom --max 50 --format json

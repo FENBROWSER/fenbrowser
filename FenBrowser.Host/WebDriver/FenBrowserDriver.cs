@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.Host.Tabs;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
 
@@ -34,6 +35,18 @@ namespace FenBrowser.Host.WebDriver
 
         public Task<string> GetCurrentUrlAsync() => Task.FromResult(_integration.CurrentUrl);
         public Task<string> GetTitleAsync() => Host?.GetTitleAsync() ?? Task.FromResult("FenBrowser");
+        public Task<string> GetWindowHandleAsync() => Task.FromResult(TabManager.Instance.ActiveTab?.Id.ToString() ?? string.Empty);
+        public Task<IReadOnlyList<string>> GetWindowHandlesAsync() => Task.FromResult((IReadOnlyList<string>)TabManager.Instance.Tabs.Select(tab => tab.Id.ToString()).ToList());
+        public Task CloseWindowAsync()
+        {
+            var tabs = TabManager.Instance;
+            if (tabs.ActiveTab != null)
+            {
+                tabs.CloseActiveTab();
+            }
+
+            return Task.CompletedTask;
+        }
         public Task GoBackAsync() => _integration.GoBackAsync();
         public Task GoForwardAsync() => _integration.GoForwardAsync();
         public Task RefreshAsync() => _integration.RefreshAsync();
@@ -212,16 +225,37 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> NewWindowAsync(string typeHint)
         {
+            var tabs = TabManager.Instance;
             if (Host != null)
             {
                 await Host.CreateNewTabAsync();
             }
-            return Guid.NewGuid().ToString("N");
+            else
+            {
+                tabs.CreateTab();
+            }
+
+            var activeTab = tabs.ActiveTab;
+            return activeTab != null ? activeTab.Id.ToString() : Guid.NewGuid().ToString("N");
         }
 
         public Task SwitchToWindowAsync(string windowHandle)
         {
-            // Session-level handle state is managed in WebDriver session.
+            if (!int.TryParse(windowHandle, out var tabId))
+            {
+                return Task.CompletedTask;
+            }
+
+            var tabs = TabManager.Instance;
+            for (int i = 0; i < tabs.Tabs.Count; i++)
+            {
+                if (tabs.Tabs[i].Id == tabId)
+                {
+                    tabs.SwitchToTab(i);
+                    break;
+                }
+            }
+
             return Task.CompletedTask;
         }
 

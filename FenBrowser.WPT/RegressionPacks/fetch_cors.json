@@ -1,0 +1,12 @@
+{
+  "name": "fetch_cors",
+  "category": "fetch",
+  "description": "Bounded fetch/CORS milestone pack covering self-contained request and response behavior without WPT server dependencies.",
+  "selectors": [
+    "fetch/api/basic/url-parsing.sub.html",
+    "fetch/api/request/request-init-001.sub.html",
+    "fetch/api/request/url-encoding.html",
+    "fetch/api/response/response-consume.html",
+    "fetch/api/response/multi-globals/url-parsing.html"
+  ]
+}

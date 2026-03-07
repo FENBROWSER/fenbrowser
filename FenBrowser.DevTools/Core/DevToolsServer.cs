@@ -41,9 +41,12 @@ public class DevToolsServer
     /// <summary>
     /// Initialize the DOM domain with a root node provider.
     /// </summary>
-    public void InitializeDom(Func<Node?> getRootNode, Action<int?>? onHighlight = null)
+    public void InitializeDom(
+        Func<Node?> getRootNode,
+        Action<int?>? onHighlight = null,
+        Func<Func<ProtocolResponse>, Task<ProtocolResponse>>? dispatchAsync = null)
     {
-        _domDomain = new DomDomain(_registry, getRootNode, onHighlight);
+        _domDomain = new DomDomain(_registry, getRootNode, onHighlight, dispatchAsync);
         _router.RegisterHandler(_domDomain);
     }
     
@@ -63,9 +66,10 @@ public class DevToolsServer
         Func<Node, CssComputed?> getComputedStyle, 
         Func<Node, List<CssLoader.MatchedRule>>? getMatchedRules = null,
         Action<Node, string, string>? setInlineStyle = null,
-        Action? triggerRepaint = null)
+        Action? triggerRepaint = null,
+        Func<Func<ProtocolResponse>, Task<ProtocolResponse>>? dispatchAsync = null)
     {
-        _cssDomain = new CSSDomain(_registry, getComputedStyle, getMatchedRules, setInlineStyle, triggerRepaint);
+        _cssDomain = new CSSDomain(_registry, getComputedStyle, getMatchedRules, setInlineStyle, triggerRepaint, dispatchAsync);
         _router.RegisterHandler(_cssDomain);
     }
     

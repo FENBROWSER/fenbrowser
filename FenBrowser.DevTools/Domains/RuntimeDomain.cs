@@ -43,11 +43,11 @@ public class RuntimeDomain : IProtocolHandler
         return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
     }
 
-    private Task<ProtocolResponse> EvaluateAsync(ProtocolRequest request)
+    private async Task<ProtocolResponse> EvaluateAsync(ProtocolRequest request)
     {
         if (request.Params == null)
         {
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+            return ProtocolResponse.Failure(request.Id, "Params required");
         }
 
         try
@@ -55,11 +55,11 @@ public class RuntimeDomain : IProtocolHandler
             var expression = request.Params.Value.GetProperty("expression").GetString();
             if (string.IsNullOrEmpty(expression))
             {
-                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Expression required"));
+                return ProtocolResponse.Failure(request.Id, "Expression required");
             }
 
-            var result = _host.EvaluateScript(expression);
-            
+            var result = await _host.EvaluateScriptAsync(expression).ConfigureAwait(false);
+
             var remoteObject = new RemoteObject
             {
                 Type = GetTypeString(result),
@@ -67,14 +67,14 @@ public class RuntimeDomain : IProtocolHandler
                 Description = result?.ToString() ?? "undefined"
             };
 
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new EvaluateResult
+            return ProtocolResponse.Success(request.Id, new EvaluateResult
             {
                 Result = remoteObject
-            }));
+            });
         }
         catch (Exception ex)
         {
-            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Eval error: {ex.Message}"));
+            return ProtocolResponse.Failure(request.Id, $"Eval error: {ex.Message}");
         }
     }
 

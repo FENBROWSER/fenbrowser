@@ -30,9 +30,9 @@ public interface IDevToolsHost
     IEnumerable<ConsoleMessageInfo> GetConsoleMessages();
     
     /// <summary>
-    /// Execute JavaScript in the page context (Legacy, will be moved to Runtime domain).
+    /// Execute JavaScript in the page context.
     /// </summary>
-    object? EvaluateScript(string script);
+    Task<object?> EvaluateScriptAsync(string script);
     
     /// <summary>
     /// Highlight an element on the page (still useful internally, but we might prefer protocol).

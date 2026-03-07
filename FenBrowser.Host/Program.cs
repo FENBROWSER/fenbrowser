@@ -11,6 +11,11 @@ using System.Diagnostics;
 using System.Threading;
 using System.IO.Pipes;
 using FenBrowser.Host.ProcessIsolation;
+using FenBrowser.Host.ProcessIsolation.Network;
+using FenBrowser.Host.ProcessIsolation.Targets;
+using System.Collections.Concurrent;
+using System.Net.Http;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.Host
 {
@@ -24,6 +29,9 @@ namespace FenBrowser.Host
         {
             Browser,
             RendererChild,
+            NetworkChild,
+            GpuChild,
+            UtilityChild,
             Test262,
             Wpt,
             Acid2,
@@ -38,6 +46,24 @@ namespace FenBrowser.Host
                 string.Equals(getEnvironmentVariable("FEN_RENDERER_CHILD"), "1", StringComparison.Ordinal))
             {
                 return StartupMode.RendererChild;
+            }
+
+            if (args.Any(a => string.Equals(a, "--network-child", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(getEnvironmentVariable("FEN_NETWORK_CHILD"), "1", StringComparison.Ordinal))
+            {
+                return StartupMode.NetworkChild;
+            }
+
+            if (args.Any(a => string.Equals(a, "--gpu-child", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(getEnvironmentVariable("FEN_GPU_CHILD"), "1", StringComparison.Ordinal))
+            {
+                return StartupMode.GpuChild;
+            }
+
+            if (args.Any(a => string.Equals(a, "--utility-child", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(getEnvironmentVariable("FEN_UTILITY_CHILD"), "1", StringComparison.Ordinal))
+            {
+                return StartupMode.UtilityChild;
             }
 
             if (args.Length >= 2 && args[0] == "--test262")
@@ -92,6 +118,24 @@ namespace FenBrowser.Host
                 if (startupMode == StartupMode.RendererChild)
                 {
                     await RunRendererChildLoopAsync(args).ConfigureAwait(false);
+                    return;
+                }
+
+                if (startupMode == StartupMode.NetworkChild)
+                {
+                    await RunNetworkChildLoopAsync().ConfigureAwait(false);
+                    return;
+                }
+
+                if (startupMode == StartupMode.GpuChild)
+                {
+                    await RunTargetChildLoopAsync(TargetProcessKind.Gpu).ConfigureAwait(false);
+                    return;
+                }
+
+                if (startupMode == StartupMode.UtilityChild)
+                {
+                    await RunTargetChildLoopAsync(TargetProcessKind.Utility).ConfigureAwait(false);
                     return;
                 }
 
@@ -808,6 +852,405 @@ namespace FenBrowser.Host
             FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
         }
 
+        private static async Task RunNetworkChildLoopAsync()
+        {
+            var pipeName = Environment.GetEnvironmentVariable("FEN_NETWORK_PIPE_NAME");
+            var authToken = Environment.GetEnvironmentVariable("FEN_NETWORK_AUTH_TOKEN");
+            var parentPidRaw = Environment.GetEnvironmentVariable("FEN_NETWORK_PARENT_PID");
+            var sandboxProfile = Environment.GetEnvironmentVariable("FEN_NETWORK_SANDBOX_PROFILE");
+            var capabilitySet = Environment.GetEnvironmentVariable("FEN_NETWORK_CAPABILITIES");
+            var parentPid = int.TryParse(parentPidRaw, out var parsedParentPid) ? parsedParentPid : 0;
+
+            if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
+            {
+                FenLogger.Warn("[NetworkChild] Missing required startup environment.", LogCategory.General);
+                return;
+            }
+
+            if (!string.Equals(sandboxProfile, "network_process", StringComparison.OrdinalIgnoreCase))
+            {
+                FenLogger.Warn(
+                    $"[NetworkChild] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
+                    LogCategory.General);
+                return;
+            }
+
+            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                pipe.Connect(5000);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[NetworkChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                return;
+            }
+
+            using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+            using var httpClient = HttpClientFactory.CreateClient();
+            using var noProxyHandler = HttpClientFactory.CreateHandler();
+            using var noProxyClient = HttpClientFactory.CreateClient(noProxyHandler);
+            var activeRequests = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal);
+            bool handshakeComplete = false;
+            bool running = true;
+
+            noProxyHandler.UseProxy = false;
+
+            while (running)
+            {
+                if (!IsParentAlive(parentPid))
+                {
+                    break;
+                }
+
+                var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
+                    reader,
+                    TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                if (!readResult.Completed)
+                {
+                    continue;
+                }
+
+                var line = readResult.Line;
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (!NetworkIpc.TryDeserialize(line, out var envelope))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.Equals(envelope.CapabilityToken, authToken, StringComparison.Ordinal))
+                        {
+                            SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                            {
+                                Type = NetworkIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "authentication_failed"
+                            });
+                            break;
+                        }
+
+                        handshakeComplete = true;
+                        SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                        {
+                            Type = NetworkIpcMessageType.Ready.ToString(),
+                            RequestId = envelope.RequestId
+                        });
+                        continue;
+                    }
+
+                    if (!handshakeComplete)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, NetworkIpcMessageType.FetchRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var payload = NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(envelope);
+                        if (payload == null || string.IsNullOrWhiteSpace(payload.Url))
+                        {
+                            SendFetchFailure(writer, envelope.RequestId, "invalid_request", "Missing fetch URL.");
+                            continue;
+                        }
+
+                        var linkedCts = new CancellationTokenSource();
+                        activeRequests[envelope.RequestId] = linkedCts;
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                using var request = BuildNetworkChildRequest(payload);
+                                using var response = await SendNetworkRequestAsync(httpClient, noProxyClient, request, linkedCts.Token).ConfigureAwait(false);
+
+                                var headers = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var header in response.Headers)
+                                {
+                                    headers[header.Key] = string.Join(", ", header.Value);
+                                }
+
+                                foreach (var header in response.Content.Headers)
+                                {
+                                    headers[header.Key] = string.Join(", ", header.Value);
+                                }
+
+                                SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                                {
+                                    Type = NetworkIpcMessageType.FetchResponseHead.ToString(),
+                                    RequestId = envelope.RequestId,
+                                    CapabilityToken = envelope.CapabilityToken,
+                                    Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseHeadPayload
+                                    {
+                                        RequestId = envelope.RequestId,
+                                        StatusCode = (int)response.StatusCode,
+                                        StatusText = response.ReasonPhrase ?? string.Empty,
+                                        Headers = headers,
+                                        Url = response.RequestMessage?.RequestUri?.AbsoluteUri ?? payload.Url,
+                                        ResponseType = "basic",
+                                        Cors = string.Equals(payload.Mode, "cors", StringComparison.OrdinalIgnoreCase),
+                                        Opaque = string.Equals(payload.Mode, "no-cors", StringComparison.OrdinalIgnoreCase),
+                                        ContentLength = response.Content.Headers.ContentLength ?? -1
+                                    })
+                                });
+
+                                using var bodyStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
+                                var buffer = new byte[16 * 1024];
+                                int chunkIndex = 0;
+                                long bytesTotal = 0;
+                                while (true)
+                                {
+                                    var read = await bodyStream.ReadAsync(buffer, 0, buffer.Length, linkedCts.Token).ConfigureAwait(false);
+                                    if (read <= 0)
+                                    {
+                                        break;
+                                    }
+
+                                    bytesTotal += read;
+                                    var chunk = new byte[read];
+                                    Buffer.BlockCopy(buffer, 0, chunk, 0, read);
+                                    SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                                    {
+                                        Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
+                                        RequestId = envelope.RequestId,
+                                        CapabilityToken = envelope.CapabilityToken,
+                                        Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
+                                        {
+                                            RequestId = envelope.RequestId,
+                                            IsComplete = false,
+                                            ChunkIndex = chunkIndex++,
+                                            BodyChunkBase64 = Convert.ToBase64String(chunk),
+                                            BytesTotal = bytesTotal
+                                        })
+                                    });
+                                }
+
+                                SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                                {
+                                    Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
+                                    RequestId = envelope.RequestId,
+                                    CapabilityToken = envelope.CapabilityToken,
+                                    Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
+                                    {
+                                        RequestId = envelope.RequestId,
+                                        IsComplete = true,
+                                        ChunkIndex = chunkIndex,
+                                        BodyChunkBase64 = string.Empty,
+                                        BytesTotal = bytesTotal
+                                    })
+                                });
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                SendFetchFailure(writer, envelope.RequestId, "cancelled", "Request cancelled.");
+                            }
+                            catch (Exception ex)
+                            {
+                                SendFetchFailure(writer, envelope.RequestId, "fetch_failed", ex.Message);
+                            }
+                            finally
+                            {
+                                if (activeRequests.TryRemove(envelope.RequestId, out var cts))
+                                {
+                                    cts.Dispose();
+                                }
+                            }
+                        });
+
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, NetworkIpcMessageType.CancelRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (activeRequests.TryRemove(envelope.RequestId, out var cts))
+                        {
+                            cts.Cancel();
+                            cts.Dispose();
+                        }
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                        {
+                            Type = NetworkIpcMessageType.Pong.ToString(),
+                            RequestId = envelope.RequestId
+                        });
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        running = false;
+                        continue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                    {
+                        Type = NetworkIpcMessageType.Error.ToString(),
+                        RequestId = envelope.RequestId,
+                        Payload = ex.Message
+                    });
+                }
+            }
+
+            foreach (var kvp in activeRequests)
+            {
+                try { kvp.Value.Cancel(); } catch { }
+                try { kvp.Value.Dispose(); } catch { }
+            }
+
+            FenLogger.Info("[NetworkChild] Exiting.", LogCategory.Network);
+        }
+
+        private static async Task RunTargetChildLoopAsync(TargetProcessKind expectedKind)
+        {
+            var pipeName = Environment.GetEnvironmentVariable("FEN_TARGET_PIPE_NAME");
+            var authToken = Environment.GetEnvironmentVariable("FEN_TARGET_AUTH_TOKEN");
+            var parentPidRaw = Environment.GetEnvironmentVariable("FEN_TARGET_PARENT_PID");
+            var targetKindRaw = Environment.GetEnvironmentVariable("FEN_TARGET_KIND");
+            var sandboxProfile = Environment.GetEnvironmentVariable("FEN_TARGET_SANDBOX_PROFILE");
+            var capabilitySet = Environment.GetEnvironmentVariable("FEN_TARGET_CAPABILITIES");
+            var parentPid = int.TryParse(parentPidRaw, out var parsedParentPid) ? parsedParentPid : 0;
+
+            if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
+            {
+                FenLogger.Warn($"[{expectedKind}Child] Missing required startup environment.", LogCategory.General);
+                return;
+            }
+
+            if (!string.Equals(targetKindRaw, expectedKind.ToString().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase))
+            {
+                FenLogger.Warn($"[{expectedKind}Child] Startup kind assertion failed. targetKind={targetKindRaw}.", LogCategory.General);
+                return;
+            }
+
+            var expectedSandboxProfile = expectedKind == TargetProcessKind.Gpu ? "gpu_process" : "utility_process";
+            if (!string.Equals(sandboxProfile, expectedSandboxProfile, StringComparison.OrdinalIgnoreCase))
+            {
+                FenLogger.Warn(
+                    $"[{expectedKind}Child] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
+                    LogCategory.General);
+                return;
+            }
+
+            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                pipe.Connect(5000);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[{expectedKind}Child] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                return;
+            }
+
+            using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+
+            var handshakeComplete = false;
+            var running = true;
+            while (running)
+            {
+                if (!IsParentAlive(parentPid))
+                {
+                    break;
+                }
+
+                var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
+                    reader,
+                    TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                if (!readResult.Completed)
+                {
+                    continue;
+                }
+
+                var line = readResult.Line;
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (!TargetIpc.TryDeserialize(line, out var envelope))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (string.Equals(envelope.Type, TargetIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.Equals(envelope.CapabilityToken, authToken, StringComparison.Ordinal))
+                        {
+                            SendTargetEnvelope(writer, new TargetIpcEnvelope
+                            {
+                                Type = TargetIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "authentication_failed"
+                            });
+                            break;
+                        }
+
+                        handshakeComplete = true;
+                        SendTargetEnvelope(writer, new TargetIpcEnvelope
+                        {
+                            Type = TargetIpcMessageType.Ready.ToString(),
+                            RequestId = envelope.RequestId,
+                            Payload = TargetIpc.SerializePayload(new TargetReadyPayload
+                            {
+                                ProcessKind = expectedKind.ToString().ToLowerInvariant(),
+                                SandboxProfile = sandboxProfile ?? string.Empty,
+                                Capabilities = capabilitySet ?? string.Empty,
+                                ProcessId = Environment.ProcessId
+                            })
+                        });
+                        continue;
+                    }
+
+                    if (!handshakeComplete)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, TargetIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        SendTargetEnvelope(writer, new TargetIpcEnvelope
+                        {
+                            Type = TargetIpcMessageType.Pong.ToString(),
+                            RequestId = envelope.RequestId
+                        });
+                        continue;
+                    }
+
+                    if (string.Equals(envelope.Type, TargetIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        running = false;
+                        continue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SendTargetEnvelope(writer, new TargetIpcEnvelope
+                    {
+                        Type = TargetIpcMessageType.Error.ToString(),
+                        RequestId = envelope.RequestId,
+                        Payload = ex.Message
+                    });
+                }
+            }
+
+            FenLogger.Info($"[{expectedKind}Child] Exiting.", LogCategory.General);
+        }
+
         private static bool IsParentAlive(int parentPid)
         {
             if (parentPid <= 0)
@@ -841,6 +1284,135 @@ namespace FenBrowser.Host
             catch
             {
             }
+        }
+
+        private static void SendNetworkEnvelope(StreamWriter writer, NetworkIpcEnvelope envelope)
+        {
+            if (writer == null || envelope == null)
+            {
+                return;
+            }
+
+            try
+            {
+                writer.WriteLine(NetworkIpc.Serialize(envelope));
+                writer.Flush();
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SendTargetEnvelope(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (writer == null || envelope == null)
+            {
+                return;
+            }
+
+            try
+            {
+                writer.WriteLine(TargetIpc.Serialize(envelope));
+                writer.Flush();
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SendFetchFailure(StreamWriter writer, string requestId, string errorCode, string errorMessage)
+        {
+            SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+            {
+                Type = NetworkIpcMessageType.FetchFailed.ToString(),
+                RequestId = requestId,
+                Payload = NetworkIpc.SerializePayload(new NetworkFetchFailedPayload
+                {
+                    RequestId = requestId,
+                    ErrorCode = errorCode,
+                    ErrorMessage = errorMessage ?? string.Empty
+                })
+            });
+        }
+
+        private static HttpRequestMessage BuildNetworkChildRequest(NetworkFetchRequestPayload payload)
+        {
+            var request = new HttpRequestMessage(
+                new HttpMethod(string.IsNullOrWhiteSpace(payload.Method) ? "GET" : payload.Method),
+                payload.Url);
+
+            if (payload.Headers != null)
+            {
+                foreach (var header in payload.Headers)
+                {
+                    if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
+                    {
+                        request.Content ??= new ByteArrayContent(Array.Empty<byte>());
+                        request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(payload.BodyBase64))
+            {
+                var bodyBytes = Convert.FromBase64String(payload.BodyBase64);
+                request.Content = new ByteArrayContent(bodyBytes);
+            }
+
+            return request;
+        }
+
+        private static async Task<HttpResponseMessage> SendNetworkRequestAsync(
+            HttpClient httpClient,
+            HttpClient noProxyClient,
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex) when (IsLoopbackProxyRefusal(ex))
+            {
+                using var retryRequest = await CloneHttpRequestMessageAsync(request).ConfigureAwait(false);
+                return await noProxyClient.SendAsync(retryRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private static bool IsLoopbackProxyRefusal(HttpRequestException ex)
+        {
+            var msg = ex?.ToString() ?? string.Empty;
+            if (msg.Length == 0) return false;
+            return (msg.IndexOf("127.0.0.1:9", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("localhost:9", StringComparison.OrdinalIgnoreCase) >= 0) &&
+                   msg.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static async Task<HttpRequestMessage> CloneHttpRequestMessageAsync(HttpRequestMessage source)
+        {
+            var clone = new HttpRequestMessage(source.Method, source.RequestUri)
+            {
+                Version = source.Version,
+                VersionPolicy = source.VersionPolicy
+            };
+
+            foreach (var header in source.Headers)
+            {
+                clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            if (source.Content != null)
+            {
+                var bytes = await source.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                var content = new ByteArrayContent(bytes);
+                foreach (var header in source.Content.Headers)
+                {
+                    content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+                clone.Content = content;
+            }
+
+            return clone;
         }
 
         private static string MapRendererKey(string key)

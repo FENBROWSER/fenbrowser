@@ -71,6 +71,13 @@ namespace FenBrowser.WebDriver.Security
         {
             if (string.IsNullOrEmpty(originHeader))
                 return true; // No origin header is ok for non-browser clients
+
+            var allowBrowserOrigins = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_WEBDRIVER_ALLOW_BROWSER_ORIGINS"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            if (!allowBrowserOrigins)
+                return false;
             
             try
             {

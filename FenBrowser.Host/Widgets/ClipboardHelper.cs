@@ -57,42 +57,68 @@ public static class ClipboardHelper
         
         string result = string.Empty;
         
-        // Try multiple times in case clipboard is locked
-        for (int i = 0; i < 10; i++)
+        if (TryOpenClipboardWithRetry(() => OpenClipboard(IntPtr.Zero)))
         {
-            if (OpenClipboard(IntPtr.Zero))
+            try
             {
-                try
+                IntPtr hData = GetClipboardData(CF_UNICODETEXT);
+                if (hData != IntPtr.Zero)
                 {
-                    IntPtr hData = GetClipboardData(CF_UNICODETEXT);
-                    if (hData != IntPtr.Zero)
+                    IntPtr pData = GlobalLock(hData);
+                    if (pData != IntPtr.Zero)
                     {
-                        IntPtr pData = GlobalLock(hData);
-                        if (pData != IntPtr.Zero)
+                        try
                         {
-                            try
-                            {
-                                result = Marshal.PtrToStringUni(pData) ?? string.Empty;
-                            }
-                            finally
-                            {
-                                GlobalUnlock(hData);
-                            }
+                            result = Marshal.PtrToStringUni(pData) ?? string.Empty;
+                        }
+                        finally
+                        {
+                            GlobalUnlock(hData);
                         }
                     }
                 }
-                finally
-                {
-                    CloseClipboard();
-                }
-                break;
             }
-            Thread.Sleep(10);
+            finally
+            {
+                CloseClipboard();
+            }
         }
         
         return result;
     }
     
+    internal static bool TryOpenClipboardWithRetry(Func<bool> openClipboard, int maxAttempts = 10, Action<int> retryDelay = null)
+    {
+        if (openClipboard == null)
+            throw new ArgumentNullException(nameof(openClipboard));
+
+        if (maxAttempts <= 0)
+            return false;
+
+        retryDelay ??= ApplyClipboardRetryBackoff;
+
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            if (openClipboard())
+                return true;
+
+            if (attempt + 1 < maxAttempts)
+                retryDelay(attempt + 1);
+        }
+
+        return false;
+    }
+
+    private static void ApplyClipboardRetryBackoff(int attempt)
+    {
+        var spinner = new SpinWait();
+        var spins = Math.Min(8, attempt + 1);
+        for (int i = 0; i < spins; i++)
+        {
+            spinner.SpinOnce();
+        }
+    }
+
     /// <summary>
     /// Set text to clipboard.
     /// </summary>
@@ -107,48 +133,41 @@ public static class ClipboardHelper
         if (string.IsNullOrEmpty(text))
             return false;
         
-        // Try multiple times in case clipboard is locked
-        for (int i = 0; i < 10; i++)
+        if (!TryOpenClipboardWithRetry(() => OpenClipboard(IntPtr.Zero)))
+            return false;
+
+        try
         {
-            if (OpenClipboard(IntPtr.Zero))
+            EmptyClipboard();
+            
+            // Allocate global memory for the string
+            int bytes = (text.Length + 1) * sizeof(char);
+            IntPtr hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes);
+            
+            if (hGlobal == IntPtr.Zero)
+                return false;
+            
+            IntPtr pGlobal = GlobalLock(hGlobal);
+            if (pGlobal == IntPtr.Zero)
+                return false;
+            
+            try
             {
-                try
-                {
-                    EmptyClipboard();
-                    
-                    // Allocate global memory for the string
-                    int bytes = (text.Length + 1) * sizeof(char);
-                    IntPtr hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes);
-                    
-                    if (hGlobal == IntPtr.Zero)
-                        return false;
-                    
-                    IntPtr pGlobal = GlobalLock(hGlobal);
-                    if (pGlobal == IntPtr.Zero)
-                        return false;
-                    
-                    try
-                    {
-                        Marshal.Copy(text.ToCharArray(), 0, pGlobal, text.Length);
-                        // Null terminate
-                        Marshal.WriteInt16(pGlobal + text.Length * sizeof(char), 0);
-                    }
-                    finally
-                    {
-                        GlobalUnlock(hGlobal);
-                    }
-                    
-                    SetClipboardData(CF_UNICODETEXT, hGlobal);
-                    return true;
-                }
-                finally
-                {
-                    CloseClipboard();
-                }
+                Marshal.Copy(text.ToCharArray(), 0, pGlobal, text.Length);
+                // Null terminate
+                Marshal.WriteInt16(pGlobal + text.Length * sizeof(char), 0);
             }
-            Thread.Sleep(10);
+            finally
+            {
+                GlobalUnlock(hGlobal);
+            }
+            
+            SetClipboardData(CF_UNICODETEXT, hGlobal);
+            return true;
         }
-        
-        return false;
+        finally
+        {
+            CloseClipboard();
+        }
     }
 }

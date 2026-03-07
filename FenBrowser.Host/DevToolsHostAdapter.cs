@@ -73,9 +73,9 @@ public class DevToolsHostAdapter : IDevToolsHost
         return await _server.ProcessRequestAsync(json);
     }
     
-    public object EvaluateScript(string script)
+    public Task<object?> EvaluateScriptAsync(string script)
     {
-        return _browser.EvaluateScript(script);
+        return _browser.EvaluateScriptAsync(script);
     }
     
     public void HighlightElement(Element? element)

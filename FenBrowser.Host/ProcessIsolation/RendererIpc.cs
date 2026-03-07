@@ -131,6 +131,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly NamedPipeServerStream _pipe;
         private readonly object _writeLock = new();
         private readonly CancellationTokenSource _cts = new();
+        private readonly TaskCompletionSource<bool> _readyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Queue<RendererIpcEnvelope> _pendingOutbound = new();
         private StreamReader _reader;
         private StreamWriter _writer;
@@ -164,7 +165,31 @@ namespace FenBrowser.Host.ProcessIsolation
         public void AttachProcess(System.Diagnostics.Process childProcess)
         {
             ChildProcess = childProcess;
+            if (childProcess != null)
+            {
+                childProcess.EnableRaisingEvents = true;
+                childProcess.Exited += (_, __) => _readyTcs.TrySetResult(false);
+            }
             _ = Task.Run(WaitForConnectionAsync);
+        }
+
+        public async Task<bool> WaitForReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            if (_readyTcs.Task.IsCompleted)
+            {
+                return await _readyTcs.Task.ConfigureAwait(false);
+            }
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, cancellationToken);
+            var delayTask = Task.Delay(timeout, linkedCts.Token);
+            var completed = await Task.WhenAny(_readyTcs.Task, delayTask).ConfigureAwait(false);
+            if (completed == _readyTcs.Task)
+            {
+                linkedCts.Cancel();
+                return await _readyTcs.Task.ConfigureAwait(false);
+            }
+
+            return false;
         }
 
         public void SendNavigate(string url, bool isUserInput)
@@ -276,9 +301,11 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (OperationCanceledException)
             {
+                _readyTcs.TrySetResult(false);
             }
             catch (Exception ex)
             {
+                _readyTcs.TrySetResult(false);
                 FenLogger.Warn($"[ProcessIsolation] IPC connect failed for tab {TabId}: {ex.Message}", LogCategory.General);
             }
         }
@@ -302,6 +329,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
                     if (string.Equals(envelope.Type, RendererIpcMessageType.Ready.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
+                        _readyTcs.TrySetResult(true);
                         FenLogger.Info($"[ProcessIsolation] Renderer child ready for tab {TabId}.", LogCategory.General);
                     }
                     else if (string.Equals(envelope.Type, RendererIpcMessageType.FrameReady.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -359,6 +387,7 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
+                _readyTcs.TrySetResult(false);
                 if (!_cts.IsCancellationRequested)
                 {
                     FenLogger.Warn($"[ProcessIsolation] IPC read loop terminated for tab {TabId}: {ex.Message}", LogCategory.General);
@@ -454,6 +483,7 @@ namespace FenBrowser.Host.ProcessIsolation
         public void Dispose()
         {
             _cts.Cancel();
+            _readyTcs.TrySetResult(false);
 
             try { _writer?.Dispose(); } catch { }
             try { _reader?.Dispose(); } catch { }

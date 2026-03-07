@@ -1,0 +1,24 @@
+{
+  "name": "dom_event_api",
+  "category": "dom",
+  "description": "Historical DOM/event runtime failures that surfaced as undefined-function errors.",
+  "selectors": [
+    "HTMLCollection-empty-name.html",
+    "HTMLCollection-own-props.html",
+    "HTMLCollection-supported-property-indices.html",
+    "CustomEvent.html",
+    "Event-defaultPrevented-after-dispatch.html",
+    "Event-dispatch-click.html",
+    "Event-dispatch-click.tentative.html",
+    "Event-dispatch-detached-input-and-change.html",
+    "Event-dispatch-handlers-changed.html",
+    "Event-dispatch-other-document.html",
+    "Event-dispatch-reenter.html",
+    "Event-dispatch-target-moved.html",
+    "Event-dispatch-target-removed.html",
+    "Event-dispatch-throwing.html",
+    "event-global.html",
+    "EventTarget-this-of-listener.html",
+    "label-default-action.html"
+  ]
+}
