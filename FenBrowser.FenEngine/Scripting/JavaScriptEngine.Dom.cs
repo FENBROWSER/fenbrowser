@@ -60,23 +60,23 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            public object[] getElementsByTagName(string tag)
+            public IEnumerable<Element> getElementsByTagName(string tag)
             {
-                if (string.IsNullOrEmpty(tag) || Root  == null) return new object[0];
-                var list = new List<object>();
+                if (string.IsNullOrEmpty(tag) || Root  == null) return Enumerable.Empty<Element>();
+                var list = new List<Element>();
                 foreach (var n in Root.Descendants().OfType<Element>())
                     if (string.Equals(n.NodeName, tag, StringComparison.OrdinalIgnoreCase))
-                        list.Add(new JsDomElement(_e, n));
-                return list.ToArray();
+                        list.Add(n);
+                return list;
             }
 
-            public object[] getElementsByClassName(string className)
+            public IEnumerable<Element> getElementsByClassName(string className)
             {
-                if (string.IsNullOrWhiteSpace(className) || Root  == null) return new object[0];
+                if (string.IsNullOrWhiteSpace(className) || Root  == null) return Enumerable.Empty<Element>();
                 var targetClasses = className.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (targetClasses.Length == 0) return new object[0];
+                if (targetClasses.Length == 0) return Enumerable.Empty<Element>();
 
-                var list = new List<object>();
+                var list = new List<Element>();
                 foreach (var n in Root.Descendants().OfType<Element>())
                 {
                     var cls = n.GetAttribute("class");
@@ -93,10 +93,10 @@ namespace FenBrowser.FenEngine.Scripting
                                 break;
                             }
                         }
-                        if (match) list.Add(new JsDomElement(_e, n));
+                        if (match) list.Add(n);
                     }
                 }
-                return list.ToArray();
+                return list;
             }
 
             public object querySelector(string sel)
@@ -316,12 +316,12 @@ namespace FenBrowser.FenEngine.Scripting
                         return result is JsDomElement el ? FenValue.FromObject(el) : FenValue.Null;
                     }));
                     case "getElementsByTagName": return FenValue.FromFunction(new FenFunction("getElementsByTagName", (args, _) => {
-                        var results = args.Length > 0 ? getElementsByTagName(args[0].ToString()) : new object[0];
+                        var results = (args.Length > 0 ? getElementsByTagName(args[0].ToString()) : Enumerable.Empty<Element>()).ToArray();
                         var arr = new FenObject();
                         arr.Set("length", FenValue.FromNumber(results.Length));
                         for (int i = 0; i < results.Length; i++)
                         {
-                            if (results[i] is JsDomElement el) arr.Set(i.ToString(), FenValue.FromObject(el));
+                            arr.Set(i.ToString(), FenValue.FromObject(new JsDomElement(_e, results[i])));
                         }
                         return FenValue.FromObject(arr);
                     }));
@@ -633,7 +633,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object querySelector(string sel) { return new JsDocument(_e, _node).querySelector(sel); }
             public object[] querySelectorAll(string sel) { return new JsDocument(_e, _node).querySelectorAll(sel); }
-            public object[] getElementsByClassName(string className) { return new JsDocument(_e, _node).getElementsByClassName(className); }
+            public IEnumerable<Element> getElementsByClassName(string className) { return new JsDocument(_e, _node).getElementsByClassName(className); }
 
             public void focus()
             {
@@ -938,20 +938,25 @@ namespace FenBrowser.FenEngine.Scripting
 
         internal sealed class JsDomShadowRoot : IObject
         {
+            private static readonly string[] BuiltInKeys = { "mode", "host", "innerHTML", "appendChild", "querySelector", "querySelectorAll", "getElementById" };
             private readonly JavaScriptEngine _e;
             private readonly ShadowRoot _node;
+            private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
             private IObject _prototype = null;
             public object NativeObject { get; set; }
-            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
 
             public JsDomShadowRoot(JavaScriptEngine e, ShadowRoot node)
             {
                 _e = e;
                 _node = node;
+                NativeObject = node;
             }
 
             public FenValue Get(string key, IExecutionContext context = null)
             {
+                if (_expandos.TryGetValue(key, out var expando) && expando.Value.HasValue)
+                    return expando.Value.Value;
+
                 switch (key)
                 {
                     case "mode": return FenValue.FromString(_node.Mode.ToString().ToLowerInvariant());
@@ -1008,7 +1013,21 @@ namespace FenBrowser.FenEngine.Scripting
                          }
                          _e.RequestRepaint();
                      } catch (Exception ex) { TryLogDomWarn($"[JsDomShadowRoot] Set innerHTML failed: {ex.Message}"); }
+                     return;
                 }
+
+                if (_expandos.TryGetValue(key, out var desc))
+                {
+                    if (desc.Writable == false) return;
+                    desc.Value = value;
+                    if (!desc.Writable.HasValue) desc.Writable = true;
+                    if (!desc.Enumerable.HasValue) desc.Enumerable = true;
+                    if (!desc.Configurable.HasValue) desc.Configurable = true;
+                    _expandos[key] = desc;
+                    return;
+                }
+
+                _expandos[key] = PropertyDescriptor.DataDefault(value);
             }
 
             private string GetInnerHTML()
@@ -1021,11 +1040,79 @@ namespace FenBrowser.FenEngine.Scripting
                  return sb.ToString();
             }
 
-            public bool Has(string key, IExecutionContext context = null) => true;
-            public bool Delete(string key, IExecutionContext context = null) => false;
-            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "mode", "host", "innerHTML", "appendChild", "querySelector", "querySelectorAll", "getElementById" };
+            public bool Has(string key, IExecutionContext context = null) => IsBuiltInKey(key) || _expandos.ContainsKey(key);
+            public bool Delete(string key, IExecutionContext context = null)
+            {
+                if (IsBuiltInKey(key)) return false;
+                if (!_expandos.TryGetValue(key, out var desc)) return true;
+                if (desc.Configurable == false) return false;
+                return _expandos.Remove(key);
+            }
+            public IEnumerable<string> Keys(IExecutionContext context = null)
+            {
+                foreach (var key in BuiltInKeys) yield return key;
+                foreach (var key in _expandos.Keys) yield return key;
+            }
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
+
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+            {
+                if (IsBuiltInKey(key))
+                {
+                    if (key != "innerHTML" || desc.IsAccessor || desc.Enumerable.HasValue || desc.Configurable.HasValue || desc.Writable == false)
+                        return false;
+
+                    if (desc.Value.HasValue) Set("innerHTML", desc.Value.Value);
+                    return true;
+                }
+
+                if (desc.IsAccessor) return false;
+
+                if (_expandos.TryGetValue(key, out var existing) && existing.Configurable == false)
+                {
+                    if (desc.Configurable == true) return false;
+                    if (desc.Enumerable.HasValue && desc.Enumerable != existing.Enumerable) return false;
+                    if (existing.Writable == false)
+                    {
+                        if (desc.Writable == true) return false;
+                        if (desc.Value.HasValue && (!existing.Value.HasValue || !existing.Value.Value.StrictEquals(desc.Value.Value))) return false;
+                    }
+                }
+
+                _expandos[key] = MergeDescriptor(existing, desc);
+                return true;
+            }
+
+            private static bool IsBuiltInKey(string key)
+            {
+                switch (key)
+                {
+                    case "mode":
+                    case "host":
+                    case "innerHTML":
+                    case "appendChild":
+                    case "querySelector":
+                    case "querySelectorAll":
+                    case "getElementById":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static PropertyDescriptor MergeDescriptor(PropertyDescriptor existing, PropertyDescriptor update)
+            {
+                return new PropertyDescriptor
+                {
+                    Value = update.Value ?? existing.Value ?? FenValue.Undefined,
+                    Writable = update.Writable ?? existing.Writable ?? true,
+                    Enumerable = update.Enumerable ?? existing.Enumerable ?? true,
+                    Configurable = update.Configurable ?? existing.Configurable ?? true,
+                    Getter = null,
+                    Setter = null
+                };
+            }
         }
 
         internal sealed class JsCssDeclaration : IObject
@@ -1033,7 +1120,7 @@ namespace FenBrowser.FenEngine.Scripting
             private readonly JsDomElement _el;
             private IObject _prototype = null;
             public object NativeObject { get; set; }
-            public JsCssDeclaration(JsDomElement el) { _el = el; }
+            public JsCssDeclaration(JsDomElement el) { _el = el; NativeObject = el; }
 
             public string cssText
             {
@@ -1047,7 +1134,7 @@ namespace FenBrowser.FenEngine.Scripting
                 TryLogDomDebug($"[JsCssDeclaration] setProperty {name}='{value}'", LogCategory.DOM);
                 var current = cssText;
                 var styles = ParseStyles(current);
-                styles[name] = value ?? "";
+                ApplyNormalizedStyleSet(styles, name, value ?? "");
                 cssText = SerializeStyles(styles);
             }
 
@@ -1057,9 +1144,16 @@ namespace FenBrowser.FenEngine.Scripting
                 FenLogger.Debug($"[JsCssDeclaration] getPropertyValue name='{name}'", LogCategory.DOM);
                 var current = cssText;
                 var styles = ParseStyles(current);
+                var normalizedName = NormalizeGapPropertyName(name);
+
+                if (IsGapFamilyProperty(normalizedName))
+                {
+                    return ReadNormalizedGapProperty(styles, normalizedName);
+                }
                 
                 // Direct lookup
-                if (styles.TryGetValue(name, out var val)) return val;
+                if (styles.TryGetValue(normalizedName, out var val)) return val;
+                if (styles.TryGetValue(name, out val)) return val;
 
                 if (name.StartsWith("background-") && styles.TryGetValue("background", out var bgVal))
                 {
@@ -1081,6 +1175,14 @@ namespace FenBrowser.FenEngine.Scripting
                     styles.Remove(name);
                     cssText = SerializeStyles(styles);
                     return val;
+                }
+                var normalizedName = NormalizeGapPropertyName(name);
+                if (IsGapFamilyProperty(normalizedName))
+                {
+                    var previous = ReadNormalizedGapProperty(styles, normalizedName);
+                    RemoveNormalizedStyle(styles, normalizedName);
+                    cssText = SerializeStyles(styles);
+                    return previous;
                 }
                 return "";
             }
@@ -1117,7 +1219,21 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             public bool Has(string key, IExecutionContext context = null) => true; // All CSS properties are valid
-            public bool Delete(string key, IExecutionContext context = null) => false; // CSS properties can't be deleted this way
+            public bool Delete(string key, IExecutionContext context = null)
+            {
+                switch (key)
+                {
+                    case "setProperty":
+                    case "getPropertyValue":
+                    case "removeProperty":
+                    case "cssText":
+                        return false;
+                    default:
+                        removeProperty(ConvertToCssProperty(key));
+                        _el._e.RequestRepaint();
+                        return true;
+                }
+            }
             public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "cssText", "display", "width", "height", "background", "color", "margin", "padding", "border", "position", "top", "left", "opacity", "transform" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
@@ -1176,6 +1292,108 @@ namespace FenBrowser.FenEngine.Scripting
                 return dict;
             }
 
+            private static void ApplyNormalizedStyleSet(Dictionary<string, string> styles, string name, string value)
+            {
+                var normalizedName = NormalizeGapPropertyName(name);
+                if (!IsGapFamilyProperty(normalizedName))
+                {
+                    styles[normalizedName] = value;
+                    return;
+                }
+
+                RemoveNormalizedStyle(styles, normalizedName);
+                var canonicalValue = CanonicalizeGapComponent(value);
+                if (string.IsNullOrWhiteSpace(canonicalValue))
+                {
+                    return;
+                }
+
+                if (normalizedName == "row-gap" || normalizedName == "column-gap")
+                {
+                    styles[normalizedName] = canonicalValue;
+                    return;
+                }
+
+                var parts = canonicalValue.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                var row = parts.Length > 0 ? CanonicalizeGapComponent(parts[0]) : "normal";
+                var column = parts.Length > 1 ? CanonicalizeGapComponent(parts[1]) : row;
+                styles["row-gap"] = row;
+                styles["column-gap"] = column;
+            }
+
+            private static void RemoveNormalizedStyle(Dictionary<string, string> styles, string name)
+            {
+                if (name == "row-gap" || name == "column-gap")
+                {
+                    styles.Remove(name);
+                    styles.Remove("grid-" + name);
+                    return;
+                }
+
+                if (name == "gap")
+                {
+                    styles.Remove("gap");
+                    styles.Remove("grid-gap");
+                    styles.Remove("row-gap");
+                    styles.Remove("column-gap");
+                    styles.Remove("grid-row-gap");
+                    styles.Remove("grid-column-gap");
+                }
+            }
+
+            private static string ReadNormalizedGapProperty(Dictionary<string, string> styles, string name)
+            {
+                string row = ReadGapComponent(styles, "row-gap");
+                string column = ReadGapComponent(styles, "column-gap");
+
+                if (name == "row-gap") return row;
+                if (name == "column-gap") return column;
+                if (row == column) return row;
+                return row + " " + column;
+            }
+
+            private static string ReadGapComponent(Dictionary<string, string> styles, string name)
+            {
+                if (styles.TryGetValue(name, out var value) || styles.TryGetValue("grid-" + name, out value))
+                {
+                    return CanonicalizeGapComponent(value);
+                }
+
+                if (styles.TryGetValue("gap", out value) || styles.TryGetValue("grid-gap", out value))
+                {
+                    var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0) return "normal";
+                    if (name == "row-gap") return CanonicalizeGapComponent(parts[0]);
+                    return CanonicalizeGapComponent(parts.Length > 1 ? parts[1] : parts[0]);
+                }
+
+                return "normal";
+            }
+
+            private static string NormalizeGapPropertyName(string name)
+            {
+                if (string.Equals(name, "grid-row-gap", StringComparison.OrdinalIgnoreCase)) return "row-gap";
+                if (string.Equals(name, "grid-column-gap", StringComparison.OrdinalIgnoreCase)) return "column-gap";
+                if (string.Equals(name, "grid-gap", StringComparison.OrdinalIgnoreCase)) return "gap";
+                return name;
+            }
+
+            private static bool IsGapFamilyProperty(string name)
+            {
+                return string.Equals(name, "gap", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(name, "row-gap", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(name, "column-gap", StringComparison.OrdinalIgnoreCase);
+            }
+
+            private static string CanonicalizeGapComponent(string value)
+            {
+                var trimmed = (value ?? string.Empty).Trim().ToLowerInvariant();
+                if (string.IsNullOrEmpty(trimmed)) return string.Empty;
+                if (trimmed == "normal") return "normal";
+                if (trimmed == "0") return "0px";
+                return trimmed;
+            }
+
             private static string SerializeStyles(Dictionary<string, string> styles)
             {
                 if (styles  == null || styles.Count == 0) return "";
@@ -1186,16 +1404,38 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 return sb.ToString().Trim();
             }
-            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+            {
+                if (desc.IsAccessor)
+                    return false;
+
+                switch (key)
+                {
+                    case "setProperty":
+                    case "getPropertyValue":
+                    case "removeProperty":
+                        return false;
+                    case "cssText":
+                        if (desc.Value.HasValue)
+                            cssText = desc.Value.Value.ToString();
+                        return desc.Writable != false;
+                    default:
+                        if (desc.Value.HasValue)
+                            setProperty(ConvertToCssProperty(key), desc.Value.Value.ToString());
+                        return desc.Writable != false;
+                }
+            }
         }
 
         internal sealed class JsDomTokenList : IObject
         {
+            private static readonly string[] BuiltInKeys = { "length", "item", "contains", "add", "remove", "toggle", "toString", "value" };
             private readonly JsDomElement _el;
+            private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
             private IObject _prototype;
             public object NativeObject { get; set; }
 
-            public JsDomTokenList(JsDomElement el) { _el = el; }
+            public JsDomTokenList(JsDomElement el) { _el = el; NativeObject = el; }
 
             public int length => _parts.Length;
             public string item(int index) { var p = _parts; return (index >= 0 && index < p.Length) ? p[index] : null; }
@@ -1225,6 +1465,22 @@ namespace FenBrowser.FenEngine.Scripting
                 return !present;
             }
 
+            public bool toggle(string token, bool force)
+            {
+                if (string.IsNullOrWhiteSpace(token)) return false;
+                var p = new HashSet<string>(_parts, StringComparer.Ordinal);
+                if (force)
+                {
+                    p.Add(token);
+                    _el.className = string.Join(" ", p.ToArray());
+                    return true;
+                }
+
+                p.Remove(token);
+                _el.className = string.Join(" ", p.ToArray());
+                return false;
+            }
+
             public override string ToString() { return _el.className; }
 
             private string[] _parts => (_el.className ?? "").Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -1232,17 +1488,26 @@ namespace FenBrowser.FenEngine.Scripting
             // IObject Implementation
             public FenValue Get(string key, IExecutionContext context = null)
             {
+                if (_expandos.TryGetValue(key, out var expando) && expando.Value.HasValue)
+                    return expando.Value.Value;
+
                 if (int.TryParse(key, out int index))
-                    return FenValue.FromString(item(index) ?? ""); // Returns undefined or null? DOM says item() returns null but indexed property returns undefined? Actually undefined usually.
+                    return index >= 0 && index < length ? FenValue.FromString(item(index)) : FenValue.Undefined;
                 
                 switch (key)
                 {
                     case "length": return FenValue.FromNumber(length);
-                    case "item": return FenValue.FromFunction(new FenFunction("item", (args, _) => FenValue.FromString(item(args.Length > 0 ? (int)args[0].ToNumber() : 0))));
+                    case "item": return FenValue.FromFunction(new FenFunction("item", (args, _) => {
+                        var result = item(args.Length > 0 ? (int)args[0].ToNumber() : 0);
+                        return result != null ? FenValue.FromString(result) : FenValue.Null;
+                    }));
                     case "contains": return FenValue.FromFunction(new FenFunction("contains", (args, _) => FenValue.FromBoolean(contains(args.Length > 0 ? args[0].ToString() : ""))));
-                    case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => { if(args.Length>0) add(args[0].ToString()); return FenValue.Undefined; }));
-                    case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => { if(args.Length>0) remove(args[0].ToString()); return FenValue.Undefined; }));
-                    case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => FenValue.FromBoolean(toggle(args.Length > 0 ? args[0].ToString() : ""))));
+                    case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => { foreach (var arg in args) add(arg.ToString()); return FenValue.Undefined; }));
+                    case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => { foreach (var arg in args) remove(arg.ToString()); return FenValue.Undefined; }));
+                    case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => {
+                        if (args.Length == 0) return FenValue.FromBoolean(false);
+                        return args.Length > 1 ? FenValue.FromBoolean(toggle(args[0].ToString(), args[1].ToBoolean())) : FenValue.FromBoolean(toggle(args[0].ToString()));
+                    }));
                     case "toString": return FenValue.FromFunction(new FenFunction("toString", (args, _) => FenValue.FromString(ToString())));
                     case "value": return FenValue.FromString(ToString()); // DOMTokenList.value
                 }
@@ -1251,21 +1516,107 @@ namespace FenBrowser.FenEngine.Scripting
 
             public void Set(string key, FenValue value, IExecutionContext context = null) 
             {
-                if (key == "value") _el.className = value.ToString();
+                if (key == "value")
+                {
+                    _el.className = value.ToString();
+                    return;
+                }
+
+                if (_expandos.TryGetValue(key, out var desc))
+                {
+                    if (desc.Writable == false) return;
+                    desc.Value = value;
+                    if (!desc.Writable.HasValue) desc.Writable = true;
+                    if (!desc.Enumerable.HasValue) desc.Enumerable = true;
+                    if (!desc.Configurable.HasValue) desc.Configurable = true;
+                    _expandos[key] = desc;
+                    return;
+                }
+
+                if (!IsBuiltInKey(key))
+                    _expandos[key] = PropertyDescriptor.DataDefault(value);
             }
 
             public bool Has(string key, IExecutionContext context = null) 
             {
                 if (int.TryParse(key, out int index)) return index >= 0 && index < length;
-                return !Get(key, context).IsUndefined;
+                return IsBuiltInKey(key) || _expandos.ContainsKey(key);
             }
 
-            public bool Delete(string key, IExecutionContext context = null) => false;
-            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "length", "item", "contains", "add", "remove", "toggle", "toString", "value" };
+            public bool Delete(string key, IExecutionContext context = null)
+            {
+                if (int.TryParse(key, out int index)) return index < 0 || index >= length;
+                if (IsBuiltInKey(key)) return false;
+                if (!_expandos.TryGetValue(key, out var desc)) return true;
+                if (desc.Configurable == false) return false;
+                return _expandos.Remove(key);
+            }
+            public IEnumerable<string> Keys(IExecutionContext context = null)
+            {
+                foreach (var key in BuiltInKeys) yield return key;
+                foreach (var key in _expandos.Keys) yield return key;
+            }
             
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) => _prototype = prototype;
-            public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+            {
+                if (int.TryParse(key, out _) || IsBuiltInKey(key))
+                {
+                    if (key != "value" || desc.IsAccessor || desc.Enumerable.HasValue || desc.Configurable.HasValue || desc.Writable == false)
+                        return false;
+
+                    if (desc.Value.HasValue) _el.className = desc.Value.Value.ToString();
+                    return true;
+                }
+
+                if (desc.IsAccessor) return false;
+
+                if (_expandos.TryGetValue(key, out var existing) && existing.Configurable == false)
+                {
+                    if (desc.Configurable == true) return false;
+                    if (desc.Enumerable.HasValue && desc.Enumerable != existing.Enumerable) return false;
+                    if (existing.Writable == false)
+                    {
+                        if (desc.Writable == true) return false;
+                        if (desc.Value.HasValue && (!existing.Value.HasValue || !existing.Value.Value.StrictEquals(desc.Value.Value))) return false;
+                    }
+                }
+
+                _expandos[key] = MergeDescriptor(existing, desc);
+                return true;
+            }
+
+            private static bool IsBuiltInKey(string key)
+            {
+                switch (key)
+                {
+                    case "length":
+                    case "item":
+                    case "contains":
+                    case "add":
+                    case "remove":
+                    case "toggle":
+                    case "toString":
+                    case "value":
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            private static PropertyDescriptor MergeDescriptor(PropertyDescriptor existing, PropertyDescriptor update)
+            {
+                return new PropertyDescriptor
+                {
+                    Value = update.Value ?? existing.Value ?? FenValue.Undefined,
+                    Writable = update.Writable ?? existing.Writable ?? true,
+                    Enumerable = update.Enumerable ?? existing.Enumerable ?? true,
+                    Configurable = update.Configurable ?? existing.Configurable ?? true,
+                    Getter = null,
+                    Setter = null
+                };
+            }
         }
     }
 }

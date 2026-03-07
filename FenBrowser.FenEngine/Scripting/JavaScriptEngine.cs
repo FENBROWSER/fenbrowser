@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -136,13 +136,9 @@ namespace FenBrowser.FenEngine.Scripting
             context.ScheduleCallback = (action, delay) =>
             {
                 FenLogger.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
-                _ = ScheduleCallbackAsync(action, delay).ContinueWith(t =>
-                {
-                    if (t.IsFaulted)
-                    {
-                        FenLogger.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {t.Exception?.GetBaseException().Message}", LogCategory.JavaScript);
-                    }
-                }, TaskContinuationOptions.OnlyOnFaulted);
+                _ = ObserveBackgroundTaskFailureAsync(
+                    ScheduleCallbackAsync(action, delay),
+                    message => FenLogger.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {message}", LogCategory.JavaScript));
             };
 
             // Configure Microtasks (Promises)
@@ -217,6 +213,27 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
+        private static async Task ObserveBackgroundTaskFailureAsync(
+            Task task,
+            Action<string> logMessage,
+            Action<Exception> logException = null)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (logException != null)
+                {
+                    logException(ex);
+                    return;
+                }
+
+                logMessage?.Invoke(ex.GetBaseException().Message);
+            }
+        }
+
         private static async Task ScheduleCallbackAsync(Action action, int delay)
         {
             await Task.Delay(delay).ConfigureAwait(false);
@@ -248,14 +265,11 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (_domRoot == null) return FenValue.Null;
             var doc = new JsDocument(this, _domRoot);
-            var results = doc.getElementsByTagName(tagName) ?? new object[0];
+            var results = (doc.getElementsByTagName(tagName) ?? Enumerable.Empty<Element>()).ToArray();
             var arr = new FenObject();
             for (int i = 0; i < results.Length; i++)
             {
-                if (results[i] is IObject itemObj)
-                {
-                    arr.Set(i.ToString(), FenValue.FromObject(itemObj));
-                }
+                arr.Set(i.ToString(), FenValue.FromObject(new JsDomElement(this, results[i])));
             }
             arr.Set("length", FenValue.FromNumber(results.Length));
             return FenValue.FromObject(arr);
@@ -265,14 +279,11 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (_domRoot == null) return FenValue.Null;
             var doc = new JsDocument(this, _domRoot);
-            var results = doc.getElementsByClassName(classNames) ?? new object[0];
+            var results = (doc.getElementsByClassName(classNames) ?? Enumerable.Empty<Element>()).ToArray();
             var arr = new FenObject();
             for (int i = 0; i < results.Length; i++)
             {
-                if (results[i] is IObject itemObj)
-                {
-                    arr.Set(i.ToString(), FenValue.FromObject(itemObj));
-                }
+                arr.Set(i.ToString(), FenValue.FromObject(new JsDomElement(this, results[i])));
             }
             arr.Set("length", FenValue.FromNumber(results.Length));
             return FenValue.FromObject(arr);
@@ -355,9 +366,9 @@ namespace FenBrowser.FenEngine.Scripting
             if (args.Length < 2) return FenValue.Undefined;
             var evt = args[0].ToString();
 
-            FenFunction callback = null;
-            if (args[1].IsFunction) callback = args[1].AsFunction() as FenFunction;
-            if (callback == null || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
+            var callback = args[1];
+            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+            if (!callbackIsValid || callback.IsUndefined || callback.IsNull || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
 
             bool capture = false;
             bool once = false;
@@ -381,7 +392,7 @@ namespace FenBrowser.FenEngine.Scripting
                 listeners[evt] = list;
             }
 
-            var exists = list.Any(l => ReferenceEquals(l.Callback, callback) && l.Capture == capture);
+            var exists = list.Any(l => l.Callback.Equals(callback) && l.Capture == capture);
             if (!exists)
             {
                 list.Add(new ObjectEventListener
@@ -401,9 +412,9 @@ namespace FenBrowser.FenEngine.Scripting
             if (args.Length < 2) return FenValue.Undefined;
             var evt = args[0].ToString();
 
-            FenFunction callback = null;
-            if (args[1].IsFunction) callback = args[1].AsFunction() as FenFunction;
-            if (callback == null || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
+            var callback = args[1];
+            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+            if (!callbackIsValid || callback.IsUndefined || callback.IsNull || string.IsNullOrWhiteSpace(evt)) return FenValue.Undefined;
 
             bool capture = false;
             bool once = false;
@@ -415,7 +426,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.TryGetValue(evt, out var list))
             {
-                list.RemoveAll(l => ReferenceEquals(l.Callback, callback) && l.Capture == capture);
+                list.RemoveAll(l => l.Callback.Equals(callback) && l.Capture == capture);
             }
 
             return FenValue.Undefined;
@@ -451,7 +462,28 @@ namespace FenBrowser.FenEngine.Scripting
                     try
                     {
                         var thisArg = thisBinding != null ? FenValue.FromObject(thisBinding) : FenValue.Undefined;
-                        listener.Callback.Invoke(args, _fenRuntime.Context, thisArg);
+                        FenFunction callbackFn = null;
+                        var callbackThis = thisArg;
+                        if (listener.Callback.IsFunction)
+                        {
+                            callbackFn = listener.Callback.AsFunction() as FenFunction;
+                        }
+                        else if (listener.Callback.IsObject)
+                        {
+                            var handleEvent = listener.Callback.AsObject()?.Get("handleEvent") ?? FenValue.Undefined;
+                            if (handleEvent.IsFunction)
+                            {
+                                callbackFn = handleEvent.AsFunction() as FenFunction;
+                                callbackThis = listener.Callback;
+                            }
+                        }
+
+                        if (callbackFn == null)
+                        {
+                            continue;
+                        }
+
+                        callbackFn.Invoke(args, _fenRuntime.Context, callbackThis);
                     }
                     catch (Exception ex)
                     {
@@ -488,7 +520,28 @@ namespace FenBrowser.FenEngine.Scripting
                     try
                     {
                         var thisArg = thisBinding != null ? FenValue.FromObject(thisBinding) : FenValue.Undefined;
-                        listener.Callback.Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
+                        FenFunction callbackFn = null;
+                        var callbackThis = thisArg;
+                        if (listener.Callback.IsFunction)
+                        {
+                            callbackFn = listener.Callback.AsFunction() as FenFunction;
+                        }
+                        else if (listener.Callback.IsObject)
+                        {
+                            var handleEvent = listener.Callback.AsObject()?.Get("handleEvent") ?? FenValue.Undefined;
+                            if (handleEvent.IsFunction)
+                            {
+                                callbackFn = handleEvent.AsFunction() as FenFunction;
+                                callbackThis = listener.Callback;
+                            }
+                        }
+
+                        if (callbackFn == null)
+                        {
+                            continue;
+                        }
+
+                        callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
                     }
                     catch (Exception ex)
                     {
@@ -497,7 +550,7 @@ namespace FenBrowser.FenEngine.Scripting
 
                     if (listener.Once)
                     {
-                        list.RemoveAll(l => ReferenceEquals(l.Callback, listener.Callback) && l.Capture == listener.Capture);
+                        list.RemoveAll(l => l.Callback.Equals(listener.Callback) && l.Capture == listener.Capture);
                     }
                 }
             }
@@ -531,7 +584,23 @@ namespace FenBrowser.FenEngine.Scripting
 
                 var entry = entryVal.AsObject();
                 var callback = entry.Get("callback");
-                if (!callback.IsFunction) continue;
+                FenFunction callbackFn = null;
+                var callbackThis = FenValue.FromObject(targetObj);
+                if (callback.IsFunction)
+                {
+                    callbackFn = callback.AsFunction() as FenFunction;
+                }
+                else if (callback.IsObject)
+                {
+                    var handleEvent = callback.AsObject()?.Get("handleEvent") ?? FenValue.Undefined;
+                    if (handleEvent.IsFunction)
+                    {
+                        callbackFn = handleEvent.AsFunction() as FenFunction;
+                        callbackThis = callback;
+                    }
+                }
+
+                if (callbackFn == null) continue;
 
                 var captureVal = entry.Get("capture");
                 var capture = captureVal.IsBoolean && captureVal.ToBoolean();
@@ -539,7 +608,7 @@ namespace FenBrowser.FenEngine.Scripting
 
                 try
                 {
-                    callback.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, FenValue.FromObject(targetObj));
+                    callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
                 }
                 catch (Exception ex)
                 {
@@ -693,7 +762,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private sealed class ObjectEventListener
         {
-            public FenFunction Callback;
+            public FenValue Callback;
             public bool Capture;
             public bool Once;
             public bool Passive;
@@ -749,7 +818,66 @@ namespace FenBrowser.FenEngine.Scripting
             
             winObj.Set("screen", FenValue.FromObject(screenObj));
             _fenRuntime.SetGlobal("screen", FenValue.FromObject(screenObj));
+            
+            // Mirror selected global constructors onto window for runtime compatibility.
+            var audioGlobal = _fenRuntime.GetGlobal("Audio");
+            if (audioGlobal is FenValue audioGlobalValue && audioGlobalValue.IsFunction)
+            {
+                winObj.Set("Audio", audioGlobalValue);
+            }
 
+            var audioContextGlobal = _fenRuntime.GetGlobal("AudioContext");
+            if (audioContextGlobal is FenValue audioContextGlobalValue && audioContextGlobalValue.IsFunction)
+            {
+                winObj.Set("AudioContext", audioContextGlobalValue);
+            }
+
+            var webkitAudioContextGlobal = _fenRuntime.GetGlobal("webkitAudioContext");
+            if (webkitAudioContextGlobal is FenValue webkitAudioContextGlobalValue && webkitAudioContextGlobalValue.IsFunction)
+            {
+                winObj.Set("webkitAudioContext", webkitAudioContextGlobalValue);
+            }
+
+            var notificationGlobal = _fenRuntime.GetGlobal("Notification");
+            if (notificationGlobal is FenValue notificationGlobalValue &&
+                (notificationGlobalValue.IsFunction || notificationGlobalValue.IsObject))
+            {
+                winObj.Set("Notification", notificationGlobalValue);
+            }
+            var rtcPeerConnectionGlobal = _fenRuntime.GetGlobal("RTCPeerConnection");
+            if (rtcPeerConnectionGlobal is FenValue rtcPeerConnectionGlobalValue &&
+                (rtcPeerConnectionGlobalValue.IsFunction || rtcPeerConnectionGlobalValue.IsObject))
+            {
+                winObj.Set("RTCPeerConnection", rtcPeerConnectionGlobalValue);
+            }
+
+            var webkitRtcPeerConnectionGlobal = _fenRuntime.GetGlobal("webkitRTCPeerConnection");
+            if (webkitRtcPeerConnectionGlobal is FenValue webkitRtcPeerConnectionGlobalValue &&
+                (webkitRtcPeerConnectionGlobalValue.IsFunction || webkitRtcPeerConnectionGlobalValue.IsObject))
+            {
+                winObj.Set("webkitRTCPeerConnection", webkitRtcPeerConnectionGlobalValue);
+            }
+
+            var mediaStreamGlobal = _fenRuntime.GetGlobal("MediaStream");
+            if (mediaStreamGlobal is FenValue mediaStreamGlobalValue &&
+                (mediaStreamGlobalValue.IsFunction || mediaStreamGlobalValue.IsObject))
+            {
+                winObj.Set("MediaStream", mediaStreamGlobalValue);
+            }
+
+            var intersectionObserverGlobal = _fenRuntime.GetGlobal("IntersectionObserver");
+            if (intersectionObserverGlobal is FenValue intersectionObserverGlobalValue &&
+                (intersectionObserverGlobalValue.IsFunction || intersectionObserverGlobalValue.IsObject))
+            {
+                winObj.Set("IntersectionObserver", intersectionObserverGlobalValue);
+            }
+
+            var resizeObserverGlobal = _fenRuntime.GetGlobal("ResizeObserver");
+            if (resizeObserverGlobal is FenValue resizeObserverGlobalValue &&
+                (resizeObserverGlobalValue.IsFunction || resizeObserverGlobalValue.IsObject))
+            {
+                winObj.Set("ResizeObserver", resizeObserverGlobalValue);
+            }
             // Bridge object listeners into DOM event flow for window/document and native object listeners.
             FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = InvokeObjectListenersForDomEvent;
             FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = ResolveDocumentEventTarget;
@@ -769,6 +897,9 @@ namespace FenBrowser.FenEngine.Scripting
         private readonly Dictionary<int, System.Threading.Timer> _timers = new Dictionary<int, System.Threading.Timer>();
         // fields restored
         private int _nextTimerId = 1;
+        private readonly Dictionary<int, CancellationTokenSource> _geolocationWatches = new Dictionary<int, CancellationTokenSource>();
+        private readonly object _geolocationWatchLock = new object();
+        private int _nextGeolocationWatchId = 0;
         private List<MutationObserverWrapper> _fenMutationObservers = new List<MutationObserverWrapper>();
         private List<string> _mutationObservers = new List<string>(); // Legacy observers
         private List<MutationRecord> _pendingMutations = new List<MutationRecord>();
@@ -816,61 +947,178 @@ namespace FenBrowser.FenEngine.Scripting
             var permissionsObj = new FenBrowser.FenEngine.Core.FenObject();
             permissionsObj.Set("query", FenValue.FromFunction(new FenFunction("query", (args, thisVal) =>
             {
+                string ResolvePermissionState(string permissionName, out bool supported)
+                {
+                    supported = true;
+                    var originKey = OriginKey(_ctx?.BaseUri);
+
+                    JsPermissions permission = permissionName switch
+                    {
+                        "geolocation" => JsPermissions.Geolocation,
+                        "notifications" => JsPermissions.Notifications,
+                        "camera" => JsPermissions.Camera,
+                        "microphone" => JsPermissions.Camera,
+                        "clipboard-read" => JsPermissions.None,
+                        "clipboard-write" => JsPermissions.None,
+                        _ => JsPermissions.None
+                    };
+
+                    if (permission != JsPermissions.None)
+                    {
+                        return PermissionStore.Instance.GetState(originKey, permission).ToString().ToLowerInvariant();
+                    }
+
+                    if (permissionName == "clipboard-read" || permissionName == "clipboard-write")
+                    {
+                        return "prompt";
+                    }
+
+                    supported = false;
+                    return "denied";
+                }
+
+                FenObject CreatePermissionStatusObject(string permissionName, string state)
+                {
+                    var statusObj = new FenBrowser.FenEngine.Core.FenObject();
+                    statusObj.Set("name", FenValue.FromString(permissionName));
+                    statusObj.Set("state", FenValue.FromString(state));
+                    statusObj.Set("onchange", FenValue.Null);
+                    statusObj.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (listenerArgs, listenerThis) => FenValue.Undefined)));
+                    statusObj.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (listenerArgs, listenerThis) => FenValue.Undefined)));
+                    statusObj.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (listenerArgs, listenerThis) => FenValue.FromBoolean(false))));
+                    return statusObj;
+                }
+
                 // Returns a Thenable (Promise-like)
                 var thenable = new FenBrowser.FenEngine.Core.FenObject();
+                FenValue resolvedValue = FenValue.Undefined;
+                FenValue rejectedValue = FenValue.Undefined;
+                var settled = false;
+                var fulfilled = false;
+
+                void ResolveThenable(FenValue value)
+                {
+                    settled = true;
+                    fulfilled = true;
+                    resolvedValue = value;
+                }
+
+                void RejectThenable(FenValue value)
+                {
+                    settled = true;
+                    fulfilled = false;
+                    rejectedValue = value;
+                }
+
                 thenable.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
                 {
                     var onFulfilled = ((thenArgs != null && thenArgs.Length > 0 && thenArgs[0].IsFunction) ? thenArgs[0].AsFunction() : null);
-                    
-                    if (onFulfilled  == null) return FenValue.FromObject(thenable); // Chain?
+                    var onRejected = ((thenArgs != null && thenArgs.Length > 1 && thenArgs[1].IsFunction) ? thenArgs[1].AsFunction() : null);
+                    if (settled)
+                    {
+                        if (fulfilled)
+                        {
+                            if (onFulfilled != null)
+                            {
+                                _fenRuntime.Context.ScheduleCallback(() =>
+                                {
+                                    TryInvokeFunction(onFulfilled, new[] { resolvedValue }, _fenRuntime.Context, "permissions.query.then");
+                                }, 0);
+                            }
+                        }
+                        else if (onRejected != null)
+                        {
+                            _fenRuntime.Context.ScheduleCallback(() =>
+                            {
+                                TryInvokeFunction(onRejected, new[] { rejectedValue }, _fenRuntime.Context, "permissions.query.then.reject");
+                            }, 0);
+                        }
 
-                    // Async execution
+                        return FenValue.FromObject(thenable);
+                    }
+
                     var desc = (args.Length > 0 && args[0].IsObject) ? args[0].AsObject() : null;
-                    var origin = OriginKey(_ctx?.BaseUri);
-
                     _ = RunDetached(() =>
                     {
                         try
                         {
-                            var name = "";
-                            if (desc != null)
+                            if (desc == null)
                             {
-                                var val = desc.Get("name");
-                                if (val is FenValue fv) name = fv.AsString();
-                                else name = val.ToString();
+                                RejectThenable(FenValue.FromError("TypeError: Permission descriptor object is required"));
                             }
-                            
-                            JsPermissions permFlag = JsPermissions.None;
-                            if (name == "geolocation") permFlag = JsPermissions.Geolocation;
-                            else if (name == "notifications") permFlag = JsPermissions.Notifications;
-                            else if (name == "camera" || name == "microphone") permFlag = JsPermissions.Camera;
-
-                            var state = "granted";
-                            if (permFlag != JsPermissions.None)
+                            else
                             {
-                                var ps = PermissionStore.Instance.GetState(origin, permFlag);
-                                state = ps.ToString().ToLowerInvariant(); // "granted", "denied", "prompt"
+                                var nameValue = desc.Get("name");
+                                if (nameValue.IsUndefined || nameValue.IsNull)
+                                {
+                                    RejectThenable(FenValue.FromError("TypeError: Permission descriptor name is required"));
+                                }
+                                else
+                                {
+                                    var name = nameValue.ToString().Trim().ToLowerInvariant();
+                                    if (string.IsNullOrEmpty(name))
+                                    {
+                                        RejectThenable(FenValue.FromError("TypeError: Permission descriptor name is required"));
+                                    }
+                                    else
+                                    {
+                                        var state = ResolvePermissionState(name, out var supported);
+                                        if (!supported)
+                                        {
+                                            RejectThenable(FenValue.FromError($"NotSupportedError: Permission '{name}' is not supported"));
+                                        }
+                                        else
+                                        {
+                                            ResolveThenable(FenValue.FromObject(CreatePermissionStatusObject(name, state)));
+                                        }
+                                    }
+                                }
                             }
-                            else if (string.IsNullOrEmpty(name))
+
+                            _fenRuntime.Context.ScheduleCallback(() =>
                             {
-                                state = "prompt";
-                            }
-
-                            // Return PermissionStatus object
-                            var statusObj = new FenBrowser.FenEngine.Core.FenObject();
-                            statusObj.Set("state", FenValue.FromString(state));
-                            statusObj.Set("onchange", FenValue.Null); 
-
-                            _fenRuntime.Context.ScheduleCallback(() => {
-                                TryInvokeFunction(onFulfilled, new FenValue[] { FenValue.FromObject(statusObj) }, _fenRuntime.Context, "permissions.query.then");
+                                if (fulfilled)
+                                {
+                                    if (onFulfilled != null)
+                                    {
+                                        TryInvokeFunction(onFulfilled, new[] { resolvedValue }, _fenRuntime.Context, "permissions.query.then");
+                                    }
+                                }
+                                else if (onRejected != null)
+                                {
+                                    TryInvokeFunction(onRejected, new[] { rejectedValue }, _fenRuntime.Context, "permissions.query.then.reject");
+                                }
                             }, 0);
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            RejectThenable(FenValue.FromError($"Error: {ex.Message}"));
+                            if (onRejected != null)
+                            {
+                                _fenRuntime.Context.ScheduleCallback(() =>
+                                {
+                                    TryInvokeFunction(onRejected, new[] { rejectedValue }, _fenRuntime.Context, "permissions.query.catch");
+                                }, 0);
+                            }
+
+                            FenLogger.Warn($"[JavaScriptEngine] permissions.query async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     });
-                    
+
+                    return FenValue.FromObject(thenable);
+                })));
+                thenable.Set("catch", FenValue.FromFunction(new FenFunction("catch", (catchArgs, catchThis) =>
+                {
+                    var onRejected = (catchArgs != null && catchArgs.Length > 0 && catchArgs[0].IsFunction) ? catchArgs[0].AsFunction() : null;
+                    if (onRejected == null || !settled || fulfilled)
+                    {
+                        return FenValue.FromObject(thenable);
+                    }
+
+                    _fenRuntime.Context.ScheduleCallback(() =>
+                    {
+                        TryInvokeFunction(onRejected, new[] { rejectedValue }, _fenRuntime.Context, "permissions.query.catch");
+                    }, 0);
                     return FenValue.FromObject(thenable);
                 })));
                 return FenValue.FromObject(thenable);
@@ -890,41 +1138,45 @@ namespace FenBrowser.FenEngine.Scripting
                     bool granted = false;
                     try
                     {
-                        granted = await _fenRuntime.Context.Permissions.RequestPermissionAsync(JsPermissions.Geolocation, origin);
+                        granted = await _fenRuntime.Context.Permissions.RequestPermissionAsync(JsPermissions.Geolocation, origin).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Warn($"[JavaScriptEngine] setTimeout dispatch failed: {ex.Message}", LogCategory.JavaScript);
+                        FenLogger.Warn($"[JavaScriptEngine] geolocation permission request failed: {ex.Message}", LogCategory.JavaScript);
                     }
 
                     if (granted)
                     {
-                         // Mock position
-                         var pos = new FenBrowser.FenEngine.Core.FenObject();
-                         var coords = new FenBrowser.FenEngine.Core.FenObject();
-                         coords.Set("latitude", FenValue.FromNumber(37.422));
-                         coords.Set("longitude", FenValue.FromNumber(-122.084));
-                         coords.Set("accuracy", FenValue.FromNumber(100));
-                         pos.Set("coords", FenValue.FromObject(coords));
-                         pos.Set("timestamp", FenValue.FromNumber((DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())));
-                         
-                         _fenRuntime.Context.ScheduleCallback(() => {
+                        var pos = CreateGeolocationPosition();
+                        _fenRuntime.Context.ScheduleCallback(() =>
+                        {
                             TryInvokeFunction(successCb, new FenValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context, "geolocation.getCurrentPosition.success");
-                         }, 0);
+                        }, 0);
                     }
                     else
                     {
-                        if (errorCb != null)
-                        {
-                             var err = new FenBrowser.FenEngine.Core.FenObject();
-                             err.Set("code", FenValue.FromNumber(1)); // PERMISSION_DENIED
-                             err.Set("message", FenValue.FromString("User denied Geolocation"));
-                             _fenRuntime.Context.ScheduleCallback(() => {
-                                TryInvokeFunction(errorCb, new FenValue[] { FenValue.FromObject(err) }, _fenRuntime.Context, "geolocation.getCurrentPosition.error");
-                             }, 0);
-                        }
+                        ScheduleGeolocationError(errorCb, "User denied Geolocation", "geolocation.getCurrentPosition.error");
                     }
                 });
+                return FenValue.Undefined;
+            })));
+            geoObj.Set("watchPosition", FenValue.FromFunction(new FenFunction("watchPosition", (args, thisVal) =>
+            {
+                if (args.Length < 1 || !args[0].IsFunction)
+                    return FenValue.FromNumber(0);
+
+                var successCb = args[0].AsFunction();
+                var errorCb = (args.Length > 1 && args[1].IsFunction) ? args[1].AsFunction() : null;
+                var intervalMs = ParseGeolocationWatchInterval(args.Length > 2 ? args[2] : FenValue.Undefined);
+                var watchId = RegisterGeolocationWatch(successCb, errorCb, intervalMs, OriginKey(_ctx?.BaseUri));
+                return FenValue.FromNumber(watchId);
+            })));
+            geoObj.Set("clearWatch", FenValue.FromFunction(new FenFunction("clearWatch", (args, thisVal) =>
+            {
+                if (args.Length > 0)
+                {
+                    ClearGeolocationWatch((int)args[0].ToNumber(), disposeCts: true);
+                }
                 return FenValue.Undefined;
             })));
 
@@ -940,6 +1192,12 @@ namespace FenBrowser.FenEngine.Scripting
 
             navObj.Set("permissions", FenValue.FromObject(permissionsObj));
             navObj.Set("geolocation", FenValue.FromObject(geoObj));
+            var shareObj = FenBrowser.FenEngine.WebAPIs.WebShareAPI.CreateShareObject(_fenRuntime.Context);
+            navObj.Set("share", shareObj.Get("share"));
+            navObj.Set("canShare", shareObj.Get("canShare"));
+            navObj.Set("storage", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.StorageManagerAPI.CreateStorageManagerObject(
+                () => OriginKey(_ctx?.BaseUri),
+                () => FenBrowser.FenEngine.WebAPIs.StorageApi.BuildSessionScope(_sessionStoragePartitionId, OriginKey(_ctx?.BaseUri)))));
             
             // Basic navigator properties for detection
             navObj.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, ctx) => FenValue.FromBoolean(false))));
@@ -994,18 +1252,71 @@ namespace FenBrowser.FenEngine.Scripting
             
             // Clipboard API - navigator.clipboard
             navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject()));
+            // Web Audio API - Audio constructors
+            var audioContextCtor = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context) as FenFunction;
+            if (audioContextCtor != null)
+            {
+                _fenRuntime.SetGlobal("AudioContext", FenValue.FromFunction(audioContextCtor));
+                _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromFunction(audioContextCtor));
+            }
+
+            var audioCtor = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioConstructor(_fenRuntime.Context);
+            _fenRuntime.SetGlobal("Audio", FenValue.FromFunction(audioCtor));
             
-            // Web Audio API - AudioContext constructor
-            _fenRuntime.SetGlobal("AudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context)));
-            _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context)));
-            
-            // WebRTC API - RTCPeerConnection constructor
-            _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context)));
-            _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context)));
-            _fenRuntime.SetGlobal("MediaStream", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateMediaStreamConstructor()));
-            
+            // WebRTC API - RTCPeerConnection / MediaStream constructors
+            var rtcPeerConnectionCtor = FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context);
+            if (rtcPeerConnectionCtor is FenFunction rtcPeerConnectionFn)
+            {
+                _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromFunction(rtcPeerConnectionFn));
+                _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromFunction(rtcPeerConnectionFn));
+            }
+            else
+            {
+                _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(rtcPeerConnectionCtor));
+                _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(rtcPeerConnectionCtor));
+            }
+
+            var mediaStreamCtor = FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateMediaStreamConstructor();
+            if (mediaStreamCtor is FenFunction mediaStreamFn)
+            {
+                _fenRuntime.SetGlobal("MediaStream", FenValue.FromFunction(mediaStreamFn));
+            }
+            else
+            {
+                _fenRuntime.SetGlobal("MediaStream", FenValue.FromObject(mediaStreamCtor));
+            }
+
+            // Observer APIs - IntersectionObserver / ResizeObserver constructors
+            var intersectionObserverCtor = FenBrowser.FenEngine.WebAPIs.IntersectionObserverAPI.CreateConstructor();
+            if (intersectionObserverCtor is FenFunction intersectionObserverFn)
+            {
+                _fenRuntime.SetGlobal("IntersectionObserver", FenValue.FromFunction(intersectionObserverFn));
+            }
+            else
+            {
+                _fenRuntime.SetGlobal("IntersectionObserver", FenValue.FromObject(intersectionObserverCtor));
+            }
+
+            var resizeObserverCtor = FenBrowser.FenEngine.WebAPIs.ResizeObserverAPI.CreateConstructor();
+            if (resizeObserverCtor is FenFunction resizeObserverFn)
+            {
+                _fenRuntime.SetGlobal("ResizeObserver", FenValue.FromFunction(resizeObserverFn));
+            }
+            else
+            {
+                _fenRuntime.SetGlobal("ResizeObserver", FenValue.FromObject(resizeObserverCtor));
+            }
+
             // Notifications API - Notification constructor
-            _fenRuntime.SetGlobal("Notification", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.NotificationsAPI.CreateNotificationConstructor()));
+            var notificationCtor = FenBrowser.FenEngine.WebAPIs.NotificationsAPI.CreateNotificationConstructor(_fenRuntime.Context);
+            if (notificationCtor is FenFunction notificationFn)
+            {
+                _fenRuntime.SetGlobal("Notification", FenValue.FromFunction(notificationFn));
+            }
+            else
+            {
+                _fenRuntime.SetGlobal("Notification", FenValue.FromObject(notificationCtor));
+            }
         }
 
         private async Task<string> FetchThroughNetworkHandlerAsync(Uri uri)
@@ -2093,25 +2404,6 @@ namespace FenBrowser.FenEngine.Scripting
             if (Regex.IsMatch(line, @"^\s*history\s*\.forward\s*\(\s*\)\s*;?$", RegexOptions.IgnoreCase)) { HistoryGo(1); return true; }
             var mGo = Regex.Match(line, @"^\s*history\s*\.go\s*\(\s*(?<n>-?\d+)\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mGo.Success) { int n; if (int.TryParse(mGo.Groups["n"].Value, out n)) HistoryGo(n); return true; }
-
-            // ---------- new Audio("url").play() stub (no-op) ----------
-            var mAudioNewPlay = System.Text.RegularExpressions.Regex.Match(
-                line,
-                "^\\s*new\\s+Audio\\s*\\(\\s*(['\"'])(?<url>.*?)\\1\\s*\\)\\s*\\.\\s*play\\s*\\(\\s*\\)\\s*;?\\s*$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (mAudioNewPlay.Success)
-            {
-                try
-                {
-                    TraceFeatureGap("Audio", "new Audio().play", mAudioNewPlay.Groups["url"].Value ?? string.Empty);
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
-                }
-                return true;
-            }
-
             // ---------- atob / btoa for innerText ----------
             var mAtob = Regex.Match(line, @"^\s*document\s*\.\s*getElementById\s*\(\s*['""](?<id>.+?)['""]\s*\)\s*\.innerText\s*=\s*atob\s*\(\s*['""](?<b64>.*?)['""]\s*\)\s*;?$", RegexOptions.IgnoreCase);
             if (mAtob.Success && _domRoot != null)
@@ -2182,45 +2474,29 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         try
                         {
-                            using (var client = new System.Net.Http.HttpClient(CreateManagedHandler()))
+                            using var response = await SendThroughNetworkHandlerAsync(uri, pageOrigin).ConfigureAwait(false);
+                            var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+                            bool corsOk = true;
+                            if (pageOrigin != null && !FenBrowser.Core.Network.Handlers.CorsHandler.IsSameOrigin(uri, pageOrigin))
                             {
-                                client.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
-                                
-                                // Add Origin header for CORS
-                                if (pageOrigin != null)
+                                corsOk = FenBrowser.Core.Network.Handlers.CorsHandler.IsCorsAllowed(response, uri, pageOrigin);
+                            }
+
+                            if (corsOk && text != null)
+                            {
+                                var token = RegisterResponseBody(text);
+                                EnqueueMicrotask(() =>
                                 {
-                                    var originStr = $"{pageOrigin.Scheme}://{pageOrigin.Host}";
-                                    if (!pageOrigin.IsDefaultPort && pageOrigin.Port != -1)
-                                        originStr += $":{pageOrigin.Port}";
-                                    client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", originStr);
-                                }
-                                
-                                var response = await client.GetAsync(uri);
-                                var text = await response.Content.ReadAsStringAsync();
-                                
-                                // CORS check for cross-origin requests
-                                bool corsOk = true;
-                                if (pageOrigin != null && !FenBrowser.Core.Network.Handlers.CorsHandler.IsSameOrigin(uri, pageOrigin))
+                                    TryRunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx);
+                                });
+                            }
+                            else if (!corsOk)
+                            {
+                                EnqueueMicrotask(() =>
                                 {
-                                    corsOk = FenBrowser.Core.Network.Handlers.CorsHandler.IsCorsAllowed(response, uri, pageOrigin);
-                                }
-                                
-                                if (corsOk && text != null)
-                                {
-                                    var token = RegisterResponseBody(text);
-                                    EnqueueMicrotask(() =>
-                                    {
-                                        TryRunInline(fn + "({ ok:true, status:200, text:function(){ return '" + JsEscape(text) + "'; }, json:function(){ return JSON.parse('" + JsEscape(text) + "'); } })", _ctx);
-                                    });
-                                }
-                                else if (!corsOk)
-                                {
-                                    // CORS blocked
-                                    EnqueueMicrotask(() =>
-                                    {
-                                        TryRunInline(fn + "({ ok:false, status:0, statusText:'CORS error' })", _ctx);
-                                    });
-                                }
+                                    TryRunInline(fn + "({ ok:false, status:0, statusText:'CORS error' })", _ctx);
+                                });
                             }
                         }
                         catch (Exception ex)
@@ -2480,9 +2756,179 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         {
             _ctx = ctx ?? new JsContext();
             ClearSandboxBlockLog();
+            ClearGeolocationWatches();
             
             InitRuntime();
 
+        }
+
+        private FenBrowser.FenEngine.Core.FenObject CreateGeolocationPosition()
+        {
+            var pos = new FenBrowser.FenEngine.Core.FenObject();
+            var coords = new FenBrowser.FenEngine.Core.FenObject();
+            coords.Set("latitude", FenValue.FromNumber(37.422));
+            coords.Set("longitude", FenValue.FromNumber(-122.084));
+            coords.Set("accuracy", FenValue.FromNumber(100));
+            coords.Set("altitude", FenValue.Null);
+            coords.Set("altitudeAccuracy", FenValue.Null);
+            coords.Set("heading", FenValue.Null);
+            coords.Set("speed", FenValue.Null);
+            pos.Set("coords", FenValue.FromObject(coords));
+            pos.Set("timestamp", FenValue.FromNumber(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            return pos;
+        }
+
+        private void ScheduleGeolocationError(FenFunction errorCb, string message, string operation)
+        {
+            if (errorCb == null)
+            {
+                return;
+            }
+
+            var err = new FenBrowser.FenEngine.Core.FenObject();
+            err.Set("code", FenValue.FromNumber(1));
+            err.Set("message", FenValue.FromString(message));
+            _fenRuntime.Context.ScheduleCallback(() =>
+            {
+                TryInvokeFunction(errorCb, new FenValue[] { FenValue.FromObject(err) }, _fenRuntime.Context, operation);
+            }, 0);
+        }
+
+        private int RegisterGeolocationWatch(FenFunction successCb, FenFunction errorCb, int intervalMs, string origin)
+        {
+            var watchId = Interlocked.Increment(ref _nextGeolocationWatchId);
+            var cts = new CancellationTokenSource();
+            lock (_geolocationWatchLock)
+            {
+                _geolocationWatches[watchId] = cts;
+            }
+
+            _ = RunDetachedAsync(async () =>
+            {
+                try
+                {
+                    bool granted = false;
+                    try
+                    {
+                        granted = await _fenRuntime.Context.Permissions.RequestPermissionAsync(JsPermissions.Geolocation, origin).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[JavaScriptEngine] geolocation watch permission request failed: {ex.Message}", LogCategory.JavaScript);
+                    }
+
+                    if (!granted)
+                    {
+                        ScheduleGeolocationError(errorCb, "User denied Geolocation", "geolocation.watchPosition.error");
+                        return;
+                    }
+
+                    while (!cts.Token.IsCancellationRequested)
+                    {
+                        var pos = CreateGeolocationPosition();
+                        _fenRuntime.Context.ScheduleCallback(() =>
+                        {
+                            TryInvokeFunction(successCb, new FenValue[] { FenValue.FromObject(pos) }, _fenRuntime.Context, "geolocation.watchPosition.success");
+                        }, 0);
+
+                        await Task.Delay(intervalMs, cts.Token).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                finally
+                {
+                    ClearGeolocationWatch(watchId, disposeCts: true);
+                }
+            });
+
+            return watchId;
+        }
+
+        private int ParseGeolocationWatchInterval(FenValue options)
+        {
+            const int defaultIntervalMs = 1000;
+            const int minIntervalMs = 250;
+            if (!options.IsObject)
+            {
+                return defaultIntervalMs;
+            }
+
+            var optionsObject = options.AsObject();
+            var intervalCandidate = optionsObject?.Get("timeout") ?? FenValue.Undefined;
+            if (!intervalCandidate.IsNumber)
+            {
+                intervalCandidate = optionsObject?.Get("maximumAge") ?? FenValue.Undefined;
+            }
+
+            if (!intervalCandidate.IsNumber)
+            {
+                return defaultIntervalMs;
+            }
+
+            var parsed = (int)Math.Round(intervalCandidate.ToNumber());
+            if (parsed <= 0)
+            {
+                return defaultIntervalMs;
+            }
+
+            return Math.Max(minIntervalMs, parsed);
+        }
+
+        private void ClearGeolocationWatch(int watchId, bool disposeCts = false)
+        {
+            CancellationTokenSource cts = null;
+            lock (_geolocationWatchLock)
+            {
+                if (_geolocationWatches.TryGetValue(watchId, out cts))
+                {
+                    _geolocationWatches.Remove(watchId);
+                }
+            }
+
+            if (cts == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            if (disposeCts)
+            {
+                cts.Dispose();
+            }
+        }
+
+        private void ClearGeolocationWatches()
+        {
+            List<CancellationTokenSource> watches;
+            lock (_geolocationWatchLock)
+            {
+                watches = new List<CancellationTokenSource>(_geolocationWatches.Values);
+                _geolocationWatches.Clear();
+            }
+
+            foreach (var watch in watches)
+            {
+                try
+                {
+                    watch.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                finally
+                {
+                    watch.Dispose();
+                }
+            }
         }
 
         private void ResetPrefetchedModuleSource()
@@ -2993,7 +3439,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             
                             // Fallback to internal fetch
                             if (content  == null) 
-                                content = await FetchAsync(uri);
+                                content = await FetchAsync(uri, baseUri);
 
                             // Dispatch result on main thread
                             EnqueueMicrotask(() =>
@@ -3059,29 +3505,35 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             public string OnErrorFn;
         }
 
-        private System.Net.Http.HttpMessageHandler CreateManagedHandler(Uri uri = null, System.Net.CookieContainer cookies = null)
+        private async Task<HttpResponseMessage> SendThroughNetworkHandlerAsync(Uri uri, Uri referer = null)
         {
-            var handler = new System.Net.Http.HttpClientHandler();
-            if (handler.SupportsAutomaticDecompression)
-                handler.AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate;
-            
-            if (cookies  == null && uri != null && CookieBridge != null)
-                cookies = CookieBridge(uri);
+            if (uri == null) throw new ArgumentNullException(nameof(uri));
+            if (FetchHandler == null) throw new InvalidOperationException("FetchHandler not configured on engine");
 
-            if (cookies != null && handler.SupportsRedirectConfiguration)
-                handler.CookieContainer = cookies;
-            return handler;
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            if (referer != null)
+            {
+                request.Headers.Referrer = referer;
+                if (!CorsHandler.IsSameOrigin(uri, referer))
+                {
+                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(referer.Scheme, referer.Host, referer.IsDefaultPort ? -1 : referer.Port).Uri);
+                    if (!string.IsNullOrWhiteSpace(origin))
+                    {
+                        request.Headers.TryAddWithoutValidation("Origin", origin);
+                    }
+                }
+            }
+
+            return await FetchHandler(request).ConfigureAwait(false);
         }
 
-        private async Task<string> FetchAsync(Uri uri)
+        private async Task<string> FetchAsync(Uri uri, Uri referer = null)
         {
             try
             {
-                using (var client = new System.Net.Http.HttpClient(CreateManagedHandler()))
-                {
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
-                    return await client.GetStringAsync(uri);
-                }
+                using var response = await SendThroughNetworkHandlerAsync(uri, referer).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             }
             catch { return null; }
         }
@@ -3348,6 +3800,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         public async Task SetDomAsync(Node domRoot, Uri baseUri = null)
         {
             /* [PERF-REMOVED] */
+            ClearGeolocationWatches();
             _domRoot = domRoot;
             
             // Initialize FenEngine with DOM
@@ -3503,11 +3956,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                             }
                                             else
                                             {
-                                                using (var client = new System.Net.Http.HttpClient())
-                                                {
-                                                    client.Timeout = TimeSpan.FromSeconds(5);
-                                                    code = await client.GetStringAsync(scriptUri).ConfigureAwait(false);
-                                                }
+                                                code = await FetchAsync(scriptUri, baseUri).ConfigureAwait(false);
                                             }
                                         }
                                         catch (Exception ex)
@@ -3564,7 +4013,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
-                                    // SRI check ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â external scripts with an integrity attr must match before execution
+                                    // SRI check ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â external scripts with an integrity attr must match before execution
                                     if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
                                     {
                                         DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
@@ -3625,17 +4074,10 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         // Backward compatibility wrapper (deprecated)
         public void SetDom(Node domRoot, Uri baseUri = null)
         {
-             _ = SetDomAsync(domRoot, baseUri).ContinueWith(
-                 t =>
-                 {
-                     FenLogger.Error(
-                         $"[JavaScriptEngine] Deprecated SetDom bridge failed: {t.Exception?.GetBaseException().Message}",
-                         LogCategory.JavaScript,
-                         t.Exception);
-                 },
-                 CancellationToken.None,
-                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                 TaskScheduler.Default);
+             _ = ObserveBackgroundTaskFailureAsync(
+                 SetDomAsync(domRoot, baseUri),
+                 message => FenLogger.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {message}", LogCategory.JavaScript),
+                 ex => FenLogger.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {ex.GetBaseException().Message}", LogCategory.JavaScript, ex));
         }
 
         private void RunGlobalScript(string js)
@@ -3760,7 +4202,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
         /// Verifies Subresource Integrity (SRI) for a fetched resource.
         /// Returns true if <paramref name="integrity"/> is absent/empty (no check required) or
         /// if at least one hash token in the space-separated list matches the content.
-        /// Returns false if tokens are present and none match ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â caller must block the resource.
+        /// Returns false if tokens are present and none match ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â caller must block the resource.
         /// Supported algorithms: sha256, sha384, sha512.
         /// </summary>
         private static bool VerifySriIntegrity(string content, string integrity)
@@ -3787,14 +4229,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         "sha512" => System.Security.Cryptography.SHA512.Create(),
                         _ => null
                     };
-                    if (alg == null) continue; // Unknown algorithm ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skip token
+                    if (alg == null) continue; // Unknown algorithm ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â skip token
                     hash = alg.ComputeHash(bytes);
                 }
                 catch { continue; }
 
                 if (Convert.ToBase64String(hash) == expectedB64) return true;
             }
-            // No matching token found ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â block the resource
+            // No matching token found ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â block the resource
             return false;
         }
     }
@@ -3931,6 +4373,19 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
     }
 
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
