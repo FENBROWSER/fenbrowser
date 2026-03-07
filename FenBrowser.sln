@@ -21,6 +21,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.WPT", "FenBrowse
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Conformance", "FenBrowser.Conformance\FenBrowser.Conformance.csproj", "{23316230-0442-493B-A8B8-D08AAC4A1035}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.WebIdlGen", "FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj", "{4DC8FB16-FE34-443A-880F-72AE22F8DB05}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -139,6 +141,18 @@ Global
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Release|x64.Build.0 = Release|Any CPU
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Release|x86.ActiveCfg = Release|Any CPU
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Release|x86.Build.0 = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|x64.Build.0 = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Debug|x86.Build.0 = Debug|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|x64.ActiveCfg = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|x64.Build.0 = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|x86.ActiveCfg = Release|Any CPU
+		{4DC8FB16-FE34-443A-880F-72AE22F8DB05}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

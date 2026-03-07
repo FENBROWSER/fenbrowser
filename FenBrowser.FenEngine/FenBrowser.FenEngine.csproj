@@ -1,5 +1,23 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- ── WebIDL Binding Generation ─────────────────────────────────────────
+       Runs webidlgen before each build to (re)generate C# binding stubs from
+       the canonical *.idl source files in FenBrowser.Core/WebIDL/Idl/.
+       Generated files land in Bindings/Generated/ and are compiled as normal
+       C# source. The <None> items expose the IDL files to VS tooling.
+       ───────────────────────────────────────────────────────────────────── -->
+  <ItemGroup>
+    <None Include="..\FenBrowser.Core\WebIDL\Idl\*.idl" />
+  </ItemGroup>
+
+  <Target Name="GenerateWebIdlBindings" BeforeTargets="BeforeBuild">
+    <Message Text="[webidlgen] Generating WebIDL bindings..." Importance="high" />
+    <Exec
+      Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj&quot; -- --idl &quot;$(MSBuildThisFileDirectory)..\FenBrowser.Core\WebIDL\Idl&quot; --out &quot;$(MSBuildThisFileDirectory)Bindings\Generated&quot;"
+      IgnoreExitCode="false"
+      WorkingDirectory="$(MSBuildThisFileDirectory)" />
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
   </ItemGroup>
