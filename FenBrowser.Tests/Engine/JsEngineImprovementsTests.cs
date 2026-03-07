@@ -88,6 +88,21 @@ namespace FenBrowser.Tests.Engine
             AssertNoParseErrors("var a = 0xFF; var b = 0o77; var c = 0b1010;");
         }
 
+        [Fact]
+        public void NavigatorSerial_GetPorts_ShouldResolveEmptyArray()
+        {
+            var runtime = CreateRuntime();
+            runtime.ExecuteSimple(@"
+                var result = false;
+                navigator.serial.getPorts().then(function(ports) {
+                    result = Array.isArray(ports) && ports.length === 0;
+                });
+            ");
+
+            var result = runtime.GetGlobal("result");
+            Assert.True(result.ToBoolean());
+        }
+
         // ========== Phase 2: Template Literal Interpolation ==========
 
         [Fact]

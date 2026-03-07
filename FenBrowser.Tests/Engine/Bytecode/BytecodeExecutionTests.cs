@@ -477,6 +477,13 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_DestructuringParameter_WithOuterDefault_ShouldBindObjectPattern()
+        {
+            var result = Evaluate("function pick({ x } = { x: 5 }) { return x; } pick();");
+            Assert.Equal(5, result.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_DestructuringAssignment_ShouldUpdateTargets()
         {
             var result = Evaluate("var a = 0; var b = 0; ({ a, b } = { a: 6, b: 9 }); a + b;");

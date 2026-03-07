@@ -4,7 +4,10 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.DOM;
 using FenEngineEventTarget = FenBrowser.FenEngine.DOM.EventTarget;
 using FenBrowser.FenEngine.Security;
+using System;
+using System.Threading;
 using Xunit;
+using FenRuntimeCore = FenBrowser.FenEngine.Core.FenRuntime;
 
 namespace FenBrowser.Tests.DOM
 {
@@ -188,6 +191,92 @@ namespace FenBrowser.Tests.DOM
             Assert.Same(target, observedTarget);
 
             FenEngineEventTarget.Registry.Remove(target, "click", handler, false);
+        }
+
+        [Fact]
+        public void DispatchEvent_ResetsExpiredExecutionBudget()
+        {
+            var target = new Element("button");
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext(
+                new PermissionManager(JsPermissions.StandardWeb),
+                new TinyResourceLimits());
+            var handlerCalled = false;
+
+            var handler = FenValue.FromFunction(new FenFunction("budgetReset", (args, thisVal) =>
+            {
+                context.CheckExecutionTimeLimit();
+                handlerCalled = true;
+                return FenValue.Undefined;
+            }));
+
+            FenEngineEventTarget.Registry.Add(target, "click", handler, false);
+            try
+            {
+                Thread.Sleep(30);
+
+                var evtDispatch = new DomEvent("click", bubbles: true, cancelable: true);
+                FenEngineEventTarget.DispatchEvent(target, evtDispatch, context);
+
+                Assert.True(handlerCalled);
+            }
+            finally
+            {
+                FenEngineEventTarget.Registry.Remove(target, "click", handler, false);
+            }
+        }
+
+        [Fact]
+        public void DisabledControls_DispatchEvent_And_Click_RuntimeSemantics()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            var button = document.CreateElement("button");
+            button.SetAttribute("disabled", string.Empty);
+            document.Body!.AppendChild(button);
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var __dispatchPass = false;
+                var __clickPass = true;
+                var __ctorType = '';
+                var __ctorName = '';
+                var __err = '';
+                try {
+                    const elem = document.getElementsByTagName('button').item(0);
+                    __ctorType = typeof elem.constructor;
+                    __ctorName = elem.constructor && elem.constructor.name ? elem.constructor.name : '';
+                    elem.addEventListener('click', () => { __dispatchPass = true; }, { once: true });
+                    elem.dispatchEvent(new Event('click'));
+                    elem.onclick = () => { __clickPass = false; };
+                    elem.click();
+                } catch (e) {
+                    __err = String(e);
+                }
+            ");
+
+            Assert.Equal(string.Empty, runtime.GetGlobal("__err").ToString());
+            Assert.True(runtime.GetGlobal("__dispatchPass").ToBoolean());
+            Assert.True(runtime.GetGlobal("__clickPass").ToBoolean());
+            Assert.Equal("function", runtime.GetGlobal("__ctorType").ToString());
+            Assert.False(string.IsNullOrEmpty(runtime.GetGlobal("__ctorName").ToString()));
+        }
+
+        private sealed class TinyResourceLimits : IResourceLimits
+        {
+            public int MaxCallStackDepth => 100;
+            public TimeSpan MaxExecutionTime => TimeSpan.FromMilliseconds(10);
+            public long MaxTotalMemory => 50 * 1024 * 1024;
+            public int MaxStringLength => 1_000_000;
+            public int MaxArrayLength => 100_000;
+            public int MaxObjectProperties => 10_000;
+            public int MaxPropertyChainDepth => 100;
+
+            public bool CheckCallStack(int currentDepth) => currentDepth < MaxCallStackDepth;
+            public bool CheckExecutionTime(TimeSpan elapsed) => elapsed < MaxExecutionTime;
+            public bool CheckMemory(long bytes) => bytes < MaxTotalMemory;
+            public bool CheckString(int length) => length < MaxStringLength;
+            public bool CheckArray(int length) => length < MaxArrayLength;
+            public bool CheckObjectProperties(int count) => count < MaxObjectProperties;
         }
     }
 }

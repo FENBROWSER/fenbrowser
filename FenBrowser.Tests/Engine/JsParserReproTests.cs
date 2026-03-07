@@ -160,6 +160,39 @@ namespace FenBrowser.Tests.Engine
             var program = parser.ParseProgram();
             AssertNoErrors(parser);
         }
+
+        [Fact]
+        public void Parse_ConstObjectDestructuringDeclaration_WithInitializer_NoErrors()
+        {
+            var input = "const { feature_description, test } = feature_descriptionOrObject;";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+
+            var declaration = Assert.IsType<LetStatement>(program.Statements.First());
+            Assert.NotNull(declaration.DestructuringPattern);
+            Assert.IsType<ObjectLiteral>(declaration.DestructuringPattern);
+            Assert.NotNull(declaration.Value);
+            Assert.IsType<Identifier>(declaration.Value);
+        }
+
+        [Fact]
+        public void Parse_DestructuringParameter_WithOuterDefault_NoErrors()
+        {
+            var input = "function pick({ x } = { x: 5 }) { return x; }";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+
+            var declaration = Assert.IsType<FunctionDeclarationStatement>(program.Statements.First());
+            var parameter = Assert.Single(declaration.Function.Parameters);
+            Assert.NotNull(parameter.DestructuringPattern);
+            Assert.IsType<ObjectLiteral>(parameter.DestructuringPattern);
+            Assert.NotNull(parameter.DefaultValue);
+            Assert.IsType<ObjectLiteral>(parameter.DefaultValue);
+        }
     }
 }
 
