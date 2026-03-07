@@ -128,3 +128,207 @@ Parser/runner hardening applied:
   - `yield` (and async `await`) in invalid method parameter positions rejected.
 - **Class heritage expression parsing** (`Core/Parser.cs`):
   - `extends` now parses general expressions, fixing valid parenthesized/arrow heritage expression parse paths.
+
+## Smoke Check (2026-03-05): First 100 Test262 Cases
+
+Execution command (runnable harness):
+- `dotnet run --project FenBrowser.Test262/FenBrowser.Test262.csproj -c Release -- run_chunk 1 --chunk-size 100 --format json --output Results/test262_chunk1_100.json`
+
+Notes:
+- `FenBrowser.FenEngine` itself is currently `OutputType=Library`, so direct `dotnet run --project FenBrowser.FenEngine -- test262-range ...` is not runnable.
+- The dedicated `FenBrowser.Test262` CLI is the valid executable harness.
+
+Result:
+- Total: **100**
+- Passed: **47**
+- Failed: **53**
+- Pass rate: **47.0%**
+- Duration: **1540ms**
+- Output artifact: `Results/test262_chunk1_100.json`
+
+Initial failure clusters observed from this slice:
+- Date semantics mismatches (`this-time-nan`, `time-clip`, `year-*` style cases)
+- RegExp legacy accessor semantics (`RegExp.$1`, `input`, `lastMatch`, `leftContext`, `rightContext`)
+- TypeError vs expected-error-class mismatches in assertion helpers
+
+## Targeted Proxy Regression Fix (2026-03-05)
+
+Validation command:
+- `dotnet run --project FenBrowser.Test262/FenBrowser.Test262.csproj -c Release -- run_single staging/sm/Proxy/global-receiver.js --isolate-process --verbose`
+
+Result:
+- `staging/sm/Proxy/global-receiver.js`: **PASS**
+
+Fix summary:
+- Preserved original receiver in window-named fallback prototype `document` lookups (`FenObject.TryResolveWindowNamedProperty(...)`).
+- Kept non-strict undeclared assignment path routed to global object semantics in VM update flow.
+- Eliminated prior crash mode where receiver-assert mismatch cascaded into stack overflow while formatting assertion output.
+
+## Object.prototype Recheck (2026-03-06)
+
+- Scope: `built-ins/Object/prototype`
+- Baseline artifact: `Results/object_prototype_recheck_20260306_002757.json`
+  - Passed: `151`
+  - Failed: `97`
+- Post-fix artifact: `Results/object_prototype_recheck_after_fix_20260306_003347.json`
+  - Passed: `165`
+  - Failed: `83`
+- Delta: **+14 passed / -14 failed**
+
+Focused Annex-B status:
+- `built-ins/Object/prototype/__defineGetter__`: `9/11` pass (remaining `define-abrupt.js`, `key-invalid.js`)
+- `built-ins/Object/prototype/__defineSetter__`: `9/11` pass (remaining `define-abrupt.js`, `key-invalid.js`)
+
+## Object.prototype Recheck Update (2026-03-06, Annex-B + Proxy defineProperty abrupt completions)
+
+- Prior checkpoint artifact: `Results/object_prototype_recheck_after_fix_20260306_003347.json`
+  - Passed: `165`
+  - Failed: `83`
+- New checkpoint artifact: `Results/object_prototype_recheck_after_annexb_proxyfix_20260306_004154.json`
+  - Passed: `172`
+  - Failed: `76`
+- Delta from prior checkpoint: **+7 passed / -7 failed**
+- Total delta from first 2026-03-06 baseline (`151/248`): **+21 passed / -21 failed**
+
+Focused status:
+- `built-ins/Object/prototype/__defineGetter__`: `11/11` pass
+- `built-ins/Object/prototype/__defineSetter__`: `11/11` pass
+
+## Object.prototype Recheck Update (2026-03-06, lookup + __proto__ completion)
+
+- Prior checkpoint artifact: `Results/object_prototype_recheck_after_annexb_proxyfix_20260306_004154.json`
+  - Passed: `172`
+  - Failed: `76`
+- New checkpoint artifact: `Results/object_prototype_recheck_after_protofix_20260306_010715.json`
+  - Passed: `194`
+  - Failed: `54`
+- Delta from prior checkpoint: **+22 passed / -22 failed**
+- Total delta from first 2026-03-06 baseline (`151/248`): **+43 passed / -43 failed**
+
+Focused status:
+- `built-ins/Object/prototype/__lookupGetter__`: `16/16` pass
+- `built-ins/Object/prototype/__lookupSetter__`: `16/16` pass
+- `built-ins/Object/prototype/__proto__`: `15/15` pass
+
+## Destructuring / Loop-Head Hardening (2026-03-06)
+
+- Baseline chunk 50 artifact: `Results/test262_full_run_10workers_20260305_185350/workers/worker_10/analysis/chunk_050_failed.md`
+  - Passed: `569`
+  - Failed: `431`
+- First checkpoint artifact: `Results/tranche1_chunk50_20260306.json`
+  - Passed: `576`
+  - Failed: `424`
+- Second checkpoint artifact: `Results/tranche1_chunk50_20260306_rerun.json`
+  - Passed: `617`
+  - Failed: `383`
+- Third checkpoint artifact: `Results/tranche1_chunk50_20260306_rerun2.json`
+  - Passed: `618`
+  - Failed: `382`
+- Net delta from original chunk-50 baseline: **+49 passed / -49 failed**
+
+Focused confirmations:
+- `run_single language/statements/for-of/head-lhs-member.js` -> pass (`Results/forof_head_lhs_member_20260306.json`)
+- `run_single language/statements/for-in/head-lhs-member.js` -> pass (`Results/forin_head_lhs_member_20260306.json`)
+- Remaining parser early-error gap still open: `run_single language/statements/for-of/head-lhs-non-asnmt-trgt.js` still fails parse-negative enforcement (`Results/forof_head_lhs_non_asnmt_20260306.json`).
+
+## Destructuring Iterator/Name Follow-Up (2026-03-06)
+
+- Fourth checkpoint artifact: Results/tranche1_chunk50_20260306_rerun3.json
+  - Passed: 727
+  - Failed: 273
+- Delta from third checkpoint: **+109 passed / -109 failed**
+- Total delta from original chunk-50 baseline: **+158 passed / -158 failed**
+
+Focused confirmations:
+- un_single language/statements/for-of/head-lhs-non-asnmt-trgt.js -> pass (Results/forof_head_lhs_non_asnmt_20260306_c.json)
+- un_single language/statements/for-in/head-lhs-non-asnmt-trgt.js -> pass (Results/forin_head_lhs_non_asnmt_20260306_b.json)
+- un_single language/statements/variable/dstr/ary-init-iter-close.js -> pass (Results/dstr_iter_close_20260306.json)
+- un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-arrow.js -> pass (Results/dstr_fn_name_arrow_var_20260306.json)
+- un_single language/statements/variable/dstr/obj-ptrn-id-init-fn-name-fn.js -> pass (Results/dstr_fn_name_fn_obj_20260306.json)
+- Remaining targeted gap: language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-class.js still fails around static 
+ame handling (Results/dstr_fn_name_class_var_20260306_b.json).
+
+## Class Static name Cleanup (2026-03-06)
+
+- Follow-up artifact: Results/tranche1_chunk50_20260306_rerun4.json
+  - Passed: 727
+  - Failed: 273
+- Aggregate status unchanged from rerun3, but the remaining targeted anonymous-class destructuring 
+ame regression is closed.
+
+Focused confirmations:
+- un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-class.js -> pass (Results/dstr_fn_name_class_var_20260306_c.json)
+- un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-arrow.js -> pass (Results/dstr_fn_name_arrow_var_20260306_b.json)
+
+## Loop Parser / Hoist Follow-Up (2026-03-06)
+
+- First tranche-2 parser rerun artifact: `Results/tranche2_chunk50_20260306_parser_rerun.json`
+  - Passed: `741`
+  - Failed: `259`
+- Second tranche-2 parser rerun artifact: `Results/tranche2_chunk50_20260306_parser_rerun2.json`
+  - Passed: `746`
+  - Failed: `254`
+- Delta from tranche-1 rerun4 (`727/1000`): **+19 passed / -19 failed**
+- Delta from original chunk-50 baseline (`569/1000`): **+177 passed / -177 failed**
+
+Focused confirmations:
+- `run_single language/statements/for-of/head-var-no-expr.js` -> pass (`Results/forof_head_var_no_expr_20260306.json`)
+- `run_single language/statements/for-of/decl-let.js` -> pass (`Results/forof_decl_let_20260306.json`)
+- `run_single language/statements/for/labelled-fn-stmt-let.js` -> pass (`Results/for_labelled_fn_stmt_let_20260306.json`)
+- `run_single language/statements/for-in/labelled-fn-stmt-lhs.js` -> pass (`Results/forin_labelled_fn_stmt_lhs_20260306.json`)
+- `run_single language/statements/for-of/let-array-with-newline.js` -> pass (`Results/forof_let_array_newline_20260306.json`)
+- `run_single language/statements/do-while/decl-async-fun.js` -> pass (`Results/dowhile_decl_async_fun_20260306.json`)
+- `run_single language/statements/for/head-var-bound-names-in-stmt.js` -> pass (`Results/for_head_var_bound_names_20260306.json`)
+- `run_single language/statements/for-in/head-var-bound-names-in-stmt.js` -> pass (`Results/forin_head_var_bound_names_20260306.json`)
+- `run_single language/statements/for-of/head-var-bound-names-in-stmt.js` -> pass (`Results/forof_head_var_bound_names_20260306.json`)
+- `run_single language/statements/for-of/head-const-bound-names-in-stmt.js` -> pass (`Results/forof_head_const_bound_names_20260306.json`)
+- `run_single language/statements/for-of/head-let-bound-names-in-stmt.js` -> pass (`Results/forof_head_let_bound_names_20260306.json`)
+- `run_single language/statements/for/head-const-bound-names-in-stmt.js` -> pass (`Results/for_head_const_bound_names_20260306.json`)
+- `run_single language/statements/for/head-let-bound-names-in-stmt.js` -> pass (`Results/for_head_let_bound_names_20260306.json`)
+
+Open gaps after rerun:
+- Per-iteration lexical scope/runtime tests still fail (`scope-body-lex-*`, `scope-head-lex-*`).
+- Several remaining parse/early-error misses are strict-mode parameter/body validation, not loop parsing.
+- Proposal-era `using` / explicit-resource-management tests still fail at parse time and remain out of the current core fix path.
+
+### Newline `let` ASI Cleanup (2026-03-06)
+
+- Final tranche-2 parser rerun artifact: `Results/tranche2_chunk50_20260306_parser_rerun3.json`
+  - Passed: `750`
+  - Failed: `250`
+- Delta from tranche-2 rerun2 (`746/1000`): **+4 passed / -4 failed**
+
+Focused confirmations:
+- `run_single language/statements/for-of/let-block-with-newline.js` -> pass (`Results/forof_let_block_newline_20260306.json`)
+- `run_single language/statements/for-of/let-identifier-with-newline.js` -> pass (`Results/forof_let_identifier_newline_20260306.json`)
+- `run_single language/statements/for-of/let-array-with-newline.js` -> still correctly parse-negative (`Results/forof_let_array_newline_20260306_b.json`)
+
+## Lexical Loop Runtime Follow-Up (2026-03-06)
+
+- Chunk 50 lexical-runtime rerun artifact: `Results/tranche2_chunk50_20260306_lexical_runtime_rerun.json`
+  - Passed: `760`
+  - Failed: `240`
+- Delta from tranche-2 parser rerun3 (`750/1000`): **+10 passed / -10 failed**
+- Delta from original chunk-50 baseline (`569/1000`): **+191 passed / -191 failed**
+
+Focused confirmations:
+- `run_single language/statements/for-of/scope-head-lex-open.js` -> pass
+- `run_single language/statements/for-of/scope-head-lex-close.js` -> pass
+- `run_single language/statements/for-of/scope-body-lex-open.js` -> pass
+- `run_single language/statements/for-of/scope-body-lex-close.js` -> pass
+- `run_single language/statements/for-of/scope-body-lex-boundary.js` -> pass
+- `run_single language/statements/for-of/scope-body-var-none.js` -> pass
+
+What changed:
+- Lexical `for-in/of` declarations now create a TDZ scope for RHS evaluation and a fresh lexical scope for each iteration.
+- `break` and `continue` now emit loop-scope cleanup for lexical `for-in/of` iterations so the per-iteration environment is not left active on control-flow exits.
+- `typeof` on TDZ bindings now throws `ReferenceError` instead of treating the TDZ sentinel as a normal value.
+- `var` declarations without initializers now create bindings via a non-clobbering declaration path instead of being dropped entirely at runtime.
+- `for-of` RHS parsing now rejects unparenthesized comma expressions through precedence handling while still allowing valid parenthesized comma expressions such as `(probeExpr = ..., [])`.
+- Additional targeted confirmations after the chunk rerun:
+  - `run_single language/statements/for-in/scope-head-lex-open.js` -> pass
+  - `run_single language/statements/for-in/scope-head-lex-close.js` -> pass
+  - `run_single language/statements/for-in/scope-body-lex-open.js` -> pass
+  - `run_single language/statements/for-in/scope-body-lex-close.js` -> pass
+  - `run_single language/statements/for-in/scope-body-lex-boundary.js` -> pass
+  - `run_single language/statements/for-in/scope-body-var-none.js` -> pass

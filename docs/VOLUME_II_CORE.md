@@ -136,6 +136,16 @@ Based strictly on the **HTML5 Parsing Specification**.
   - `BuildWithPipelineStages(PipelineContext)` runs parse inside scoped frame and explicit stages:
     - `PipelineStage.Tokenizing`
     - `PipelineStage.Parsing`.
+- **Raw-Text State Feedback Hardening (2026-03-07)**:
+  - Non-interleaved `HtmlTreeBuilder` now consumes tokens incrementally instead of tokenizing the full document ahead of tree construction, so tokenizer state changes requested by tree-builder insertion logic take effect before script/style bodies are consumed.
+  - Interleaved parse batches now flush immediately when raw-text / RCDATA start tags (`script`, `style`, `title`, `textarea`, `xmp`, `iframe`, `noembed`, `noframes`, `noscript`, `plaintext`) are observed, preventing same-batch script bodies from being tokenized in plain `Data` state.
+  - This closed the concrete Google repro where inline script text (`document.fonts.load(...); for(var a=0;a<w.length;...)`) previously became bogus markup and produced `Invalid characters in attribute name` diagnostics.
+
+### 4.3 StreamingHtmlParser
+
+- **Chunk-Split Raw-Text Hardening (2026-03-07)**:
+  - `StreamingHtmlParser` now tracks raw-text elements across chunk boundaries and only exits when the matching closing tag is fully recognized.
+  - Split `</script>` boundaries no longer leak intermediate script bytes into the markup token stream.
 
 ---
 
@@ -378,6 +388,9 @@ Verification aggregator for source-vs-render diagnostics.
 Security definitions.
 
 - Defines feature flags (`Scripts`, `Network`, `DomMutation`) for restricting iframe/tab capabilities.
+- Added baseline HTML iframe sandbox-token parsing and policy derivation:
+  - parses `allow-scripts`, `allow-same-origin`, `allow-forms`, `allow-popups`, and top-navigation-related tokens into reusable `IframeSandboxFlags`
+  - derives a feature-level `SandboxPolicy` for sandboxed iframe contexts so engine bridges can consistently gate script, storage, and navigation exposure.
 
 _End of Volume II_
 
@@ -567,3 +580,199 @@ _End of Volume II_
   - Added regression coverage for:
     - `Element.Matches(...)` with `nth-child(... of ...)`
     - attribute flag behavior (`i`/`s`) in core selector path.
+
+### 6.19 PAL Shared-Memory Productionization (2026-03-07)
+
+- `Platform/CrossPlatformSharedMemoryRegion.cs` (new)
+  - Added a cross-platform `ISharedMemoryRegion` backed by deterministic temp-directory files plus `MemoryMappedFile`.
+  - Logical region names are hashed into stable file paths so cooperating processes on Linux/macOS can reopen the same region by name.
+  - Read, write, span-write, pointer access, and bounds validation now mirror the Windows shared-memory contract.
+
+- `Platform/PosixPlatformLayer.cs` (new)
+  - Added a concrete Linux/macOS `IPlatformLayer`.
+  - `CreateSharedMemory(...)` / `OpenSharedMemory(...)` now use the cross-platform mapped-file region instead of unsupported-platform exceptions.
+  - `ApplySandbox(...)` now preserves direct-spawn PAL semantics (`UseShellExecute=false`, `CreateNoWindow` when desktop access is denied).
+  - `GetProcessMemoryBytes(...)` now provides real process working-set queries on non-Windows hosts.
+  - Sandbox factory remains explicitly null-sandbox backed on non-Windows hosts; this tranche removes PAL/IPC throw-path fallback, not the remaining OS-native sandbox gap.
+
+- `Platform/PlatformLayerFactory.cs`
+  - Linux and macOS now resolve to `PosixPlatformLayer` instead of the previous unsupported-platform fallback for baseline PAL operations.
+
+- Net effect:
+  - Non-Windows hosts now have working shared-memory/process PAL behavior for IPC baselines instead of immediately failing on named shared-memory creation/open.
+
+### 6.20 POSIX Sandbox Launcher Integration (2026-03-07)
+
+- `Security/Sandbox/Posix/PosixOsSandboxFactory.cs` (new)
+  - Added a POSIX sandbox factory that resolves native launcher helpers on the current host:
+    - Linux: `bwrap`
+    - macOS: `sandbox-exec`
+  - Broker profile still resolves to `NullSandbox`; non-broker child profiles now receive a command-backed sandbox when a native helper is present.
+
+- `Security/Sandbox/Posix/PosixCommandSandbox.cs` (new)
+  - Added helper-backed custom-spawn sandbox implementation.
+  - Linux launches child processes through `bwrap` with namespace/session isolation and capability-shaped networking/file-write allowances.
+  - macOS launches child processes through `sandbox-exec` with generated profile text shaped by granted capabilities.
+  - Sandbox health now reports active-process count and aggregate working-set usage for spawned child processes.
+
+- `Platform/PosixPlatformLayer.cs`
+  - Non-Windows PAL now returns `PosixOsSandboxFactory` instead of unconditional `NullSandboxFactory`.
+
+- Net effect:
+  - Linux/macOS no longer hard-code all child-process sandbox creation to null-sandbox behavior when native launcher support is available on the host.
+
+### 1.29 POSIX Sandbox Capability Enforcement Hardening (2026-03-07)
+- `Security/Sandbox/Posix/PosixCommandSandbox.cs`
+- POSIX helper-backed sandbox launch is now capability-shaped instead of using a broad read-everything wrapper policy.
+- Linux `bwrap` launch generation now:
+  - binds system runtime directories read-only,
+  - binds the child executable directory and working directory explicitly instead of `ro-bind / /`,
+  - exposes user-home and temp paths only when the profile capabilities require them,
+  - shares the network namespace only when outbound/listen capabilities are granted,
+  - sanitizes inherited environment variables through a narrow allowlist.
+- macOS `sandbox-exec` profile generation now:
+  - uses path-scoped `file-read*` / `file-write*` allowances for runtime/system/working paths,
+  - denies `process-fork` unless child spawning is explicitly allowed by the profile,
+  - only enables network inbound/outbound rules when granted by capability flags.
+- POSIX sandboxing remains helper-backed and best-effort: there is still no seccomp/App Sandbox entitlement layer or self-restriction path for already-running processes.
+
+### 1.30 Referrer-Policy Enforcement Hardening (2026-03-07)
+- `ResourceManager.cs`
+- Added shared `Referrer-Policy` parsing and outgoing `Referer` computation in the network/resource pipeline instead of unconditional `Referer: <full URL>` emission at each request call site.
+- `ResourceManager` now parses response `Referrer-Policy` headers, adopts document/iframe navigation policy as the active page policy, and applies that policy across text, image, and generic byte fetches.
+- Supported policy directives now include:
+  - `no-referrer`
+  - `no-referrer-when-downgrade`
+  - `same-origin`
+  - `origin`
+  - `strict-origin`
+  - `origin-when-cross-origin`
+  - `strict-origin-when-cross-origin`
+  - `unsafe-url`
+- Navigation fetch results now also expose the parsed referrer policy on `FetchResult`, aligning header parsing with the existing `X-Frame-Options` response metadata path.
+
+### 1.31 X-Frame-Options Enforcement Hardening (2026-03-07)
+- `ResourceManager.cs`
+- Frame-document fetches (`secFetchDest=iframe`) now enforce parsed `X-Frame-Options` response policy instead of only recording the header for later diagnostics.
+- `DENY` now blocks all iframe document embeddings, `SAMEORIGIN` now requires the embedding document and framed document to share origin, and `ALLOW-FROM` now requires the embedding document origin to match the declared allowed origin.
+- Violating iframe fetches now return a blocked `FetchResult` with preserved response metadata and increment the blocked-request telemetry counter, making the security decision visible to diagnostics/UI state.
+- Browser-side XFO state in `BrowserApi` is now diagnostic-only; enforcement lives in the centralized network/resource fetch path where the frame response is available.
+
+### 1.32 Mixed-Content Image Blocking Hardening (2026-03-07)
+- `ResourceManager.cs`
+- Hardened centralized image fetch entry points so secure documents no longer load insecure `http:` image subresources through engine-managed resource fetching.
+- `FetchImageAsync(...)` and `FetchBytesAsync(..., secFetchDest: "image")` now block mixed-content image requests when the embedding/referrer document is `https:`.
+- Blocked mixed-content image requests now increment blocked-request telemetry and emit explicit network-category warnings for diagnostics.
+
+### 1.33 CORS Preflight Enforcement Hardening (2026-03-07)
+- `Network/Handlers/CorsHandler.cs`
+- `ResourceManager.cs`
+- Centralized generic request dispatch in `ResourceManager.SendAsync(...)` now performs real CORS preflight for cross-origin non-simple requests before the actual request is sent.
+- `CorsHandler` now classifies safelisted methods/headers, derives request origin from `Origin`/`Referrer`, computes unsafe request-header sets, and validates preflight responses against:
+  - `Access-Control-Allow-Origin`
+  - `Access-Control-Allow-Methods`
+  - `Access-Control-Allow-Headers`
+- Failed preflights now block the primary request with a network-layer error instead of allowing the request onto the wire and only rejecting after the response.
+
+### 1.34 CORB Enforcement Wiring Hardening (2026-03-07)
+- `Security/Corb/CorbFilter.cs`
+- `ResourceManager.cs`
+- The existing CORB filter is now enforced from the centralized `ResourceManager` no-cors subresource paths instead of existing as broker-side logic without guaranteed runtime application.
+- `FetchTextDetailedAsync(...)` now threads `Sec-Fetch-Dest` / `Sec-Fetch-Mode` metadata through text subresource requests and evaluates CORB before style/script-like cross-origin payloads are exposed to engine consumers.
+- `FetchImageAsync(...)` and `FetchBytesAsync(...)` now evaluate the same CORB decision before returning cross-origin no-cors bytes, blocking HTML/XML/JSON responses masquerading as image/font/media/object payloads.
+- Blocked CORB decisions now increment the shared blocked-request telemetry counter and emit explicit network warnings, making the security decision visible to diagnostics instead of failing silently.
+- This is a centralized enforcement tranche, not full Milestone F closure: broader MIME/body analysis and complete cross-process CORB policy coverage still remain.
+
+### 1.35 OOPIF Planner Assignment Enforcement (2026-03-07)
+- `Security/Oopif/OopifPlanner.cs`
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- The existing OOPIF planner is now used as a live assignment oracle for iframe `src` navigations instead of remaining planning-only logic.
+- Cross-site iframe targets that the planner classifies as requiring a new renderer process are now exposed to the engine as remote-frame assignments:
+  - `contentWindow` publishes remote-frame metadata (`__fenRemoteFrame`, renderer id, origin, reason)
+- `contentDocument` stays `null`
+- browser frame switching resolves to an opaque/empty local search context instead of aliasing local DOM
+- This is an assignment-boundary tranche, not full OOPIF completion: real cross-process frame rendering, event routing, and compositor handoff still remain open.
+
+### 1.36 WebIDL Binding Merge-Order Hardening (2026-03-07)
+- `WebIDL/WebIdlBindingGenerator.cs`
+- The binding generator no longer depends on source-file ordering for partial interfaces, partial dictionaries, or partial namespaces.
+- Partial definitions encountered before their non-partial base definitions are now retained and merged later instead of being silently dropped.
+- Repeated mixin fragments now merge cumulatively instead of overwriting each other, and `includes` application now reuses that merged mixin state.
+- Extattrs and base metadata now survive aggregation more coherently, reducing order-sensitive generated-binding drift across the IDL corpus.
+- This is a generator-correctness tranche, not full WebIDL pipeline completion: broader type-resolution and generated binding parity work still remain.
+
+### 1.37 WebIDL Type-Resolution Hardening (2026-03-07)
+- `WebIDL/WebIdlBindingGenerator.cs`
+- The binding generator now builds a merged type registry before emission so typedef aliases, generated enums, interface types, and dictionary init types resolve coherently during binding generation.
+- `MapType(...)`, `CSharpTypeName(...)`, `ConversionExpr(...)`, and default-value handling now follow typedef chains instead of collapsing named WebIDL types into `object` prematurely.
+- `EmitWrapUnwrap(...)` now emits dedicated conversion helpers for typedef aliases, enums, dictionaries, and interface-backed arguments so generated bindings preserve more of the IDL surface at compile time instead of routing everything through `any`.
+- This is still a bounded tranche: callback typing, richer return-side object wrapping, and full union conversion remain incomplete.
+### 1.38 Accessibility bridge attachment-lifecycle hardening (2026-03-07)
+- `Accessibility/PlatformA11yBridge.cs`
+- Hardened repeated accessibility attach/initialize flows so platform bridges no longer accumulate duplicate `TreeInvalidated` subscriptions when reinitialized against a new document/tree instance.
+- `WindowsUiaBridge`, `LinuxAtSpiBridge`, and `MacOsNsAccessibilityBridge` now detach prior invalidation handlers before subscribing to the next tree.
+- `AccessibilityManager.Attach(...)` now also detaches its previous tree invalidation relay before reattaching, and `Dispose()` removes that relay explicitly.
+- This closes a real lifecycle/leak path in Milestone `F3` accessibility plumbing while the broader cross-platform platform-export surface remains incomplete.
+### 1.39 POSIX sandbox working-directory and environment tightening (2026-03-07)
+- `Security/Sandbox/Posix/PosixCommandSandbox.cs`
+- Hardened helper-backed POSIX child launch so profiles without file capabilities no longer inherit the host working directory as a readable bind mount by default.
+- Low-privilege profiles now run with `/tmp` as their sandbox working directory and do not receive `HOME`, `TMPDIR`, `TMP`, or `TEMP` environment variables unless the profile actually grants user-file or write capability.
+- Writable temp-path exposure is now only granted when `FileWrite` is present, and working-directory host-path exposure is limited to profiles that explicitly need file access.
+- This is another fail-closed Milestone `A4` tranche: helper-backed sandboxing remains incomplete relative to full OS-native seccomp/App Sandbox enforcement, but it no longer leaks as much host filesystem context into low-privilege child startup.
+### 1.40 POSIX sandbox helper-required mode (2026-03-07)
+- `Security/Sandbox/Posix/PosixOsSandboxFactory.cs`
+- Added `FEN_POSIX_SANDBOX_REQUIRED=1` so Linux/macOS launches can fail closed when the required native helper (`bwrap` or `sandbox-exec`) is absent instead of silently normalizing to `NullSandbox`.
+- Broker code can still opt into explicit unsandboxed overrides where supported, but the POSIX sandbox factory itself now has a production-mode path that rejects helper absence as a startup error.
+- This tightens Milestone `A4` by moving more of the fail-closed behavior into the factory boundary instead of leaving all enforcement to individual process launch call sites.
+### 1.41 OOPIF handoff-state hardening (2026-03-07)
+- `Security/Oopif/OopifPlanner.cs`
+- Extended the broker-owned OOPIF frame tree from assignment-only state into basic remote-frame handoff state.
+- `FrameProxy` now carries a stable handoff token and mutable presentation-state record, and `FrameTree` now exposes:
+  - `CreateHandoffTicket(...)`
+  - `CommitRemoteFrame(...)`
+- Cross-process child-frame assignments now retain committed URL/origin, frame sequence, surface size, and commit time in the planner-owned frame tree instead of only marking the child opaque.
+- This is a real Milestone `F1` handoff-state tranche, but not full OOPIF completion: renderer boot, compositor texture routing, and remote event routing still remain open.
+
+### 1.42 CORB MIME/body analysis hardening (2026-03-07)
+- `Security/Corb/CorbFilter.cs`
+- Strengthened CORB analysis so the filter no longer treats all `text/plain` responses as intrinsically sensitive, and it now blocks more realistic cross-origin document/data disguises via body sniffing.
+- Added:
+  - `+json` / `+xml` suffix sensitivity
+  - `image/svg+xml` sensitivity
+  - sniff-only handling for `text/plain`, JS MIME types, and `application/octet-stream`
+  - XSSI-prefix trimming and stronger HTML/XML probes (`<!doctype`, `<html`, `<head`, `<body`, `<script`, `<iframe`, `<svg`)
+- This is a stricter Milestone `F2` blocking tranche, but not full CORB completion across all body-analysis edge cases and process boundaries.
+
+### 1.43 Accessibility platform snapshot export (2026-03-07)
+- `Accessibility/PlatformAccessibilitySnapshot.cs`
+- `Accessibility/AccessibilityTree.cs`
+- Added a normalized platform-facing accessibility snapshot/export layer for:
+  - Windows UIA
+  - Linux AT-SPI
+  - macOS NSAccessibility
+- `AccessibilityTree.ExportPlatformSnapshot(...)` now emits flattened mapped-role nodes plus validation errors, providing a concrete platform-mapping artifact path without relying only on live bridge callbacks.
+- This advances Milestone `F3` from internal-tree-only state toward end-to-end platform mapping validation, but it does not replace the still-partial runtime bridge implementations.
+### 1.44 CORB and accessibility artifact commands (2026-03-07)
+- `FenBrowser.Conformance/AccessibilityValidation.cs`
+- `FenBrowser.Conformance/CorbValidation.cs`
+- Added first-class validation helpers that turn the newer CORB and accessibility code paths into artifact-producing conformance commands instead of leaving them as internal-only subsystems.
+- This strengthens Milestone `F2`/`F3` evidence retention, but does not by itself satisfy the broader end-to-end closure criteria in `Task.md`.
+
+### 1.45 Build and Validation Recovery (2026-03-07)
+- Restored `FenBrowser.Core` + `FenBrowser.FenEngine` + solution build viability after validation exposed post-tranche regressions in WebIDL generation, accessibility snapshot role mapping, CORB/resource plumbing, and POSIX sandbox environment handling.
+- Validation run results:
+  - `ipc-fuzz`: pass (`renderer/network/target` 45/45 each)
+  - `corb-validate`: fail on same-origin JSON false-positive block
+  - full milestone gate: fail (`Test262`, DOM/WPT, missing CSS/fetch artifacts)
+
+## 1.38 CORB Same-Origin Normalization and Sensitive SVG Hardening (2026-03-07)
+- `CorbFilter.IsSameOrigin(...)` now compares normalized absolute origins through `System.Uri` first, with WHATWG parsing as fallback.
+- `image/svg+xml` was removed from the always-safe MIME allowlist so cross-origin opaque SVG responses remain CORB-sensitive.
+- This closed the `same-origin-json` false positive in `corb-validate` while preserving the existing cross-origin HTML/JSON/SVG block cases.
+
+## 1.39 Secure DNS Transport Socket-Family Hardening (2026-03-07)
+- `HttpClientFactory.ConnectSocketAsync(...)` no longer forces every outbound connection through an IPv6 dual-mode raw socket.
+- `IPEndPoint` connections now use the endpoint's own address family.
+- `DnsEndPoint` connections now use `TcpClient.ConnectAsync(host, port, ct)` instead of the previous dual-mode raw socket path.
+- This removes one browser-path transport divergence from the system HTTP stack and avoids the earlier access-permission failure mode in the custom Secure DNS connect path.

@@ -121,6 +121,74 @@ flowchart TD
 - Replaced silent host/timer callback suppression in history/timer/fetch bridge paths with warning-logged wrappers to keep behavior non-breaking while improving observability.
 - Remaining silent-catch count in `JavaScriptEngine.cs` is reduced in these targeted paths, with additional cleanup still required for constructor/debug and some compatibility shims.
 
+
+### 2.8 Web Audio API Productionization (2026-03-06)
+
+- `WebAudioAPI` now provides a full `Audio` constructor (`new Audio(src)`) as a real constructor-capable `FenFunction`, replacing parser-gap behavior with runtime-backed semantics (`FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs`).
+- `Audio` instances now implement hardened source validation and constrained playback controls:
+  - allowed source classes: `http`, `https`, `blob`, and `data:audio/*` (bounded length),
+  - blocked classes: unsafe schemes (`javascript:`, `file:`), private/reserved host targets, and control-character payloads.
+- `Audio.play()` now returns `JsPromise` with deterministic resolve/reject paths, event dispatch (`play`, `playing`, `pause`, `ended`, `error`), and bounded concurrency protection to prevent unbounded playback fan-out.
+- `JavaScriptEngine.SetupPermissions` and `SetupWindowEvents` now expose `Audio`, `AudioContext`, and `webkitAudioContext` as function constructors on both global and `window` surfaces (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
+- Legacy parser fallback for `new Audio("...").play()` feature-gap tracing was removed from `HandlePhase123Builtins`, so execution now flows through the real runtime API.
+### 2.9 Notifications API Productionization (2026-03-06)
+
+- `NotificationsAPI` now exposes `Notification` as a real constructor-capable `FenFunction` instead of a plain object surface (`FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`).
+- Constructor flow is hardened with bounded payloads and source validation:
+  - permission gate (`granted` required),
+  - title/body/tag length caps,
+  - icon URL constraints (`http`, `https`, `blob`, `data:image/*`) with private/reserved host blocking and control-character rejection.
+- `Notification.requestPermission()` now updates and returns canonical permission state (`granted`/`denied`/`default` normalization), preserves legacy callback support, and keeps constructor `permission` in sync across created globals.
+- Active notification objects are bounded (`MaxActiveNotifications`) and receive explicit close-state transitions to avoid unbounded object retention.
+- `JavaScriptEngine.SetupPermissions` and `SetupWindowEvents` now publish `Notification` as a constructor on both global scope and `window` (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
+
+### 2.10 Web Share API Productionization (2026-03-07)
+
+- `FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- Added a dedicated `WebShareAPI` and wired `navigator.share(...)` / `navigator.canShare(...)` onto the active navigator surface instead of leaving Web Share completely absent.
+- `navigator.canShare(...)` now validates share payload structure and supported field types rather than behaving like a blind feature probe.
+- `navigator.share(...)` now returns promise-style resolved/rejected thenables through the existing `ResolvedThenable` helper, with validation for:
+  - object payload requirement,
+  - bounded `title`, `text`, and `url` lengths,
+  - control-character rejection,
+  - URL normalization against the current document URL,
+  - supported schemes limited to `http`, `https`, `mailto`, and `tel`,
+  - explicit rejection of non-empty file sharing payloads because file-share transport is not implemented.
+- The current implementation is a validated compatibility surface rather than a native OS share-sheet integration; successful shares resolve without invoking a platform share broker.
+
+### 2.11 Storage Manager API Productionization (2026-03-07)
+
+- `FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+- `FenBrowser.FenEngine/WebAPIs/IndexedDBService.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- Added `navigator.storage` on the active navigator surface instead of leaving the Storage Manager API entirely absent.
+- Implemented `navigator.storage.estimate()` as a promise-style resolved thenable that returns:
+  - `usage`
+  - `quota`
+  - `usageDetails.localStorage`
+  - `usageDetails.sessionStorage`
+  - `usageDetails.indexedDB`
+- `estimate()` now uses the same UTF-16 byte-accounting model already enforced by `StorageApi` for DOM storage, plus baseline size estimation across the in-memory IndexedDB registry.
+- Added baseline `navigator.storage.persisted()` and `navigator.storage.persist()` compatibility methods that currently resolve `false`, making the API surface explicit instead of missing.
+- Storage quota reporting remains a compatibility estimate rather than an OS-backed quota broker; IndexedDB usage is derived from the current in-memory registry model, and Cache/File System usage is not yet included.
+
+### 2.12 PerformanceObserver Entry Delivery Hardening (2026-03-07)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Replaced the empty `performance` shell with a buffered runtime entry store backing `performance.getEntries()`, `getEntriesByType()`, `getEntriesByName()`, `mark()`, `measure()`, `clearMarks()`, and `clearMeasures()`.
+- `performance.mark()` and `performance.measure()` now create real `PerformanceEntry`-style objects carrying `name`, `entryType`, `startTime`, `duration`, and `toJSON()` output instead of returning `undefined` with no recorded state.
+- Added a real `PerformanceObserver` constructor with `observe()`, `disconnect()`, `takeRecords()`, and `supportedEntryTypes`, including buffered delivery for `mark` and `measure` entries through queued callback dispatch.
+- `PerformanceObserver.observe({ buffered: true, entryTypes: [...] })` now replays matching buffered entries, while `takeRecords()` drains queued entries without invoking the callback.
+- The current implementation is a runtime-local performance timeline rather than a full browser telemetry bridge: resource/navigation/paint entries are still outside this tranche.
+
+### 2.13 Cookie Prefix Enforcement Hardening (2026-03-07)
+
+- `FenBrowser.FenEngine/DOM/InMemoryCookieStore.cs`
+- Hardened the fallback in-memory cookie jar so RFC-style `__Secure-` cookies are ignored unless they are set from an HTTPS origin and explicitly carry the `Secure` attribute.
+- Hardened `__Host-` cookie handling so those cookies are ignored unless they are set from HTTPS, carry `Secure`, keep `Path=/`, and do not use the `Domain` attribute.
+- This closes the previous prefix-validation gap in the engine-side fallback cookie path and prevents script-driven acceptance of prefix-decorated cookies that would be rejected by production browsers.
 ---
 
 ## 3. The Rendering Pipeline (`FenBrowser.FenEngine.Rendering`)
@@ -173,7 +241,7 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Gradient backgrounds are parsed into `SKShader` instances during paint-node creation (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs:1440-1570`), enabling linear/radial gradients in the new pipeline.
 - Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
 - Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
-- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
+- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
 - Engine targets `net8.0` (solution unified via global.json).
 - Web-compat guardrail: site/domain/class-specific styling hooks are prohibited in UA/layout/cascade paths; fixes must land as generic standards behavior with regression coverage (`Rendering/Css/CssLoader.cs`, `Rendering/UserAgent/UAStyleProvider.cs`, `Layout/MinimalLayoutComputer.cs`).
 - Paint/Compositing tranche PC-1 (2026-02-20):
@@ -244,6 +312,9 @@ The high-level controller used by the UI.
 - Streaming preparse path is now integrated for large documents as a controlled pre-commit assist phase (bounded checkpoints + repaints), while final DOM correctness remains anchored to the production tree builder parse.
 - Production parser now supports interleaved tokenize/parse batches for large documents through `HtmlTreeBuilder.InterleavedTokenBatchSize`, and runtime parse policy chooses tiered batch sizes without introducing site-specific behavior.
 - Runtime parser integration now retries with interleaving disabled if an interleaved parse attempt fails, preserving production parser correctness and surfacing the event via `interleavedFallback` telemetry.
+- Real-page parser recovery hardening (2026-03-07):
+  - `CustomHtmlEngine` now limits the streaming preparse assist phase to medium-sized HTML documents (`32 KiB` to `128 KiB`) instead of attempting the hint pass on very large pages where it added latency without improving final DOM correctness.
+  - Latest Google verification no longer reports the earlier streaming-preparse corruption signature (`Invalid characters in attribute name`) after the Core raw-text fixes and bounded preparse policy were applied.
 
 ### 4.4 JavaScript Runtime Bytecode-Only Mainline (2026-02-27)
 
@@ -296,6 +367,10 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - `Rendering/Interaction/ScrollManager` now guards null element access in scroll-state APIs, preventing `ArgumentNullException (Parameter 'key')` during paint-tree build when scroll queries receive a transient null element.
 - `Rendering/BrowserApi.HandleElementClick(...)` now forces native control default activation (`input`, `textarea`, `button`, `select`, and `contenteditable`) even when wrapper-level script handlers call `preventDefault()`, restoring reliable focus/typing and form submit behavior on modern script-heavy pages.
 - `Rendering/BrowserApi` now exposes viewport-space DOM fallback hit testing (`HitTestElementAtViewportPoint(...)`) so host integration can recover click targets when paint-tree `NativeElement` is transiently unavailable.
+- Event-dispatch execution-budget hardening (2026-03-07):
+  - `DOM/EventTarget.DispatchEvent(...)` now resets `ExecutionContext` timing at each event entry so pointer and DOM events do not inherit an already-expired script budget from a prior long-running page script.
+  - This closed the reproduced Google fatal path where `mousemove` hit `DocumentWrapper.Get(...)` with a stale 5-second budget and crashed the host with `FenTimeoutError`.
+  - Regression coverage: `FenBrowser.Tests/DOM/InputEventTests.cs` includes `DispatchEvent_ResetsExpiredExecutionBudget`.
 
 ---
 
@@ -522,6 +597,13 @@ The custom logic runtime and bridge.
 - `CSSStyleDeclaration.Keys()` in `ElementWrapper` now enumerates parsed inline style property names, fixing empty-key enumeration in JS style reflection paths.
 - `BrowserApi` now registers rendered text length and active DOM node count from `GetTextContent()` into `ContentVerifier`, aligning verification metrics with exported `rendered_text_*.txt` output.
 - `CssAnimationEngine.StartAnimation` now handles comma-separated `animation-name` lists and index-aligned animation sub-properties, resolving false `Keyframes not found` logs for multi-animation declarations (e.g., `fillunfill, rot`).
+
+### 6.3.1 Permissions API Query Hardening (2026-03-07)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- Hardened `navigator.permissions.query(...)` so it now validates descriptor objects and permission names instead of accepting empty/unsupported descriptors through a loose success path.
+- Added descriptor-aware state mapping for `geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, and `clipboard-write`, using persisted per-origin `PermissionStore` state where the engine has a concrete backing permission.
+- The returned value now behaves like a settled thenable with both `then` and `catch`, and resolves to a richer `PermissionStatus`-style object carrying `name`, `state`, `onchange`, and baseline event-method placeholders instead of a bare `{ state }` object.
+- Unsupported permission names now reject with `NotSupportedError` rather than silently reporting a misleading default state.
 - `BoxTreeBuilder` now enforces closed-`<details>` behavior at box construction time (`details:not([open]) > :not(summary)`), preventing hidden disclosure descendants from entering the Box Tree.
 - `MinimalLayoutComputer` now applies closed-`<details>` visibility rules for direct children in `ShouldHide`, and routes `DETAILS` measurement through `MeasureDetails` to avoid incorrect flow sizing.
 - `Layout.Algorithms.LayoutHelpers.ShouldHide` now mirrors the same closed-`<details>` rule so delegated `BlockLayoutAlgorithm` passes do not reintroduce hidden disclosure children into measured layout flow.
@@ -2764,16 +2846,18 @@ Verification snapshot (2026-03-05):
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
 - Targeted tests (`JsEngineImprovementsTests|WebApiPromiseTests`): `39/39` pass.
 
-### 2.52 Runtime Hardening (2026-03-05, ExecutionContext detached scheduler baseline)
+### 2.52 Runtime Hardening (2026-03-06, ExecutionContext event-loop scheduler integration)
 - Core/ExecutionContext.cs
-  - Replaced default `ScheduleCallback` and `ScheduleMicrotask` `Task.Run` paths with detached helper-backed scheduling.
-  - Added `RunDetachedAsync(Func<Task>)` and `RunDetached(Action)` helpers to centralize detached-fault handling.
-  - Added null guards before queueing callback/microtask actions.
+  - Kept detached delay waiting only for timer latency, but moved actual callback execution back onto `EventLoopCoordinator`.
+  - Default `ScheduleCallback` now enqueues `TaskSource.Timer` work instead of invoking JavaScript from a detached worker thread.
+  - Default `ScheduleMicrotask` now feeds the event-loop microtask queue directly instead of running detached work outside checkpoint control.
+  - Null guards remain in place before queueing callback or microtask actions.
+- Net effect:
+  - Restores task/microtask ordering guarantees for the default runtime context.
+  - Prevents `ExecutionContext` from bypassing phase tracking and executing callbacks outside `JSExecution` / `Microtasks` windows.
 
-Verification snapshot (2026-03-05):
-- Static scan: `ExecutionContext.cs` direct `Task.Run` count `2 -> 0`.
-- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug`: pass.
-- Targeted tests (`EventInvariantTests|JsEngineImprovementsTests`): `31/31` pass.
+Verification snapshot (2026-03-06):
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter FullyQualifiedName~ExecutionContextSchedulingTests --logger "console;verbosity=minimal"`: pass (`2/2`).
 
 ### 2.53 Runtime Hardening (2026-03-05, ServiceWorker detached promise scheduler consolidation)
 - Workers/ServiceWorkerContainer.cs
@@ -2892,3 +2976,965 @@ Verification snapshot (2026-03-05):
 - Targeted tests (`ModuleLoaderTests`): `7/7` pass.
 - Maturity state: `full`.
 - Score: `90/100`.
+
+### 2.60 Runtime/Test Hardening (2026-03-05, Test262 chunk-13 stack-overflow containment + memory-cap CLI)
+- Core/FenObject.cs
+  - Added thread-static recursion guards for window-named lookup and `Has(...)` depth (`MAX_WINDOW_NAMED_LOOKUP_DEPTH=32`, `MAX_HAS_DEPTH=256`).
+  - Hardened `TryResolveWindowNamedProperty(...)` to use direct/prototype `document` resolution and bounded re-entrancy.
+  - Prevents runaway recursive `Has -> TryResolveWindowNamedProperty -> Has` call chains that previously crashed chunk-13 runs with native stack overflow.
+- FenBrowser.Test262/Program.cs
+  - Added global CLI option `--max-memory-mb <N>` to set `Test262Runner.MemoryThresholdBytes` from command line.
+  - Wired memory cap into `run_single` path for parity with chunk/category execution.
+  - Updated CLI usage text to document new flag.
+- Net effect: previously crashing Test262 chunk-13 execution now completes and emits JSON results under constrained-memory execution.
+
+Verification snapshot (2026-03-05):
+- Reproduction-before-fix evidence:
+  - `Results/test262_debug_fix_20260305/logs/chunk_013.err.log` showed `Stack overflow` with repeating `FenObject.Has` frames.
+- Post-fix validation:
+  - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass (`0` errors).
+  - `dotnet run --project FenBrowser.Test262/FenBrowser.Test262.csproj -c Release --no-build -- run_chunk 13 --root test262 --chunk-size 1000 --max-memory-mb 2000 --timeout 5000 --format json --output Results/test262_debug_fix_20260305/chunks/chunk_013_after_guard2.json`
+  - Output: `total=1000`, `passed=412`, `failed=588`, `durationMs=114827` (process no longer crashes).
+
+### 2.61 Test262 Recursion Guard Hardening (2026-03-05)
+- Added compile/visit depth guards in BytecodeCompiler to reduce hard stack-overflow crashes during deep AST compilation paths.
+- Added guarded legacy-global lookup path in FenEnvironment (HasBinding iterative walk + bounded legacy lookup depth).
+- Current known blocker: 4 staging/spidermonkey tests still terminate the process with stack overflow and require deeper compiler/runtime recursion remediation.
+
+
+### 2.62 VM Runtime Hardening (2026-03-05, Test262 pending recheck recovery)
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `RunLoop()` exception-resume path no longer recursively re-enters `RunLoop`; it now resumes execution through an in-method restart label (`goto run_loop_restart`) after `HandleException`.
+  - Effect: prevents repeated JS exception handling from building unmanaged call depth and crashing process-level Test262 runs.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Added generator resume depth guard in `GeneratorObject.Next(...)` (`MaxGeneratorResumeDepth=32`) with `RangeError`-style `FenResourceError` on excessive recursive resume.
+  - Effect: recursion-heavy generator paths now fail as JS runtime error instead of process-level stack overflow.
+- Verification snapshot:
+  - `run_single staging/sm/expressions/optional-chain-first-expression.js` -> PASS
+  - `run_single staging/sm/extensions/recursion.js` -> PASS
+  - `run_single staging/sm/regress/regress-619003-1.js` -> PASS
+  - `run_single staging/sm/Proxy/global-receiver.js` -> FAIL (`ReferenceError: bareword is not defined`)
+
+### 2.63 VM/Object Hardening (2026-03-05, Proxy global receiver compliance)
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Kept non-strict undeclared assignment routing through `TryAssignUndeclaredToGlobal(...)` so implicit-global writes (`bareword = ...`) flow to global-object semantics instead of lexical-store fallback.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - `TryResolveWindowNamedProperty(...)` now preserves the original `receiver` when consulting prototype-provided `document` (`GetWithReceiver("document", receiver, ...)`) instead of using prototype-self receiver.
+  - This removes proxy-observable receiver drift during named global fallback (`document` lookup) and prevents false failures in proxy get-trap receiver assertions.
+- Net effect:
+  - Eliminated `global-receiver.js` stack-overflow crash path (assert formatting recursion after receiver mismatch).
+  - Restored expected Proxy `get`/`set` trap receiver behavior for global bareword access paths.
+
+Verification snapshot (2026-03-05):
+- `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass (`0` errors).
+- `run_single staging/sm/Proxy/global-receiver.js --isolate-process --verbose`: PASS.
+- Focused regression probe `run_single staging/sm/Proxy/__diag_badget_only.js --isolate-process --verbose`: PASS (before cleanup).
+
+### 2.64 Object Prototype Conformance Hardening (2026-03-06, Test262 Annex-B/accessor coercion)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Hardened `Object.defineProperty` to throw `FenTypeError` on invalid invocations/descriptors instead of returning error values.
+  - Switched `Object.defineProperty` and `Object.getOwnPropertyDescriptor` key conversion to `ToPropertyKeyString(...)` so Symbol keys follow runtime symbol-key encoding.
+  - Hardened `Object.prototype.__defineGetter__` / `__defineSetter__` to throw on invalid callback/redefinition paths (spec-compatible abrupt completion behavior).
+  - Added explicit `NativeLength` metadata for Object.prototype built-ins:
+    - `hasOwnProperty(1)`, `isPrototypeOf(1)`, `propertyIsEnumerable(1)`, `toString(0)`, `valueOf(0)`, `toLocaleString(0)`,
+    - `__defineGetter__(2)`, `__defineSetter__(2)`, `__lookupGetter__(1)`, `__lookupSetter__(1)`.
+- Net effect:
+  - Restored multiple Annex-B/Object.prototype length and TypeError semantics.
+  - Symbol-key own-property checks now pass for `hasOwnProperty` and `propertyIsEnumerable`.
+
+Verification snapshot (2026-03-06):
+- Focused category:
+  - `run_category built-ins/Object/prototype/__defineGetter__` -> `9/11` pass (remaining: `define-abrupt.js`, `key-invalid.js`).
+  - `run_category built-ins/Object/prototype/__defineSetter__` -> `9/11` pass (remaining: `define-abrupt.js`, `key-invalid.js`).
+- Full Object.prototype recheck:
+  - Before: `151/248` pass (`Results/object_prototype_recheck_20260306_002757.json`).
+  - After: `165/248` pass (`Results/object_prototype_recheck_after_fix_20260306_003347.json`).
+  - Net: `+14` passing tests in this category.
+
+### 2.65 VM/Proxy Abrupt-Completion Plumbing (2026-03-06, Annex-B define/getter-setter completion semantics)
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Added internal `JsUncaughtException` carrying original `FenValue` throw payload.
+  - `HandleException(...)` now rethrows uncaught JS exceptions as `JsUncaughtException` (instead of flattening to string-only host exceptions).
+  - `RunLoop()` catch-path now recognizes `JsUncaughtException` and re-injects the original thrown JS value into VM exception handling flow.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Added `DefineOwnProperty` proxy trap dispatch for `__proxyDefineProperty__` with descriptor object marshalling.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Proxy construction now captures/stores `defineProperty` trap as `__proxyDefineProperty__` for both direct and revocable proxy initialization paths.
+- Net effect:
+  - Restored abrupt-completion behavior for Annex-B `__defineGetter__` / `__defineSetter__` proxy+key edge cases.
+  - Remaining Object.prototype failures now concentrate in other families (e.g., `toString` branding, lookup abrupt-path invariants, setPrototype/immutability semantics).
+
+Verification snapshot (2026-03-06):
+- `run_category built-ins/Object/prototype/__defineGetter__` -> `11/11` pass.
+- `run_category built-ins/Object/prototype/__defineSetter__` -> `11/11` pass.
+- `run_category built-ins/Object/prototype`:
+  - prior checkpoint: `165/248` pass (`Results/object_prototype_recheck_after_fix_20260306_003347.json`)
+  - after VM/proxy abrupt-completion patch: `172/248` pass (`Results/object_prototype_recheck_after_annexb_proxyfix_20260306_004154.json`)
+  - delta: `+7` in this pass, `+21` from initial `151/248` baseline.
+
+### 2.66 Object.prototype Proxy/Proto Semantics Hardening (2026-03-06)
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Added proxy-trap exception bridge in `DefineOwnProperty`, `GetOwnPropertyDescriptor`, and `GetPrototype` to preserve original JS thrown values from nested trap invocation paths.
+  - Added `TrySetPrototype(...)` with ordinary-cycle detection, non-extensible guard, immutable `Object.prototype` guard, and proxy `setPrototypeOf` trap dispatch.
+  - Added non-extensible `__proto__` assignment guard in `SetWithReceiver(...)` to enforce TypeError on incompatible prototype writes.
+- `FenBrowser.FenEngine/Core/JsThrownValueException.cs`
+  - New exception type to carry JS `FenValue` across host/native boundaries without flattening to message-only errors.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Added generic thrown-value extraction (`ThrownValue` reflection bridge) so VM catch paths can re-inject JS throw payloads from bridge exceptions.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added full Annex-B `Object.prototype.__proto__` accessor descriptor (`get __proto__` / `set __proto__`) with correct function names/lengths and setter semantics.
+  - Proxy construction now captures `setPrototypeOf` trap as `__proxySetPrototypeOf__` (direct + revocable paths).
+
+Verification snapshot (2026-03-06):
+- `run_category built-ins/Object/prototype/__lookupGetter__` -> `16/16` pass.
+- `run_category built-ins/Object/prototype/__lookupSetter__` -> `16/16` pass.
+- `run_category built-ins/Object/prototype/__proto__` -> `15/15` pass.
+- `run_category built-ins/Object/prototype`:
+  - prior checkpoint: `172/248` pass (`Results/object_prototype_recheck_after_annexb_proxyfix_20260306_004154.json`)
+  - new checkpoint: `194/248` pass (`Results/object_prototype_recheck_after_protofix_20260306_010715.json`)
+  - delta: `+22` in this pass, `+43` from initial `151/248` baseline.
+
+### 2.67 Bytecode/Parser Hardening (2026-03-06, destructuring guardrails + loop-head assignment targets)
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Rest/destructuring formal parameter extraction now preserves `DestructuringPattern` metadata for arrow/function parameter lowering, including rest-parameter binding patterns.
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Object/array destructuring object-guard paths now construct and throw real JS `TypeError` objects instead of raw string values.
+  - Unsupported destructuring compiler guardrails now throw typed JS `SyntaxError` objects.
+  - Destructuring target binding now writes through member/index targets in assignment paths.
+  - `for...of` / `for...in` non-identifier heads that are valid assignment targets (for example `x.y`) now route through assignment-target binding instead of the destructuring-only lowering path.
+- Net effect:
+  - Removed the large "thrown value was not an object" failure family from chunk-50 destructuring cases.
+  - Restored `for-of` / `for-in` member-head execution (`head-lhs-member.js`) in bytecode paths.
+  - Remaining failures in this tranche are now concentrated in iterator-close semantics, default-initializer ordering, function-name inference in destructuring, and parser early-error enforcement for invalid loop heads.
+
+Verification snapshot (2026-03-06):
+- `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass.
+- `run_chunk 50` progression:
+  - baseline: `569/1000` pass (`Results/test262_full_run_10workers_20260305_185350/workers/worker_10/analysis/chunk_050_failed.md`)
+  - after parser + compiler tranche-1 groundwork: `576/1000` pass (`Results/tranche1_chunk50_20260306.json`)
+  - after typed JS error-object throws: `617/1000` pass (`Results/tranche1_chunk50_20260306_rerun.json`)
+  - after loop-head assignment-target fix: `618/1000` pass (`Results/tranche1_chunk50_20260306_rerun2.json`)
+- Targeted confirmations:
+  - `run_single language/statements/for-of/head-lhs-member.js`: pass.
+  - `run_single language/statements/for-in/head-lhs-member.js`: pass.
+  - `run_single language/statements/for-of/head-lhs-non-asnmt-trgt.js`: still failing parse-negative enforcement; parser early-error hardening remains pending.
+
+### 2.68 Bytecode/Parser Hardening (2026-03-06, parser early-errors + iterator-close + inferred destructuring names)
+- FenBrowser.FenEngine/Core/Parser.cs
+  - IsValidAssignmentTarget, IsValidUpdateTarget, and IsValidForInOfTarget now reject 	his/super via IsAssignableIdentifier(...), restoring parse-negative enforcement for invalid or-in / or-of heads.
+- FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Array destructuring now lowers through iterators (MakeValuesIterator, IteratorMoveNext, IteratorCurrent) instead of indexed property reads.
+  - Added synthetic inally-style iterator close emission around array destructuring and rest collection via the new IteratorClose opcode.
+  - Default initializers in destructuring now run through VisitWithInferredName(...), restoring anonymous function/arrow name inference for direct binding targets.
+  - Anonymous class-name inference is now gated behind CanInferAnonymousClassName(...) to avoid applying the outer binding name when the class defines its own static 
+ame member.
+- FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+  - JsProtocolIteratorEnumerator.MoveNext() now propagates abrupt completions and rejects non-object iterator results with TypeError.
+  - JsProtocolIteratorEnumerator.Dispose() now calls iterator .return() when present and validates its return shape.
+  - Added OpCode.IteratorClose execution path.
+- FenBrowser.FenEngine/Core/Bytecode/OpCode.cs
+  - Added IteratorClose = 0x6F.
+- Net effect:
+  - Closed the remaining parser early-error gap for or (this of ...) / or (this in ...).
+  - Replaced the major array-destructuring indexed-read shortcut with iterator semantics and close-on-exit behavior.
+  - Restored direct destructuring anonymous function-name inference for arrow/function cases; anonymous class + static 
+ame remains open.
+
+Verification snapshot (2026-03-06):
+- dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release: pass.
+- 
+un_chunk 50 progression:
+  - baseline: 569/1000 pass (Results/test262_full_run_10workers_20260305_185350/workers/worker_10/analysis/chunk_050_failed.md)
+  - after parser + compiler tranche-1 groundwork: 576/1000 pass (Results/tranche1_chunk50_20260306.json)
+  - after typed JS error-object throws: 617/1000 pass (Results/tranche1_chunk50_20260306_rerun.json)
+  - after loop-head assignment-target fix: 618/1000 pass (Results/tranche1_chunk50_20260306_rerun2.json)
+  - after parser early-errors + iterator-close + inferred names: 727/1000 pass (Results/tranche1_chunk50_20260306_rerun3.json)
+- Targeted confirmations:
+  - 
+un_single language/statements/for-of/head-lhs-non-asnmt-trgt.js: pass.
+  - 
+un_single language/statements/for-in/head-lhs-non-asnmt-trgt.js: pass.
+  - 
+un_single language/statements/variable/dstr/ary-init-iter-close.js: pass.
+  - 
+un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-arrow.js: pass.
+  - 
+un_single language/statements/variable/dstr/obj-ptrn-id-init-fn-name-fn.js: pass.
+  - Residual targeted failure: 
+un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-class.js still fails due static 
+ame semantics on anonymous class expressions.
+
+### 2.69 Class Method Property Definition Cleanup (2026-03-06)
+- FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Class methods and static properties are now installed through Object.defineProperty-style descriptor emission instead of StoreProp assignment semantics.
+  - Added EmitDefineDataProperty(...) and EmitStoreDescriptorField(...) so class-installed members use spec-appropriate descriptor replacement behavior.
+- Net effect:
+  - Anonymous class expressions with a static 
+ame method no longer retain the outer inferred constructor 
+ame just because assignment to the constructor object failed.
+  - This closes the residual destructuring/class-name regression without changing the broader chunk-50 aggregate from the prior rerun.
+
+Verification snapshot (2026-03-06):
+- dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release: pass.
+- 
+un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-class.js: pass.
+- 
+un_single language/statements/variable/dstr/ary-ptrn-elem-id-init-fn-name-arrow.js: pass.
+- 
+un_chunk 50: 727/1000 pass (Results/tranche1_chunk50_20260306_rerun4.json).
+
+### 2.70 Loop Parser and Hoist Follow-Up (2026-03-06)
+- FenBrowser.FenEngine/Core/Parser.cs
+  - Added IsInvalidSingleStatementBody(...), ReportInvalidSingleStatementBody(...), and IsInvalidForOfRightHandSide(...) to enforce single-statement declaration early errors and reject comma-expression RHS forms in `for-of` heads.
+  - ParseWhileStatement, ParseDoWhileStatement, ParseForStatement, ParseForInStatement, ParseForOfStatement, ParseWithStatement, and ParseLabeledStatement now reject declaration bodies that are not valid single statements.
+  - Added ValidateLoopBodyVarRedeclarations(...) and CollectVarDeclaredNames(...) so lexical loop-head bindings reject conflicting `var` declarations in the loop body during parsing.
+- FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - `var` declarations without initializers no longer emit `LoadUndefined; StoreVar` at statement execution time; hoisting remains responsible for creating the binding.
+- Net effect:
+  - Closed the remaining loop parse-negative cluster for declaration bodies, labelled function bodies in loop single-statement position, `for-of` comma RHS rejection, and loop-head/body lexical-vs-var name collisions.
+  - Fixed runtime clobbering of loop-head `var` bindings by body-level `var x;` redeclarations in `for`, `for-in`, and `for-of`.
+
+Verification snapshot (2026-03-06):
+- `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass.
+- `run_chunk 50` progression:
+  - tranche-1 rerun4: `727/1000` pass (`Results/tranche1_chunk50_20260306_rerun4.json`)
+  - parser follow-up rerun1: `741/1000` pass (`Results/tranche2_chunk50_20260306_parser_rerun.json`)
+  - parser + hoist rerun2: `746/1000` pass (`Results/tranche2_chunk50_20260306_parser_rerun2.json`)
+- Targeted confirmations:
+  - `run_single language/statements/for-of/head-var-no-expr.js`: pass.
+  - `run_single language/statements/for-of/decl-let.js`: pass.
+  - `run_single language/statements/for/labelled-fn-stmt-let.js`: pass.
+  - `run_single language/statements/for-in/labelled-fn-stmt-lhs.js`: pass.
+  - `run_single language/statements/for-of/let-array-with-newline.js`: pass.
+  - `run_single language/statements/do-while/decl-async-fun.js`: pass.
+  - `run_single language/statements/for/head-var-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for-in/head-var-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for-of/head-var-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for-of/head-const-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for-of/head-let-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for/head-const-bound-names-in-stmt.js`: pass.
+  - `run_single language/statements/for/head-let-bound-names-in-stmt.js`: pass.
+- Remaining dominant failures after this pass are no longer parser-only. The next tranche is lexical-environment runtime correctness (`scope-head-lex-*`, `scope-body-lex-*`), followed by the strict-mode parameter/body early-error set and proposal-era `using` parsing if that feature is brought into scope.
+
+### 2.71 `let` Newline ASI Split (2026-03-06)
+- FenBrowser.FenEngine/Core/Parser.cs
+  - `ParseStatement()` now treats `let` followed by a real line break as an expression statement when the lookahead is not `[`.
+  - This preserves the `let [` parse-negative restriction while allowing `let` ASI cases such as `let // ASI` followed by `{}` or an identifier on the next line.
+- Net effect:
+  - Removed the parser regression introduced by the stricter single-statement-body checks.
+  - Restored the positive `let` newline tests without reopening the `let [` negative cases.
+
+Verification snapshot (2026-03-06):
+- `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass.
+- `run_chunk 50`: `750/1000` pass (`Results/tranche2_chunk50_20260306_parser_rerun3.json`).
+- Targeted confirmations:
+  - `run_single language/statements/for-of/let-block-with-newline.js`: pass.
+  - `run_single language/statements/for-of/let-identifier-with-newline.js`: pass.
+  - `run_single language/statements/for-of/let-array-with-newline.js`: pass (still parse-negative as expected).
+
+### 2.72 Lexical `for-in/of` Runtime Environments (2026-03-06)
+- FenBrowser.FenEngine/Core/Ast.cs
+  - `ForInStatement` and `ForOfStatement` now carry `BindingKind` so the compiler can distinguish declaration heads from assignment heads.
+- FenBrowser.FenEngine/Core/Parser.cs
+  - Lexical `for-in/of` heads now preserve `let` / `const` metadata through parsing.
+  - `for-of` RHS parsing now uses assignment precedence, which rejects unparenthesized comma expressions while preserving valid parenthesized comma-expression RHS cases.
+- FenBrowser.FenEngine/Core/FenEnvironment.cs
+  - Added lexical-scope tracking alongside the existing declaration-environment helpers.
+  - TDZ reads now surface `ReferenceError: Cannot access '<name>' before initialization` consistently.
+  - Added `GetVarDeclarationEnvironment()` so `var` declarations can skip transient lexical loop scopes.
+- FenBrowser.FenEngine/Core/Bytecode/OpCode.cs
+  - Added `StoreVarDeclaration`, `StoreLocalDeclaration`, `DeclareTdz`, and `DeclareVar` opcodes.
+- FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs
+  - `PushScope` now marks child scopes as lexical-only.
+  - `LoadVar` and `LoadVarSafe` now throw on TDZ sentinel values, restoring `typeof` TDZ behavior.
+  - Added runtime handling for `StoreVarDeclaration`, `StoreLocalDeclaration`, `DeclareTdz`, and `DeclareVar`.
+- FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs
+  - Lexical `for-in/of` heads now emit a temporary TDZ scope around RHS evaluation.
+  - Lexical `for-in/of` iterations now emit a fresh scope per iteration before binding initialization and body execution.
+  - `break` / `continue` now emit loop-scope cleanup for lexical loop environments.
+  - Local-slot collection now skips lexical `for-in/of` loop bindings so closures capture environment-backed iteration bindings instead of frame-local slots.
+  - `var` declarations without initializers now emit `DeclareVar` instead of becoming runtime no-ops.
+  - `var` initializers inside lexical scopes now use declaration opcodes that skip transient lexical environments.
+- Net effect:
+  - Closed the lexical loop scope cluster for TDZ head evaluation, per-iteration closure capture, and non-clobbering `var` declarations inside lexical loop bodies.
+  - Removed the false parser rejection of valid parenthesized comma-expression RHS forms in `for-of`.
+
+Verification snapshot (2026-03-06):
+- `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release`: pass.
+- `run_chunk 50`: `760/1000` pass (`Results/tranche2_chunk50_20260306_lexical_runtime_rerun.json`).
+- Targeted confirmations:
+  - `run_single language/statements/for-of/scope-head-lex-open.js`: pass.
+  - `run_single language/statements/for-of/scope-head-lex-close.js`: pass.
+  - `run_single language/statements/for-of/scope-body-lex-open.js`: pass.
+  - `run_single language/statements/for-of/scope-body-lex-close.js`: pass.
+  - `run_single language/statements/for-of/scope-body-lex-boundary.js`: pass.
+  - `run_single language/statements/for-of/scope-body-var-none.js`: pass.
+- Additional targeted confirmations:
+  - `run_single language/statements/for-in/scope-head-lex-open.js`: pass.
+  - `run_single language/statements/for-in/scope-head-lex-close.js`: pass.
+  - `run_single language/statements/for-in/scope-body-lex-open.js`: pass.
+  - `run_single language/statements/for-in/scope-body-lex-close.js`: pass.
+  - `run_single language/statements/for-in/scope-body-lex-boundary.js`: pass.
+  - `run_single language/statements/for-in/scope-body-var-none.js`: pass.
+
+
+### 2.73 Worker Bootstrap Async Gating (2026-03-06)
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Worker script fetch now starts as an async bootstrap task instead of blocking the worker thread with `LoadWorkerScriptAsync().GetAwaiter().GetResult()`.
+  - Worker task processing is now gated on bootstrap completion so queued messages/timers cannot run before the bootstrap script is fetched and executed.
+  - Bootstrap completion wakes the worker loop explicitly, and startup fetch/execute failures still surface through `OnError`.
+- Net effect:
+  - Removes the remaining sync-over-async bridge from worker startup.
+  - Preserves deterministic bootstrap ordering without letting pre-bootstrap tasks race ahead of script execution.
+
+### 2.74 Custom Elements `whenDefined()` Promise Semantics (2026-03-06)
+- `FenBrowser.FenEngine/DOM/CustomElementRegistry.cs`
+  - `WhenDefined(...)` now creates `TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)` so registry completion cannot inline-continuation back into the defining call path.
+  - `customElements.whenDefined(name)` now uses a single promise-like helper for pending, fulfilled, and rejected states instead of mixing async and synchronous callback paths.
+  - `then(...)` and `catch(...)` callbacks now always re-enter through the engine microtask queue, including already-fulfilled and already-rejected cases.
+  - Promise settlement now snapshots callback lists under a private gate before scheduling delivery, avoiding callback-list races between definition and late subscriber registration.
+- Net effect:
+  - `whenDefined()` no longer fires late subscribers synchronously.
+  - Custom-elements definition notifications now line up with the engine event-loop/microtask model used elsewhere in FenEngine.
+
+### 2.75 BrowserHost WebDriver Property Lookup Fast Path (2026-03-06)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `BrowserHost.GetElementPropertyAsync(...)` no longer wraps `GetElementAttributeAsync(...)` in `ContinueWith(...)` for simple in-memory element property reads.
+  - The WebDriver element-property path now returns `Task.FromResult<object>(...)` directly for hit and miss cases.
+- Net effect:
+  - Removes unnecessary continuation scheduling from synchronous element property inspection.
+  - Keeps WebDriver attribute/property reads on the zero-wait fast path when the value is already present in the element map.
+
+### 2.75.1 Focus-State Convergence (2026-03-07)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Added centralized focus-state synchronization so pointer/programmatic focus updates now keep `_focusedElement`, `ElementStateManager`, and `document.activeElement` aligned.
+  - `GetActiveElementAsync()` now returns the actual focused element by reusing or registering the live focused node in the WebDriver element map instead of the previous hard-coded `null` stub.
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - `focus()` / `blur()` now mirror DOM focus transitions into `ElementStateManager`, keeping selector state (`:focus`, `:focus-within`, `:focus-visible`) synchronized with DOM-visible `document.activeElement`.
+- Net effect:
+  - Programmatic focus, pointer focus, CSS focus selectors, and WebDriver `Get Active Element` now share one engine-visible focus state instead of diverging across separate partial paths.
+
+### 2.75.2 Storage Persistence Hardening (2026-03-07)
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - Replaced write-on-every-mutation localStorage persistence with debounced persistence scheduling.
+  - Immediate `Save()` now flushes pending timers and performs an explicit synchronous write when a hard flush is required.
+  - Persistent writes now use temp-file + replace/move semantics instead of in-place overwrite, reducing corruption risk on interruption.
+- Net effect:
+  - localStorage mutations no longer block every set/remove/clear on direct disk writes.
+  - persistence is more resilient under process interruption and repeated high-frequency mutation bursts.
+
+### 2.76 Worker Bootstrap Completion Observer Hardening (2026-03-06)
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Replaced the constructor-time `_bootstrapScriptLoadTask.ContinueWith(...)` wakeup with an explicit `ObserveBootstrapCompletionAsync()` observer.
+  - The observer now awaits bootstrap completion and always signals the worker loop in `finally`, while tolerating disposal races through an `ObjectDisposedException` guard.
+- Net effect:
+  - Removes the remaining continuation-based bootstrap wake bridge from the worker runtime.
+  - Preserves bootstrap success/failure wake semantics without leaving completion signaling tied to `ContinueWith(...)` behavior.
+
+### 2.77 JavaScriptEngine Background Task Fault Observation Hardening (2026-03-06)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Replaced the remaining `ContinueWith(...OnlyOnFaulted...)` observers on `ScheduleCallbackAsync(...)` and the deprecated `SetDom(...)` wrapper with awaited `ObserveBackgroundTaskFailureAsync(...)` helpers.
+  - Fire-and-forget callback scheduling and deprecated DOM bootstrap now stay non-blocking while routing fault logging through explicit async observation instead of continuation-only bridges.
+- Net effect:
+  - Removes the last continuation-only fault observers from `JavaScriptEngine`.
+  - Preserves non-blocking legacy entrypoints and callback scheduling while keeping background failures observed and logged.
+
+### 2.78 JavaScriptEngine Geolocation Watch Lifecycle (2026-03-06)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added live `navigator.geolocation.watchPosition()` support with unique watch ids, permission-gated callback delivery, and periodic position updates routed back through the engine event loop.
+  - Added `clearWatch()` cancellation plus internal watch tracking/cancellation storage.
+  - Active geolocation watches are now cleared on `Reset(...)` and `SetDomAsync(...)` so location subscriptions remain page-scoped and do not leak across navigations/runtime resets.
+- Net effect:
+  - Closes the runtime gap where only `getCurrentPosition()` existed and continuous geolocation observation was missing.
+  - Prevents detached geolocation watchers from surviving navigation or engine reset boundaries.
+
+### 2.79 Static GeolocationAPI Watch Support (2026-03-06)
+- `FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`
+  - `GeolocationAPI.CreateGeolocationObject()` now returns working `watchPosition()` / `clearWatch()` methods instead of the previous hard-coded watch id stub.
+  - Static geolocation watches now allocate unique ids, emit repeated approximate position snapshots on a bounded timer cadence, and stop cleanly when cleared.
+  - Permission revocation through `SetPermission(false)` now tears down active static watches so helper-created objects cannot leak timers across tests or standalone contexts.
+- Net effect:
+  - Closes the remaining geolocation watch stub in the standalone Web API factory surface.
+  - Aligns helper-created geolocation objects with the live runtime behavior added in `JavaScriptEngine`.
+
+
+
+
+### 2.80 WebRTC Constructorization and ICE Configuration Hardening (2026-03-06)
+- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs`
+  - `RTCPeerConnection` and `MediaStream` are now constructor-capable (`FenFunction` with constructor metadata + prototype linkage) instead of object-only exposure.
+  - Added explicit execution-context fallback and constructor-path configuration validation.
+  - Added bounded ICE configuration normalization with scheme allowlist (`stun`, `turn`, `turns`), array-size limits, URL-size limits, and private/reserved host rejection.
+  - Added `getConfiguration()` / `setConfiguration()` handling against normalized configuration state.
+  - Added instance-level event listener wiring (`addEventListener`, `removeEventListener`, `dispatchEvent`) and state-change event dispatch on `close()`.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Runtime registration now exposes constructor-capable `RTCPeerConnection`, `webkitRTCPeerConnection`, and `MediaStream` on both global and `window`.
+- Net effect:
+  - WebRTC globals now behave as constructor APIs in runtime surface checks.
+  - ICE configuration acceptance is constrained to hardened bounds and safer endpoint classes.
+
+### 2.81 Observer API Constructor and Runtime Exposure Productionization (2026-03-06)
+- `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs`
+  - Reworked `IntersectionObserver` creation into constructor semantics (`IsConstructor`, `NativeLength`, prototype linkage).
+  - Added option normalization/validation for `threshold` and `rootMargin`:
+    - numeric and array-like threshold support,
+    - bounded threshold list size,
+    - finite-range validation (`0..1`),
+    - root margin length/control-character guards.
+  - Added normalized `rootMargin` / `thresholds` properties on created observer objects.
+  - Hardened `observe` / `unobserve` argument validation.
+- `FenBrowser.FenEngine/WebAPIs/ResizeObserverAPI.cs`
+  - Reworked `ResizeObserver` creation into constructor semantics with prototype linkage.
+  - Hardened callback/target argument validation for constructor and observer methods.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added global registration and `window` mirroring for `IntersectionObserver` and `ResizeObserver`.
+- Net effect:
+  - Observer constructors are now runtime-visible and constructor-correct, with bounded option parsing and stronger argument validation.
+
+### 2.82 Cache API Response Persistence and CacheStorage Match Completion (2026-03-06)
+- `FenBrowser.FenEngine/WebAPIs/Cache.cs`
+  - Replaced placeholder-body caching with real response-body persistence from response objects (`body` / `textBody`) and bounded payload storage.
+  - Added hardened request URL validation for cache operations (`http/https` only, max length, absolute URL requirement).
+  - Upgraded `match`, `put`, `delete`, and `keys` to initialization-gated async execution with deterministic promise settlement state.
+  - Added `json()` parsing for cached response bodies (with rejection on invalid JSON) and preserved `text()` retrieval.
+  - Added cache invalidation lifecycle support to prevent deleted caches from recreating storage during async initialization races.
+- `FenBrowser.FenEngine/WebAPIs/CacheStorage.cs`
+  - Implemented functional `CacheStorage.match(request)` search across named caches instead of prior stub behavior.
+  - Added strict cache-name normalization bounds and rejection path for invalid `open(name)` requests.
+  - Hardened delete lifecycle: open-cache invalidation + backing database removal without stale cache resurrection.
+  - Kept async promise-returning behavior for `open`, `has`, `delete`, `keys`, and `match` with explicit fulfillment/rejection states.
+- Net effect:
+  - Service Worker cache storage now persists real response content and resolves cross-cache lookups.
+  - Cache deletion no longer races with async initialization to recreate deleted stores.
+
+### 2.46 Intl Baseline Hardening (2026-03-07, JsIntl productionization tranche)
+- `Core/Types/JsIntl.cs`
+- Replaced the `Intl.Collator` object stub with a real locale-backed comparer built on `.NET` `CompareInfo`, including `compare`, `resolvedOptions`, and constructor-level `supportedLocalesOf`.
+- Hardened `Intl.DateTimeFormat` locale negotiation so string locales, array-like locale lists, and object-wrapped locale descriptors resolve through `CultureInfo` instead of silently collapsing to the process default.
+- Upgraded `Intl.DateTimeFormat` option handling for `weekday`, `year`, `month`, `day`, `hour`, `minute`, `second`, `hour12`, `timeZone`, and `timeZoneName`, and exposed the negotiated state through `resolvedOptions`.
+- Upgraded `Intl.NumberFormat` option handling for `style`, `currency`, `currencyDisplay`, `minimumFractionDigits`, `maximumFractionDigits`, `useGrouping`, and `signDisplay`, using culture-cloned `NumberFormatInfo` instead of a single fixed formatting path.
+- `Intl` remains a baseline embedded implementation rather than full ICU parity: advanced families such as `Intl.Segmenter`, full locale data packs, and spec-edge formatting behaviors are still outside this tranche.
+
+### 2.47 XMLHttpRequest State Machine Hardening (2026-03-07, productionization tranche)
+- `WebAPIs/XMLHttpRequest.cs`
+- Replaced the old happy-path-only XHR implementation with a stateful request lifecycle that tracks `send()` in-flight state, request generations, and cancellation so stale completions cannot mutate a later request after `abort()` or `open()`.
+- Added baseline instance property semantics for `timeout`, `responseType`, and `withCredentials` by synchronizing JS property writes into internal request state instead of leaving them as constructor-only placeholders.
+- Added `abort()` and `overrideMimeType()` plus terminal lifecycle dispatch for `onloadstart`, `onprogress`, `onload`, `onerror`, `onabort`, `ontimeout`, and `onloadend`.
+- Added synchronous-path handling for `open(..., false)` / `send()` so non-async callers no longer silently take the detached async path.
+- Added response decoding for `text`, `json`, `arraybuffer`, and `blob`-compatible binary responses, including `response`, `responseText`, response header enumeration across normal and content headers, and JSON materialization into Fen objects/arrays.
+- XHR remains a baseline host-backed implementation: upload progress events, cookie credential plumbing, and full `document` response parsing are still outside this tranche.
+
+### 2.48 WebRTC PeerConnection State Hardening (2026-03-07, tracked object tranche)
+- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs`
+- `RTCPeerConnection` now keeps live tracked collections for created data channels, RTP senders, RTP receivers, and transceivers instead of returning empty placeholder arrays from `getSenders()`, `getReceivers()`, and `getTransceivers()`.
+- `createDataChannel()` now persists created channels on the owning peer connection, assigns stable channel ids, accepts baseline channel options (`ordered`, `maxPacketLifeTime`, `maxRetransmits`, `protocol`, `negotiated`, `binaryType`), and advances peer-connection state toward negotiation instead of being an isolated detached object factory.
+- `RTCDataChannel.send()` now enforces `readyState === "open"`, tracks `bufferedAmount`, and emits `onbufferedamountlow` after asynchronous drain instead of remaining a no-op.
+- `addTrack()` / `removeTrack()` now build and maintain linked sender/receiver/transceiver objects and dispatch `negotiationneeded` when the transceiver set changes.
+- `getStats()` now returns a baseline peer-connection stats report with connection state, ICE state, and tracked object counts rather than an empty placeholder object.
+- `close()` is now idempotent, closes tracked data channels, emits close/state-change events, and converges `connectionState`, `iceConnectionState`, `iceGatheringState`, and `signalingState` on `closed`.
+- WebRTC remains a baseline implementation: SDP generation, ICE gathering, NAT traversal, and true peer transport establishment are still outside this tranche.
+
+### 2.49 Fetch Constructor Semantics Hardening (2026-03-07, Headers/Response tranche)
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+- `JsHeaders` now accepts constructor init values from existing `Headers`, plain objects, and array-like `[name, value]` pairs instead of always constructing an empty shell.
+- Added `Headers.delete()` and `Headers.forEach()` so script-side header mutation/inspection is no longer limited to `append/get/has/set` only.
+- `Response(body, init)` now applies real constructor semantics for `status`, `statusText`, `headers`, and body content instead of always returning a blank `HttpResponseMessage` wrapper.
+- Added `Response.clone()` so response wrappers can be duplicated with preserved status, headers, and buffered text content.
+- Fetch remains a baseline host-backed implementation: `AbortSignal`, credentials/cookie plumbing, and full body stream/`arrayBuffer()` parity are still outside this tranche.
+
+### 2.50 IndexedDB In-Memory Engine Hardening (2026-03-07, versioned request/transaction tranche)
+- `FenBrowser.FenEngine/WebAPIs/IndexedDBService.cs`
+- Replaced the previous minimal `indexedDB.open()` shim with a versioned in-memory database registry that tracks database version, object stores, store metadata, and record dictionaries per database.
+- Added async `IDBOpenDBRequest`-style behavior for `open()` and `deleteDatabase()` with `onsuccess`, `onerror`, and `onupgradeneeded` dispatch plus request `result`, `error`, `readyState`, `source`, and `transaction` state.
+- Added upgrade-time schema mutation through `createObjectStore()` / `deleteObjectStore()` with `objectStoreNames` synchronization and version downgrade rejection.
+- Added baseline transaction objects with `mode`, `objectStore()`, `commit()`, `abort()`, `oncomplete`, `onerror`, and `onabort`.
+- Added object store CRUD request surfaces for `add`, `put`, `get`, `delete`, `clear`, `count`, and `getAll`, including readonly transaction enforcement and baseline `keyPath` / `autoIncrement` support.
+- IndexedDB remains an in-memory compatibility layer rather than a durable browser store: indexes, cursors, range queries, multi-entry keys, and persistence across process restarts are still outside this tranche.
+
+### 2.51 Cache/Response Interop Hardening (2026-03-07, cached response fidelity tranche)
+- `FenBrowser.FenEngine/WebAPIs/Cache.cs`
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+- Cache persistence now recognizes `JsResponse` bodies directly from the underlying `HttpResponseMessage` instead of silently storing an empty body when callers cache a real fetch `Response` object.
+- Cache header extraction now understands `JsHeaders` objects and copies actual header entries instead of only handling plain-object header bags.
+- Cache hits now rehydrate into real `JsResponse` objects backed by `HttpResponseMessage` rather than a plain ad-hoc object with a partial `text/json` surface.
+- Rehydrated cache responses now preserve `url`, `body`, `textBody`, response status, and header semantics more closely with the fetch runtime surface.
+- Cache Storage remains a baseline implementation: streaming bodies, opaque responses, VARY semantics, and full request-option matching are still outside this tranche.
+
+### 2.52 Weak Collection Semantics Hardening (2026-03-07, weak key/value parity tranche)
+- `FenBrowser.FenEngine/Core/Types/JsWeakMap.cs`
+- `FenBrowser.FenEngine/Core/Types/JsWeakSet.cs`
+- `JsWeakMap` mutation paths now use strict key validation and direct `ConditionalWeakTable` updates instead of swallowing internal add/remove failures behind warning logs.
+- `JsWeakSet` now accepts the same weakly-held key space as `JsWeakMap` by supporting symbols in `add`, `has`, and `delete` rather than rejecting everything except ordinary objects.
+- Weak collection membership checks and deletion paths now consistently return `false` for non-object/non-symbol inputs while mutation paths still throw the expected `TypeError`-style errors.
+- Weak collection constructors in runtime registration still remain baseline because iterable constructor initialization is not wired through the current `FenRuntime` constructor surface; this tranche hardens live instance semantics rather than the constructor call path.
+
+### 2.53 Weak Collection Constructor Initialization Wiring (2026-03-07, FenRuntime iterable tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.FenEngine/Core/Types/JsWeakMap.cs`
+- `FenBrowser.FenEngine/Core/Types/JsWeakSet.cs`
+- `FenRuntime` now routes `new WeakMap(iterable)` and `new WeakSet(iterable)` through constructor-time iterable population instead of always returning empty weak collections regardless of arguments.
+- Constructor initialization now accepts both iterator-backed inputs and array-like fallback inputs, so array literals and iterator-producing collections can seed weak collections during construction.
+- Added internal weak-collection insertion helpers so constructor initialization and instance mutation paths share the same key/value validation semantics instead of duplicating partial logic.
+- Weak collection constructor support remains baseline: iterable validation is stricter than web engines in some edge cases, and the runtime still does not expose broader collection helper methods beyond the standard constructor/mutation surface.
+
+### 2.54 Fetch Abort and Body Reader Hardening (2026-03-07, request/response parity tranche)
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+- `fetch(...)` now observes `Request.signal` / init-provided signals and rejects with an abort-style error when the signal is already aborted or aborts before the request settles.
+- `JsRequest` now carries `signal`, `bodyUsed`, `clone()`, `text()`, `json()`, and `arrayBuffer()` so request objects are no longer constructor-only shells.
+- `Request` construction from another `Request` now clones URL/method/headers/body/signal state and allows init overrides on top of the source request.
+- `JsResponse` now tracks `bodyUsed`, exposes `arrayBuffer()`, and blocks repeated body consumption / cloning after the body has been consumed.
+- Fetch body support remains buffered rather than streaming: readable streams, teeing, incremental consumption, and transport-level cancellation of the underlying host fetch are still outside this tranche.
+
+### 2.55 Web Audio Node Runtime Hardening (2026-03-07, graph/analyser/buffer tranche)
+- `FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs`
+- `AudioContext.createOscillator()` / `createBufferSource()` now produce source nodes with baseline playback state, `onended` support, and scheduled start/stop completion instead of pure no-op `start()` / `stop()` functions.
+- Base audio nodes now track live connection counts through `connect()` / `disconnect()` rather than behaving as stateless passthrough shells.
+- `AnalyserNode` byte/float capture methods now populate provided array-like targets with deterministic waveform/frequency-domain data instead of returning without mutation.
+- `AudioBuffer` now stores per-channel sample arrays and supports meaningful `getChannelData()`, `copyFromChannel()`, and `copyToChannel()` behavior rather than empty array-like placeholders.
+- Web Audio remains a compatibility implementation rather than a real audio renderer: no actual mixer, hardware output, sample-accurate scheduling, or DSP graph processing is performed in this tranche.
+
+### 2.56 String Well-Formed Unicode Built-ins (2026-03-07, runtime parity tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Added `String.prototype.isWellFormed()` on the active `String.prototype` so modern framework/runtime probes can validate whether a UTF-16 string contains only paired surrogate sequences.
+- Added `String.prototype.toWellFormed()` so lone high/low surrogates are rewritten to U+FFFD instead of leaving the runtime without the ES2024 repair surface.
+- The implementation follows the browser-facing compatibility goal for UTF-16 surrogate validation/repair within Fen strings; it does not attempt broader Unicode normalization or grapheme-segmentation behavior.
+
+### 2.57 GroupBy and Promise.withResolvers Runtime Hardening (2026-03-07, iterable/static built-in tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Replaced the old array-length-only `Object.groupBy()` / `Map.groupBy()` paths with iterable-aware grouping that accepts iterator-backed inputs, array-like fallback inputs, and string inputs instead of silently producing empty results for non-array objects.
+- `Object.groupBy()` now validates required arguments, throws for null/undefined or non-callable callback inputs, and coerces callback results through the runtime property-key conversion path so Symbol-compatible property keys align with the rest of `Object` built-ins.
+- `Map.groupBy()` now mirrors the same iterable-aware traversal and argument validation while preserving callback-returned keys as live map keys instead of coercing them to strings.
+- Hardened `Promise.withResolvers()` in both promise-constructor registration paths so it consistently returns a constructor-backed promise plus real captured `resolve` / `reject` functions instead of relying on loosely initialized `undefined` fallback slots.
+
+### 2.58 Error.cause Constructor Propagation Hardening (2026-03-07, error-family parity tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Tightened the shared `MakeError(...)` helper so `cause` is attached only when the options bag explicitly provides it, instead of materializing a loose `cause: undefined` slot whenever any second argument object is passed.
+- Fixed `AggregateError(errors, message, options)` so the third-argument options bag now flows into the shared error-construction path; previously `AggregateError` dropped the `cause` option even though the base `Error` family already routed through `MakeError(...)`.
+- Error-family constructor coverage for `cause` now includes `Error`, typed error subclasses (`TypeError`, `SyntaxError`, `ReferenceError`, `RangeError`, `URIError`, `EvalError`), and `AggregateError`.
+
+### 2.59 Non-Mutating Array Method Hardening (2026-03-07, ES2023 array parity tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Hardened `Array.prototype.toSorted()` so it now throws on null/undefined receivers and non-callable comparator inputs instead of silently fabricating success paths.
+- `toSorted()` now performs stable ordering by preserving original index order for equal comparisons, moves `undefined` values to the end on the default path, and treats `NaN` comparator returns as equality instead of producing unstable cast-based ordering.
+- Hardened `Array.prototype.toSpliced()` so null/undefined and non-object receivers now throw rather than returning an empty fabricated array.
+- Hardened `Array.prototype.with()` so invalid receivers throw and out-of-range indices now surface a real `RangeError` instead of returning an error payload value.
+- The ES2023 non-mutating array trio remains a baseline runtime implementation: species construction, sparse-hole fidelity, and deeper spec edge cases are still outside this tranche.
+
+### 2.60 Uint8Array Base64 Decode Hardening (2026-03-07, ES2024 binary-data tranche)
+- `FenBrowser.FenEngine/Core/Types/JsTypedArray.cs`
+- Added `Uint8Array.prototype.setFromBase64()` directly on `JsUint8Array` instances instead of leaving the ES2024 binary-data surface missing from the typed-array runtime.
+- The implementation now supports `alphabet: "base64"` and `alphabet: "base64url"` plus `lastChunkHandling` values `loose`, `strict`, and `stop-before-partial`.
+- Decoding writes directly into the typed array's backing buffer/view window and returns a `{ read, written }` result object so callers can continue chunked decoding when destination capacity is smaller than the full decoded payload.
+- The implementation validates malformed quartets and invalid option values with typed runtime errors, but still remains a baseline compatibility layer rather than a fully spec-audited binary-data implementation.
+
+### 2.61 FinalizationRegistry Cleanup Queue Hardening (2026-03-07, GC-backed runtime tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Replaced the old `FinalizationRegistry` constructor shell with tracked registrations backed by a `ConditionalWeakTable` so registry state now follows target object lifetime instead of exposing a no-op API surface.
+- Added real `register(target, holdings, unregisterToken)` and `unregister(unregisterToken)` validation/behavior, including tracked unregister-token removal instead of unconditional `true` responses.
+- Added queued cleanup delivery backed by bucket finalizers: when a target becomes collectible, its held values are enqueued and then drained through the cleanup callback on the next registry API interaction.
+- Added `cleanupSome([callback])` so pending held values can be drained explicitly with either the provided cleanup callback or the registry's constructor callback.
+- Callback timing remains best-effort rather than browser-grade deterministic scheduling because cleanup still depends on CLR GC/finalizer timing and runtime re-entry before queued callbacks are invoked.
+
+### 2.62 structuredClone Cycle Graph Hardening (2026-03-07, clone-graph parity tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Replaced the old `structuredClone()` depth-50 bailout path with an identity-map clone walker so cyclic and shared-reference object graphs no longer fall back to returning original references once recursion gets deep enough.
+- Added explicit `DataCloneError`-style rejection for function values instead of silently cloning unsupported callable objects.
+- Added structured-clone handling for `ArrayBuffer`, `Uint8Array`, `Float32Array`, and `DataView` so buffer-backed values now clone into fresh backing stores instead of aliasing original memory.
+- Plain objects and arrays now preserve graph identity during clone traversal and keep their runtime `InternalClass`/prototype linkage rather than collapsing everything into a shallow detached object shell.
+- `structuredClone()` remains a baseline runtime implementation: transfer-list semantics and deeper host-object coverage are still outside this tranche.
+
+### 2.63 Fetch/XHR CORS Origin Propagation Hardening (2026-03-07, network security tranche)
+- `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
+- `FenBrowser.FenEngine/WebAPIs/XMLHttpRequest.cs`
+- `fetch(...)` and `XMLHttpRequest` request builders now derive the execution/document origin from `IExecutionContext.CurrentUrl` and attach an internal `Origin` header on cross-origin requests before handing off to the centralized network pipeline.
+- This aligns engine-side request construction with the new core-layer preflight enforcement so cross-origin non-simple requests are evaluated against the correct page origin instead of bypassing preflight due to missing origin metadata.
+
+### 2.64 JavaScriptEngine Network-Path Convergence (2026-03-07, policy bypass tranche)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- Removed the remaining browser-facing direct `HttpClient` GET paths from `JavaScriptEngine`.
+- Legacy `fetch(...).then(...)` bridging, generic script/text fetch fallback, and external-script fallback now route through the existing `FetchHandler` seam instead of bypassing the browser network pipeline.
+- Cross-origin engine-side GET fallbacks now preserve `Referrer` and `Origin` metadata when a page base URI is available, keeping centralized cookie/CSP/CORS/HSTS handling aligned with the rest of the runtime.
+
+### 2.65 Iframe Sandbox DOM Bridge Hardening (2026-03-07, iframe security tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- Sandboxed iframes no longer reuse the parent document by default through `contentWindow` / `contentDocument`.
+- The iframe DOM bridge now consumes centralized sandbox-token parsing from `SandboxPolicy` and applies baseline restrictions:
+  - `contentDocument` returns `null` unless `allow-same-origin` is present
+  - `contentWindow` advertises script/navigation/form/popup capability state instead of implicitly inheriting unrestricted parent context
+  - sandboxed iframe windows default to self-contained `window` / `self` / `top` / `parent` references rather than exposing parent browsing context objects
+- This is a baseline DOM/JS exposure fix; full popup/form/process isolation semantics remain outside this tranche.
+
+### 2.66 Iframe Sandbox Popup/Navigation Bridge Enforcement (2026-03-07, iframe security tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `contentWindow.open(...)` on sandboxed iframes now blocks by default unless `allow-popups` is present.
+- `contentWindow.location.assign(...)` / `replace(...)` now block by default unless the iframe sandbox policy grants top-navigation capability.
+- Blocked iframe-window actions now leave a per-frame diagnostic marker (`__fenSandboxLastBlockedAction`) instead of silently inheriting unrestricted parent behavior.
+
+### 2.67 Iframe Sandbox Form Submission Enforcement (2026-03-07, iframe security tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- Submit-button activation and host-side form submission now block when a containing iframe is sandboxed without `allow-forms`.
+- This binds `allow-forms` into both DOM event-driven submit activation and the authoritative navigation submission path, so sandboxed frame forms no longer navigate by default.
+
+### 2.68 Iframe Sandbox Modal API Enforcement (2026-03-07, iframe security tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `contentWindow.alert(...)`, `confirm(...)`, and `prompt(...)` on sandboxed iframes now block by default unless `allow-modals` is present.
+- Blocked modal attempts now record the same iframe diagnostic marker (`__fenSandboxLastBlockedAction = "modal"`) used by the popup/navigation bridge.
+- When `allow-modals` is granted, the iframe window delegates to the parent window modal functions instead of bypassing the existing host/runtime modal path.
+
+### 2.69 Frame-Context Search Isolation Hardening (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `SwitchToFrameAsync(...)` / `SwitchToParentFrameAsync()` no longer succeed as pure no-ops.
+- BrowserHost now tracks an explicit frame-context stack for WebDriver/browser frame selection and resets that context on top-level navigation.
+- Element searches now resolve against the active frame context instead of always querying the top document.
+- When the selected frame is sandboxed without `allow-same-origin`, frame search context resolves to `null`, preventing same-document fallback leakage through frame switching.
+- Current frame support remains bounded by the existing DOM model: if no embedded frame document subtree exists, switching into the frame yields an isolated empty search context rather than silently aliasing the top document.
+
+### 2.70 Frame-Scoped Introspection Hardening (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- The older direct `FindElementAsync(strategy, value)` path now honors the active frame context instead of always searching the top document.
+- `GetActiveElementAsync()` now returns `null` when the active frame context is opaque and filters out focused elements that are outside the active frame search root.
+- `GetPageSourceAsync()` now serializes the active frame subtree, and returns an empty payload for opaque sandboxed frames instead of leaking the top document source.
+
+### 2.71 Frame-Context Element Handle Invalidation (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- Top-level navigation and all frame-context transitions now clear the WebDriver/browser element-id map.
+- Previously resolved element handles can no longer be reused across navigation, frame entry, frame reset, or parent-frame transitions, preventing cross-context element aliasing after browsing-context changes.
+- This is a conservative isolation step: callers must reacquire elements after each context change instead of accidentally operating on stale top-document handles.
+
+### 2.72 Frame-Scoped Script Execution Fail-Closed (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `ExecuteScriptAsync(...)` and `ExecuteAsyncScriptAsync(...)` now fail closed whenever a non-top-level frame context is active.
+- This prevents frame-switched script execution from silently evaluating in the top-level document until a dedicated per-frame JavaScript world exists.
+- The current behavior is intentionally conservative: frame script execution is blocked rather than incorrectly aliasing top-document execution state.
+
+### 2.73 Uint8Array Static Base64 Construction (2026-03-07, ES2024 binary-data tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Added `Uint8Array.fromBase64(...)` on the active typed-array constructor path.
+- Supports `alphabet: "base64"` and `alphabet: "base64url"`, strips ASCII base64 whitespace, pads partial quartets where valid, and rejects malformed input with typed runtime errors.
+- This complements the earlier `Uint8Array.prototype.setFromBase64()` work by enabling direct constructor-style decode into a fresh `Uint8Array` result.
+
+### 2.74 Frame-Scoped Element Operation Guarding (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- Element reads and mutations now resolve through the active frame context instead of trusting any element-id that still exists in the session map.
+- Attribute/property/text/tag/role/label reads plus input mutations now fail closed for elements outside the active frame root, preventing cross-frame element reuse inside a still-live browsing session.
+
+### 2.75 Uint8Array Static Hex Construction (2026-03-07, ES2024 binary-data tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Added `Uint8Array.fromHex(...)` on the active typed-array constructor path.
+- Strips ASCII hex whitespace, rejects odd-length or malformed input, and produces a fresh `Uint8Array` result without requiring a preallocated destination buffer.
+
+### 2.76 Frame-Scoped Click and Pointer-Origin Guarding (2026-03-07, browsing-context tranche)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `ClickElementAsync(...)` now resolves element handles through the active frame root instead of trusting any still-live element id in the session map.
+- Pointer actions with `origin: <element>` now use the same frame-scoped resolution path before converting the origin element into pointer coordinates.
+- This closes another active browsing-context leak: element ids from a different frame can no longer drive click or pointer-origin behavior after the user switches frame context.
+
+### 2.77 Uint8Array Prototype Hex Decode Writes (2026-03-07, ES2024 binary-data tranche)
+- `FenBrowser.FenEngine/Core/Types/JsTypedArray.cs`
+- Added `Uint8Array.prototype.setFromHex(...)` on `JsUint8Array`, matching the existing `{ read, written }` shape used by `setFromBase64(...)`.
+- The decode path strips ASCII hex whitespace, validates malformed digits, writes directly into the existing typed-array view window, and reports partial writes when destination capacity is smaller than the source payload.
+- This removes another remaining constructor-only bias from the binary-data surface by letting callers decode hex into preallocated buffers.
+
+### 2.78 Remote-Iframe Assignment Boundary Hardening (2026-03-07, OOPIF tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- Iframe `src` navigations now consult the shared OOPIF planner and stop being treated as implicitly same-process local frame contexts when the target is cross-site.
+- Cross-site assigned iframes now surface as remote-frame proxies through `contentWindow` metadata while keeping `contentDocument == null`.
+- Browser frame switching treats those assigned remote iframes as opaque contexts, so local DOM lookup and subtree fallback do not cross the OOPIF assignment boundary.
+- This is a conservative enforcement step until real cross-process frame DOM/compositor plumbing exists: remote iframes become intentionally inaccessible from the local renderer rather than incorrectly exposed as local same-process frames.
+
+### 2.79 DOM collection descriptor parity hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/DOM/NamedNodeMapWrapper.cs`
+- `DOMStringMap` (`element.dataset`) no longer hard-rejects `DefineOwnProperty(...)`.
+- Supported `data-*` entries now expose stable own-property descriptors, while non-backed expando properties use normal ES-style descriptor merge semantics.
+- `NamedNodeMapWrapper` now exposes own-property descriptors for indexed and named entries and supports ordinary expando descriptor behavior instead of collapsing reflection APIs onto a blanket `false`.
+- This closes another live WPT-facing `Object.getOwnPropertyNames` / descriptor failure path in DOM named-collection surfaces without pretending Milestone C is complete overall.
+
+### 2.80 Event listener-object parity hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Event listener registration paths that previously accepted only callable functions now also accept listener objects with `handleEvent`.
+- Native DOM wrapper dispatch, top-level FenRuntime listener dispatch, and JavaScriptEngine-side object-target dispatch now all invoke `handleEvent` with the listener object as `this`.
+- Duplicate suppression and removal now track the original listener value instead of assuming every callback is a `FenFunction`.
+- This removes one concrete `undefined is not a function` failure source in the Milestone `C2` event-API cluster without claiming full WPT DOM/event closure.
+
+### 2.81 WPT no-assertion fatal-script recovery (2026-03-07, Milestone C1 tranche)
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+- `FenBrowser.WPT/HeadlessNavigator.cs`
+- Added a fatal page-script bridge that reports `error` / `unhandledrejection` into `testRunner.reportResult(...)` and completes the harness instead of leaving the run at `completionSignal: none`.
+- The WPT runner now also detects fatal console-side `[WPT-NAV]` / global-script errors and synthesizes a structured failing harness result when no assertions were otherwise emitted.
+- This converts a class of opaque no-assertion failures into explicit structured failures, tightening Milestone `C1` recovery without claiming the DOM/event WPT gate is complete.
+
+### 2.82 Event subclass constructor/prototype parity hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- Replaced the previous event-subclass constructor shells that only returned plain `DomEvent` objects with richer constructor initialization for:
+  - `UIEvent`
+  - `MouseEvent`
+  - `KeyboardEvent`
+  - `FocusEvent`
+  - `InputEvent`
+  - `CompositionEvent`
+  - `PointerEvent`
+  - `WheelEvent`
+  - `TouchEvent`
+  - `AnimationEvent`
+  - `TransitionEvent`
+  - `BeforeUnloadEvent`
+- Constructor init dictionaries now populate baseline subclass fields such as coordinates, modifier keys, `key`/`code`, `relatedTarget`, `data`, `inputType`, pointer metrics, wheel deltas, touch lists, and transition/animation metadata.
+- Added baseline `getModifierState(...)` support on the mouse/keyboard/pointer/wheel/touch constructor paths.
+- This removes another live WPT constructor/prototype parity gap in the Milestone `C2` event surface without claiming full event-subclass completeness.
+
+### 2.83 HTMLCollection numeric-index coercion hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/DOM/HtmlCollectionWrapper.cs`
+- `HTMLCollection.item(...)` now uses a `ToUint32`-style coercion path instead of directly casting to `int`.
+- Negative and oversized numeric arguments now follow collection-index wrapping semantics more closely, including the WPT cases around `2^31` and `2^32`.
+- Out-of-range `item(...)` access now deterministically returns `null` instead of depending on LINQ negative-index behavior.
+- This closes another concrete collection/name edge-case gap in the Milestone `C2` DOM surface without claiming the full HTMLCollection suite is complete.
+
+### 2.84 HTMLCollection prototype brand-check hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/DOM/HtmlCollectionWrapper.cs`
+- `HTMLCollection.length` now rejects incompatible prototype receivers instead of behaving like a plain inherited data property.
+- This aligns the collection more closely with browser behavior for `Object.create(collection)` style prototype usage while preserving named-property lookup on the live collection itself.
+- This removes the direct `HTMLCollection as a prototype should not allow getting .length on the base object` gap without claiming full platform-object brand-check parity.
+
+### 2.85 HTMLCollection out-of-range delete semantics hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/DOM/HtmlCollectionWrapper.cs`
+- `delete collection[index]` now only fails for real live indexed entries; out-of-range numeric property names succeed as no-op deletes.
+- Supported named properties remain undeletable through the wrapper, while ordinary expandos keep normal configurable delete semantics.
+- This closes the specific WPT edge case around deleting numeric property names past the live collection length without claiming the full HTMLCollection suite is complete.
+
+### 2.86 Document collection API parity hardening (2026-03-07, Milestone C2 tranche)
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `document.getElementsByTagName(...)` and `document.getElementsByClassName(...)` now return `HTMLCollectionWrapper` instead of ad hoc plain list objects.
+- Added `document.getElementsByTagNameNS(...)` on the DOM wrapper path, backed by namespace/local-name matching and the same `HTMLCollectionWrapper` surface.
+- This removes a direct document-level source of `namedItem` / supported-property / collection-method failures in the Milestone `C2` DOM WPT bucket.
+
+
+### 2.87 Legacy JS bridge collection parity hardening (2026-03-07, Milestone C2 tranche)
+- FenBrowser.FenEngine/Scripting/JavaScriptEngine.Dom.cs`r
+- The older JsDocument bridge no longer materializes getElementsByTagName(...) / getElementsByClassName(...) as plain arrays of wrapped objects.
+- Those legacy bridge entrypoints now feed HTMLCollectionWrapper, preserving the same named-property and collection-method behavior used by the main DOM wrapper path.
+- This removes another bypass where older bridge consumers could still observe array semantics instead of real HTMLCollection semantics.
+
+### 2.88 Event constant/prototype-chain parity hardening (2026-03-07, Milestone C2 tranche)
+- FenBrowser.FenEngine/Core/FenRuntime.cs
+- Mirrored the core Event phase constants onto Event.prototype in addition to the constructor and instance surface.
+- Corrected subclass prototype inheritance so:
+  - UIEvent extends Event
+  - MouseEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, and TouchEvent extend UIEvent
+  - PointerEvent and WheelEvent extend MouseEvent
+- UIEvent-family constructors now default iew to 
+ull and reject non-object/non-null iew init values instead of always forcing window.
+- This removes another concrete WPT event-constant / subclass-inheritance gap without claiming the event surface is fully complete.
+### 2.88 Event constant/prototype-chain parity hardening (2026-03-07)
+
+- Mirrored the `Event` phase constants onto `Event.prototype` so prototype-based constant checks no longer fail on base event instances.
+- Corrected event subclass prototype ancestry so `MouseEvent`, `KeyboardEvent`, `FocusEvent`, `InputEvent`, `CompositionEvent`, and `TouchEvent` inherit from `UIEvent`, while `PointerEvent` and `WheelEvent` inherit from `MouseEvent`.
+- Hardened `UIEvent`-family constructor handling so `view` defaults to `null` and invalid non-object/non-null `view` values are rejected instead of being accepted as loose data.
+### 2.89 DOM regression-pack artifact hardening (2026-03-07, Milestone C3 tranche)
+
+- Added first-class WPT regression-pack support in `FenBrowser.WPT` via:
+  - `run_pack <pack>` for repeatable execution of historical failure clusters
+  - `extract_pack <pack> [artifact]` for carving versioned cluster artifacts out of an existing aggregate WPT JSON run
+  - `list_packs` for built-in pack discovery
+- Added built-in DOM regression packs for the three historical Milestone `C` recovery clusters:
+  - `dom_no_assertion`
+  - `dom_event_api`
+  - `dom_named_collections`
+- Pack execution now emits versioned JSON artifacts plus a stable `*_latest.json` alias in `Results/`, so recovery evidence can be retained without overwriting the prior checkpoint history.
+- This closes the tooling side of Milestone `C3`: repeatable cluster-targeted execution and versioned artifact retention now exist for the recovered DOM/event failure groups.
+### 2.90 Legacy event-method parity hardening (2026-03-07, Milestone C2 tranche)
+
+- Hardened legacy `document.createEvent(...)` behavior so it no longer fabricates a generic initialized `Event` for every requested interface:
+  - `Event` / `Events` / `HTMLEvents` now create an uninitialized `DomEvent`
+  - `CustomEvent` now creates an uninitialized native `CustomEvent`
+  - missing interface arguments now throw instead of silently succeeding
+  - unsupported interface names now fail closed with `NotSupportedError` text instead of returning the wrong event class
+- Fixed dispatch-state handling in `DomEvent` so pre-dispatch propagation flags (`stopPropagation()`, `stopImmediatePropagation()`, `cancelBubble = true`) affect the first dispatch but are cleared after dispatch finalization, allowing spec-compatible redispatch of the same event object.
+- This removes another concrete old-style DOM event API gap in the Milestone `C2` recovery track without claiming the full legacy event factory matrix is complete.
+### 2.91 Legacy UI event-factory parity hardening (2026-03-07, Milestone C2 tranche)
+
+- Extended `document.createEvent(...)` beyond generic `Event`/`CustomEvent` to return native legacy event objects for:
+  - `UIEvent` / `UIEvents`
+  - `MouseEvent` / `MouseEvents`
+  - `KeyboardEvent` / `KeyboardEvents`
+  - `CompositionEvent` / `CompositionEvents`
+- Added old-style init methods on the native DOM event objects:
+  - `initUIEvent(...)`
+  - `initMouseEvent(...)`
+  - `initKeyboardEvent(...)`
+  - `initCompositionEvent(...)`
+- Those init methods now:
+  - throw on missing mandatory `type`
+  - short-circuit while dispatch is active
+  - reinitialize subclass fields through the same object instead of fabricating a replacement event
+- `KeyboardEvent.initKeyEvent` remains intentionally undefined, matching current WPT expectations.
+- This closes another concrete old-style event factory/method gap in the Milestone `C2` recovery track without claiming full legacy UI Events parity.
+### 2.92 Label activation parity hardening (2026-03-07, Milestone C2 tranche)
+
+- Extended the DOM click/default-action path so `label.click()` and `label.dispatchEvent(new MouseEvent("click"))` now forward activation to the associated labelable control instead of terminating at the label wrapper.
+- Label association now resolves through:
+  - `for=<id>` lookup against the owning document
+  - first labelable descendant fallback when no `for` target exists
+- Disabled controls are excluded from forwarded label activation, so disabled checkbox/radio targets no longer receive synthetic label activation through the DOM wrapper path.
+- This closes another concrete Milestone `C2` event/default-action gap around label-triggered activation without claiming full HTML activation-behavior parity.
+### 2.93 NodeList collection parity hardening (2026-03-07, Milestone C2 tranche)
+
+- Upgraded `NodeListWrapper` from a minimal index/length shell into a more browser-like collection surface:
+  - `item(...)` now uses collection-index coercion instead of raw integer-only handling
+  - added `keys()`, `values()`, `entries()`, and iterator support
+  - `forEach(...)` now runs alongside a real iterable/indexed collection shape instead of being the only traversal API
+  - indexed properties are now undeletable only while live, while out-of-range numeric deletes succeed as no-ops
+  - non-backed properties now use expando storage and ordinary assignment/delete semantics
+- This removes another concrete collection/name gap outside `HTMLCollection` in the Milestone `C2` DOM recovery track.
+
+### 2.94 Bubbling click activation-target hardening (2026-03-07, Milestone C2 tranche)
+
+- Hardened synthetic mouse-click default-action handling so `dispatchEvent(new MouseEvent("click", { bubbles: true }))` now resolves the first ancestor with click activation behavior instead of assuming only the direct event target can activate.
+- Activation-target discovery now covers the current DOM wrapper click path for:
+  - `label`
+  - `button`
+  - `a[href]`
+  - `input[type=checkbox|radio|submit|image|button]`
+- Checkable pre-activation, label forwarding, and submit activation now execute against that resolved activation target rather than the raw dispatch target when bubbling is involved.
+- This closes another concrete Milestone `C2` default-action gap for nested bubbling click cases without claiming full HTML activation-behavior parity.
+### 2.95 DOMTokenList collection parity hardening (2026-03-07, Milestone C2 tranche)
+
+- Upgraded `DOMTokenList` from a minimal mutator shell into a more collection-like surface:
+  - added `item(...)`
+  - added `forEach(...)`, `keys()`, `values()`, `entries()`, and iterator support
+  - `toggle(token, force)` now honors the forced-toggle branch instead of only the single-argument form
+  - added expando storage plus baseline define/delete behavior for non-backed properties
+- This removes another collection-surface gap outside `HTMLCollection` in the Milestone `C2` recovery track.
+
+### 2.96 Radio-group activation rollback hardening (2026-03-07, Milestone C2 tranche)
+
+- Click pre-activation for `input[type=radio]` now snapshots the live radio group instead of only the clicked element’s own checked state.
+- Synthetic/default-action radio activation now:
+  - unchecks competing radios in the same named group/form during pre-activation
+  - restores the prior group state if activation is canceled
+- Checkbox behavior continues to use element-local toggle/rollback semantics.
+- This closes another concrete activation/default-action gap in the Milestone `C2` DOM event surface without claiming full HTML form-control parity.
+### 2.97 Document expando descriptor hardening (2026-03-07, Milestone C2 tranche)
+
+- `DocumentWrapper` no longer blanket-rejects ordinary own-property definition and deletion.
+- Non-built-in document expandos now participate in baseline `DefineOwnProperty(...)` and `delete` behavior through the existing expando store instead of failing closed for every property operation.
+- This removes another concrete descriptor/reflection gap in the Milestone `C2` DOM surface without pretending full document brand/descriptor parity is complete.
+### 2.98 Non-element EventTarget hardening (2026-03-07, Milestone C2 tranche)
+
+- `NodeWrapper` no longer leaves `addEventListener(...)` / `removeEventListener(...)` as no-ops for non-element nodes.
+- The shared event-listener registry now stores listeners for generic DOM `Node` targets instead of only `Element` targets.
+- Non-element node dispatch now invokes target listeners for text/comment/document-fragment style wrappers instead of silently skipping them.
+- This removes another concrete DOM/event runtime gap in the Milestone `C2` recovery track, especially for node-type listener tests that do not go through the element path.
+### 2.99 Attr wrapper descriptor and namespace hardening (2026-03-07, Milestone C2 tranche)
+
+- `AttrWrapper` is no longer a fixed-property shell around only `name` / `value` / `specified`.
+- Added baseline wrapper parity for:
+  - `namespaceURI`
+  - `prefix`
+  - `localName`
+  - `textContent`
+  - legacy `nodeName` / `nodeValue` / `nodeType`
+- `value`, `nodeValue`, and `textContent` now converge on the same attribute-write path instead of only `value` mutating the underlying attribute.
+- Added ordinary data-property expando storage plus baseline `delete` / `DefineOwnProperty(...)` behavior for non-built-in properties instead of blanket failure.
+- This removes another concrete DOM reflection/descriptor gap in the Milestone `C2` recovery track without claiming full WebIDL-generated `Attr` parity is complete.
+### 2.100 Range wrapper method and descriptor hardening (2026-03-07, Milestone C2 tranche)
+
+- `RangeWrapper` is no longer just a handful of getters plus blanket-false object semantics.
+- Exposed additional live `Range` methods already implemented in Core:
+  - `compareBoundaryPoints(...)`
+  - `isPointInRange(...)`
+  - `comparePoint(...)`
+  - `intersectsNode(...)`
+- Range node-argument methods now unwrap generic DOM wrapper `NativeObject` nodes instead of only the narrow `NodeWrapper` / `DocumentWrapper` cases.
+- Added ordinary data-property expando storage plus baseline `Has(...)`, `Keys(...)`, `Set(...)`, `Delete(...)`, and `DefineOwnProperty(...)` behavior for non-built-in properties instead of blanket failure.
+- This removes another concrete wrapper/reflection gap in the Milestone `C2` DOM recovery track while keeping the live Core `Range` object as the single authority for boundary logic.
+### 2.101 Legacy JS bridge ShadowRoot and DOMTokenList hardening (2026-03-07, Milestone C2 tranche)
+
+- Hardened the legacy `JavaScriptEngine.Dom` bridge so `JsDomShadowRoot` no longer reports blanket `Has(...) == true` with no real own-property behavior.
+- `JsDomShadowRoot` now has baseline expando-backed `Has(...)`, `Keys(...)`, `Set(...)`, `Delete(...)`, and `DefineOwnProperty(...)` semantics for non-built-in properties, while preserving `innerHTML` as the only writable built-in surface.
+- Hardened the legacy `JsDomTokenList` bridge so it no longer diverges from the main wrapper on basic token-list behavior:
+  - indexed property lookup now returns `undefined` when out of range
+  - `item(...)` now returns `null` when missing
+  - `add(...)` and `remove(...)` now accept multiple tokens
+  - `toggle(token, force)` now honors the forced branch
+  - non-built-in expandos now participate in baseline property-definition and deletion behavior
+- This removes another concrete legacy-bridge source of Milestone `C2` collection/reflection failures without widening back into a second incompatible DOM object model.
+### 2.102 Legacy JS bridge CSSStyleDeclaration delete/define hardening (2026-03-07, Milestone C2 tranche)
+
+- Hardened the legacy `JsCssDeclaration` bridge so `delete style.someProperty` now clears the corresponding serialized style property instead of always failing.
+- `DefineOwnProperty(...)` on the legacy style object no longer blanket-fails for every property name:
+  - method names remain protected
+  - `cssText` can now be applied through the descriptor path
+  - other data descriptors now route through `setProperty(...)`
+- This removes another direct reflection mismatch in the Milestone `C2` DOM/CSS bridge without changing the underlying style serialization authority.
+
+### 2.99 Build-Blocking FenEngine Regression Recovery (2026-03-07)
+- Cleared FenEngine compile regressions surfaced by the first full validation run:
+  - normalized corrupted literal newline sequences in runtime/DOM bridge files
+  - corrected nullable `FenValue` handling for listener-object/event paths
+  - corrected descriptor struct usage in DOM wrappers
+  - repaired legacy collection bridge typing and generated-binding interface resolution
+  - restored solution build so conformance commands and host diagnostics could execute
+- Runtime validation outcome remains non-green:
+  - host 25-second run reached an error page instead of a healthy navigation
+  - DOM/WPT and Test262 milestone gates still fail
+## 2.99 WPT CSS Harness and Binary Fetch Body Recovery
+
+- The headless mini-harness now schedules queued tests through microtasks before falling back to timers, which removes one zero-assertion execution path in CSS WPT packs.
+- The mini-harness now includes `assert_in_array`, which the CSS support shims depend on.
+- `fetch` registration now also installs baseline `Blob`, `FormData`, `FileReader`, and `URL.createObjectURL`/`revokeObjectURL`.
+- `Response` now supports `blob()` and `formData()`, constructor body initialization from binary/form bodies, and `fetch(blob:...)` resolution through in-runtime object URL storage.
+## 2.100 CSS Gap Property Canonicalization Hardening
+
+- `CSSStyleDeclaration` now normalizes `grid-gap`, `grid-row-gap`, and `grid-column-gap` onto the modern `gap` / `row-gap` / `column-gap` family.
+- Inline style reads now return browser-like defaults and canonical serialization for the gap family, including `normal` when unset and `0px` instead of bare `0`.
+- Gap shorthand reads now collapse identical row/column values to a single serialized token.
+- Runtime `getComputedStyle()` now exposes the same defaulted/canonicalized values for `gap`, `row-gap`, `column-gap`, `grid-gap`, `grid-row-gap`, and `grid-column-gap`.
+
+## 2.101 WPT Chunk Triage Primitives Recovery (2026-03-08)
+
+- Added a baseline global `CSS` interface in `FenRuntime` with:
+  - `CSS.supports(...)`
+  - `CSS.escape(...)`
+- This removes the direct `ReferenceError: CSS is not defined` failure mode from chunk-driven WPT runs and shifts CSS-support tests onto deeper runtime behavior instead of missing-global failure.
+- Added a minimal global `on_event(...)` helper to the WPT headless mini-harness in `FenBrowser.WPT/HeadlessNavigator.cs`.
+- Verified the helper path with:
+  - `dotnet run --project FenBrowser.WPT -- run_single html/browsers/browsing-the-web/scroll-to-fragid/scroll-position.html --verbose`
+  - result: `PASS`
+- Recorded large-sample triage evidence from:
+  - `dotnet run --project FenBrowser.WPT -- run_chunk 1 --chunk-size 1000 --timeout 8000 --format json`
+  - result: `460/1000` passed, `540` failed, `0` timed out
+- This establishes the correct next-step strategy for WPT recovery: fix repeated missing primitives and harness/platform globals first, then rerun bounded chunks, instead of treating all 540 failures as unrelated.
+
+## 2.102 WPT Permissions-Policy Recovery: Destructuring Bootstrap + Serial Baseline (2026-03-08)
+
+- `Core/Parser.cs`
+  - Destructuring declarations now normalize `const { ... } = value` and `let [ ... ] = value` when the expression parser returns an `AssignmentExpression`, instead of emitting the stale `SyntaxError: Missing initializer in const declaration` recovery error.
+  - Destructuring parameters now normalize outer defaults such as `function f({ x } = { x: 1 }) {}` so parameter lowering sees a binding pattern plus a real default value rather than a malformed combined expression.
+  - Rest-parameter destructuring still rejects default initializers after normalization, preserving spec-invalid behavior while avoiding parser corruption.
+- `Core/FenRuntime.cs`
+  - Added a baseline `navigator.serial` object with:
+    - `getPorts()` returning a resolved promise with an empty array
+    - `requestPort()` returning a rejected promise with a stable `NotFoundError` result
+    - `onconnect` / `ondisconnect` slots
+- Added focused regression coverage:
+  - `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+    - `Parse_ConstObjectDestructuringDeclaration_WithInitializer_NoErrors`
+    - `Parse_DestructuringParameter_WithOuterDefault_NoErrors`
+  - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+    - `Bytecode_DestructuringParameter_WithOuterDefault_ShouldBindObjectPattern`
+  - `FenBrowser.Tests/Engine/JsEngineImprovementsTests.cs`
+    - `NavigatorSerial_GetPorts_ShouldResolveEmptyArray`
+- Verified with:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName=FenBrowser.Tests.Engine.JsParserReproTests.Parse_ConstObjectDestructuringDeclaration_WithInitializer_NoErrors|FullyQualifiedName=FenBrowser.Tests.Engine.JsParserReproTests.Parse_DestructuringParameter_WithOuterDefault_NoErrors|FullyQualifiedName=FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_DestructuringParameter_WithOuterDefault_ShouldBindObjectPattern|FullyQualifiedName=FenBrowser.Tests.Engine.JsEngineImprovementsTests.NavigatorSerial_GetPorts_ShouldResolveEmptyArray"`
+    - result: `4/4` passed
+  - `dotnet run --project FenBrowser.WPT -- run_single serial/serial-default-permissions-policy.https.sub.html --verbose`
+    - result: `PASS`
+- Outcome:
+  - The permissions-policy helper bootstrap is no longer blocked by parser failure.
+  - The bounded serial permissions-policy WPT now reaches green, proving the chunk-triage loop can convert repeated bootstrap failures into concrete conformance gains.
