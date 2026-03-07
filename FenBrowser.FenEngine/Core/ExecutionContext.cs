@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Dom.V2; // MutationRecord
@@ -32,10 +33,18 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
+            var safeDelay = Math.Max(0, delay);
             _ = RunDetachedAsync(async () =>
             {
-                await Task.Delay(delay).ConfigureAwait(false);
-                action();
+                if (safeDelay > 0)
+                {
+                    await Task.Delay(safeDelay).ConfigureAwait(false);
+                }
+
+                EventLoopCoordinator.Instance.ScheduleTask(
+                    action,
+                    TaskSource.Timer,
+                    "ExecutionContext.ScheduleCallback");
             });
         };
 
@@ -46,7 +55,7 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
-            _ = RunDetached(action);
+            EventLoopCoordinator.Instance.ScheduleMicrotask(action);
         };
 
         public FenValue ThisBinding { get; set; }

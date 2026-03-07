@@ -184,6 +184,10 @@ namespace FenBrowser.FenEngine.Core.Types
         /// </summary>
         public string ToPropertyKey()
         {
+            if (_isWellKnown && !string.IsNullOrEmpty(_description))
+            {
+                return $"[{_description}]";
+            }
             return $"@@{_id}";
         }
     }

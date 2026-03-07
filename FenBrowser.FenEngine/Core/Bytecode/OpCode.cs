@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace FenBrowser.FenEngine.Core.Bytecode
 {
@@ -13,14 +13,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode
 
         // 0x10 - 0x1F: Variables & Scopes
         LoadVar = 0x10,
-        StoreVar = 0x11,   // Declare: always sets in current scope (for let/var/const declarations, function declarations)
+        StoreVar = 0x11,
         Dup = 0x12,
         Pop = 0x13,
         PopAccumulator = 0x14,
         LoadLocal = 0x15,
         StoreLocal = 0x16,
-        UpdateVar = 0x17,  // Assign: walks scope chain to update existing binding (for x = value assignments)
-        LoadVarSafe = 0x18, // Like LoadVar but returns undefined (not ReferenceError) when binding is absent (used by typeof)
+        UpdateVar = 0x17,
+        LoadVarSafe = 0x18,
+        StoreVarDeclaration = 0x19,
+        DeclareTdz = 0x1A,
+        StoreLocalDeclaration = 0x1B,
+        DeclareVar = 0x1C,
 
         // 0x20 - 0x2F: Math
         Add = 0x20,
@@ -55,8 +59,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Construct = 0x53,
         CallFromArray = 0x54,
         ConstructFromArray = 0x55,
-        CallMethod = 0x56,           // [receiver, callee, arg0..argN] -> result (passes receiver as 'this')
-        CallMethodFromArray = 0x57,  // [receiver, callee, argsArray] -> result (passes receiver as 'this')
+        CallMethod = 0x56,
+        CallMethodFromArray = 0x57,
 
         // 0x60 - 0x6F: Objects & Arrays
         MakeArray = 0x60,
@@ -73,7 +77,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         IteratorMoveNext = 0x6B,
         IteratorCurrent = 0x6C,
         MakeValuesIterator = 0x6D,
-        Yield = 0x6E,            // yield value — suspends generator, returns {value, done:false} to caller
+        Yield = 0x6E,
+        IteratorClose = 0x6F,
 
         // 0x80 - 0x8F: Exceptions & Scoping
         PushExceptionHandler = 0x80,
@@ -104,3 +109,4 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Halt = 0xFF
     }
 }
+

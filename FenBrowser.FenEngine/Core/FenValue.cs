@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -247,7 +247,7 @@ namespace FenBrowser.FenEngine.Core
                 case Interfaces.ValueType.Undefined: return "undefined";
                 case Interfaces.ValueType.Object:
                 {
-                    // ES5.1 9.8: ToString for Objects via ToPrimitive(String) — calls toString()/valueOf()
+                    // ES5.1 9.8: ToString for Objects via ToPrimitive(String) â€” calls toString()/valueOf()
                     var prim = ToPrimitive(context, "string");
                     if (prim.Type != Interfaces.ValueType.Object && prim.Type != Interfaces.ValueType.Function)
                         return prim.AsString(context);
@@ -303,6 +303,8 @@ namespace FenBrowser.FenEngine.Core
 
             // ES2015+: check @@toPrimitive first (multiple internal key encodings in this runtime).
             FenValue toPrimMethod = obj.Get("@@toPrimitive", context);
+            if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get(Types.JsSymbol.ToPrimitive.ToPropertyKey(), context);
+            if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("[Symbol.toPrimitive]", context);
             if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("Symbol.toPrimitive", context);
             if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("@@Symbol.toPrimitive", context);
             if (toPrimMethod.IsUndefined) toPrimMethod = obj.Get("Symbol(Symbol.toPrimitive)", context);
@@ -524,17 +526,17 @@ namespace FenBrowser.FenEngine.Core
             string result;
             if (k <= n && n <= 21)
             {
-                // Integer form: e.g. 1e20 → "100000000000000000000"
+                // Integer form: e.g. 1e20 â†’ "100000000000000000000"
                 result = digits + new string('0', n - k);
             }
             else if (0 < n && n <= 21)
             {
-                // Fixed-point: e.g. 123.456 → "123.456"
+                // Fixed-point: e.g. 123.456 â†’ "123.456"
                 result = digits.Substring(0, n) + "." + digits.Substring(n);
             }
             else if (-6 < n && n <= 0)
             {
-                // Small decimal: e.g. 0.000001 → "0.000001"
+                // Small decimal: e.g. 0.000001 â†’ "0.000001"
                 result = "0." + new string('0', -n) + digits;
             }
             else
@@ -604,5 +606,7 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
 
 

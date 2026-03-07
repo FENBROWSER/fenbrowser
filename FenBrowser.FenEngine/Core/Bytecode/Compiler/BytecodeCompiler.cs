@@ -28,9 +28,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
+        private int _visitDepth;
+        private const int MaxVisitDepth = 128;
+        [ThreadStatic]
+        private static int _compileDepth;
+        private const int MaxCompileDepth = 8;
         private int _syntheticNameCounter;
         private int _scopeDepth;
         private bool _insideBlock;
+        private string _currentInferredName;
 
         public BytecodeCompiler(bool isEval = false)
             : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
@@ -52,6 +58,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         public CodeBlock Compile(AstNode root)
         {
+            if (++_compileDepth > MaxCompileDepth)
+            {
+                _compileDepth--;
+                throw new InvalidOperationException("Bytecode compiler nesting depth exceeded");
+            }
+
+            try
+            {
             _instructions.Clear();
             _constants.Clear();
             _stringConstantIndex.Clear();
@@ -64,6 +78,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _localSlotByName.Clear();
             _localSlotNames.Clear();
             _topLevelHoistedFunctions.Clear();
+            _visitDepth = 0;
 
             if (_enableLocalSlots)
             {
@@ -89,6 +104,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 IsStrict = IsStrictRoot(root)
             };
             return codeBlock;
+            }
+            finally
+            {
+                _compileDepth--;
+            }
         }
 
         private static bool IsStrictRoot(AstNode root)
@@ -258,6 +278,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void Visit(AstNode node)
         {
             if (node == null) return;
+            if (++_visitDepth > MaxVisitDepth)
+            {
+                _visitDepth--;
+                throw new InvalidOperationException("Bytecode compiler recursion depth exceeded");
+            }
+
+
+            try
+            {
 
             // Phase 1: Only handling a subset of nodes for proof of concept
             if (node is Program prog)
@@ -689,16 +718,30 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     Visit(letStmt.Value);
                     if (letStmt.Name != null)
                     {
-                        EmitStoreVarByName(letStmt.Name.Value);
+                        if (letStmt.Kind == DeclarationKind.Var)
+                        {
+                            EmitStoreVarDeclarationByName(letStmt.Name.Value);
+                        }
+                        else
+                        {
+                            EmitStoreVarByName(letStmt.Name.Value);
+                        }
                     }
                     Emit(OpCode.Pop); // declarations are statements; discard the stored value from the stack
                 }
                 else if (letStmt.Name != null)
                 {
-                    // Declarations without initializer still create a binding with undefined.
-                    Emit(OpCode.LoadUndefined);
-                    EmitStoreVarByName(letStmt.Name.Value);
-                    Emit(OpCode.Pop);
+                    if (letStmt.Kind == DeclarationKind.Var)
+                    {
+                        EmitDeclareVarByName(letStmt.Name.Value);
+                    }
+                    else
+                    {
+                        // Lexical declarations initialize on execution.
+                        Emit(OpCode.LoadUndefined);
+                        EmitStoreVarByName(letStmt.Name.Value);
+                        Emit(OpCode.Pop);
+                    }
                 }
             }
             else if (node is EmptyExpression)
@@ -782,7 +825,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is FunctionLiteral funcLit)
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
-                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, funcLit.Name);
+                string functionName = !string.IsNullOrEmpty(funcLit.Name) ? funcLit.Name : _currentInferredName;
+                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
                 compiledBlock.IsStrict = compiledBlock.IsStrict || funcLit.IsStrict;
                 var localMap = BuildFunctionLocalMap(compiledBlock);
@@ -794,6 +838,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
+                if (!string.IsNullOrEmpty(functionName))
+                {
+                    templateFunc.Name = functionName;
+                }
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
                 
                 Emit(OpCode.MakeClosure);
@@ -802,17 +850,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is AsyncFunctionExpression asyncFuncExpr)
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
-                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFuncExpr.Name?.Value);
+                string asyncFunctionName = asyncFuncExpr.Name?.Value ?? _currentInferredName;
+                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(asyncFuncExpr.Parameters, compiledBlock, null)
                 {
-                    Name = asyncFuncExpr.Name?.Value,
                     IsAsync = true,
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
+                if (!string.IsNullOrEmpty(asyncFunctionName))
+                {
+                    templateFunc.Name = asyncFunctionName;
+                }
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
 
                 Emit(OpCode.MakeClosure);
@@ -821,7 +873,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
-                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, null);
+                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, _currentInferredName);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -832,6 +884,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     NeedsArgumentsObject = false,
                     LocalMap = localMap
                 };
+                if (!string.IsNullOrEmpty(_currentInferredName))
+                {
+                    templateFunc.Name = _currentInferredName;
+                }
                 int idx = AddConstant(FenValue.FromFunction(templateFunc));
 
                 Emit(OpCode.MakeClosure);
@@ -1053,6 +1109,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else
             {
                 throw new FenSyntaxError($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");
+            }
+            }
+            finally
+            {
+                _visitDepth--;
             }
         }
 
@@ -1701,12 +1762,29 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitForInStatement(ForInStatement forInStmt, string labelName = null)
         {
+            bool hasLexicalBinding = IsLexicalLoopBinding(forInStmt.BindingKind);
+            List<string> loopBindingNames = hasLexicalBinding
+                ? GetLoopBindingNames(forInStmt.Variable, forInStmt.DestructuringPattern)
+                : null;
+
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PushScope);
+                EmitLoopBindingTdzDeclarations(loopBindingNames);
+            }
+
             Visit(forInStmt.Object);
+
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PopScope);
+            }
+
             Emit(OpCode.MakeKeysIterator);
 
             int loopStart = _instructions.Count;
-            var breakContext = PushBreakContext();
-            var loopContext = PushLoopContext(loopStart);
+            var breakContext = PushBreakContext(hasLexicalBinding ? 1 : 0);
+            var loopContext = PushLoopContext(loopStart, hasLexicalBinding ? 1 : 0);
             var labelContext = labelName != null ? PushLabelContext(labelName, loopContext) : null;
 
             Emit(OpCode.Dup);
@@ -1716,17 +1794,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.Dup);
             Emit(OpCode.IteratorCurrent);
 
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PushScope);
+                EmitLoopBindingTdzDeclarations(loopBindingNames);
+            }
+
             if (forInStmt.Variable != null)
             {
-                EmitStoreVarByName(forInStmt.Variable.Value);
-                Emit(OpCode.Pop); // pop the assigned key value
+                EmitForInOfIdentifierBinding(forInStmt.Variable.Value, forInStmt.BindingKind);
             }
             else if (forInStmt.DestructuringPattern != null)
             {
-                string destructureSource = NextSyntheticName("forin");
-                EmitStoreVarByName(destructureSource);
+                string assignmentSource = NextSyntheticName("forin");
+                EmitStoreVarByName(assignmentSource);
                 Emit(OpCode.Pop); // pop the stored key value
-                EmitDestructuringFromVariable(forInStmt.DestructuringPattern, destructureSource);
+                EmitForInOfBindingTarget(forInStmt.DestructuringPattern, assignmentSource);
             }
             else
             {
@@ -1734,6 +1817,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
 
             Visit(forInStmt.Body);
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PopScope);
+            }
             Emit(OpCode.Jump);
             EmitInt32(loopStart);
 
@@ -1754,12 +1841,29 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitForOfStatement(ForOfStatement forOfStmt, string labelName = null)
         {
+            bool hasLexicalBinding = IsLexicalLoopBinding(forOfStmt.BindingKind);
+            List<string> loopBindingNames = hasLexicalBinding
+                ? GetLoopBindingNames(forOfStmt.Variable, forOfStmt.DestructuringPattern)
+                : null;
+
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PushScope);
+                EmitLoopBindingTdzDeclarations(loopBindingNames);
+            }
+
             Visit(forOfStmt.Iterable);
+
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PopScope);
+            }
+
             Emit(OpCode.MakeValuesIterator);
 
             int loopStart = _instructions.Count;
-            var breakContext = PushBreakContext();
-            var loopContext = PushLoopContext(loopStart);
+            var breakContext = PushBreakContext(hasLexicalBinding ? 1 : 0);
+            var loopContext = PushLoopContext(loopStart, hasLexicalBinding ? 1 : 0);
             var labelContext = labelName != null ? PushLabelContext(labelName, loopContext) : null;
 
             Emit(OpCode.Dup);
@@ -1769,17 +1873,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.Dup);
             Emit(OpCode.IteratorCurrent);
 
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PushScope);
+                EmitLoopBindingTdzDeclarations(loopBindingNames);
+            }
+
             if (forOfStmt.Variable != null)
             {
-                EmitStoreVarByName(forOfStmt.Variable.Value);
-                Emit(OpCode.Pop); // pop the assigned value
+                EmitForInOfIdentifierBinding(forOfStmt.Variable.Value, forOfStmt.BindingKind);
             }
             else if (forOfStmt.DestructuringPattern != null)
             {
-                string destructureSource = NextSyntheticName("forof");
-                EmitStoreVarByName(destructureSource);
+                string assignmentSource = NextSyntheticName("forof");
+                EmitStoreVarByName(assignmentSource);
                 Emit(OpCode.Pop); // pop the stored value
-                EmitDestructuringFromVariable(forOfStmt.DestructuringPattern, destructureSource);
+                EmitForInOfBindingTarget(forOfStmt.DestructuringPattern, assignmentSource);
             }
             else
             {
@@ -1787,6 +1896,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
 
             Visit(forOfStmt.Body);
+            if (hasLexicalBinding)
+            {
+                Emit(OpCode.PopScope);
+            }
             Emit(OpCode.Jump);
             EmitInt32(loopStart);
 
@@ -1803,6 +1916,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             PopLoopContext(loopContext);
             PopBreakContext(breakContext);
+        }
+
+        private void EmitForInOfBindingTarget(Expression target, string sourceVariableName)
+        {
+            if (target is ArrayLiteral || target is ObjectLiteral || target is AssignmentExpression)
+            {
+                EmitDestructuringFromVariable(target, sourceVariableName);
+                return;
+            }
+
+            EmitDestructuringTargetBinding(target, sourceVariableName);
         }
 
         private void EmitSwitchStatement(SwitchStatement switchStmt)
@@ -1879,6 +2003,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
+        private void EmitScopeCleanup(int scopeCleanupDepth)
+        {
+            for (int i = 0; i < scopeCleanupDepth; i++)
+            {
+                Emit(OpCode.PopScope);
+            }
+        }
+
         private void EmitBreakStatement(BreakStatement breakStmt)
         {
             if (breakStmt.Label != null)
@@ -1892,6 +2024,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     return;
                 }
 
+                EmitScopeCleanup(labelContext.LoopContext?.ScopeCleanupDepth ?? 0);
                 int labeledJumpOffset = EmitJump(OpCode.Jump);
                 labelContext.BreakJumpOffsets.Add(labeledJumpOffset);
                 return;
@@ -1906,6 +2039,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            EmitScopeCleanup(_breakContexts.Peek().ScopeCleanupDepth);
             int jumpOffset = EmitJump(OpCode.Jump);
             _breakContexts.Peek().BreakJumpOffsets.Add(jumpOffset);
         }
@@ -1932,6 +2066,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     return;
                 }
 
+                EmitScopeCleanup(labelContext.LoopContext?.ScopeCleanupDepth ?? 0);
                 int labeledJumpOffset = EmitJump(OpCode.Jump);
                 if (labelContext.LoopContext.ContinueTarget >= 0)
                 {
@@ -1954,6 +2089,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
 
             var loopContext = _loopContexts.Peek();
+            EmitScopeCleanup(loopContext.ScopeCleanupDepth);
             int jumpOffset = EmitJump(OpCode.Jump);
             if (loopContext.ContinueTarget >= 0)
             {
@@ -2014,9 +2150,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             PopLabelContext(labelContext);
         }
 
-        private BreakContext PushBreakContext()
+        private BreakContext PushBreakContext(int scopeCleanupDepth = 0)
         {
-            var context = new BreakContext();
+            var context = new BreakContext
+            {
+                ScopeCleanupDepth = scopeCleanupDepth
+            };
             _breakContexts.Push(context);
             return context;
         }
@@ -2038,11 +2177,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
-        private LoopContext PushLoopContext(int continueTarget)
+        private LoopContext PushLoopContext(int continueTarget, int scopeCleanupDepth = 0)
         {
             var context = new LoopContext
             {
-                ContinueTarget = continueTarget
+                ContinueTarget = continueTarget,
+                ScopeCleanupDepth = scopeCleanupDepth
             };
             _loopContexts.Push(context);
             return context;
@@ -2443,7 +2583,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             string className = classExpression.Name?.Value;
             if (string.IsNullOrEmpty(className))
             {
-                className = NextSyntheticName("class_expr");
+                className = !string.IsNullOrEmpty(_currentInferredName) && CanInferAnonymousClassName(classExpression)
+                    ? _currentInferredName
+                    : NextSyntheticName("class_expr");
             }
 
             var loweredStatement = new ClassStatement
@@ -2510,23 +2652,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         continue;
                     }
 
-                    EmitLoadVarByName(className);
-                    string propertyName = classProperty.IsPrivate
-                        ? "#" + (classProperty.Key?.Value ?? string.Empty)
-                        : (classProperty.Key?.Value ?? string.Empty);
-                    int propKeyIdx = AddConstant(FenValue.FromString(propertyName));
-                    Emit(OpCode.LoadConst);
-                    EmitInt32(propKeyIdx);
-                    if (classProperty.Value != null)
-                    {
-                        Visit(classProperty.Value);
-                    }
-                    else
-                    {
-                        Emit(OpCode.LoadUndefined);
-                    }
-                    Emit(OpCode.StoreProp);
-                    Emit(OpCode.Pop);
+                    EmitInstallClassStaticProperty(className, classProperty);
                 }
             }
 
@@ -2643,6 +2769,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            string targetVariable = NextSyntheticName("class_method_target");
             if (methodDefinition.Static)
             {
                 EmitLoadVarByName(className);
@@ -2655,16 +2782,87 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 EmitInt32(prototypeKeyIdx);
                 Emit(OpCode.LoadProp);
             }
+            EmitStoreVarByName(targetVariable);
+            Emit(OpCode.Pop);
+
+            string methodVariable = NextSyntheticName("class_method_value");
+            Visit(methodDefinition.Value);
+            EmitStoreVarByName(methodVariable);
+            Emit(OpCode.Pop);
 
             string methodName = methodDefinition.IsPrivate
                 ? "#" + methodDefinition.Key.Value
                 : methodDefinition.Key.Value;
-            int methodNameIdx = AddConstant(FenValue.FromString(methodName ?? string.Empty));
+            EmitDefineDataProperty(targetVariable, methodName, methodVariable, enumerable: false);
+        }
+
+        private void EmitInstallClassStaticProperty(string className, ClassProperty classProperty)
+        {
+            if (classProperty == null)
+            {
+                return;
+            }
+
+            string propertyName = classProperty.IsPrivate
+                ? "#" + (classProperty.Key?.Value ?? string.Empty)
+                : (classProperty.Key?.Value ?? string.Empty);
+
+            string valueVariable = NextSyntheticName("class_static_prop");
+            if (classProperty.Value != null)
+            {
+                Visit(classProperty.Value);
+            }
+            else
+            {
+                Emit(OpCode.LoadUndefined);
+            }
+            EmitStoreVarByName(valueVariable);
+            Emit(OpCode.Pop);
+
+            EmitDefineDataProperty(className, propertyName, valueVariable, enumerable: true);
+        }
+
+        private void EmitDefineDataProperty(string objectVariableName, string propertyName, string valueVariableName, bool enumerable)
+        {
+            if (string.IsNullOrEmpty(objectVariableName) || string.IsNullOrEmpty(propertyName) || string.IsNullOrEmpty(valueVariableName))
+            {
+                return;
+            }
+
+            string descriptorVariable = NextSyntheticName("prop_desc");
+            Emit(OpCode.MakeObject);
+            EmitInt32(0);
+            EmitStoreVarByName(descriptorVariable);
+            Emit(OpCode.Pop);
+
+            EmitStoreDescriptorField(descriptorVariable, "value", () => EmitLoadVarByName(valueVariableName));
+            EmitStoreDescriptorField(descriptorVariable, "writable", () => Emit(OpCode.LoadTrue));
+            EmitStoreDescriptorField(descriptorVariable, "enumerable", () => Emit(enumerable ? OpCode.LoadTrue : OpCode.LoadFalse));
+            EmitStoreDescriptorField(descriptorVariable, "configurable", () => Emit(OpCode.LoadTrue));
+
+            EmitLoadVarByName("Object");
+            Emit(OpCode.Dup);
+            int definePropertyKeyIdx = AddConstant(FenValue.FromString("defineProperty"));
             Emit(OpCode.LoadConst);
-            EmitInt32(methodNameIdx);
+            EmitInt32(definePropertyKeyIdx);
+            Emit(OpCode.LoadProp);
+            EmitLoadVarByName(objectVariableName);
+            int propertyNameIdx = AddConstant(FenValue.FromString(propertyName));
+            Emit(OpCode.LoadConst);
+            EmitInt32(propertyNameIdx);
+            EmitLoadVarByName(descriptorVariable);
+            Emit(OpCode.CallMethod);
+            EmitInt32(3);
+            Emit(OpCode.Pop);
+        }
 
-            Visit(methodDefinition.Value);
-
+        private void EmitStoreDescriptorField(string descriptorVariable, string fieldName, Action emitValue)
+        {
+            EmitLoadVarByName(descriptorVariable);
+            int fieldKeyIdx = AddConstant(FenValue.FromString(fieldName ?? string.Empty));
+            Emit(OpCode.LoadConst);
+            EmitInt32(fieldKeyIdx);
+            emitValue?.Invoke();
             Emit(OpCode.StoreProp);
             Emit(OpCode.Pop);
         }
@@ -2706,6 +2904,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.StoreVar);
+            EmitInt32(idx);
+        }
+
+        private void EmitStoreVarDeclarationByName(string variableName)
+        {
+            if (TryGetLocalSlot(variableName, out int slotIndex))
+            {
+                Emit(OpCode.StoreLocalDeclaration);
+                EmitInt32(slotIndex);
+                return;
+            }
+
+            int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
+            Emit(OpCode.StoreVarDeclaration);
+            EmitInt32(idx);
+        }
+
+        private void EmitDeclareTdzByName(string variableName)
+        {
+            int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
+            Emit(OpCode.DeclareTdz);
+            EmitInt32(idx);
+        }
+
+        private void EmitDeclareVarByName(string variableName)
+        {
+            int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
+            Emit(OpCode.DeclareVar);
             EmitInt32(idx);
         }
 
@@ -2778,6 +3004,96 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             CollectLocalBindings(root);
         }
 
+        private static bool IsLexicalLoopBinding(DeclarationKind? bindingKind)
+        {
+            return bindingKind == DeclarationKind.Let || bindingKind == DeclarationKind.Const;
+        }
+
+        private static void CollectPatternBindingNames(Expression pattern, HashSet<string> names)
+        {
+            if (pattern == null || names == null)
+            {
+                return;
+            }
+
+            switch (pattern)
+            {
+                case Identifier identifier when !string.IsNullOrEmpty(identifier.Value):
+                    names.Add(identifier.Value);
+                    break;
+                case AssignmentExpression assignmentExpression:
+                    CollectPatternBindingNames(assignmentExpression.Left, names);
+                    break;
+                case SpreadElement spreadElement:
+                    CollectPatternBindingNames(spreadElement.Argument, names);
+                    break;
+                case ArrayLiteral arrayLiteral:
+                    foreach (var element in arrayLiteral.Elements)
+                    {
+                        CollectPatternBindingNames(element, names);
+                    }
+                    break;
+                case ObjectLiteral objectLiteral:
+                    foreach (var pair in objectLiteral.Pairs)
+                    {
+                        CollectPatternBindingNames(pair.Value, names);
+                    }
+                    break;
+            }
+        }
+
+        private static List<string> GetLoopBindingNames(Identifier variable, Expression destructuringPattern)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (variable != null && !string.IsNullOrEmpty(variable.Value))
+            {
+                names.Add(variable.Value);
+            }
+            else
+            {
+                CollectPatternBindingNames(destructuringPattern, names);
+            }
+
+            return new List<string>(names);
+        }
+
+        private void EmitLoopBindingTdzDeclarations(List<string> bindingNames)
+        {
+            if (bindingNames == null)
+            {
+                return;
+            }
+
+            foreach (var bindingName in bindingNames)
+            {
+                EmitDeclareTdzByName(bindingName);
+            }
+        }
+
+        private void EmitForInOfIdentifierBinding(string variableName, DeclarationKind? bindingKind)
+        {
+            if (string.IsNullOrEmpty(variableName))
+            {
+                Emit(OpCode.Pop);
+                return;
+            }
+
+            if (bindingKind == DeclarationKind.Var)
+            {
+                EmitStoreVarDeclarationByName(variableName);
+            }
+            else if (bindingKind == DeclarationKind.Let || bindingKind == DeclarationKind.Const)
+            {
+                EmitStoreVarByName(variableName);
+            }
+            else
+            {
+                EmitUpdateVarByName(variableName);
+            }
+
+            Emit(OpCode.Pop);
+        }
+
         private void CollectLocalBindings(AstNode node)
         {
             if (node == null)
@@ -2811,13 +3127,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     CollectLocalBindings(forStatement.Body);
                     break;
                 case ForInStatement forInStatement:
-                    AddLocalBinding(forInStatement.Variable?.Value);
-                    CollectBindingNamesFromPattern(forInStatement.DestructuringPattern);
+                    if (!IsLexicalLoopBinding(forInStatement.BindingKind))
+                    {
+                        AddLocalBinding(forInStatement.Variable?.Value);
+                        CollectBindingNamesFromPattern(forInStatement.DestructuringPattern);
+                    }
                     CollectLocalBindings(forInStatement.Body);
                     break;
                 case ForOfStatement forOfStatement:
-                    AddLocalBinding(forOfStatement.Variable?.Value);
-                    CollectBindingNamesFromPattern(forOfStatement.DestructuringPattern);
+                    if (!IsLexicalLoopBinding(forOfStatement.BindingKind))
+                    {
+                        AddLocalBinding(forOfStatement.Variable?.Value);
+                        CollectBindingNamesFromPattern(forOfStatement.DestructuringPattern);
+                    }
                     CollectLocalBindings(forOfStatement.Body);
                     break;
                 case WhileStatement whileStatement:
@@ -2988,21 +3310,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            int skipOffsetNull = -1;
-            int skipOffsetType = -1;
             if (applyObjectGuard)
             {
-                // Skip destructuring if source is null (real JS throws TypeError; here we silently skip)
                 EmitLoadVarByName(sourceVariableName);
                 Emit(OpCode.LoadNull);
                 Emit(OpCode.StrictEqual);
-                skipOffsetNull = EmitJump(OpCode.JumpIfTrue);
+                int skipNullThrowOffset = EmitJump(OpCode.JumpIfFalse);
+                EmitThrowJsError("TypeError", "Cannot destructure null");
+                PatchJumpTo(skipNullThrowOffset, _instructions.Count);
 
-                // Skip destructuring if source is undefined
                 EmitLoadVarByName(sourceVariableName);
                 Emit(OpCode.LoadUndefined);
                 Emit(OpCode.StrictEqual);
-                skipOffsetType = EmitJump(OpCode.JumpIfTrue);
+                int skipUndefinedThrowOffset = EmitJump(OpCode.JumpIfFalse);
+                EmitThrowJsError("TypeError", "Cannot destructure undefined");
+                PatchJumpTo(skipUndefinedThrowOffset, _instructions.Count);
             }
 
             if (pattern is Identifier identifierPattern)
@@ -3019,23 +3341,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (pattern is AssignmentExpression assignmentPattern)
             {
-                EmitApplyDefaultIfUndefined(sourceVariableName, assignmentPattern.Right);
+                EmitApplyDefaultIfUndefined(sourceVariableName, assignmentPattern.Right, GetDestructuringTargetName(assignmentPattern.Left));
                 EmitDestructuringFromVariableCore(assignmentPattern.Left, sourceVariableName, applyObjectGuard: false);
             }
             else if (!(pattern is EmptyExpression) && !(pattern is UndefinedLiteral))
             {
-                int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Unsupported destructuring pattern."));
-                Emit(OpCode.LoadConst);
-                EmitInt32(msgIdx);
-                Emit(OpCode.Throw);
+                EmitThrowJsError("SyntaxError", "Unsupported destructuring pattern.");
                 return;
-            }
-
-            if (applyObjectGuard)
-            {
-                int patternEnd = _instructions.Count;
-                PatchJumpTo(skipOffsetNull, patternEnd);
-                PatchJumpTo(skipOffsetType, patternEnd);
             }
         }
 
@@ -3046,24 +3358,75 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            string iteratorVariable = NextSyntheticName("arr_iter");
+            EmitLoadVarByName(sourceVariableName);
+            Emit(OpCode.MakeValuesIterator);
+            EmitStoreVarByName(iteratorVariable);
+            Emit(OpCode.Pop);
+
+            Emit(OpCode.PushExceptionHandler);
+            int catchOffsetIndex = _instructions.Count;
+            EmitInt32(-1);
+            int finallyOffsetIndex = _instructions.Count;
+            EmitInt32(0);
+
             for (int i = 0; i < arrayPattern.Elements.Count; i++)
             {
                 var element = arrayPattern.Elements[i];
+
+                if (element is SpreadElement spreadElement)
+                {
+                    EmitArrayRestBindingFromIterator(iteratorVariable, spreadElement.Argument);
+                    break;
+                }
+
+                string hasValueVariable = NextSyntheticName("arr_has");
+                EmitLoadVarByName(iteratorVariable);
+                Emit(OpCode.IteratorMoveNext);
+                EmitStoreVarByName(hasValueVariable);
+                Emit(OpCode.Pop);
+
                 if (element == null || element is UndefinedLiteral || element is EmptyExpression)
                 {
                     continue;
                 }
 
-                if (element is SpreadElement spreadElement)
-                {
-                    EmitArrayRestBinding(sourceVariableName, i, spreadElement.Argument);
-                    break;
-                }
-
                 string elementVariable = NextSyntheticName("arr_elem");
-                EmitLoadPropertyByKeyToVariable(sourceVariableName, FenValue.FromNumber(i), elementVariable);
+                Emit(OpCode.LoadUndefined);
+                EmitStoreVarByName(elementVariable);
+                Emit(OpCode.Pop);
+
+                EmitLoadVarByName(hasValueVariable);
+                int skipCurrentOffset = EmitJump(OpCode.JumpIfFalse);
+
+                EmitLoadVarByName(iteratorVariable);
+                Emit(OpCode.IteratorCurrent);
+                EmitStoreVarByName(elementVariable);
+                Emit(OpCode.Pop);
+
+                PatchJumpTo(skipCurrentOffset, _instructions.Count);
                 EmitDestructuringTargetBinding(element, elementVariable);
             }
+
+            Emit(OpCode.PopExceptionHandler);
+            int jumpToFinallyOffset = EmitJump(OpCode.Jump);
+
+            int finallyStart = _instructions.Count;
+            byte[] catchBytes = BitConverter.GetBytes(-1);
+            for (int i = 0; i < 4; i++)
+            {
+                _instructions[catchOffsetIndex + i] = catchBytes[i];
+            }
+            byte[] finallyBytes = BitConverter.GetBytes(finallyStart);
+            for (int i = 0; i < 4; i++)
+            {
+                _instructions[finallyOffsetIndex + i] = finallyBytes[i];
+            }
+            PatchJumpTo(jumpToFinallyOffset, finallyStart);
+
+            Emit(OpCode.EnterFinally);
+            EmitCloseIterator(iteratorVariable);
+            Emit(OpCode.ExitFinally);
         }
 
         private void EmitDestructuringObjectBinding(ObjectLiteral objectPattern, string sourceVariableName)
@@ -3143,7 +3506,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (target is AssignmentExpression assignmentTarget)
             {
-                EmitApplyDefaultIfUndefined(valueVariable, assignmentTarget.Right);
+                EmitApplyDefaultIfUndefined(valueVariable, assignmentTarget.Right, GetDestructuringTargetName(assignmentTarget.Left));
                 EmitDestructuringTargetBinding(assignmentTarget.Left, valueVariable);
                 return;
             }
@@ -3154,15 +3517,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            if (target is MemberExpression memberTarget)
+            {
+                Visit(memberTarget.Object);
+                int memberKeyIdx = AddConstant(FenValue.FromString(memberTarget.Property ?? string.Empty));
+                Emit(OpCode.LoadConst);
+                EmitInt32(memberKeyIdx);
+                EmitLoadVarByName(valueVariable);
+                Emit(OpCode.StoreProp);
+                Emit(OpCode.Pop);
+                return;
+            }
+
+            if (target is IndexExpression indexTarget)
+            {
+                Visit(indexTarget.Left);
+                Visit(indexTarget.Index);
+                EmitLoadVarByName(valueVariable);
+                Emit(OpCode.StoreProp);
+                Emit(OpCode.Pop);
+                return;
+            }
+
             if (target is EmptyExpression || target is UndefinedLiteral)
             {
                 return;
             }
 
-            int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Unsupported destructuring binding target '{target.GetType().Name}'."));
-            Emit(OpCode.LoadConst);
-            EmitInt32(msgIdx);
-            Emit(OpCode.Throw);
+            EmitThrowJsError("SyntaxError", $"Unsupported destructuring binding target '{target.GetType().Name}'.");
         }
 
         private void EmitLoadPropertyByKeyToVariable(string sourceVariableName, FenValue propertyKey, string destinationVariable)
@@ -3327,7 +3709,49 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.Pop);
         }
 
-        private void EmitApplyDefaultIfUndefined(string valueVariable, Expression defaultExpression)
+        private void EmitCloseIterator(string iteratorVariable)
+        {
+            if (string.IsNullOrEmpty(iteratorVariable))
+            {
+                return;
+            }
+
+            EmitLoadVarByName(iteratorVariable);
+            Emit(OpCode.IteratorClose);
+        }
+
+        private void EmitArrayRestBindingFromIterator(string iteratorVariable, Expression restTarget)
+        {
+            if (restTarget == null || string.IsNullOrEmpty(iteratorVariable))
+            {
+                return;
+            }
+
+            string restArrayVariable = NextSyntheticName("arr_rest_iter");
+            Emit(OpCode.MakeArray);
+            EmitInt32(0);
+            EmitStoreVarByName(restArrayVariable);
+            Emit(OpCode.Pop);
+
+            int loopStart = _instructions.Count;
+            EmitLoadVarByName(iteratorVariable);
+            Emit(OpCode.IteratorMoveNext);
+            int jumpLoopEndOffset = EmitJump(OpCode.JumpIfFalse);
+
+            EmitLoadVarByName(restArrayVariable);
+            EmitLoadVarByName(iteratorVariable);
+            Emit(OpCode.IteratorCurrent);
+            Emit(OpCode.ArrayAppend);
+            Emit(OpCode.Pop);
+
+            Emit(OpCode.Jump);
+            EmitInt32(loopStart);
+
+            PatchJumpTo(jumpLoopEndOffset, _instructions.Count);
+            EmitDestructuringTargetBinding(restTarget, restArrayVariable);
+        }
+
+        private void EmitApplyDefaultIfUndefined(string valueVariable, Expression defaultExpression, string inferredName = null)
         {
             if (string.IsNullOrEmpty(valueVariable) || defaultExpression == null)
             {
@@ -3339,11 +3763,118 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.StrictEqual);
             int skipDefaultOffset = EmitJump(OpCode.JumpIfFalse);
 
-            Visit(defaultExpression);
+            VisitWithInferredName(defaultExpression, inferredName);
             EmitStoreVarByName(valueVariable);
             Emit(OpCode.Pop);
 
             PatchJumpTo(skipDefaultOffset, _instructions.Count);
+        }
+
+        private void VisitWithInferredName(AstNode node, string inferredName)
+        {
+            if (!CanUseInferredName(node) || string.IsNullOrEmpty(inferredName))
+            {
+                Visit(node);
+                return;
+            }
+
+            string previousName = _currentInferredName;
+            _currentInferredName = inferredName;
+            try
+            {
+                Visit(node);
+            }
+            finally
+            {
+                _currentInferredName = previousName;
+            }
+        }
+
+        private static bool CanInferAnonymousClassName(ClassExpression classExpression)
+        {
+            if (classExpression == null)
+            {
+                return false;
+            }
+
+            if (classExpression.Methods != null)
+            {
+                foreach (var method in classExpression.Methods)
+                {
+                    if (method?.Static == true && !method.IsPrivate && !method.Computed && string.Equals(method.Key?.Value, "name", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            if (classExpression.Properties != null)
+            {
+                foreach (var property in classExpression.Properties)
+                {
+                    if (property?.Static == true && !property.IsPrivate && string.Equals(property.Key?.Value, "name", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool CanUseInferredName(AstNode node)
+        {
+            if (node is FunctionLiteral functionLiteral)
+            {
+                return string.IsNullOrEmpty(functionLiteral.Name);
+            }
+
+            if (node is AsyncFunctionExpression asyncFunctionExpression)
+            {
+                return asyncFunctionExpression.Name == null || string.IsNullOrEmpty(asyncFunctionExpression.Name.Value);
+            }
+
+            if (node is ArrowFunctionExpression)
+            {
+                return true;
+            }
+
+            if (node is ClassExpression classExpression)
+            {
+                return classExpression.Name == null || string.IsNullOrEmpty(classExpression.Name.Value);
+            }
+
+            return false;
+        }
+
+        private static string GetDestructuringTargetName(Expression target)
+        {
+            switch (target)
+            {
+                case Identifier identifier:
+                    return identifier.Value;
+                case MemberExpression memberExpression:
+                    return memberExpression.Property;
+                case IndexExpression indexExpression when indexExpression.Index is StringLiteral stringLiteral:
+                    return stringLiteral.Value;
+                case IndexExpression indexExpression when indexExpression.Index is IntegerLiteral integerLiteral:
+                    return integerLiteral.Value.ToString();
+                case AssignmentExpression assignmentExpression:
+                    return GetDestructuringTargetName(assignmentExpression.Left);
+                default:
+                    return null;
+            }
+        }
+
+        private void EmitThrowJsError(string constructorName, string message)
+        {
+            EmitLoadVarByName(constructorName ?? "Error");
+            int messageIdx = AddConstant(FenValue.FromString(message ?? string.Empty));
+            Emit(OpCode.LoadConst);
+            EmitInt32(messageIdx);
+            Emit(OpCode.Construct);
+            EmitInt32(1);
+            Emit(OpCode.Throw);
         }
 
         private static void RejectWithInsideCallableBody(AstNode body, string nodeKind)
@@ -3858,12 +4389,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private sealed class BreakContext
         {
+            public int ScopeCleanupDepth { get; set; }
             public readonly List<int> BreakJumpOffsets = new List<int>();
         }
 
         private sealed class LoopContext
         {
             public int ContinueTarget { get; set; } = -1;
+            public int ScopeCleanupDepth { get; set; }
             public readonly List<int> PendingContinueJumpOffsets = new List<int>();
         }
 
@@ -3875,6 +4408,25 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
