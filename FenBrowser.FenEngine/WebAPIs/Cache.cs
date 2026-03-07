@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
@@ -17,7 +19,14 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly string _cacheName;
         private readonly string _origin;
         private readonly IStorageBackend _storage;
-        private const string STORE_NAME = "cache_entries";
+        private readonly Task _initializeTask;
+        private volatile bool _invalidated;
+
+        private const string StoreName = "cache_entries";
+        private const int MaxCacheUrlLength = 2048;
+        private const int MaxStatusTextLength = 128;
+        private const int MaxCachedBodyLength = 1_048_576;
+        private const int MaxHeaderCount = 64;
 
         public Cache(string origin, string cacheName, IStorageBackend storage)
         {
@@ -25,26 +34,59 @@ namespace FenBrowser.FenEngine.WebAPIs
             _cacheName = cacheName;
             _storage = storage;
 
-            InitialiseInterface();
-            _ = InitializeStorage(); // Fire and forget init, discard task
+            InitializeInterface();
+            _initializeTask = InitializeStorage();
+        }
+
+        internal void Invalidate()
+        {
+            _invalidated = true;
         }
 
         private async Task InitializeStorage()
         {
-            try 
+            try
             {
-                await _storage.OpenDatabase(_origin, $"cache_{_cacheName}", 1);
-                // Schema: Key = Request URL, Value = CacheEntry (JSON)
-                await _storage.CreateObjectStore(_origin, $"cache_{_cacheName}", STORE_NAME, new ObjectStoreOptions { KeyPath = "url" });
+                if (_invalidated)
+                {
+                    return;
+                }
+
+                await _storage.OpenDatabase(_origin, GetDatabaseName(_cacheName), 1).ConfigureAwait(false);
+
+                if (_invalidated)
+                {
+                    return;
+                }
+
+                await _storage.CreateObjectStore(
+                    _origin,
+                    GetDatabaseName(_cacheName),
+                    StoreName,
+                    new ObjectStoreOptions { KeyPath = "url" }).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                // Likely already exists or open
                 FenBrowser.Core.FenLogger.Debug($"[Cache] Init: {ex.Message}", LogCategory.Storage);
             }
         }
 
-        private void InitialiseInterface()
+        private async Task EnsureInitializedAsync()
+        {
+            if (_invalidated)
+            {
+                throw new InvalidOperationException("Cache has been deleted.");
+            }
+
+            await _initializeTask.ConfigureAwait(false);
+
+            if (_invalidated)
+            {
+                throw new InvalidOperationException("Cache has been deleted.");
+            }
+        }
+
+        private void InitializeInterface()
         {
             Set("match", FenValue.FromFunction(new FenFunction("match", Match)));
             Set("put", FenValue.FromFunction(new FenFunction("put", Put)));
@@ -54,101 +96,429 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private FenValue Match(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length < 1) return FenValue.FromObject(CreatePromise(() => Resolve(FenValue.Undefined)));
-
-            var requestUrl = ResolveUrl(args[0]);
+            if (args == null || args.Length < 1)
+            {
+                return FenValue.FromObject(CreateRejectedPromise("Cache.match requires a request argument."));
+            }
 
             return FenValue.FromObject(CreatePromise(async () =>
             {
-                var entry = await _storage.Get(_origin, $"cache_{_cacheName}", STORE_NAME, requestUrl);
-                if (entry is CacheEntry cached)
-                {
-                    return CreateJsResponse(cached);
-                }
-                return FenValue.Undefined;
+                await EnsureInitializedAsync().ConfigureAwait(false);
+
+                var requestUrl = ResolveRequestUrl(args[0]);
+                EnsureAllowedRequestUrl(requestUrl);
+
+                var entry = await TryGetEntryAsync(requestUrl).ConfigureAwait(false);
+                return entry == null ? FenValue.Undefined : CreateJsResponse(entry);
             }));
         }
 
         private FenValue Put(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length < 2) return FenValue.Undefined; // Should reject
+            if (args == null || args.Length < 2)
+            {
+                return FenValue.FromObject(CreateRejectedPromise("Cache.put requires request and response arguments."));
+            }
 
-            var requestUrl = ResolveUrl(args[0]);
-            var responseObj = args[1].AsObject(); 
+            if (!args[1].IsObject)
+            {
+                return FenValue.FromObject(CreateRejectedPromise("Cache.put response must be an object."));
+            }
 
             return FenValue.FromObject(CreatePromise(async () =>
             {
-                var entry = await SerializeResponse(requestUrl, responseObj);
-                await _storage.Put(_origin, $"cache_{_cacheName}", STORE_NAME, requestUrl, entry);
+                await EnsureInitializedAsync().ConfigureAwait(false);
+
+                var requestUrl = ResolveRequestUrl(args[0]);
+                EnsureAllowedRequestUrl(requestUrl);
+
+                var responseObject = args[1].AsObject();
+                var entry = SerializeResponse(requestUrl, responseObject);
+                await _storage.Put(_origin, GetDatabaseName(_cacheName), StoreName, requestUrl, entry).ConfigureAwait(false);
+
                 return FenValue.Undefined;
             }));
         }
 
         private FenValue Delete(FenValue[] args, FenValue thisVal)
         {
-             if (args.Length < 1) return FenValue.FromObject(CreatePromise(() => Resolve(FenValue.FromBoolean(false))));
+            if (args == null || args.Length < 1)
+            {
+                return FenValue.FromObject(CreatePromise(() => Task.FromResult(FenValue.FromBoolean(false))));
+            }
 
-             var requestUrl = ResolveUrl(args[0]);
+            return FenValue.FromObject(CreatePromise(async () =>
+            {
+                await EnsureInitializedAsync().ConfigureAwait(false);
 
-             return FenValue.FromObject(CreatePromise(async () => {
-                 var exists = await _storage.Get(_origin, $"cache_{_cacheName}", STORE_NAME, requestUrl) != null;
-                 if (exists)
-                 {
-                     await _storage.Delete(_origin, $"cache_{_cacheName}", STORE_NAME, requestUrl);
-                 }
-                 return FenValue.FromBoolean(exists);
-             }));
+                var requestUrl = ResolveRequestUrl(args[0]);
+                EnsureAllowedRequestUrl(requestUrl);
+
+                var exists = await _storage.Get(_origin, GetDatabaseName(_cacheName), StoreName, requestUrl).ConfigureAwait(false) != null;
+                if (exists)
+                {
+                    await _storage.Delete(_origin, GetDatabaseName(_cacheName), StoreName, requestUrl).ConfigureAwait(false);
+                }
+
+                return FenValue.FromBoolean(exists);
+            }));
         }
 
         private FenValue Keys(FenValue[] args, FenValue thisVal)
         {
             return FenValue.FromObject(CreatePromise(async () =>
             {
-                var keys = await _storage.GetAllKeys(_origin, $"cache_{_cacheName}", STORE_NAME);
-                var list = new List<FenValue>();
-                foreach(var k in keys)
+                await EnsureInitializedAsync().ConfigureAwait(false);
+
+                var keys = await _storage.GetAllKeys(_origin, GetDatabaseName(_cacheName), StoreName).ConfigureAwait(false);
+                var keyList = new List<string>();
+                foreach (var key in keys)
                 {
-                    var req = new FenObject();
-                    req.Set("url", FenValue.FromString(k.ToString()));
-                    list.Add(FenValue.FromObject(req));
+                    if (key == null)
+                    {
+                        continue;
+                    }
+
+                    keyList.Add(key.ToString());
                 }
-                
+
                 var array = new FenObject();
-                array.Set("length", FenValue.FromNumber(list.Count));
-                for(int i=0; i<list.Count; i++) array.Set(i.ToString(), list[i]);
-                
+                array.Set("length", FenValue.FromNumber(keyList.Count));
+                for (var i = 0; i < keyList.Count; i++)
+                {
+                    var request = new FenObject();
+                    request.Set("url", FenValue.FromString(keyList[i]));
+                    array.Set(i.ToString(), FenValue.FromObject(request));
+                }
+
                 return FenValue.FromObject(array);
             }));
         }
 
-        #region Helpers
-
-        private string ResolveUrl(IValue request)
+        internal async Task<FenValue> MatchRequestAsync(string requestUrl)
         {
-            if (request.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.String) return request.ToString();
-            if (request.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Object)
+            await EnsureInitializedAsync().ConfigureAwait(false);
+            EnsureAllowedRequestUrl(requestUrl);
+
+            var entry = await TryGetEntryAsync(requestUrl).ConfigureAwait(false);
+            return entry == null ? FenValue.Undefined : CreateJsResponse(entry);
+        }
+
+        internal static string ResolveRequestUrl(FenValue request)
+        {
+            if (request.IsString)
             {
-                var obj = request.AsObject(); 
-                if (request is FenValue fv)
-                {
-                    obj = fv.AsObject();
-                }
-                else
-                {
-                    obj = ((dynamic)request).AsObject();
-                    // Or check manual interface property if needed
-                }
-                
+                return request.ToString();
+            }
+
+            if (request.IsObject)
+            {
+                var obj = request.AsObject();
                 if (obj != null && obj.Has("url"))
                 {
-                     var u = obj.Get("url");
-                     if (u != null) return u.ToString();
+                    var urlValue = obj.Get("url");
+                    if (!urlValue.IsUndefined && !urlValue.IsNull)
+                    {
+                        return urlValue.ToString();
+                    }
                 }
             }
+
             return request.ToString();
         }
 
-        private Task<FenValue> Resolve(FenValue value) => Task.FromResult(value);
+        internal static void EnsureAllowedRequestUrl(string requestUrl)
+        {
+            if (string.IsNullOrWhiteSpace(requestUrl))
+            {
+                throw new InvalidOperationException("Cache request URL is empty.");
+            }
+
+            if (requestUrl.Length > MaxCacheUrlLength)
+            {
+                throw new InvalidOperationException($"Cache request URL exceeds max length {MaxCacheUrlLength}.");
+            }
+
+            if (!Uri.TryCreate(requestUrl, UriKind.Absolute, out var uri))
+            {
+                throw new InvalidOperationException("Cache request URL is invalid.");
+            }
+
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Cache only supports http and https URLs.");
+            }
+        }
+
+        private async Task<CacheEntry> TryGetEntryAsync(string requestUrl)
+        {
+            var raw = await _storage.Get(_origin, GetDatabaseName(_cacheName), StoreName, requestUrl).ConfigureAwait(false);
+            return DeserializeCacheEntry(raw);
+        }
+
+        private static CacheEntry DeserializeCacheEntry(object raw)
+        {
+            if (raw is CacheEntry entry)
+            {
+                return entry;
+            }
+
+            if (raw is Dictionary<string, object> map)
+            {
+                var deserialized = new CacheEntry();
+                if (map.TryGetValue("Url", out var urlValue)) deserialized.Url = urlValue?.ToString();
+                if (map.TryGetValue("Status", out var statusValue) && int.TryParse(statusValue?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var status)) deserialized.Status = status;
+                if (map.TryGetValue("StatusText", out var statusTextValue)) deserialized.StatusText = statusTextValue?.ToString();
+                if (map.TryGetValue("Body", out var bodyValue)) deserialized.Body = bodyValue?.ToString();
+                deserialized.Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                return deserialized;
+            }
+
+            return null;
+        }
+
+        private static string GetDatabaseName(string cacheName)
+        {
+            return $"cache_{cacheName}";
+        }
+
+        private CacheEntry SerializeResponse(string url, IObject response)
+        {
+            var status = 200;
+            if (response != null && response.Has("status"))
+            {
+                var statusValue = response.Get("status");
+                if (statusValue.IsNumber)
+                {
+                    var parsed = (int)Math.Round(statusValue.ToNumber());
+                    if (parsed >= 100 && parsed <= 599)
+                    {
+                        status = parsed;
+                    }
+                }
+            }
+
+            var statusText = "OK";
+            if (response != null && response.Has("statusText"))
+            {
+                var rawStatusText = response.Get("statusText").ToString() ?? string.Empty;
+                rawStatusText = StripControlCharacters(rawStatusText).Trim();
+                if (rawStatusText.Length > 0)
+                {
+                    statusText = rawStatusText.Length <= MaxStatusTextLength
+                        ? rawStatusText
+                        : rawStatusText.Substring(0, MaxStatusTextLength);
+                }
+            }
+
+            var body = ExtractResponseBody(response);
+            var headers = ExtractHeaders(response);
+
+            return new CacheEntry
+            {
+                Url = url,
+                Status = status,
+                StatusText = statusText,
+                Body = body,
+                Headers = headers
+            };
+        }
+
+        private static string ExtractResponseBody(IObject response)
+        {
+            if (response == null)
+            {
+                return string.Empty;
+            }
+
+            if (response is JsResponse jsResponse)
+            {
+                var content = jsResponse.ResponseMessage?.Content;
+                if (content == null)
+                {
+                    return string.Empty;
+                }
+
+                var bodyFromJsResponse = content.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+                if (bodyFromJsResponse.Length > MaxCachedBodyLength)
+                {
+                    bodyFromJsResponse = bodyFromJsResponse.Substring(0, MaxCachedBodyLength);
+                }
+
+                return bodyFromJsResponse;
+            }
+
+            FenValue bodyValue = FenValue.Undefined;
+            if (response.Has("body"))
+            {
+                bodyValue = response.Get("body");
+            }
+            else if (response.Has("textBody"))
+            {
+                bodyValue = response.Get("textBody");
+            }
+
+            if (bodyValue.IsUndefined || bodyValue.IsNull)
+            {
+                return string.Empty;
+            }
+
+            var body = bodyValue.ToString() ?? string.Empty;
+            if (body.Length > MaxCachedBodyLength)
+            {
+                body = body.Substring(0, MaxCachedBodyLength);
+            }
+
+            return body;
+        }
+
+        private static Dictionary<string, string> ExtractHeaders(IObject response)
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (response == null || !response.Has("headers"))
+            {
+                return headers;
+            }
+
+            var headersValue = response.Get("headers");
+            if (!headersValue.IsObject)
+            {
+                return headers;
+            }
+
+            var headerObject = headersValue.AsObject();
+            if (headerObject == null)
+            {
+                return headers;
+            }
+
+            if (headerObject is JsHeaders jsHeaders)
+            {
+                var copied = 0;
+                foreach (var header in jsHeaders.GetHeaders())
+                {
+                    if (copied >= MaxHeaderCount)
+                    {
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(header.Key))
+                    {
+                        continue;
+                    }
+
+                    headers[StripControlCharacters(header.Key).Trim()] = StripControlCharacters(header.Value ?? string.Empty).Trim();
+                    copied++;
+                }
+
+                return headers;
+            }
+
+            var count = 0;
+            foreach (var key in headerObject.Keys())
+            {
+                if (count >= MaxHeaderCount)
+                {
+                    break;
+                }
+
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                var value = headerObject.Get(key).ToString() ?? string.Empty;
+                headers[StripControlCharacters(key).Trim()] = StripControlCharacters(value).Trim();
+                count++;
+            }
+
+            return headers;
+        }
+
+        private FenValue CreateJsResponse(CacheEntry entry)
+        {
+            var httpResponse = new HttpResponseMessage((System.Net.HttpStatusCode)Math.Clamp(entry.Status, 100, 599))
+            {
+                ReasonPhrase = entry.StatusText ?? string.Empty,
+                Content = new StringContent(entry.Body ?? string.Empty)
+            };
+
+            if (Uri.TryCreate(entry.Url ?? string.Empty, UriKind.Absolute, out var uri))
+            {
+                httpResponse.RequestMessage = new HttpRequestMessage(HttpMethod.Get, uri);
+            }
+
+            if (entry.Headers != null)
+            {
+                foreach (var header in entry.Headers)
+                {
+                    if (!httpResponse.Headers.TryAddWithoutValidation(header.Key, header.Value))
+                    {
+                        httpResponse.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
+            }
+
+            var response = new JsResponse(httpResponse);
+            response.Set("body", FenValue.FromString(entry.Body ?? string.Empty));
+            response.Set("textBody", FenValue.FromString(entry.Body ?? string.Empty));
+            return FenValue.FromObject(response);
+        }
+
+        private Task<FenValue> ParseJsonBody(string body)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(body ?? string.Empty);
+                return Task.FromResult(ConvertJsonElement(document.RootElement));
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Cached response body is not valid JSON: {ex.Message}");
+            }
+        }
+
+        private FenValue ConvertJsonElement(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    var obj = new FenObject();
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        obj.Set(property.Name, ConvertJsonElement(property.Value));
+                    }
+                    return FenValue.FromObject(obj);
+                case JsonValueKind.Array:
+                    var array = new FenObject();
+                    var index = 0;
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        array.Set(index.ToString(CultureInfo.InvariantCulture), ConvertJsonElement(item));
+                        index++;
+                    }
+                    array.Set("length", FenValue.FromNumber(index));
+                    return FenValue.FromObject(array);
+                case JsonValueKind.String:
+                    return FenValue.FromString(element.GetString());
+                case JsonValueKind.Number:
+                    return FenValue.FromNumber(element.GetDouble());
+                case JsonValueKind.True:
+                    return FenValue.FromBoolean(true);
+                case JsonValueKind.False:
+                    return FenValue.FromBoolean(false);
+                case JsonValueKind.Null:
+                    return FenValue.Null;
+                default:
+                    return FenValue.Undefined;
+            }
+        }
+
+        private FenObject CreateRejectedPromise(string message)
+        {
+            return CreatePromise(() => throw new InvalidOperationException(message));
+        }
 
         private static Task RunDetachedAsync(Func<Task> operation)
         {
@@ -164,117 +534,173 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
+
         private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
             var promise = new FenObject();
+            var gate = new object();
+            var state = "pending";
+            var settledValue = FenValue.Undefined;
+            var fulfilledHandlers = new List<FenFunction>();
+            var rejectedHandlers = new List<FenFunction>();
+
+            promise.Set("__state", FenValue.FromString(state));
+
+            void Settle(string nextState, FenValue value)
+            {
+                List<FenFunction> handlers;
+                lock (gate)
+                {
+                    if (!string.Equals(state, "pending", StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    state = nextState;
+                    settledValue = value;
+
+                    promise.Set("__state", FenValue.FromString(state));
+                    if (string.Equals(state, "fulfilled", StringComparison.Ordinal))
+                    {
+                        promise.Set("__result", value);
+                        handlers = new List<FenFunction>(fulfilledHandlers);
+                    }
+                    else
+                    {
+                        promise.Set("__reason", value);
+                        handlers = new List<FenFunction>(rejectedHandlers);
+                    }
+                }
+
+                foreach (var handler in handlers)
+                {
+                    TryInvokePromiseCallback(handler, value);
+                }
+            }
+
+            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, thisValue) =>
+            {
+                FenFunction onFulfilled = null;
+                FenFunction onRejected = null;
+                if (args != null && args.Length > 0 && args[0].IsFunction)
+                {
+                    onFulfilled = args[0].AsFunction();
+                }
+                if (args != null && args.Length > 1 && args[1].IsFunction)
+                {
+                    onRejected = args[1].AsFunction();
+                }
+
+                string currentState;
+                FenValue currentValue;
+                lock (gate)
+                {
+                    if (onFulfilled != null)
+                    {
+                        fulfilledHandlers.Add(onFulfilled);
+                    }
+                    if (onRejected != null)
+                    {
+                        rejectedHandlers.Add(onRejected);
+                    }
+
+                    currentState = state;
+                    currentValue = settledValue;
+                }
+
+                if (string.Equals(currentState, "fulfilled", StringComparison.Ordinal) && onFulfilled != null)
+                {
+                    TryInvokePromiseCallback(onFulfilled, currentValue);
+                }
+                else if (string.Equals(currentState, "rejected", StringComparison.Ordinal) && onRejected != null)
+                {
+                    TryInvokePromiseCallback(onRejected, currentValue);
+                }
+
+                return FenValue.FromObject(promise);
+            })));
+
+            promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (args, thisValue) =>
+            {
+                FenFunction onRejected = null;
+                if (args != null && args.Length > 0 && args[0].IsFunction)
+                {
+                    onRejected = args[0].AsFunction();
+                }
+
+                string currentState;
+                FenValue currentValue;
+                lock (gate)
+                {
+                    if (onRejected != null)
+                    {
+                        rejectedHandlers.Add(onRejected);
+                    }
+
+                    currentState = state;
+                    currentValue = settledValue;
+                }
+
+                if (string.Equals(currentState, "rejected", StringComparison.Ordinal) && onRejected != null)
+                {
+                    TryInvokePromiseCallback(onRejected, currentValue);
+                }
+
+                return FenValue.FromObject(promise);
+            })));
+
             _ = RunDetachedAsync(async () =>
             {
                 try
                 {
-                    var result = await valueFactory();
-                    ResolvePromise(promise, result);
+                    var value = await valueFactory().ConfigureAwait(false);
+                    Settle("fulfilled", value);
                 }
                 catch (Exception ex)
                 {
-                    RejectPromise(promise, ex.Message);
+                    Settle("rejected", FenValue.FromString(ex.Message));
                 }
             });
-            
-            SetupPromiseThen(promise);
+
             return promise;
         }
 
-        private void ResolvePromise(FenObject promise, FenValue result)
+        private static void TryInvokePromiseCallback(FenFunction callback, FenValue value)
         {
-             if (promise.Has("onFulfilled"))
-             {
-                 var cb = promise.Get("onFulfilled").AsFunction();
-                 cb?.Invoke(new[] { result }, null);
-             }
-             else
-             {
-                 promise.Set("__result", result);
-                 promise.Set("__state", FenValue.FromString("fulfilled"));
-             }
-        }
-
-        private void RejectPromise(FenObject promise, string error)
-        {
-             if (promise.Has("onRejected"))
-             {
-                 var cb = promise.Get("onRejected").AsFunction();
-                 cb?.Invoke(new[] { FenValue.FromString(error) }, null);
-             }
-             else
-             {
-                 promise.Set("__reason", FenValue.FromString(error));
-                 promise.Set("__state", FenValue.FromString("rejected"));
-             }
-        }
-
-        private void SetupPromiseThen(FenObject promise)
-        {
-            promise.Set("then", FenValue.FromFunction(new FenFunction("then", (args, _) =>
+            if (callback == null)
             {
-                if (args.Length > 0) promise.Set("onFulfilled", args[0]);
-                if (args.Length > 1) promise.Set("onRejected", args[1]);
+                return;
+            }
 
-                var state = promise.Get("__state").ToString();
-                if (state == "fulfilled")
-                {
-                    var res = promise.Get("__result");
-                    var cb = args[0];
-                    if (cb.IsFunction) cb.AsFunction().Invoke(new[] { res }, null);
-                }
-                else if (state == "rejected")
-                {
-                     var reason = promise.Get("__reason");
-                     var cb = args[1];
-                     if (cb.IsFunction) cb.AsFunction().Invoke(new[] { reason }, null);
-                }
-
-                return FenValue.FromObject(promise); 
-            })));
-        }
-
-        private async Task<CacheEntry> SerializeResponse(string url, IObject response)
-        {
-            var statusVal = response.Get("status");
-            var status = (int)(statusVal.IsNumber ? statusVal.ToNumber() : 200); 
-            
-            var statusTextVal = response.Get("statusText");
-            var statusText = statusTextVal.IsString ? statusTextVal.ToString() : "OK";
-            
-            string body = "Cached Body content placeholder";
-            
-            return new CacheEntry
+            try
             {
-                Url = url,
-                Status = status,
-                StatusText = statusText,
-                Body = body,
-                Headers = new Dictionary<string,string>() 
-            };
+                callback.Invoke(new[] { value }, null);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.FenLogger.Warn($"[Cache] Promise callback failed: {ex.Message}", LogCategory.Storage);
+            }
         }
 
-        private FenValue CreateJsResponse(CacheEntry entry)
+        private static string StripControlCharacters(string input)
         {
-            var res = new FenObject();
-            res.Set("status", FenValue.FromNumber(entry.Status));
-            res.Set("statusText", FenValue.FromString(entry.StatusText));
-            res.Set("ok", FenValue.FromBoolean(entry.Status >= 200 && entry.Status < 300));
-            res.Set("url", FenValue.FromString(entry.Url));
-            
-            res.Set("text", FenValue.FromFunction(new FenFunction("text", (a,t) => 
-               FenValue.FromObject(CreatePromise(() => Resolve(FenValue.FromString(entry.Body)))))));
-               
-            res.Set("json", FenValue.FromFunction(new FenFunction("json", (a,t) => 
-               FenValue.FromObject(CreatePromise(() => Resolve(FenValue.FromString(entry.Body))))))); 
+            if (string.IsNullOrEmpty(input))
+            {
+                return string.Empty;
+            }
 
-            return FenValue.FromObject(res);
+            var chars = input.ToCharArray();
+            var kept = 0;
+            for (var i = 0; i < chars.Length; i++)
+            {
+                if (!char.IsControl(chars[i]))
+                {
+                    chars[kept++] = chars[i];
+                }
+            }
+
+            return kept == chars.Length ? input : new string(chars, 0, kept);
         }
-
-        #endregion
     }
 
     public class CacheEntry
@@ -286,4 +712,6 @@ namespace FenBrowser.FenEngine.WebAPIs
         public string Body { get; set; }
     }
 }
+
+
 

@@ -17,6 +17,9 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _localStorage = new();
         private static ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _sessionStorage = new();
         private static readonly object _ioLock = new object();
+        private static readonly object _saveTimerLock = new object();
+        private static Timer _saveTimer;
+        private static readonly TimeSpan SaveDebounceDelay = TimeSpan.FromMilliseconds(150);
         
         // Configurable path for persistence
         public static string LocalStoragePath { get; set; } = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FenBrowser_Data", "localStorage.json");
@@ -29,6 +32,12 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         public static void ResetForTesting()
         {
+            lock (_saveTimerLock)
+            {
+                _saveTimer?.Dispose();
+                _saveTimer = null;
+            }
+
             _localStorage.Clear();
             _sessionStorage.Clear();
             if (File.Exists(LocalStoragePath))
@@ -68,7 +77,35 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         public static void Save()
         {
-            // Simple synchronous save for now. In production, this should be debounced/async.
+            lock (_saveTimerLock)
+            {
+                _saveTimer?.Dispose();
+                _saveTimer = null;
+            }
+
+            SaveNow();
+        }
+
+        private static void ScheduleSave()
+        {
+            lock (_saveTimerLock)
+            {
+                _saveTimer?.Dispose();
+                _saveTimer = new Timer(_ =>
+                {
+                    lock (_saveTimerLock)
+                    {
+                        _saveTimer?.Dispose();
+                        _saveTimer = null;
+                    }
+
+                    SaveNow();
+                }, null, SaveDebounceDelay, Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        private static void SaveNow()
+        {
             lock (_ioLock)
             {
                 try
@@ -85,7 +122,17 @@ namespace FenBrowser.FenEngine.WebAPIs
                     }
 
                     var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText(LocalStoragePath, json);
+                    var tempPath = LocalStoragePath + ".tmp";
+                    File.WriteAllText(tempPath, json);
+
+                    if (File.Exists(LocalStoragePath))
+                    {
+                        File.Replace(tempPath, LocalStoragePath, null);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, LocalStoragePath);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -149,7 +196,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (string.IsNullOrEmpty(key)) return;
             var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
             store[key] = value ?? string.Empty;
-            Save();
+            ScheduleSave();
         }
 
         public static void RemoveLocalStorageItem(string origin, string key)
@@ -157,13 +204,13 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (string.IsNullOrEmpty(key)) return;
             var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
             store.TryRemove(key, out _);
-            Save();
+            ScheduleSave();
         }
 
         public static void ClearLocalStorage(string origin)
         {
             _localStorage.TryRemove(NormalizeOrigin(origin), out _);
-            Save();
+            ScheduleSave();
         }
 
         public static IReadOnlyDictionary<string, string> GetAllLocalStorageItems(string origin)
@@ -249,6 +296,19 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// </summary>
         private static long CalculateStoreBytes(ConcurrentDictionary<string, string> store)
             => store.Sum(kvp => ((long)kvp.Key.Length + kvp.Value.Length) * 2);
+
+        public static long GetLocalStorageUsageBytes(string origin)
+        {
+            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            return CalculateStoreBytes(store);
+        }
+
+        public static long GetSessionStorageUsageBytes(string sessionScope)
+        {
+            var scope = sessionScope ?? "session:null";
+            var store = _sessionStorage.GetOrAdd(scope, _ => new ConcurrentDictionary<string, string>());
+            return CalculateStoreBytes(store);
+        }
 
         public class DomStorage : FenObject
         {

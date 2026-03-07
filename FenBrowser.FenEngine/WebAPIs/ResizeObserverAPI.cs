@@ -1,14 +1,13 @@
-using System;
+﻿using System;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Observers;
-using FenBrowser.Core.Engine; // Phase enum
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
     /// Implements the ResizeObserver API (JavaScript interface).
-    /// 
+    ///
     /// IMPORTANT: Per Phase D spec Section 0:
     /// - No execution during Measure, Layout, or Paint
     /// - Uses immutable LayoutResult only
@@ -20,50 +19,44 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates the ResizeObserver constructor for registration in the global scope.
         /// </summary>
-        public static IValue CreateConstructor()
+        public static FenObject CreateConstructor()
         {
             var observerCtor = new FenFunction("ResizeObserver", (args, thisVal) =>
             {
                 if (args.Length < 1 || !args[0].IsFunction)
                 {
-                    return FenValue.FromError("ResizeObserver requires a callback function");
+                    throw new InvalidOperationException("ResizeObserver requires a callback function.");
                 }
 
                 var callback = args[0];
-
-                // Create observer instance using the spec-compliant ObserverCoordinator system
                 var instance = new ResizeObserverInstance(callback);
-                
-                // Register with ObserverCoordinator for proper post-layout evaluation
                 ObserverCoordinator.Instance.RegisterResizeObserver(instance);
-                
-                // Create JavaScript-facing object
+
                 var observerObj = new FenObject();
                 observerObj.NativeObject = instance;
-                
-                // observe(target) - start observing a target element
+
                 observerObj.Set("observe", FenValue.FromFunction(new FenFunction("observe", (obsArgs, obsThis) =>
                 {
-                    if (obsArgs.Length > 0 && obsArgs[0].IsObject)
+                    if (obsArgs.Length < 1 || !obsArgs[0].IsObject)
                     {
-                        var target = obsArgs[0].AsObject();
-                        instance.Observe(target);
+                        throw new InvalidOperationException("ResizeObserver.observe requires a target object.");
                     }
+
+                    instance.Observe(obsArgs[0].AsObject());
                     return FenValue.Undefined;
                 })));
 
-                // unobserve(target) - stop observing a specific target
                 observerObj.Set("unobserve", FenValue.FromFunction(new FenFunction("unobserve", (obsArgs, obsThis) =>
                 {
-                    if (obsArgs.Length > 0 && obsArgs[0].IsObject)
+                    if (obsArgs.Length < 1 || !obsArgs[0].IsObject)
                     {
-                        var target = obsArgs[0].AsObject();
-                        instance.Unobserve(target);
+                        throw new InvalidOperationException("ResizeObserver.unobserve requires a target object.");
                     }
+
+                    instance.Unobserve(obsArgs[0].AsObject());
                     return FenValue.Undefined;
                 })));
 
-                // disconnect() - stop observing all targets
                 observerObj.Set("disconnect", FenValue.FromFunction(new FenFunction("disconnect", (obsArgs, obsThis) =>
                 {
                     instance.Disconnect();
@@ -71,9 +64,16 @@ namespace FenBrowser.FenEngine.WebAPIs
                 })));
 
                 return FenValue.FromObject(observerObj);
-            });
+            })
+            {
+                IsConstructor = true,
+                NativeLength = 1
+            };
 
-            return FenValue.FromFunction(observerCtor);
+            var prototype = new FenObject();
+            prototype.Set("constructor", FenValue.FromFunction(observerCtor));
+            observerCtor.Set("prototype", FenValue.FromObject(prototype));
+            return observerCtor;
         }
 
         /// <summary>
@@ -81,7 +81,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// </summary>
         public static void ClearAllObservers()
         {
-            // ResizeObservers are cleared via ObserverCoordinator.Clear()
+            ObserverCoordinator.Instance.Clear();
         }
     }
 }

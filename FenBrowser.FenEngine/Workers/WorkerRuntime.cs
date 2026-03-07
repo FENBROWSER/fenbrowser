@@ -35,7 +35,9 @@ namespace FenBrowser.FenEngine.Workers
         private readonly CancellationTokenSource _cts;
         private readonly AutoResetEvent _taskSignal;
         private readonly Thread _workerThread;
+        private readonly Task<string> _bootstrapScriptLoadTask;
         private bool _isRunning;
+        private bool _bootstrapCompleted;
         private bool _isDisposed;
         private FenRuntime _runtime;
         private WorkerGlobalScope _globalScope;
@@ -98,6 +100,9 @@ namespace FenBrowser.FenEngine.Workers
                 }
             }
 
+            _bootstrapScriptLoadTask = LoadWorkerScriptAsync();
+            _ = ObserveBootstrapCompletionAsync();
+
             // Start worker thread
             _workerThread = new Thread(WorkerThreadProc)
             {
@@ -107,6 +112,32 @@ namespace FenBrowser.FenEngine.Workers
             _workerThread.Start();
 
             FenLogger.Debug($"[WorkerRuntime] Created worker for {scriptUrl} (origin: {origin})", LogCategory.JavaScript);
+        }
+
+        private async Task ObserveBootstrapCompletionAsync()
+        {
+            try
+            {
+                await _bootstrapScriptLoadTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // WorkerThreadProc/TryCompleteBootstrap surfaces the failure through OnError.
+            }
+            finally
+            {
+                try
+                {
+                    if (!_isDisposed)
+                    {
+                        _taskSignal.Set();
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Worker disposal raced the bootstrap completion signal.
+                }
+            }
         }
 
         /// <summary>
@@ -179,25 +210,14 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 _runtime.SetGlobal("self", FenValue.FromObject(_globalScope));
 
-                // Load and execute the worker bootstrap script deterministically on the worker thread.
-                // This avoids startup races where script fetch/queue can lag behind task-loop polling.
-                try
-                {
-                    var scriptContent = LoadWorkerScriptAsync().GetAwaiter().GetResult();
-                    if (!string.IsNullOrEmpty(scriptContent))
-                    {
-                        _runtime.ExecuteSimple(scriptContent);
-                        FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Error($"[WorkerRuntime] Script fetch/execute error: {ex.Message}", LogCategory.Errors);
-                    OnError?.Invoke(ex);
-                }
-                
                 while (_isRunning && !_cts.IsCancellationRequested)
                 {
+                    if (!TryCompleteBootstrap())
+                    {
+                        _taskSignal.WaitOne();
+                        continue;
+                    }
+
                     // Process one task
                     var task = _taskQueue.Dequeue();
                     if (task != null)
@@ -229,6 +249,49 @@ namespace FenBrowser.FenEngine.Workers
             }
 
             FenLogger.Debug("[WorkerRuntime] Worker thread stopped", LogCategory.JavaScript);
+        }
+
+        private bool TryCompleteBootstrap()
+        {
+            if (_bootstrapCompleted)
+            {
+                return true;
+            }
+
+            if (!_bootstrapScriptLoadTask.IsCompleted)
+            {
+                return false;
+            }
+
+            _bootstrapCompleted = true;
+
+            try
+            {
+                if (_bootstrapScriptLoadTask.IsFaulted)
+                {
+                    throw _bootstrapScriptLoadTask.Exception?.GetBaseException()
+                        ?? new InvalidOperationException("Worker bootstrap failed.");
+                }
+
+                if (_bootstrapScriptLoadTask.IsCanceled)
+                {
+                    throw new TaskCanceledException("Worker bootstrap was canceled.");
+                }
+
+                var scriptContent = _bootstrapScriptLoadTask.Result;
+                if (!string.IsNullOrEmpty(scriptContent))
+                {
+                    _runtime.ExecuteSimple(scriptContent);
+                    FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[WorkerRuntime] Script fetch/execute error: {ex.Message}", LogCategory.Errors);
+                OnError?.Invoke(ex);
+            }
+
+            return true;
         }
 
         public async Task<bool> DispatchServiceWorkerFetchAsync(FenBrowser.FenEngine.WebAPIs.FetchEvent fetchEvent)
