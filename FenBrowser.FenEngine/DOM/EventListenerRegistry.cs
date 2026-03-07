@@ -64,25 +64,25 @@ namespace FenBrowser.FenEngine.DOM
     public class EventListenerRegistry
     {
         // Element → EventType → List<EventListener>
-        private readonly Dictionary<Element, Dictionary<string, List<EventListener>>> _listeners
-            = new Dictionary<Element, Dictionary<string, List<EventListener>>>();
+        private readonly Dictionary<Node, Dictionary<string, List<EventListener>>> _listeners
+            = new Dictionary<Node, Dictionary<string, List<EventListener>>>();
 
         private readonly object _lock = new object();
 
         /// <summary>
         /// Add an event listener to an element
         /// </summary>
-        public void Add(Element element, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
+        public void Add(Node node, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
         {
-            if (element == null || type == null || callback.IsUndefined || callback.IsNull)
+            if (node == null || type == null || callback.IsUndefined || callback.IsNull)
                 return;
 
             lock (_lock)
             {
-                if (!_listeners.ContainsKey(element))
-                    _listeners[element] = new Dictionary<string, List<EventListener>>(StringComparer.OrdinalIgnoreCase);
+                if (!_listeners.ContainsKey(node))
+                    _listeners[node] = new Dictionary<string, List<EventListener>>(StringComparer.OrdinalIgnoreCase);
 
-                var byType = _listeners[element];
+                var byType = _listeners[node];
                 if (!byType.ContainsKey(type))
                     byType[type] = new List<EventListener>();
 
@@ -99,24 +99,24 @@ namespace FenBrowser.FenEngine.DOM
                 }
 
                 list.Add(new EventListener(callback, capture, once, passive));
-                FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on <{element.TagName}> (capture={capture}, once={once})", LogCategory.Events);
+                FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on {DescribeNode(node)} (capture={capture}, once={once})", LogCategory.Events);
             }
         }
 
         /// <summary>
         /// Remove an event listener from an element
         /// </summary>
-        public void Remove(Element element, string type, FenValue callback, bool capture = false)
+        public void Remove(Node node, string type, FenValue callback, bool capture = false)
         {
-            if (element == null || type == null || callback.IsUndefined || callback.IsNull)
+            if (node == null || type == null || callback.IsUndefined || callback.IsNull)
                 return;
 
             lock (_lock)
             {
-                if (!_listeners.ContainsKey(element))
+                if (!_listeners.ContainsKey(node))
                     return;
 
-                var byType = _listeners[element];
+                var byType = _listeners[node];
                 if (!byType.ContainsKey(type))
                     return;
 
@@ -126,7 +126,7 @@ namespace FenBrowser.FenEngine.DOM
                     if (list[i].Matches(callback, capture))
                     {
                         list.RemoveAt(i);
-                        FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on <{element.TagName}>", LogCategory.Events);
+                        FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
                         break;
                     }
                 }
@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (list.Count == 0)
                     byType.Remove(type);
                 if (byType.Count == 0)
-                    _listeners.Remove(element);
+                    _listeners.Remove(node);
             }
         }
 
@@ -146,19 +146,19 @@ namespace FenBrowser.FenEngine.DOM
         /// <param name="type">Event type</param>
         /// <param name="capture">If true, return capture-phase listeners; if false, bubble-phase</param>
         /// <returns>List of matching listeners (copy to allow modification during iteration)</returns>
-        public List<EventListener> Get(Element element, string type, bool capture)
+        public List<EventListener> Get(Node node, string type, bool capture)
         {
             var result = new List<EventListener>();
 
-            if (element  == null || type == null)
+            if (node  == null || type == null)
                 return result;
 
             lock (_lock)
             {
-                if (!_listeners.ContainsKey(element))
+                if (!_listeners.ContainsKey(node))
                     return result;
 
-                var byType = _listeners[element];
+                var byType = _listeners[node];
                 if (!byType.ContainsKey(type))
                     return result;
 
@@ -175,19 +175,19 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Get all listeners for an element and event type (both phases)
         /// </summary>
-        public List<EventListener> GetAll(Element element, string type)
+        public List<EventListener> GetAll(Node node, string type)
         {
             var result = new List<EventListener>();
 
-            if (element  == null || type == null)
+            if (node  == null || type == null)
                 return result;
 
             lock (_lock)
             {
-                if (!_listeners.ContainsKey(element))
+                if (!_listeners.ContainsKey(node))
                     return result;
 
-                var byType = _listeners[element];
+                var byType = _listeners[node];
                 if (!byType.ContainsKey(type))
                     return result;
 
@@ -200,35 +200,35 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Remove a listener that was marked with 'once' option
         /// </summary>
-        public void RemoveOnce(Element element, string type, EventListener listener)
+        public void RemoveOnce(Node node, string type, EventListener listener)
         {
-            if (element  == null || type == null || listener  == null)
+            if (node  == null || type == null || listener  == null)
                 return;
 
             lock (_lock)
             {
-                if (!_listeners.ContainsKey(element))
+                if (!_listeners.ContainsKey(node))
                     return;
 
-                var byType = _listeners[element];
+                var byType = _listeners[node];
                 if (!byType.ContainsKey(type))
                     return;
 
                 byType[type].Remove(listener);
-                FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on <{element.TagName}>", LogCategory.Events);
+                FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
             }
         }
 
         /// <summary>
         /// Clear all listeners for an element (e.g., when element is removed from DOM)
         /// </summary>
-        public void ClearElement(Element element)
+        public void ClearElement(Node node)
         {
-            if (element  == null) return;
+            if (node  == null) return;
 
             lock (_lock)
             {
-                _listeners.Remove(element);
+                _listeners.Remove(node);
             }
         }
 
@@ -241,6 +241,16 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _listeners.Clear();
             }
+        }
+
+        private static string DescribeNode(Node node)
+        {
+            if (node is Element element)
+            {
+                return $"<{element.TagName}>";
+            }
+
+            return node.NodeName ?? node.GetType().Name;
         }
     }
 }

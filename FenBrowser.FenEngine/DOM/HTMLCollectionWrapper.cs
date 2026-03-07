@@ -11,14 +11,19 @@ namespace FenBrowser.FenEngine.DOM
 {
     public class HTMLCollectionWrapper : IObject
     {
-        private readonly IEnumerable<Element> _source;
+        private readonly Func<IEnumerable<Element>> _sourceProvider;
         private readonly IExecutionContext _context;
         private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
         private readonly List<string> _expandoOrder = new();
 
         public HTMLCollectionWrapper(IEnumerable<Element> source, IExecutionContext context)
+            : this(() => source ?? Array.Empty<Element>(), context)
         {
-            _source = source ?? Array.Empty<Element>();
+        }
+
+        public HTMLCollectionWrapper(Func<IEnumerable<Element>> sourceProvider, IExecutionContext context)
+        {
+            _sourceProvider = sourceProvider ?? (() => Array.Empty<Element>());
             _context = context;
         }
 
@@ -26,6 +31,16 @@ namespace FenBrowser.FenEngine.DOM
 
         public FenValue Get(string key, IExecutionContext context = null)
         {
+            return GetWithReceiver(key, FenValue.FromObject(this), context);
+        }
+
+        public FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null)
+        {
+            if (key == "length" && receiver.IsObject && !ReferenceEquals(receiver.AsObject(), this))
+            {
+                throw new FenTypeError("Illegal invocation");
+            }
+
             if (_expandos.TryGetValue(key, out var expandoDesc))
             {
                 if (expandoDesc.IsAccessor)
@@ -38,18 +53,19 @@ namespace FenBrowser.FenEngine.DOM
                 return expandoDesc.Value ?? FenValue.Undefined;
             }
 
+            var snapshot = GetSnapshot();
             if (TryParseArrayIndex(key, out var arrayIndex))
             {
-                var count = (uint)_source.Count();
+                var count = (uint)snapshot.Count;
                 if (arrayIndex < count)
                 {
-                    return Item((int)arrayIndex);
+                    return WrapElement(snapshot[(int)arrayIndex]);
                 }
 
                 return FenValue.Undefined;
             }
 
-            var named = NamedItem(key);
+            var named = NamedItem(snapshot, key);
             if (!named.IsNull)
             {
                 return named;
@@ -58,14 +74,14 @@ namespace FenBrowser.FenEngine.DOM
             switch (key)
             {
                 case "length":
-                    return FenValue.FromNumber(_source.Count());
+                    return FenValue.FromNumber(snapshot.Count);
 
                 case "item":
                     return FenValue.FromFunction(new FenFunction("item", (args, thisVal) =>
                     {
-                        if (args.Length > 0 && args[0].IsNumber)
+                        if (args.Length > 0)
                         {
-                            return Item((int)args[0].ToNumber());
+                            return Item(ToCollectionIndex(args[0]));
                         }
 
                         return FenValue.Null;
@@ -76,7 +92,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         if (args.Length > 0)
                         {
-                            return NamedItem(args[0].ToString());
+                            return NamedItem(GetSnapshot(), args[0].ToString());
                         }
 
                         return FenValue.Null;
@@ -84,30 +100,10 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "[Symbol.iterator]":
                 case "Symbol.iterator":
+                case "Symbol(Symbol.iterator)":
                     return FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, thisVal) =>
                     {
-                        var iterator = new FenObject();
-                        int i = 0;
-                        iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (nextArgs, nextThis) =>
-                        {
-                            var result = new FenObject();
-                            if (i >= _source.Count())
-                            {
-                                result.Set("done", FenValue.FromBoolean(true));
-                                result.Set("value", FenValue.Undefined);
-                            }
-                            else
-                            {
-                                result.Set("done", FenValue.FromBoolean(false));
-                                result.Set("value", Item(i));
-                                i++;
-                            }
-
-                            return FenValue.FromObject(result);
-                        })));
-                        iterator.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (itArgs, itThis) => itThis)));
-                        iterator.Set("Symbol.iterator", FenValue.FromFunction(new FenFunction("Symbol.iterator", (itArgs, itThis) => itThis)));
-                        return FenValue.FromObject(iterator);
+                        return FenValue.FromObject(CreateIteratorObject());
                     }));
             }
 
@@ -116,36 +112,41 @@ namespace FenBrowser.FenEngine.DOM
 
         public bool IsSupportedNamedProperty(string key)
         {
-            return !string.IsNullOrEmpty(key) && !NamedItem(key).IsNull;
+            return !string.IsNullOrEmpty(key) && !NamedItem(GetSnapshot(), key).IsNull;
         }
 
-        private FenValue Item(int index)
+        private FenValue Item(uint index)
         {
-            var el = _source.ElementAtOrDefault(index);
-            return WrapElement(el);
+            var snapshot = GetSnapshot();
+            if (index >= (uint)snapshot.Count)
+            {
+                return FenValue.Null;
+            }
+
+            return WrapElement(snapshot[(int)index]);
         }
 
-        private FenValue NamedItem(string name)
+        private FenValue NamedItem(IReadOnlyList<Element> snapshot, string name)
         {
             if (string.IsNullOrEmpty(name))
             {
                 return FenValue.Null;
             }
 
-            var el = _source.FirstOrDefault(e => string.Equals(e.Id, name, StringComparison.Ordinal));
+            var el = snapshot.FirstOrDefault(e => string.Equals(e.Id, name, StringComparison.Ordinal));
             if (el == null)
             {
-                el = _source.FirstOrDefault(e => string.Equals(e.GetAttribute("name"), name, StringComparison.Ordinal)
+                el = snapshot.FirstOrDefault(e => string.Equals(e.GetAttribute("name"), name, StringComparison.Ordinal)
                                                  && string.Equals(e.NamespaceUri, Namespaces.Html, StringComparison.Ordinal));
             }
 
             return WrapElement(el);
         }
 
-        private IEnumerable<string> EnumerateNamedProperties()
+        private IEnumerable<string> EnumerateNamedProperties(IReadOnlyList<Element> snapshot)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var el in _source)
+            foreach (var el in snapshot)
             {
                 if (el == null)
                 {
@@ -190,6 +191,25 @@ namespace FenBrowser.FenEngine.DOM
             return true;
         }
 
+        private static uint ToCollectionIndex(FenValue value)
+        {
+            var number = value.ToNumber();
+            if (double.IsNaN(number) || double.IsInfinity(number))
+            {
+                return 0;
+            }
+
+            const double modulo = 4294967296d;
+            var integer = Math.Truncate(number);
+            var wrapped = integer % modulo;
+            if (wrapped < 0)
+            {
+                wrapped += modulo;
+            }
+
+            return (uint)wrapped;
+        }
+
         private FenValue WrapElement(Element el)
         {
             if (el == null)
@@ -198,6 +218,39 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return DomWrapperFactory.Wrap(el, _context);
+        }
+
+        private FenObject CreateIteratorObject()
+        {
+            var iterator = new FenObject();
+            int index = 0;
+            iterator.Set("next", FenValue.FromFunction(new FenFunction("next", (args, thisVal) =>
+            {
+                var result = new FenObject();
+                var snapshot = GetSnapshot();
+                if (index >= snapshot.Count)
+                {
+                    result.Set("value", FenValue.Undefined);
+                    result.Set("done", FenValue.FromBoolean(true));
+                    return FenValue.FromObject(result);
+                }
+
+                result.Set("value", WrapElement(snapshot[index]));
+                result.Set("done", FenValue.FromBoolean(false));
+                index++;
+                return FenValue.FromObject(result);
+            })));
+            iterator.Set("[Symbol.iterator]", FenValue.FromFunction(new FenFunction("[Symbol.iterator]", (args, thisVal) => FenValue.FromObject(iterator))));
+            iterator.Set("Symbol.iterator", iterator.Get("[Symbol.iterator]"));
+            iterator.Set("Symbol(Symbol.iterator)", iterator.Get("[Symbol.iterator]"));
+            return iterator;
+        }
+
+        private IReadOnlyList<Element> GetSnapshot()
+        {
+            return (_sourceProvider?.Invoke() ?? Array.Empty<Element>())
+                .Where(element => element != null)
+                .ToList();
         }
 
         public void Set(string key, FenValue value, IExecutionContext context = null)
@@ -269,13 +322,14 @@ namespace FenBrowser.FenEngine.DOM
 
         public IEnumerable<string> Keys(IExecutionContext context = null)
         {
-            var count = _source.Count();
+            var snapshot = GetSnapshot();
+            var count = snapshot.Count;
             for (int i = 0; i < count; i++)
             {
                 yield return i.ToString(CultureInfo.InvariantCulture);
             }
 
-            foreach (var name in EnumerateNamedProperties())
+            foreach (var name in EnumerateNamedProperties(snapshot))
             {
                 yield return name;
             }
@@ -291,13 +345,14 @@ namespace FenBrowser.FenEngine.DOM
 
         public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null)
         {
-            var count = _source.Count();
+            var snapshot = GetSnapshot();
+            var count = snapshot.Count;
             for (int i = 0; i < count; i++)
             {
                 yield return i.ToString(CultureInfo.InvariantCulture);
             }
 
-            foreach (var name in EnumerateNamedProperties())
+            foreach (var name in EnumerateNamedProperties(snapshot))
             {
                 yield return name;
             }
@@ -318,9 +373,10 @@ namespace FenBrowser.FenEngine.DOM
                 return true;
             }
 
+            var snapshot = GetSnapshot();
             if (TryParseArrayIndex(key, out var index))
             {
-                return index < (uint)_source.Count();
+                return index < (uint)snapshot.Count;
             }
 
             if (key == "length" || key == "item" || key == "namedItem" || key == "[Symbol.iterator]" || key == "Symbol.iterator" || key == "Symbol(Symbol.iterator)")
@@ -345,7 +401,13 @@ namespace FenBrowser.FenEngine.DOM
                 return true;
             }
 
-            if (TryParseArrayIndex(key, out _) || IsSupportedNamedProperty(key))
+            var snapshot = GetSnapshot();
+            if (TryParseArrayIndex(key, out var index))
+            {
+                return index >= (uint)snapshot.Count;
+            }
+
+            if (!string.IsNullOrEmpty(key) && !NamedItem(snapshot, key).IsNull)
             {
                 return false;
             }
@@ -360,12 +422,13 @@ namespace FenBrowser.FenEngine.DOM
                 return expandoDesc;
             }
 
-            if (TryParseArrayIndex(key, out var index) && index < (uint)_source.Count())
+            var snapshot = GetSnapshot();
+            if (TryParseArrayIndex(key, out var index) && index < (uint)snapshot.Count)
             {
                 return new PropertyDescriptor { Value = Get(key), Writable = false, Enumerable = true, Configurable = true, Getter = null, Setter = null };
             }
 
-            if (IsSupportedNamedProperty(key))
+            if (!string.IsNullOrEmpty(key) && !NamedItem(snapshot, key).IsNull)
             {
                 return new PropertyDescriptor { Value = Get(key), Writable = false, Enumerable = false, Configurable = true, Getter = null, Setter = null };
             }
