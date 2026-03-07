@@ -15,6 +15,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly HashSet<string> _tdz;
         private readonly IObject _withObject;
         private readonly bool _isWithEnvironment;
+        private readonly bool _isLexicalScope;
         private IDictionary<string, int> _fastSlotByName;
         public FenValue[] FastStore; // NEW: Exposed for JIT direct access
         public FenEnvironment Outer { get; set; }
@@ -30,13 +31,17 @@ namespace FenBrowser.FenEngine.Core
             set => _strictMode = value;
         }
         private bool _strictMode;
+        [ThreadStatic]
+        private static int _legacyGlobalLookupDepth;
+        private const int MaxLegacyGlobalLookupDepth = 16;
 
-        public FenEnvironment(FenEnvironment outer = null)
+        public FenEnvironment(FenEnvironment outer = null, bool isLexicalScope = false)
         {
             _store = new Dictionary<string, FenValue>();
             _constants = new HashSet<string>();
             _tdz = new HashSet<string>();
             Outer = outer;
+            _isLexicalScope = isLexicalScope;
         }
 
         public FenEnvironment(FenEnvironment outer, IObject withObject)
@@ -47,6 +52,7 @@ namespace FenBrowser.FenEngine.Core
         }
 
         public bool IsWithEnvironment => _isWithEnvironment;
+        public bool IsLexicalScope => _isLexicalScope;
 
         public FenValue Get(string name)
         {
@@ -57,7 +63,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (_tdz.Contains(name))
             {
-                return FenValue.FromError($"Cannot access '{name}' before initialization");
+                return FenValue.FromError($"ReferenceError: Cannot access '{name}' before initialization");
             }
 
             if (_store.TryGetValue(name, out var value))
@@ -103,7 +109,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (_tdz.Contains(name))
             {
-                value = FenValue.FromError($"Cannot access '{name}' before initialization");
+                value = FenValue.FromError($"ReferenceError: Cannot access '{name}' before initialization");
                 return true;
             }
 
@@ -143,6 +149,17 @@ namespace FenBrowser.FenEngine.Core
         public void ConfigureFastSlots(IDictionary<string, int> fastSlotByName)
         {
             _fastSlotByName = fastSlotByName;
+        }
+
+        public void InheritFastSlots(FenEnvironment outer)
+        {
+            if (outer == null)
+            {
+                return;
+            }
+
+            _fastSlotByName = outer._fastSlotByName;
+            FastStore = outer.FastStore;
         }
 
         public FenValue GetFast(int index)
@@ -185,7 +202,7 @@ namespace FenBrowser.FenEngine.Core
             if (Outer != null)
                 return Outer.IsConstant(name);
             return false;
-        }
+            }
 
         public FenValue Update(string name, FenValue value, bool isStrict = false)
         {
@@ -221,6 +238,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromError($"ReferenceError: {name} is not defined");
             }
 
+
             _store[name] = value;
             SyncFastSlot(name, value);
             return value;
@@ -228,19 +246,28 @@ namespace FenBrowser.FenEngine.Core
 
         public bool HasBinding(string name)
         {
-            if (_isWithEnvironment && HasWithBinding(name))
+            if (string.IsNullOrEmpty(name))
             {
-                return true;
+                return false;
             }
 
-            if (_store.ContainsKey(name) || _tdz.Contains(name))
+            var visited = new HashSet<FenEnvironment>();
+            for (var env = this; env != null; env = env.Outer)
             {
-                return true;
-            }
+                if (!visited.Add(env))
+                {
+                    break;
+                }
 
-            if (Outer != null && Outer.HasBinding(name))
-            {
-                return true;
+                if (env._isWithEnvironment && env.HasWithBinding(name))
+                {
+                    return true;
+                }
+
+                if (env._store.ContainsKey(name) || env._tdz.Contains(name))
+                {
+                    return true;
+                }
             }
 
             return TryResolveLegacyGlobalFromWindow(name, out _);
@@ -262,6 +289,17 @@ namespace FenBrowser.FenEngine.Core
             return env ?? this;
         }
 
+        public FenEnvironment GetVarDeclarationEnvironment()
+        {
+            var env = this;
+            while (env != null && (env._isWithEnvironment || env._isLexicalScope))
+            {
+                env = env.Outer;
+            }
+
+            return env ?? this;
+        }
+
         private bool TryResolveLegacyGlobalFromWindow(string name, out FenValue value)
         {
             value = FenValue.Undefined;
@@ -270,71 +308,50 @@ namespace FenBrowser.FenEngine.Core
                 return false;
             }
 
-            IObject windowObj = null;
-            FenValue docVal = FenValue.Undefined;
-            IObject docObj = null;
-
-            if (TryGetBindingFromChain("window", out var windowVal) && windowVal.IsObject)
+            if (++_legacyGlobalLookupDepth > MaxLegacyGlobalLookupDepth)
             {
-                windowObj = windowVal.AsObject();
-                if (windowObj != null)
-                {
-                    // First check explicit window own/prototype properties.
-                    var windowProp = windowObj.Get(name);
-                    if (!windowProp.IsUndefined)
-                    {
-                        value = windowProp;
-                        return true;
-                    }
-
-                    docVal = windowObj.Get("document");
-                    if (docVal.IsObject)
-                    {
-                        docObj = docVal.AsObject();
-                    }
-                }
-            }
-
-            // Fallback: direct global "document" binding when window is not exposed on this chain.
-            if (docObj == null && TryGetBindingFromChain("document", out var directDocVal) && directDocVal.IsObject)
-            {
-                docVal = directDocVal;
-                docObj = directDocVal.AsObject();
-            }
-
-            // Final fallback: resolve document through normal identifier lookup (needed when globals are bridged, not stored directly).
-            if (docObj == null && !string.Equals(name, "document", StringComparison.Ordinal))
-            {
-                var resolvedDoc = Get("document");
-                if (resolvedDoc.IsObject)
-                {
-                    docVal = resolvedDoc;
-                    docObj = resolvedDoc.AsObject();
-                }
-            }
-
-            if (docObj == null)
-            {
+                _legacyGlobalLookupDepth--;
                 return false;
             }
 
-            // Legacy named access: id-backed global variables (e.g., <iframe id="iframe"> => window.iframe).
-            var getById = docObj.Get("getElementById");
-            if (!getById.IsFunction)
+            try
             {
+                FenValue docVal = FenValue.Undefined;
+                IObject docObj = null;
+
+                // Resolve only direct global document binding here; avoid re-entering window named-property plumbing.
+                if (TryGetBindingFromChain("document", out var directDocVal) && directDocVal.IsObject)
+                {
+                    docVal = directDocVal;
+                    docObj = directDocVal.AsObject();
+                }
+
+                if (docObj == null)
+                {
+                    return false;
+                }
+
+                // Legacy named access: id-backed global variables (e.g., <iframe id="iframe"> => window.iframe).
+                var getById = docObj.Get("getElementById");
+                if (!getById.IsFunction)
+                {
+                    return false;
+                }
+
+                var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(name) }, null, docVal);
+                if (!found.IsNull && !found.IsUndefined)
+                {
+                    value = found;
+                    return true;
+                }
+
                 return false;
             }
-
-            var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(name) }, null, docVal);
-            if (!found.IsNull && !found.IsUndefined)
+            finally
             {
-                value = found;
-                return true;
+                _legacyGlobalLookupDepth--;
             }
-
-            return false;
         }
-
         private bool TryGetBindingFromChain(string name, out FenValue value)
         {
             for (var env = this; env != null; env = env.Outer)
@@ -355,6 +372,61 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
+        private bool TryAssignToGlobalObject(string name, FenValue value)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            FenObject globalRoot = null;
+            if (TryGetBindingFromChain("globalThis", out var globalThisVal) && globalThisVal.IsObject)
+            {
+                globalRoot = globalThisVal.AsObject() as FenObject;
+            }
+            else if (TryGetBindingFromChain("window", out var windowVal) && windowVal.IsObject)
+            {
+                globalRoot = windowVal.AsObject() as FenObject;
+            }
+            else if (TryGetBindingFromChain("self", out var selfVal) && selfVal.IsObject)
+            {
+                globalRoot = selfVal.AsObject() as FenObject;
+            }
+
+            if (globalRoot == null)
+            {
+                return false;
+            }
+
+            if (globalRoot.GetOwnPropertyDescriptor(name).HasValue)
+            {
+                globalRoot.Set(name, value);
+                return true;
+            }
+
+            var proto = globalRoot.GetPrototype() as FenObject;
+            if (proto != null)
+            {
+                var isProxyDesc = proto.GetOwnPropertyDescriptor("__isProxy__");
+                if (isProxyDesc.HasValue && isProxyDesc.Value.Value.HasValue && isProxyDesc.Value.Value.Value.ToBoolean())
+                {
+                    var setTrapDesc = proto.GetOwnPropertyDescriptor("__proxySet__");
+                    if (setTrapDesc.HasValue && setTrapDesc.Value.Value.HasValue && setTrapDesc.Value.Value.Value.IsFunction)
+                    {
+                        var targetDesc = proto.GetOwnPropertyDescriptor("__proxyTarget__") ?? proto.GetOwnPropertyDescriptor("__target__");
+                        var proxyTarget = targetDesc.HasValue && targetDesc.Value.Value.HasValue
+                            ? targetDesc.Value.Value.Value
+                            : FenValue.Undefined;
+                        var setTrap = setTrapDesc.Value.Value.Value.AsFunction();
+                        setTrap.Invoke(new[] { proxyTarget, FenValue.FromString(name), value, FenValue.FromObject(globalRoot) }, null, FenValue.Undefined);
+                        return true;
+                    }
+                }
+            }
+
+            globalRoot.Set(name, value);
+            return true;
+        }
         private void SyncFastSlot(string name, FenValue value)
         {
             if (_fastSlotByName != null && _fastSlotByName.TryGetValue(name, out int slotIndex))
@@ -418,3 +490,14 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+

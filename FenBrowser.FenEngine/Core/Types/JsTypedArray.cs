@@ -504,6 +504,366 @@ namespace FenBrowser.FenEngine.Core.Types
                 // Return same type view over same buffer
                 return thisVal; // simplified: return self for now
             })));
+
+            if (this is JsUint8Array)
+            {
+                Set("setFromBase64", FenValue.FromFunction(new FenFunction("setFromBase64", (args, thisVal) =>
+                {
+                    if (thisVal.AsObject() is not JsUint8Array target)
+                    {
+                        throw new FenTypeError("TypeError: Uint8Array.prototype.setFromBase64 called on incompatible receiver");
+                    }
+
+                    if (args.Length == 0)
+                    {
+                        throw new FenTypeError("TypeError: Uint8Array.prototype.setFromBase64 requires a source string");
+                    }
+
+                    var source = args[0].ToString();
+                    var alphabet = "base64";
+                    var lastChunkHandling = "loose";
+
+                    if (args.Length > 1 && args[1].IsObject)
+                    {
+                        var options = args[1].AsObject();
+                        var alphabetValue = options.Get("alphabet", null);
+                        if (!alphabetValue.IsUndefined)
+                        {
+                            alphabet = alphabetValue.ToString();
+                        }
+
+                        var lastChunkValue = options.Get("lastChunkHandling", null);
+                        if (!lastChunkValue.IsUndefined)
+                        {
+                            lastChunkHandling = lastChunkValue.ToString();
+                        }
+                    }
+
+                    if (alphabet != "base64" && alphabet != "base64url")
+                    {
+                        throw new FenTypeError("TypeError: Invalid base64 alphabet option");
+                    }
+
+                    if (lastChunkHandling != "loose" &&
+                        lastChunkHandling != "strict" &&
+                        lastChunkHandling != "stop-before-partial")
+                    {
+                        throw new FenTypeError("TypeError: Invalid lastChunkHandling option");
+                    }
+
+                    return target.SetFromBase64(source, alphabet == "base64url", lastChunkHandling);
+                })));
+
+                Set("setFromHex", FenValue.FromFunction(new FenFunction("setFromHex", (args, thisVal) =>
+                {
+                    if (thisVal.AsObject() is not JsUint8Array target)
+                    {
+                        throw new FenTypeError("TypeError: Uint8Array.prototype.setFromHex called on incompatible receiver");
+                    }
+
+                    if (args.Length == 0)
+                    {
+                        throw new FenTypeError("TypeError: Uint8Array.prototype.setFromHex requires a source string");
+                    }
+
+                    return target.SetFromHex(args[0].ToString());
+                })));
+            }
+        }
+
+        private static bool IsBase64Whitespace(char ch)
+        {
+            return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f';
+        }
+
+        private static bool IsHexWhitespace(char ch)
+        {
+            return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\f';
+        }
+
+        private static int DecodeHexNibble(char ch)
+        {
+            if (ch >= '0' && ch <= '9') return ch - '0';
+            if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+            if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+            return -1;
+        }
+
+        private static int DecodeBase64Sextet(char ch, bool useBase64UrlAlphabet)
+        {
+            if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+            if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+            if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+            if (useBase64UrlAlphabet)
+            {
+                if (ch == '-') return 62;
+                if (ch == '_') return 63;
+            }
+            else
+            {
+                if (ch == '+') return 62;
+                if (ch == '/') return 63;
+            }
+
+            return -1;
+        }
+
+        protected FenValue SetFromBase64(string source, bool useBase64UrlAlphabet, string lastChunkHandling)
+        {
+            var sanitized = new List<char>(source.Length);
+            var originalPositions = new List<int>(source.Length);
+            for (int i = 0; i < source.Length; i++)
+            {
+                var ch = source[i];
+                if (IsBase64Whitespace(ch))
+                {
+                    continue;
+                }
+
+                sanitized.Add(ch);
+                originalPositions.Add(i + 1);
+            }
+
+            var sanitizedLength = sanitized.Count;
+            var fullQuartetCount = sanitizedLength / 4;
+            var remainder = sanitizedLength % 4;
+            if (remainder == 1)
+            {
+                throw new FenTypeError("TypeError: Invalid base64 string");
+            }
+
+            if (lastChunkHandling == "strict" && remainder != 0)
+            {
+                throw new FenTypeError("TypeError: Invalid base64 string");
+            }
+
+            var writableBytes = ByteLength;
+            var bytesWritten = 0;
+            var charsConsumed = 0;
+            var fullCharsToProcess = fullQuartetCount * 4;
+
+            for (int offset = 0; offset < fullCharsToProcess; offset += 4)
+            {
+                var isFinalQuartet = offset + 4 == fullCharsToProcess && remainder == 0;
+                var c0 = sanitized[offset];
+                var c1 = sanitized[offset + 1];
+                var c2 = sanitized[offset + 2];
+                var c3 = sanitized[offset + 3];
+
+                if (c0 == '=' || c1 == '=')
+                {
+                    throw new FenTypeError("TypeError: Invalid base64 string");
+                }
+
+                var s0 = DecodeBase64Sextet(c0, useBase64UrlAlphabet);
+                var s1 = DecodeBase64Sextet(c1, useBase64UrlAlphabet);
+                if (s0 < 0 || s1 < 0)
+                {
+                    throw new FenTypeError("TypeError: Invalid base64 string");
+                }
+
+                var paddedBytes = 3;
+                int s2;
+                int s3;
+                if (c2 == '=')
+                {
+                    if (c3 != '=' || !isFinalQuartet)
+                    {
+                        throw new FenTypeError("TypeError: Invalid base64 string");
+                    }
+
+                    paddedBytes = 1;
+                    s2 = 0;
+                    s3 = 0;
+                    if ((s1 & 0x0F) != 0)
+                    {
+                        throw new FenTypeError("TypeError: Invalid base64 string");
+                    }
+                }
+                else
+                {
+                    s2 = DecodeBase64Sextet(c2, useBase64UrlAlphabet);
+                    if (s2 < 0)
+                    {
+                        throw new FenTypeError("TypeError: Invalid base64 string");
+                    }
+
+                    if (c3 == '=')
+                    {
+                        if (!isFinalQuartet)
+                        {
+                            throw new FenTypeError("TypeError: Invalid base64 string");
+                        }
+
+                        paddedBytes = 2;
+                        s3 = 0;
+                        if ((s2 & 0x03) != 0)
+                        {
+                            throw new FenTypeError("TypeError: Invalid base64 string");
+                        }
+                    }
+                    else
+                    {
+                        s3 = DecodeBase64Sextet(c3, useBase64UrlAlphabet);
+                        if (s3 < 0)
+                        {
+                            throw new FenTypeError("TypeError: Invalid base64 string");
+                        }
+                    }
+                }
+
+                if (bytesWritten + paddedBytes > writableBytes)
+                {
+                    break;
+                }
+
+                Buffer.Data[ByteOffset + bytesWritten] = (byte)((s0 << 2) | (s1 >> 4));
+                if (paddedBytes > 1)
+                {
+                    Buffer.Data[ByteOffset + bytesWritten + 1] = (byte)(((s1 & 0x0F) << 4) | (s2 >> 2));
+                }
+
+                if (paddedBytes > 2)
+                {
+                    Buffer.Data[ByteOffset + bytesWritten + 2] = (byte)(((s2 & 0x03) << 6) | s3);
+                }
+
+                bytesWritten += paddedBytes;
+                charsConsumed = originalPositions[offset + 3];
+            }
+
+            if (remainder > 0 && lastChunkHandling == "loose")
+            {
+                var partialOffset = fullCharsToProcess;
+                var s0 = DecodeBase64Sextet(sanitized[partialOffset], useBase64UrlAlphabet);
+                var s1 = DecodeBase64Sextet(sanitized[partialOffset + 1], useBase64UrlAlphabet);
+                if (s0 < 0 || s1 < 0)
+                {
+                    throw new FenTypeError("TypeError: Invalid base64 string");
+                }
+
+                if (remainder == 2)
+                {
+                    if (bytesWritten + 1 <= writableBytes)
+                    {
+                        Buffer.Data[ByteOffset + bytesWritten] = (byte)((s0 << 2) | (s1 >> 4));
+                        bytesWritten += 1;
+                        charsConsumed = originalPositions[partialOffset + 1];
+                    }
+                }
+                else if (remainder == 3)
+                {
+                    var s2 = DecodeBase64Sextet(sanitized[partialOffset + 2], useBase64UrlAlphabet);
+                    if (s2 < 0)
+                    {
+                        throw new FenTypeError("TypeError: Invalid base64 string");
+                    }
+
+                    if (bytesWritten + 2 <= writableBytes)
+                    {
+                        Buffer.Data[ByteOffset + bytesWritten] = (byte)((s0 << 2) | (s1 >> 4));
+                        Buffer.Data[ByteOffset + bytesWritten + 1] = (byte)(((s1 & 0x0F) << 4) | (s2 >> 2));
+                        bytesWritten += 2;
+                        charsConsumed = originalPositions[partialOffset + 2];
+                    }
+                }
+            }
+            else if (charsConsumed == 0 && sanitizedLength == 0)
+            {
+                charsConsumed = source.Length;
+            }
+
+            if (charsConsumed == 0 && bytesWritten == 0 && sanitizedLength > 0 && lastChunkHandling == "stop-before-partial")
+            {
+                charsConsumed = 0;
+            }
+            else if (charsConsumed == 0 && bytesWritten == 0 && sanitizedLength > 0 && fullCharsToProcess > 0)
+            {
+                charsConsumed = 0;
+            }
+            else if (charsConsumed > 0 && charsConsumed < source.Length)
+            {
+                var trailingWhitespaceOnly = true;
+                for (int i = charsConsumed; i < source.Length; i++)
+                {
+                    if (!IsBase64Whitespace(source[i]))
+                    {
+                        trailingWhitespaceOnly = false;
+                        break;
+                    }
+                }
+
+                if (trailingWhitespaceOnly)
+                {
+                    charsConsumed = source.Length;
+                }
+            }
+            else if (sanitizedLength > 0 && charsConsumed == 0 && bytesWritten > 0)
+            {
+                charsConsumed = source.Length;
+            }
+
+            var result = new FenObject();
+            result.Set("read", FenValue.FromNumber(charsConsumed));
+            result.Set("written", FenValue.FromNumber(bytesWritten));
+            return FenValue.FromObject(result);
+        }
+
+        protected FenValue SetFromHex(string source)
+        {
+            var sanitized = new List<char>(source.Length);
+            var originalPositions = new List<int>(source.Length);
+            for (int i = 0; i < source.Length; i++)
+            {
+                var ch = source[i];
+                if (IsHexWhitespace(ch))
+                {
+                    continue;
+                }
+
+                sanitized.Add(ch);
+                originalPositions.Add(i + 1);
+            }
+
+            if ((sanitized.Count & 1) != 0)
+            {
+                throw new FenTypeError("TypeError: Invalid hex string");
+            }
+
+            var maxWritableBytes = Math.Max(0, Length);
+            var availablePairs = sanitized.Count / 2;
+            var writablePairs = Math.Min(availablePairs, maxWritableBytes);
+            for (int pairIndex = 0; pairIndex < writablePairs; pairIndex++)
+            {
+                int sourceIndex = pairIndex * 2;
+                var hi = DecodeHexNibble(sanitized[sourceIndex]);
+                var lo = DecodeHexNibble(sanitized[sourceIndex + 1]);
+                if (hi < 0 || lo < 0)
+                {
+                    throw new FenTypeError("TypeError: Invalid hex string");
+                }
+
+                Buffer.Data[ByteOffset + pairIndex] = (byte)((hi << 4) | lo);
+            }
+
+            if (writablePairs < availablePairs)
+            {
+                int sourceIndex = writablePairs * 2;
+                if (sourceIndex < sanitized.Count)
+                {
+                    var hi = DecodeHexNibble(sanitized[sourceIndex]);
+                    var lo = DecodeHexNibble(sanitized[sourceIndex + 1]);
+                    if (hi < 0 || lo < 0)
+                    {
+                        throw new FenTypeError("TypeError: Invalid hex string");
+                    }
+                }
+            }
+
+            var result = new FenObject();
+            result.Set("read", FenValue.FromNumber(writablePairs * 2));
+            result.Set("written", FenValue.FromNumber(writablePairs));
+            return FenValue.FromObject(result);
         }
     }
 

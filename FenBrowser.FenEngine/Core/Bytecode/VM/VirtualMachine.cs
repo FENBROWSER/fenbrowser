@@ -1,11 +1,13 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
@@ -41,6 +43,43 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public readonly PropertyInlineCacheEntry[] Entries = new PropertyInlineCacheEntry[MaxEntries];
             public int Count;      // 0?4: valid entries
             public bool Megamorphic; // true ? too many shapes, skip caching
+        }
+
+        // Preserve original JS thrown values when crossing host/native frames.
+        private sealed class JsUncaughtException : Exception
+        {
+            public FenValue ThrownValue { get; }
+
+            public JsUncaughtException(FenValue thrownValue)
+                : base("Uncaught JS Exception")
+            {
+                ThrownValue = thrownValue;
+            }
+        }
+
+        private static bool TryExtractThrownValue(Exception ex, out FenValue thrownValue)
+        {
+            thrownValue = FenValue.Undefined;
+            if (ex == null)
+            {
+                return false;
+            }
+
+            var exType = ex.GetType();
+            var thrownProp = exType.GetProperty("ThrownValue", BindingFlags.Public | BindingFlags.Instance);
+            if (thrownProp == null || thrownProp.PropertyType != typeof(FenValue))
+            {
+                return false;
+            }
+
+            var raw = thrownProp.GetValue(ex);
+            if (raw is FenValue fen)
+            {
+                thrownValue = fen;
+                return true;
+            }
+
+            return false;
         }
 
         private sealed class BytecodeArrayObject : FenObject
@@ -363,18 +402,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             {
                 if (_done) return false;
 
-                FenValue resultVal;
-                try
-                {
-                    resultVal = _nextFn.Invoke(Array.Empty<FenValue>(), null, FenValue.FromObject(_iterator));
-                }
-                catch
+                var resultVal = _nextFn.Invoke(Array.Empty<FenValue>(), null, FenValue.FromObject(_iterator));
+                if (!resultVal.IsObject)
                 {
                     _done = true;
-                    return false;
+                    throw new FenTypeError("TypeError: Iterator result is not an object");
                 }
-
-                if (!resultVal.IsObject) { _done = true; return false; }
                 var resultObj = resultVal.AsObject();
 
                 var doneVal = resultObj?.Get("done");
@@ -390,7 +423,32 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             public void Reset() { }
-            public void Dispose() { }
+            public void Dispose()
+            {
+                if (_done || _iterator == null)
+                {
+                    return;
+                }
+
+                _done = true;
+                var returnMethod = _iterator.Get("return");
+                if (!returnMethod.IsFunction)
+                {
+                    return;
+                }
+
+                var returnFn = returnMethod.AsFunction() as FenFunction;
+                if (returnFn == null)
+                {
+                    throw new FenTypeError("TypeError: Iterator .return() is not callable");
+                }
+
+                var returnResult = returnFn.Invoke(Array.Empty<FenValue>(), null, FenValue.FromObject(_iterator));
+                if (!returnResult.IsObject)
+                {
+                    throw new FenTypeError("TypeError: Iterator .return() must return an object");
+                }
+            }
         }
 
         private sealed class StringIteratorEnumerator : IEnumerator<FenValue>
@@ -445,6 +503,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         /// </summary>
         private sealed class GeneratorObject : FenObject
         {
+            [ThreadStatic]
+            private static int _generatorResumeDepth;
+            private const int MaxGeneratorResumeDepth = 32;
+
             private readonly VirtualMachine _vm = new VirtualMachine();
             private readonly FenFunction _func;
             private FenValue[] _initialArgs;
@@ -514,10 +576,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             public FenValue Next(FenValue sentValue)
             {
-                if (IsDone)
-                    return MakeIteratorResult(FenValue.Undefined, true);
+                if (++_generatorResumeDepth > MaxGeneratorResumeDepth)
+                {
+                    _generatorResumeDepth--;
+                    throw new FenResourceError("RangeError: Maximum call stack size exceeded");
+                }
 
-                if (!IsStarted)
+                try
+                {
+                    if (IsDone)
+                        return MakeIteratorResult(FenValue.Undefined, true);
+
+                    if (!IsStarted)
                 {
                     IsStarted = true;
                     _vm._sp = 0;
@@ -544,14 +614,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 FenValue runResult = _vm.RunLoop();
 
-                if (_vm._generatorYielded)
-                {
-                    return MakeIteratorResult(_vm._generatorYieldValue, false);
+                    if (_vm._generatorYielded)
+                    {
+                        return MakeIteratorResult(_vm._generatorYieldValue, false);
+                    }
+                    else
+                    {
+                        IsDone = true;
+                        return MakeIteratorResult(runResult, true);
+                    }
                 }
-                else
+                finally
                 {
-                    IsDone = true;
-                    return MakeIteratorResult(runResult, true);
+                    _generatorResumeDepth--;
                 }
             }
         }
@@ -885,6 +960,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return namedGlobalById;
             }
 
+            if (TryResolveGlobalOwnProperty(frame, varName, out var globalOwnValue))
+            {
+                return globalOwnValue;
+            }
+
+            if (TryResolveGlobalPrototypeProxyBinding(frame, varName, out var globalValue))
+            {
+                return globalValue;
+            }
+
             if (frame.Environment.HasBinding(varName))
             {
                 return frame.Environment.Get(varName);
@@ -922,6 +1007,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return namedGlobalById;
             }
 
+            if (TryResolveGlobalOwnProperty(frame, varName, out var globalOwnValue))
+            {
+                return globalOwnValue;
+            }
+
+            if (TryResolveGlobalPrototypeProxyBinding(frame, varName, out var globalValue))
+            {
+                return globalValue;
+            }
+
             if (frame.Environment.HasBinding(varName))
             {
                 return frame.Environment.Get(varName);
@@ -930,6 +1025,203 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             throw new FenReferenceError($"ReferenceError: {varName} is not defined");
         }
 
+        private static bool TryResolveGlobalObjectProperty(CallFrame frame, string varName, out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (string.IsNullOrEmpty(varName) ||
+                string.Equals(varName, "globalThis", StringComparison.Ordinal) ||
+                string.Equals(varName, "window", StringComparison.Ordinal) ||
+                string.Equals(varName, "self", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            static bool TryGetGlobalObj(FenEnvironment env, string bindingName, out FenObject globalObj)
+            {
+                globalObj = null;
+                var bindingEnv = env.ResolveBindingEnvironment(bindingName);
+                if (bindingEnv != null && bindingEnv.TryGetLocal(bindingName, out var bound) && bound.IsObject)
+                {
+                    globalObj = bound.AsObject() as FenObject;
+                    return globalObj != null;
+                }
+
+                return false;
+            }
+
+            FenObject rootObj = null;
+            if (!TryGetGlobalObj(frame.Environment, "globalThis", out rootObj) &&
+                !TryGetGlobalObj(frame.Environment, "window", out rootObj) &&
+                !TryGetGlobalObj(frame.Environment, "self", out rootObj))
+            {
+                return false;
+            }
+
+            if (!rootObj.Has(varName))
+            {
+                return false;
+            }
+
+            value = rootObj.Get(varName);
+            return true;
+        }
+        private static bool TryResolveGlobalOwnProperty(CallFrame frame, string varName, out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (string.IsNullOrEmpty(varName))
+            {
+                return false;
+            }
+
+            static bool TryGetGlobalObj(FenEnvironment env, string bindingName, out FenObject globalObj)
+            {
+                globalObj = null;
+                var bindingEnv = env.ResolveBindingEnvironment(bindingName);
+                if (bindingEnv != null && bindingEnv.TryGetLocal(bindingName, out var bound) && bound.IsObject)
+                {
+                    globalObj = bound.AsObject() as FenObject;
+                    return globalObj != null;
+                }
+
+                return false;
+            }
+
+            FenObject rootObj = null;
+            if (!TryGetGlobalObj(frame.Environment, "globalThis", out rootObj) &&
+                !TryGetGlobalObj(frame.Environment, "window", out rootObj) &&
+                !TryGetGlobalObj(frame.Environment, "self", out rootObj))
+            {
+                return false;
+            }
+
+            if (!rootObj.GetOwnPropertyDescriptor(varName).HasValue)
+            {
+                return false;
+            }
+
+            value = rootObj.Get(varName);
+            return true;
+        }
+        private static bool TryResolveGlobalPrototypeProxyBinding(CallFrame frame, string varName, out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (string.IsNullOrEmpty(varName))
+            {
+                return false;
+            }
+
+            static bool TryGetGlobalObj(FenEnvironment env, string bindingName, out FenObject globalObj)
+            {
+                globalObj = null;
+                var bindingEnv = env.ResolveBindingEnvironment(bindingName);
+                if (bindingEnv != null && bindingEnv.TryGetLocal(bindingName, out var bound) && bound.IsObject)
+                {
+                    globalObj = bound.AsObject() as FenObject;
+                    return globalObj != null;
+                }
+
+                return false;
+            }
+
+            FenObject globalRoot = null;
+            if (!TryGetGlobalObj(frame.Environment, "globalThis", out globalRoot) &&
+                !TryGetGlobalObj(frame.Environment, "window", out globalRoot) &&
+                !TryGetGlobalObj(frame.Environment, "self", out globalRoot))
+            {
+                return false;
+            }
+
+            var proto = globalRoot.GetPrototype() as FenObject;
+            if (proto == null)
+            {
+                return false;
+            }
+
+            var isProxyDesc = proto.GetOwnPropertyDescriptor("__isProxy__");
+            if (!isProxyDesc.HasValue || !isProxyDesc.Value.Value.HasValue || !isProxyDesc.Value.Value.Value.ToBoolean())
+            {
+                return false;
+            }
+
+            var hasTrapDesc = proto.GetOwnPropertyDescriptor("__proxyHas__");
+            if (!hasTrapDesc.HasValue || !hasTrapDesc.Value.Value.HasValue || !hasTrapDesc.Value.Value.Value.IsFunction)
+            {
+                return false;
+            }
+
+            var getTrapDesc = proto.GetOwnPropertyDescriptor("__proxyGet__");
+            if (!getTrapDesc.HasValue || !getTrapDesc.Value.Value.HasValue || !getTrapDesc.Value.Value.Value.IsFunction)
+            {
+                return false;
+            }
+
+            var targetDesc = proto.GetOwnPropertyDescriptor("__proxyTarget__") ?? proto.GetOwnPropertyDescriptor("__target__");
+            var proxyTarget = targetDesc.HasValue && targetDesc.Value.Value.HasValue
+                ? targetDesc.Value.Value.Value
+                : FenValue.Undefined;
+
+            var hasTrap = hasTrapDesc.Value.Value.Value.AsFunction();
+            var hasResult = hasTrap.Invoke(new[] { proxyTarget, FenValue.FromString(varName) }, null, FenValue.Undefined);
+            if (!hasResult.ToBoolean())
+            {
+                return false;
+            }
+
+            var getTrap = getTrapDesc.Value.Value.Value.AsFunction();
+            value = getTrap.Invoke(new[] { proxyTarget, FenValue.FromString(varName), FenValue.FromObject(globalRoot) }, null, FenValue.Undefined);
+            return true;
+        }
+        private static bool TryAssignUndeclaredToGlobal(CallFrame frame, string varName, FenValue value)
+        {
+            if (string.IsNullOrEmpty(varName))
+            {
+                return false;
+            }
+
+            static bool TryGetGlobalObj(FenEnvironment env, string bindingName, out FenObject globalObj)
+            {
+                globalObj = null;
+                var bindingEnv = env.ResolveBindingEnvironment(bindingName);
+                if (bindingEnv != null && bindingEnv.TryGetLocal(bindingName, out var bound) && bound.IsObject)
+                {
+                    globalObj = bound.AsObject() as FenObject;
+                    return globalObj != null;
+                }
+
+                return false;
+            }
+
+            FenObject globalRoot = null;
+            if (!TryGetGlobalObj(frame.Environment, "globalThis", out globalRoot) &&
+                !TryGetGlobalObj(frame.Environment, "window", out globalRoot) &&
+                !TryGetGlobalObj(frame.Environment, "self", out globalRoot))
+            {
+                return false;
+            }
+
+            var proto = globalRoot.GetPrototype() as FenObject;
+            if (proto != null)
+            {
+                var isProxyDesc = proto.GetOwnPropertyDescriptor("__isProxy__");
+                if (isProxyDesc.HasValue && isProxyDesc.Value.Value.HasValue && isProxyDesc.Value.Value.Value.ToBoolean())
+                {
+                    var setTrapDesc = proto.GetOwnPropertyDescriptor("__proxySet__");
+                    if (setTrapDesc.HasValue && setTrapDesc.Value.Value.HasValue && setTrapDesc.Value.Value.Value.IsFunction)
+                    {
+                        var targetDesc = proto.GetOwnPropertyDescriptor("__proxyTarget__") ?? proto.GetOwnPropertyDescriptor("__target__");
+                        var proxyTarget = targetDesc.HasValue && targetDesc.Value.Value.HasValue
+                            ? targetDesc.Value.Value.Value
+                            : FenValue.Undefined;
+                        var setTrap = setTrapDesc.Value.Value.Value.AsFunction();
+                        setTrap.Invoke(new[] { proxyTarget, FenValue.FromString(varName), value, FenValue.FromObject(globalRoot) }, null, FenValue.Undefined);
+                        return true;
+                    }
+                }
+            }
+
+            globalRoot.Set(varName, value);
+            return true;
+        }
         private static bool TryResolveNamedGlobalById(CallFrame frame, string varName, out FenValue value)
         {
             value = FenValue.Undefined;
@@ -1046,6 +1338,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private FenValue RunLoop()
         {
+run_loop_restart:
             try
             {
                 while (_frameCount > 0)
@@ -1325,15 +1618,24 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int nameIndex = ReadInt32(instructions, ref frame);
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
                                 var value = ResolveVariable(frame, varName);
+                                if (value.Type == JsValueType.Error)
+                                {
+                                    throw new FenInternalError(value.ToString());
+                                }
                                 _stack[_sp++] = value;
                                 break;
                             }
                             case OpCode.LoadVarSafe:
                             {
-                                // Like LoadVar but returns undefined instead of throwing for undeclared bindings (used by typeof)
+                                // Like LoadVar but still throws for TDZ bindings; it only suppresses undeclared-name errors for typeof.
                                 int nameIndex = ReadInt32(instructions, ref frame);
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
-                                _stack[_sp++] = ResolveVariableSafe(frame, varName);
+                                var value = ResolveVariableSafe(frame, varName);
+                                if (value.Type == JsValueType.Error)
+                                {
+                                    throw new FenInternalError(value.ToString());
+                                }
+                                _stack[_sp++] = value;
                                 break;
                             }
                             case OpCode.StoreVar:
@@ -1350,6 +1652,46 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 _stack[_sp++] = value;
                                 break;
                             }
+                            case OpCode.StoreVarDeclaration:
+                            {
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var value = _stack[--_sp];
+                                var declarationEnv = frame.Environment.GetVarDeclarationEnvironment();
+                                declarationEnv.Set(varName, value);
+                                if (CanUseBindingCache(frame))
+                                {
+                                    frame.RemoveCachedBindingEnvironment(varName);
+                                }
+                                _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.DeclareTdz:
+                            {
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                frame.Environment.GetDeclarationEnvironment().DeclareTDZ(varName);
+                                if (CanUseBindingCache(frame))
+                                {
+                                    frame.RemoveCachedBindingEnvironment(varName);
+                                }
+                                break;
+                            }
+                            case OpCode.DeclareVar:
+                            {
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var declarationEnv = frame.Environment.GetVarDeclarationEnvironment();
+                                if (!declarationEnv.HasLocalBinding(varName))
+                                {
+                                    declarationEnv.Set(varName, FenValue.Undefined);
+                                }
+                                if (CanUseBindingCache(frame))
+                                {
+                                    frame.RemoveCachedBindingEnvironment(varName);
+                                }
+                                break;
+                            }
                             case OpCode.UpdateVar:
                             {
                                 // Assignment: walks scope chain to update an existing binding,
@@ -1358,6 +1700,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
                                 var value = _stack[--_sp];
                                 bool strictAssignment = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                bool hasResolvedBinding = frame.Environment.ResolveBindingEnvironment(varName) != null;
+                                if (!strictAssignment && !hasResolvedBinding && TryAssignUndeclaredToGlobal(frame, varName, value))
+                                {
+                                    if (CanUseBindingCache(frame))
+                                    {
+                                        frame.RemoveCachedBindingEnvironment(varName);
+                                    }
+
+                                    _stack[_sp++] = value;
+                                    break;
+                                }
+
                                 var updateResult = frame.Environment.Update(varName, value, strictAssignment);
                                 if (updateResult.Type == JsValueType.Error)
                                 {
@@ -1375,9 +1729,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.LoadLocal:
                             {
                                 int localSlot = ReadInt32(instructions, ref frame);
-                                var slotName = frame.Block.GetLocalSlotName(localSlot);
                                 var localValue = frame.Environment.GetFast(localSlot);
                                 _stack[_sp++] = localValue;
+                                break;
+                            }
+                            case OpCode.StoreLocalDeclaration:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                var value = _stack[--_sp];
+                                frame.Environment.SetFast(localSlot, value);
+                                string localName = frame.Block.GetLocalSlotName(localSlot);
+                                if (!string.IsNullOrEmpty(localName))
+                                {
+                                    var declarationEnv = frame.Environment.GetVarDeclarationEnvironment();
+                                    declarationEnv.Set(localName, value);
+                                    if (CanUseBindingCache(frame))
+                                    {
+                                        frame.RemoveCachedBindingEnvironment(localName);
+                                    }
+                                }
+
+                                _stack[_sp++] = value;
                                 break;
                             }
                             case OpCode.StoreLocal:
@@ -1415,6 +1787,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 break;
                             }
                             case OpCode.MakeClosure:
+
                             {
                                 int idx = ReadInt32(instructions, ref frame);
                                 var templateFunc = constants[idx].AsObject() as FenFunction;
@@ -1442,9 +1815,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int argCount = ReadInt32(instructions, ref frame);
                                 int argStart = _sp - argCount;
                                 var callee = _stack[argStart - 1];
-                                
-                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
-                                var func = callee.AsObject() as FenFunction;
+
+                                var func = (callee.IsFunction || callee.IsObject) ? callee.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{callee.AsString()} is not a function");
 
                                 if (func.IsNative)
                                 {
@@ -1511,8 +1884,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var argsArrayVal = _stack[--_sp];
                                 var callee = _stack[--_sp];
 
-                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
-                                var func = callee.AsObject() as FenFunction;
+                                var func = (callee.IsFunction || callee.IsObject) ? callee.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
                                 int argCount = GetArrayLikeLength(argsObject);
 
@@ -1571,8 +1944,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var callee = _stack[argStart - 1];
                                 var receiver = _stack[argStart - 2];
 
-                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
-                                var func = callee.AsObject() as FenFunction;
+                                var func = (callee.IsFunction || callee.IsObject) ? callee.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{callee.AsString()} is not a function");
 
                                 if (func.IsNative)
                                 {
@@ -1630,8 +2003,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var callee = _stack[--_sp];
                                 var receiver = _stack[--_sp];
 
-                                if (!callee.IsFunction) ThrowTypeError($"{callee.AsString()} is not a function");
-                                var func = callee.AsObject() as FenFunction;
+                                var func = (callee.IsFunction || callee.IsObject) ? callee.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{callee.AsString()} is not a function");
                                 var argsObject = argsArrayVal.IsObject ? argsArrayVal.AsObject() : null;
                                 int argCount = GetArrayLikeLength(argsObject);
 
@@ -1683,8 +2056,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 int argStart = _sp - argCount;
                                 var constructorVal = _stack[argStart - 1];
 
-                                if (!constructorVal.IsFunction) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
-                                var func = constructorVal.AsObject() as FenFunction;
+                                var func = (constructorVal.IsFunction || constructorVal.IsObject) ? constructorVal.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
                                 if (func.IsArrowFunction || !func.IsConstructor)
                                 {
                                     ThrowTypeError(func.Name + " is not a constructor");
@@ -1757,8 +2130,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var argsArrayVal = _stack[--_sp];
                                 var constructorVal = _stack[--_sp];
 
-                                if (!constructorVal.IsFunction) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
-                                var func = constructorVal.AsObject() as FenFunction;
+                                var func = (constructorVal.IsFunction || constructorVal.IsObject) ? constructorVal.AsObject() as FenFunction : null;
+                                if (func == null) ThrowTypeError($"{constructorVal.AsString()} is not a constructor");
                                 if (func.IsArrowFunction || !func.IsConstructor)
                                 {
                                     ThrowTypeError(func.Name + " is not a constructor");
@@ -1939,6 +2312,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     var key = PropertyKey(prop);
                                     if (objectRef is FenObject fenObj && !string.Equals(key, "__proto__", StringComparison.Ordinal))
                                     {
+                                        const string getterMarker = "__get_";
+                                        const string setterMarker = "__set_";
+                                        if (key.StartsWith(getterMarker, StringComparison.Ordinal) ||
+                                            key.StartsWith(setterMarker, StringComparison.Ordinal))
+                                        {
+                                            bool isGetter = key.StartsWith(getterMarker, StringComparison.Ordinal);
+                                            string actualKey = key.Substring(isGetter ? getterMarker.Length : setterMarker.Length);
+                                            var existingDesc = fenObj.GetOwnPropertyDescriptor(actualKey);
+                                            FenFunction existingGetter = existingDesc.HasValue ? existingDesc.Value.Getter : null;
+                                            FenFunction existingSetter = existingDesc.HasValue ? existingDesc.Value.Setter : null;
+                                            var incomingFn = value.IsFunction ? value.AsFunction() : null;
+                                            var accessorDesc = PropertyDescriptor.Accessor(
+                                                isGetter ? incomingFn : existingGetter,
+                                                isGetter ? existingSetter : incomingFn,
+                                                enumerable: true,
+                                                configurable: true);
+                                            fenObj.DefineOwnProperty(actualKey, accessorDesc);
+                                            _stack[_sp++] = value;
+                                            break;
+                                        }
+
                                         var cache = GetStorePropertyInlineCache(frame.Block);
                                         bool inlineCacheHit = false;
                                         if (cache.TryGetValue(instructionOffset, out var pic) && !pic.Megamorphic)
@@ -1976,7 +2370,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     }
                                     else
                                     {
-                                        objectRef.Set(key, value);
+                                        if (objectRef is HTMLCollectionWrapper htmlCollection)
+                                        {
+                                            bool strictMode = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                            htmlCollection.SetFromVm(key, value, strictMode);
+                                        }
+                                        else
+                                        {
+                                            objectRef.Set(key, value);
+                                        }
                                     }
                                 }
                                 _stack[_sp++] = value;
@@ -2139,6 +2541,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                     deleted = objectRef.Delete(PropertyKey(prop));
                                 }
 
+                                bool strictDelete = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                if (!deleted && strictDelete)
+                                {
+                                    ThrowTypeError("Cannot delete property");
+                                }
+
                                 _stack[_sp++] = FenValue.FromBoolean(deleted);
                                 break;
                             }
@@ -2234,6 +2642,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                                 var obj = (FenObject)_stack[--_sp].AsObject();
                                 var iter = (IEnumerator<FenValue>)obj.NativeObject;
                                 _stack[_sp++] = iter.Current;
+                                break;
+                            }
+                            case OpCode.IteratorClose:
+                            {
+                                var obj = (FenObject)_stack[--_sp].AsObject();
+                                var iter = (IEnumerator<FenValue>)obj.NativeObject;
+                                iter.Dispose();
                                 break;
                             }
                             case OpCode.Negate:
@@ -2363,7 +2778,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                             case OpCode.PushScope:
                             {
                                 // Create a new child environment for block-level bindings (let/const/class)
-                                var childEnv = new FenEnvironment(frame.Environment);
+                                var childEnv = new FenEnvironment(frame.Environment, isLexicalScope: true);
+                                childEnv.InheritFastSlots(frame.Environment);
                                 frame.SetEnvironment(childEnv);
                                 break;
                             }
@@ -2461,6 +2877,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
             catch (Exception ex)
             {
+                if (TryExtractThrownValue(ex, out var thrown))
+                {
+                    if (_frameCount > 0)
+                    {
+                        var top = _callFrames[_frameCount - 1];
+                        HandleException(thrown, ref top);
+                        goto run_loop_restart;
+                    }
+
+                    throw;
+                }
+
                 // Unwind and handle .NET exceptions gracefully
                 // Parse error type from message prefix (e.g. "TypeError: ...")
                 string rawMsg = ex.Message;
@@ -2517,8 +2945,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 {
                     var topFrame = _callFrames[_frameCount - 1];
                     HandleException(errorObj, ref topFrame);
-                    // Resume execution at the installed JS catch/finally handler.
-                    return RunLoop();
+                    // Resume execution at the installed JS catch/finally handler without recursive RunLoop calls.
+                    goto run_loop_restart;
                 }
                 else
                 {
@@ -2605,7 +3033,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             // Uncaught exception!
             var formattedErr = FormatExceptionValue(exceptionValue);
             Console.WriteLine($"[VM Uncaught Exception] {formattedErr}");
-            throw new global::System.Exception($"Uncaught JS Exception: {formattedErr}");
+            throw new JsUncaughtException(exceptionValue);
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -3178,6 +3606,24 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

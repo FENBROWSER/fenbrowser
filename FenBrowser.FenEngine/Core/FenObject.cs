@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Engine; // Phase enum
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -39,6 +41,53 @@ namespace FenBrowser.FenEngine.Core
         [ThreadStatic]
         private static int _accessorDepth;
         private const int MAX_ACCESSOR_DEPTH = 64;
+        // Guard named-window lookups from re-entering through DOM/property plumbing and recursing indefinitely.
+        [ThreadStatic]
+        private static int _windowNamedLookupDepth;
+        private const int MAX_WINDOW_NAMED_LOOKUP_DEPTH = 32;
+        [ThreadStatic]
+        private static int _hasDepth;
+        private const int MAX_HAS_DEPTH = 256;
+
+        private static bool TryUnwrapJsThrownValue(Exception ex, out FenValue thrownValue)
+        {
+            thrownValue = FenValue.Undefined;
+            if (ex == null)
+            {
+                return false;
+            }
+
+            var exType = ex.GetType();
+            if (!string.Equals(exType.Name, "JsUncaughtException", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var thrownProp = exType.GetProperty("ThrownValue", BindingFlags.Public | BindingFlags.Instance);
+            if (thrownProp == null || thrownProp.PropertyType != typeof(FenValue))
+            {
+                return false;
+            }
+
+            var raw = thrownProp.GetValue(ex);
+            if (raw is FenValue fen)
+            {
+                thrownValue = fen;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void RethrowUnwrappedJsValue(Exception ex)
+        {
+            if (!TryUnwrapJsThrownValue(ex, out var thrown))
+            {
+                throw ex;
+            }
+
+            throw new JsThrownValueException(thrown);
+        }
 
         public FenObject()
         {
@@ -76,8 +125,8 @@ namespace FenBrowser.FenEngine.Core
         public virtual FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
-            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
-                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) && 
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
@@ -95,27 +144,32 @@ namespace FenBrowser.FenEngine.Core
             if (_shape.TryGetPropertyOffset(key, out var index))
             {
                 var desc = _properties[index];
-                // Accessor descriptor: invoke getter
-                if (desc.IsAccessor && desc.Getter != null)
+                // Treat tombstoned slots from Delete() as absent so prototype lookup still works.
+                var isTombstoned = !desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false;
+                if (!isTombstoned)
                 {
-                    if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                    // Accessor descriptor: invoke getter
+                    if (desc.IsAccessor && desc.Getter != null)
                     {
-                        _accessorDepth--;
-                        return FenValue.Undefined;
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                        {
+                            _accessorDepth--;
+                            return FenValue.Undefined;
+                        }
+                        try
+                        {
+                            return desc.Getter.Invoke(Array.Empty<FenValue>(), context, receiver);
+                        }
+                        finally
+                        {
+                            _accessorDepth--;
+                        }
                     }
-                    try
-                    {
-                        return desc.Getter.Invoke(Array.Empty<FenValue>(), context, receiver);
-                    }
-                    finally
-                    {
-                        _accessorDepth--;
-                    }
+                    return desc.Value ?? FenValue.Undefined;
                 }
-                return desc.Value ?? FenValue.Undefined;
             }
             
-            if (TryResolveWindowNamedProperty(key, context, out var namedWindowValue))
+            if (TryResolveWindowNamedProperty(key, receiver, context, out var namedWindowValue))
             {
                 return namedWindowValue;
             }
@@ -134,21 +188,21 @@ namespace FenBrowser.FenEngine.Core
 
         public virtual void SetWithReceiver(string key, FenValue value, FenValue receiver, IExecutionContext context = null)
         {
-            // SECURITY: Intercept __proto__ assignment — update the prototype chain instead of
-            // storing it as a regular data property, which would cause prototype pollution.
-            if (key == "__proto__")
+            // Spec guard for __proto__ assignment on non-extensible ordinary objects.
+            if (key == "__proto__" && !_extensible && (value.IsObject || value.IsFunction || value.IsNull))
             {
-                if (value.IsNull)
-                    SetPrototype(null);
-                else if (value.IsObject)
-                    SetPrototype(value.AsObject());
-                // Non-object, non-null __proto__ assignments are silently ignored per spec
+                var nextProto = value.IsNull ? null : value.AsObject();
+                if (!ReferenceEquals(_prototype, nextProto))
+                {
+                    throw new FenTypeError("TypeError: Cannot set prototype");
+                }
+
                 return;
             }
 
             // PROXY TRAP: Set
-            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
-                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) && 
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
                 
@@ -208,29 +262,33 @@ namespace FenBrowser.FenEngine.Core
             IObject proto = _prototype;
             while (proto != null)
             {
-                // This checks proto without throwing away its caching structure if it's a FenObject
-                if (proto.Has(key) && proto is FenObject fenProto && 
-                    fenProto._shape.TryGetPropertyOffset(key, out var protoIdx))
+                if (proto is FenObject fenProto)
                 {
-                    var inherited = fenProto._properties[protoIdx];
-                    if (inherited.IsAccessor && inherited.Setter != null)
+
+                    // This checks proto without throwing away its caching structure if it's a FenObject
+                    if (proto.Has(key) && fenProto._shape.TryGetPropertyOffset(key, out var protoIdx))
                     {
-                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                        var inherited = fenProto._properties[protoIdx];
+                        if (inherited.IsAccessor && inherited.Setter != null)
                         {
-                            _accessorDepth--;
+                            if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                            {
+                                _accessorDepth--;
+                                return;
+                            }
+                            try
+                            {
+                                inherited.Setter.Invoke(new FenValue[] { value }, context, receiver);
+                            }
+                            finally
+                            {
+                                _accessorDepth--;
+                            }
                             return;
                         }
-                        try
-                        {
-                            inherited.Setter.Invoke(new FenValue[] { value }, context, receiver);
-                        }
-                        finally
-                        {
-                            _accessorDepth--;
-                        }
-                        return;
                     }
                 }
+
                 proto = proto.GetPrototype();
             }
 
@@ -249,76 +307,111 @@ namespace FenBrowser.FenEngine.Core
 
         public virtual bool Has(string key, IExecutionContext context = null)
         {
-            // PROXY TRAP: Has
-            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
-                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
+            if (++_hasDepth > MAX_HAS_DEPTH)
             {
-                if (_shape.TryGetPropertyOffset("__proxyHas__", out var phIdx) && 
-                    (_properties[phIdx].Value.HasValue && _properties[phIdx].Value.Value.IsFunction))
-                {
-                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
-                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
-                    
-                    var fn = _properties[phIdx].Value.Value.AsFunction();
-                    var res = fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
-                    return res.ToBoolean();
-                }
+                _hasDepth--;
+                return false;
             }
 
-            if (_shape.TryGetPropertyOffset(key, out _)) return true;
-            if (TryResolveWindowNamedProperty(key, context, out _)) return true;
-            if (_prototype != null) return _prototype.Has(key, context);
-            return false;
+            try
+            {
+                // PROXY TRAP: Has
+                if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) && 
+                    (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+                {
+                    if (_shape.TryGetPropertyOffset("__proxyHas__", out var phIdx) && 
+                        (_properties[phIdx].Value.HasValue && _properties[phIdx].Value.Value.IsFunction))
+                    {
+                        if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                        var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+
+                        var fn = _properties[phIdx].Value.Value.AsFunction();
+                        var res = fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
+                        return res.ToBoolean();
+                    }
+                }
+
+                if (_shape.TryGetPropertyOffset(key, out _)) return true;
+                if (TryResolveWindowNamedProperty(key, FenValue.FromObject(this), context, out _)) return true;
+                if (_prototype != null) return _prototype.Has(key, context);
+                return false;
+            }
+            finally
+            {
+                _hasDepth--;
+            }
         }
 
-        private bool TryResolveWindowNamedProperty(string key, IExecutionContext context, out FenValue value)
+        private bool TryResolveWindowNamedProperty(string key, FenValue receiver, IExecutionContext context, out FenValue value)
         {
             value = FenValue.Undefined;
-
-            if (string.IsNullOrEmpty(key) || string.Equals(key, "document", StringComparison.Ordinal) || string.Equals(key, "__fen_window_named_access__", StringComparison.Ordinal))
+            if (++_windowNamedLookupDepth > MAX_WINDOW_NAMED_LOOKUP_DEPTH)
             {
+                _windowNamedLookupDepth--;
                 return false;
             }
-
-            if (!_shape.TryGetPropertyOffset("__fen_window_named_access__", out var markerIdx))
+            try
             {
-                return false;
+                if (string.IsNullOrEmpty(key) || string.Equals(key, "document", StringComparison.Ordinal) || string.Equals(key, "__fen_window_named_access__", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                if (!_shape.TryGetPropertyOffset("__fen_window_named_access__", out var markerIdx))
+                {
+                    return false;
+                }
+                var marker = _properties[markerIdx].Value;
+                if (!marker.HasValue || !marker.Value.ToBoolean())
+                {
+                    return false;
+                }
+                FenValue doc;
+                if (_shape.TryGetPropertyOffset("document", out var docIdx))
+                {
+                    doc = _properties[docIdx].Value ?? FenValue.Undefined;
+                }
+                else if (_prototype != null)
+                {
+                    if (_prototype is FenObject fenProto)
+                    {
+                        doc = fenProto.GetWithReceiver("document", receiver, context);
+                    }
+                    else
+                    {
+                        doc = _prototype.Get("document", context);
+                    }
+                }
+                else
+                {
+                    return false;
+                }
+                if (!doc.IsObject)
+                {
+                    return false;
+                }
+                var docObj = doc.AsObject();
+                if (docObj == null)
+                {
+                    return false;
+                }
+                var getById = docObj.Get("getElementById", context);
+                if (!getById.IsFunction)
+                {
+                    return false;
+                }
+                var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(key) }, context, doc);
+                if (found.IsNull || found.IsUndefined)
+                {
+                    return false;
+                }
+                value = found;
+                return true;
             }
-
-            var marker = _properties[markerIdx].Value;
-            if (!marker.HasValue || !marker.Value.ToBoolean())
+            finally
             {
-                return false;
+                _windowNamedLookupDepth--;
             }
-
-            var doc = Get("document", context);
-            if (!doc.IsObject)
-            {
-                return false;
-            }
-
-            var docObj = doc.AsObject();
-            if (docObj == null)
-            {
-                return false;
-            }
-
-            var getById = docObj.Get("getElementById", context);
-            if (!getById.IsFunction)
-            {
-                return false;
-            }
-
-            var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(key) }, context, doc);
-            if (found.IsNull || found.IsUndefined)
-            {
-                return false;
-            }
-
-            value = found;
-            return true;
         }
-
         public virtual bool Delete(string key, IExecutionContext context = null)
         {
             if (_shape.TryGetPropertyOffset(key, out var index))
@@ -345,8 +438,8 @@ namespace FenBrowser.FenEngine.Core
         public virtual IEnumerable<string> Keys(IExecutionContext context = null)
         {
             // PROXY TRAP: OwnKeys
-            if (_shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) && 
-                (_properties[proxyIdx].Value.HasValue && _properties[proxyIdx].Value.Value.ToBoolean()))
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) && 
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 if (_shape.TryGetPropertyOffset("__proxyOwnKeys__", out var pkIdx) && 
                     (_properties[pkIdx].Value.HasValue && _properties[pkIdx].Value.Value.IsFunction))
@@ -393,6 +486,39 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public virtual bool DefineOwnProperty(string key, PropertyDescriptor desc)
         {
+            // PROXY TRAP: defineProperty
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) &&
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+            {
+                if (_shape.TryGetPropertyOffset("__proxyDefineProperty__", out var pdIdx) &&
+                    (_properties[pdIdx].Value.HasValue && _properties[pdIdx].Value.Value.IsFunction))
+                {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    var fn = _properties[pdIdx].Value.Value.AsFunction();
+
+                    var descObj = new FenObject();
+                    if (desc.Value.HasValue) descObj.Set("value", desc.Value.Value);
+                    if (desc.Writable.HasValue) descObj.Set("writable", FenValue.FromBoolean(desc.Writable.Value));
+                    if (desc.Getter != null) descObj.Set("get", FenValue.FromFunction(desc.Getter));
+                    if (desc.Setter != null) descObj.Set("set", FenValue.FromFunction(desc.Setter));
+                    if (desc.Enumerable.HasValue) descObj.Set("enumerable", FenValue.FromBoolean(desc.Enumerable.Value));
+                    if (desc.Configurable.HasValue) descObj.Set("configurable", FenValue.FromBoolean(desc.Configurable.Value));
+
+                    FenValue trapResult;
+                    try
+                    {
+                        trapResult = fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), FenValue.FromObject(descObj) }, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        RethrowUnwrappedJsValue(ex);
+                        throw;
+                    }
+                    return trapResult.ToBoolean();
+                }
+            }
+
             PropertyDescriptor current;
             bool exists = _shape.TryGetPropertyOffset(key, out var index);
 
@@ -480,15 +606,80 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public virtual PropertyDescriptor? GetOwnPropertyDescriptor(string key)
         {
+            // PROXY TRAP: getOwnPropertyDescriptor
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) &&
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+            {
+                if (_shape.TryGetPropertyOffset("__proxyGetOwnPropertyDescriptor__", out var gopdIdx) &&
+                    (_properties[gopdIdx].Value.HasValue && _properties[gopdIdx].Value.Value.IsFunction))
+                {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    var trapFn = _properties[gopdIdx].Value.Value.AsFunction();
+                    FenValue trapResult;
+                    try
+                    {
+                        trapResult = trapFn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        RethrowUnwrappedJsValue(ex);
+                        throw;
+                    }
+
+                    if (trapResult.IsUndefined) return null;
+                    if (!trapResult.IsObject)
+                    {
+                        throw new FenTypeError("TypeError: Proxy getOwnPropertyDescriptor trap must return an object or undefined");
+                    }
+
+                    var descObj = trapResult.AsObject();
+                    var desc = new PropertyDescriptor
+                    {
+                        Enumerable = descObj.Get("enumerable", null).ToBoolean(),
+                        Configurable = descObj.Get("configurable", null).ToBoolean()
+                    };
+
+                    var getVal = descObj.Get("get", null);
+                    var setVal = descObj.Get("set", null);
+                    bool hasGet = descObj.Has("get");
+                    bool hasSet = descObj.Has("set");
+                    if (hasGet || hasSet)
+                    {
+                        desc.Getter = getVal.IsFunction ? getVal.AsFunction() : null;
+                        desc.Setter = setVal.IsFunction ? setVal.AsFunction() : null;
+                    }
+                    else
+                    {
+                        desc.Value = descObj.Get("value", null);
+                        desc.Writable = descObj.Get("writable", null).ToBoolean();
+                    }
+
+                    return desc;
+                }
+
+                // No trap: forward to proxy target own descriptor.
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var forwardedTargetIdx)) _shape.TryGetPropertyOffset("__target__", out forwardedTargetIdx);
+                if (forwardedTargetIdx >= 0)
+                {
+                    var forwardedTarget = _properties[forwardedTargetIdx].Value;
+                    if (forwardedTarget.HasValue && (forwardedTarget.Value.IsObject || forwardedTarget.Value.IsFunction))
+                    {
+                        return forwardedTarget.Value.AsObject()?.GetOwnPropertyDescriptor(key);
+                    }
+                }
+            }
+
             if (_shape.TryGetPropertyOffset(key, out var index))
             {
                 var desc = _properties[index];
                 if (!desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false) return null; // Tombstoned
                 return desc;
             }
+
             return null;
         }
-        
+
         /// <summary>
         /// Set a built-in property: writable=true, enumerable=false, configurable=true.
         /// Use for prototype methods and built-in properties per the ES spec.
@@ -517,7 +708,27 @@ namespace FenBrowser.FenEngine.Core
             
             _properties[idx] = PropertyDescriptor.DataDefault(value);
         }
-        
+
+        /// <summary>
+        /// Read a direct own slot value without invoking accessors/proxy traps.
+        /// Useful for runtime internal-slot style checks (e.g. Proxy internals).
+        /// </summary>
+        public bool TryGetDirect(string key, out FenValue value)
+        {
+            if (_shape.TryGetPropertyOffset(key, out var idx))
+            {
+                var desc = _properties[idx];
+                if (desc.Value.HasValue)
+                {
+                    value = desc.Value.Value;
+                    return true;
+                }
+            }
+
+            value = FenValue.Undefined;
+            return false;
+        }
+
         /// <summary>
         /// Prevent future property additions.
         /// </summary>
@@ -585,7 +796,136 @@ namespace FenBrowser.FenEngine.Core
             return true;
         }
 
-        public virtual IObject GetPrototype() => _prototype;
+        public virtual IObject GetPrototype()
+        {
+            // PROXY TRAP: getPrototypeOf
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) &&
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+            {
+                if (_shape.TryGetPropertyOffset("__proxyGetPrototypeOf__", out var gpoIdx) &&
+                    (_properties[gpoIdx].Value.HasValue && _properties[gpoIdx].Value.Value.IsFunction))
+                {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    var trapFn = _properties[gpoIdx].Value.Value.AsFunction();
+                    FenValue trapResult;
+                    try
+                    {
+                        trapResult = trapFn.Invoke(new FenValue[] { target ?? FenValue.Undefined }, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        RethrowUnwrappedJsValue(ex);
+                        throw;
+                    }
+
+                    if (trapResult.IsNull) return null;
+                    if (trapResult.IsObject || trapResult.IsFunction) return trapResult.AsObject();
+                    throw new FenTypeError("TypeError: Proxy getPrototypeOf trap must return an object or null");
+                }
+
+                // No trap: forward to proxy target prototype.
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var forwardedTargetIdx)) _shape.TryGetPropertyOffset("__target__", out forwardedTargetIdx);
+                if (forwardedTargetIdx >= 0)
+                {
+                    var forwardedTarget = _properties[forwardedTargetIdx].Value;
+                    if (forwardedTarget.HasValue && (forwardedTarget.Value.IsObject || forwardedTarget.Value.IsFunction))
+                    {
+                        return forwardedTarget.Value.AsObject()?.GetPrototype();
+                    }
+                }
+            }
+
+            return _prototype;
+        }
+        public virtual bool TrySetPrototype(IObject prototype)
+        {
+            // PROXY TRAP: setPrototypeOf
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) &&
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+            {
+                if (_shape.TryGetPropertyOffset("__proxySetPrototypeOf__", out var spoIdx) &&
+                    (_properties[spoIdx].Value.HasValue && _properties[spoIdx].Value.Value.IsFunction))
+                {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    var trapFn = _properties[spoIdx].Value.Value.AsFunction();
+                    FenValue trapResult;
+                    try
+                    {
+                        trapResult = trapFn.Invoke(new FenValue[] { target ?? FenValue.Undefined, prototype != null ? FenValue.FromObject(prototype) : FenValue.Null }, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        RethrowUnwrappedJsValue(ex);
+                        throw;
+                    }
+
+                    return trapResult.ToBoolean();
+                }
+
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var forwardedTargetIdx)) _shape.TryGetPropertyOffset("__target__", out forwardedTargetIdx);
+                if (forwardedTargetIdx >= 0)
+                {
+                    var forwardedTarget = _properties[forwardedTargetIdx].Value;
+                    if (forwardedTarget.HasValue && (forwardedTarget.Value.IsObject || forwardedTarget.Value.IsFunction))
+                    {
+                        if (forwardedTarget.Value.AsObject() is FenObject fenTarget)
+                        {
+                            return fenTarget.TrySetPrototype(prototype);
+                        }
+
+                        forwardedTarget.Value.AsObject()?.SetPrototype(prototype);
+                        return true;
+                    }
+                }
+            }
+
+            // Immutable-prototype exotic: Object.prototype may only have null prototype.
+            if (ReferenceEquals(this, DefaultPrototype))
+            {
+                return prototype == null;
+            }
+
+            var current = _prototype;
+            if (ReferenceEquals(current, prototype))
+            {
+                return true;
+            }
+
+            if (!_extensible)
+            {
+                return false;
+            }
+
+            // Ordinary cycle detection. If a Proxy is encountered in the candidate chain, stop checking.
+            var p = prototype;
+            while (p != null)
+            {
+                if (ReferenceEquals(p, this))
+                {
+                    return false;
+                }
+
+                if (p is FenObject fenP)
+                {
+                    if (fenP._shape.TryGetPropertyOffset("__isProxy__", out var proxyIdx) &&
+                        (fenP._properties[proxyIdx].Value.HasValue && fenP._properties[proxyIdx].Value.Value.ToBoolean()))
+                    {
+                        break;
+                    }
+
+                    p = fenP._prototype;
+                    continue;
+                }
+
+                p = p.GetPrototype();
+            }
+
+            _prototype = prototype;
+            return true;
+        }
+
         public virtual void SetPrototype(IObject prototype) => _prototype = prototype;
 
         /// <summary>
@@ -599,6 +939,27 @@ namespace FenBrowser.FenEngine.Core
         public PropertyDescriptor[] GetPropertyStorage() => _properties;
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

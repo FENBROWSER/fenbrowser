@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -606,6 +606,7 @@ namespace FenBrowser.FenEngine.Core
     {
         public Identifier Variable { get; set; }  // Loop variable (x in "for x in obj")
         public Expression DestructuringPattern { get; set; } // For destructuring: for (const {a,b} in obj)
+        public DeclarationKind? BindingKind { get; set; } // Null for assignment targets; set for var/let/const declarations
         public Expression Object { get; set; }     // Object to iterate
         public BlockStatement Body { get; set; }
 
@@ -620,6 +621,7 @@ namespace FenBrowser.FenEngine.Core
     {
         public Identifier Variable { get; set; }  // Loop variable
         public Expression DestructuringPattern { get; set; } // For destructuring: for (const [a,b] of iterable)
+        public DeclarationKind? BindingKind { get; set; } // Null for assignment targets; set for var/let/const declarations
         public Expression Iterable { get; set; }  // Iterable object
         public BlockStatement Body { get; set; }
         public bool IsAwait { get; set; } // ES2018: for await...of async iteration
@@ -1158,3 +1160,5 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
+
+
