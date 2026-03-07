@@ -27,7 +27,7 @@ namespace FenBrowser.Core.Platform;
 ///   </item>
 ///   <item>
 ///     <term>Linux / macOS</term>
-///     <description><see cref="UnsupportedPlatformLayer"/> (throws on most operations)</description>
+///     <description><see cref="PosixPlatformLayer"/> (real shared-memory/process PAL, null sandbox factory)</description>
 ///   </item>
 /// </list>
 /// </para>
@@ -52,10 +52,10 @@ public static class PlatformLayerFactory
             return new WindowsPlatformLayer();
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            return new UnsupportedPlatformLayer(OSPlatformKind.Linux);
+            return new PosixPlatformLayer(OSPlatformKind.Linux);
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return new UnsupportedPlatformLayer(OSPlatformKind.MacOS);
+            return new PosixPlatformLayer(OSPlatformKind.MacOS);
 
         return new UnsupportedPlatformLayer(OSPlatformKind.Unknown);
     }

@@ -16,6 +16,8 @@
 
 using System.Diagnostics;
 using FenBrowser.FenEngine.Testing;
+using FenBrowser.Host.ProcessIsolation;
+using System.Text.Json;
 
 namespace FenBrowser.Conformance;
 
@@ -57,6 +59,10 @@ public static class Program
             return command switch
             {
                 "run" when args.Length >= 2 => await RunSuiteAsync(args[1..]),
+                "gate" => RunGate(args.Skip(1).ToArray()),
+                "ipc-fuzz" => RunIpcFuzz(args.Skip(1).ToArray()),
+                "a11y-validate" => RunAccessibilityValidation(),
+                "corb-validate" => RunCorbValidation(),
                 "report" => GenerateReport(),
                 "--help" or "-h" or "help" => PrintUsage(),
                 _ => PrintUsage()
@@ -338,6 +344,148 @@ public static class Program
     }
 
     // =========================================================================
+    // Gate Command
+    // =========================================================================
+
+    private static int RunIpcFuzz(string[] args)
+    {
+        var results = IpcFuzzBaseline.RunDefaultSuite();
+        var passed = results.All(r => r.Failures == 0);
+
+        foreach (var result in results)
+        {
+            Console.WriteLine($"[IPC-FUZZ] {result.Channel}: cases={result.CasesRun} ok={result.Successes} fail={result.Failures}");
+            foreach (var sample in result.FailureSamples)
+            {
+                Console.WriteLine($"  sample: {sample}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_outputPath))
+        {
+            var dir = Path.GetDirectoryName(_outputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var payload = results.Select(r => new
+            {
+                channel = r.Channel,
+                casesRun = r.CasesRun,
+                successes = r.Successes,
+                failures = r.Failures,
+                failureSamples = r.FailureSamples
+            });
+
+            File.WriteAllText(_outputPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }));
+        }
+
+        return passed ? 0 : 2;
+    }
+
+    private static int RunAccessibilityValidation()
+    {
+        var resolvedOutput = string.IsNullOrWhiteSpace(_outputPath)
+            ? Path.Combine(_repoRoot, "Results", "a11y_platform_snapshot.json")
+            : _outputPath;
+        return AccessibilityValidation.Run(_repoRoot, resolvedOutput);
+    }
+
+    private static int RunCorbValidation()
+    {
+        var resolvedOutput = string.IsNullOrWhiteSpace(_outputPath)
+            ? Path.Combine(_repoRoot, "Results", "corb_validation.json")
+            : _outputPath;
+        return CorbValidation.Run(_repoRoot, resolvedOutput);
+    }
+
+    private static int RunGate(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("Usage: gate <policy-path>|default <name|all>");
+            return 1;
+        }
+
+        List<ConformanceGateResult> results;
+        if (string.Equals(args[0], "default", StringComparison.OrdinalIgnoreCase))
+        {
+            var selector = args.Length >= 2 ? args[1] : "all";
+            var policyPaths = ResolveBuiltInPolicies(selector);
+            if (policyPaths.Count == 0)
+            {
+                Console.Error.WriteLine($"Unknown built-in gate selector: {selector}");
+                return 1;
+            }
+
+            results = policyPaths
+                .Select(path => ConformanceGateEvaluator.Evaluate(_repoRoot, ConformanceGatePolicy.Load(path)))
+                .ToList();
+        }
+        else
+        {
+            var policyPath = Path.IsPathRooted(args[0]) ? args[0] : Path.Combine(_repoRoot, args[0]);
+            results = new List<ConformanceGateResult>
+            {
+                ConformanceGateEvaluator.Evaluate(_repoRoot, ConformanceGatePolicy.Load(policyPath))
+            };
+        }
+
+        var markdown = string.Join(Environment.NewLine + Environment.NewLine, results.Select(r => r.ToMarkdown()));
+        Console.WriteLine(markdown);
+
+        if (!string.IsNullOrWhiteSpace(_outputPath))
+        {
+            var dir = Path.GetDirectoryName(_outputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            if (_outputPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                var jsonPayload = "[" + string.Join("," + Environment.NewLine, results.Select(r => r.ToJson())) + "]";
+                File.WriteAllText(_outputPath, jsonPayload);
+            }
+            else
+            {
+                File.WriteAllText(_outputPath, markdown);
+            }
+        }
+
+        return results.All(r => r.Passed) ? 0 : 2;
+    }
+
+    private static List<string> ResolveBuiltInPolicies(string selector)
+    {
+        var gatesRoot = Path.Combine(_repoRoot, "FenBrowser.Conformance", "Gates");
+        var map = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["test262"] = new[] { Path.Combine(gatesRoot, "test262_gate_policy.json") },
+            ["wpt-c80"] = new[] { Path.Combine(gatesRoot, "wpt_dom_gate_80.json") },
+            ["wpt-c90"] = new[] { Path.Combine(gatesRoot, "wpt_dom_gate_90.json") },
+            ["wpt-d"] = new[] { Path.Combine(gatesRoot, "wpt_css_layout_gate.json") },
+            ["wpt-e"] = new[] { Path.Combine(gatesRoot, "wpt_fetch_cors_gate.json") },
+            ["all"] = new[]
+            {
+                Path.Combine(gatesRoot, "test262_gate_policy.json"),
+                Path.Combine(gatesRoot, "wpt_dom_gate_80.json"),
+                Path.Combine(gatesRoot, "wpt_dom_gate_90.json"),
+                Path.Combine(gatesRoot, "wpt_css_layout_gate.json"),
+                Path.Combine(gatesRoot, "wpt_fetch_cors_gate.json")
+            }
+        };
+
+        return map.TryGetValue(selector, out var values)
+            ? values.ToList()
+            : new List<string>();
+    }
+
+    // =========================================================================
     // Report Command
     // =========================================================================
 
@@ -417,6 +565,10 @@ COMMANDS:
   run wpt [category]             Run Web Platform Tests
   run acid [1|2|3]               Run Acid tests
   run html5lib                   Run html5lib parser tests
+  gate <policy>|default <name>   Evaluate WPT/Test262 milestone gate policies
+  ipc-fuzz                       Run IPC fuzz-baseline suite for renderer/network/target channels
+  a11y-validate                  Export platform accessibility mapping snapshot artifact
+  corb-validate                  Run bounded CORB validation cases and write artifact
   report                         Generate conformance report template
   help                           Show this help message
 
@@ -428,6 +580,8 @@ OPTIONS:
 EXAMPLES:
   FenBrowser.Conformance run all --max 100 -o conformance_report.md
   FenBrowser.Conformance run test262 language/expressions --max 50
+  FenBrowser.Conformance gate default all
+  FenBrowser.Conformance gate FenBrowser.Conformance/Gates/test262_gate_policy.json
   FenBrowser.Conformance run acid 2
   FenBrowser.Conformance run html5lib --verbose
 ");

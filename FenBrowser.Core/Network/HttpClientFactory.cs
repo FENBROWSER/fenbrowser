@@ -216,31 +216,49 @@ namespace FenBrowser.Core.Network
 
         private static async Task<System.IO.Stream> ConnectSocketAsync(EndPoint endPoint, CancellationToken ct)
         {
-            var socket = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp)
-            {
-                DualMode = true,
-                NoDelay = true
-            };
-
             try
             {
                 switch (endPoint)
                 {
                     case IPEndPoint ipEndPoint:
-                        await socket.ConnectAsync(ipEndPoint, ct).ConfigureAwait(false);
-                        break;
+                    {
+                        var socket = new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+                        {
+                            NoDelay = true
+                        };
+
+                        try
+                        {
+                            await socket.ConnectAsync(ipEndPoint, ct).ConfigureAwait(false);
+                            return new NetworkStream(socket, ownsSocket: true);
+                        }
+                        catch
+                        {
+                            socket.Dispose();
+                            throw;
+                        }
+                    }
                     case DnsEndPoint dnsEndPoint:
-                        await socket.ConnectAsync(dnsEndPoint, ct).ConfigureAwait(false);
-                        break;
+                    {
+                        var client = new TcpClient();
+                        client.NoDelay = true;
+                        try
+                        {
+                            await client.ConnectAsync(dnsEndPoint.Host, dnsEndPoint.Port, ct).ConfigureAwait(false);
+                            return client.GetStream();
+                        }
+                        catch
+                        {
+                            client.Dispose();
+                            throw;
+                        }
+                    }
                     default:
                         throw new NotSupportedException($"Unsupported endpoint type: {endPoint?.GetType().Name}");
                 }
-
-                return new NetworkStream(socket, ownsSocket: true);
             }
             catch
             {
-                socket.Dispose();
                 throw;
             }
         }

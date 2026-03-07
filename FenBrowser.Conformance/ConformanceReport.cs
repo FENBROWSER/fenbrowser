@@ -8,6 +8,7 @@
 // =============================================================================
 
 using System.Text;
+using System.Text.Json;
 
 namespace FenBrowser.Conformance;
 
@@ -158,8 +159,31 @@ public sealed class ConformanceReport
             sb.AppendLine();
             sb.AppendLine($"_Compared against: {baselinePath}_");
             sb.AppendLine();
-            // In a full implementation, parse the previous report and compute deltas
-            sb.AppendLine("_(Baseline comparison will be implemented in a future update)_");
+            if (TryLoadBaselineSuites(baselinePath, out var baselineSuites))
+            {
+                sb.AppendLine("| Suite | Category | Passed Delta | Failed Delta | Pass Rate Delta |");
+                sb.AppendLine("|-------|----------|-------------:|-------------:|----------------:|");
+
+                foreach (var current in _suiteResults.OrderBy(r => r.Name).ThenBy(r => r.Category))
+                {
+                    var key = MakeSuiteKey(current.Name, current.Category);
+                    if (!baselineSuites.TryGetValue(key, out var baseline))
+                    {
+                        sb.AppendLine($"| {current.Name} | {current.Category} | n/a | n/a | n/a |");
+                        continue;
+                    }
+
+                    var passedDelta = current.Passed - baseline.Passed;
+                    var failedDelta = current.Failed - baseline.Failed;
+                    var passRateDelta = current.PassRate - baseline.PassRate;
+                    sb.AppendLine(
+                        $"| {current.Name} | {current.Category} | {FormatSigned(passedDelta)} | {FormatSigned(failedDelta)} | {FormatSigned(passRateDelta, "F1")}% |");
+                }
+            }
+            else
+            {
+                sb.AppendLine("_(Unable to parse baseline report for structured comparison.)_");
+            }
         }
 
         sb.AppendLine();
@@ -236,5 +260,63 @@ public sealed class ConformanceReport
     private static string EscapeJson(string s)
     {
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    private static string MakeSuiteKey(string name, string category)
+    {
+        return $"{name}::{category}";
+    }
+
+    private static string FormatSigned(int value)
+    {
+        return value >= 0 ? $"+{value}" : value.ToString();
+    }
+
+    private static string FormatSigned(double value, string format)
+    {
+        return value >= 0 ? $"+{value.ToString(format)}" : value.ToString(format);
+    }
+
+    private static bool TryLoadBaselineSuites(string baselinePath, out Dictionary<string, SuiteResult> suites)
+    {
+        suites = new Dictionary<string, SuiteResult>(StringComparer.Ordinal);
+        try
+        {
+            if (!baselinePath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(baselinePath));
+            var root = document.RootElement;
+            if (!root.TryGetProperty("suites", out var suitesElement) || suitesElement.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var item in suitesElement.EnumerateArray())
+            {
+                var suite = new SuiteResult
+                {
+                    Name = item.TryGetProperty("name", out var nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty,
+                    Category = item.TryGetProperty("category", out var categoryElement) ? categoryElement.GetString() ?? string.Empty : string.Empty,
+                    Total = item.TryGetProperty("total", out var totalElement) && totalElement.ValueKind == JsonValueKind.Number ? totalElement.GetInt32() : 0,
+                    Passed = item.TryGetProperty("passed", out var passedElement) && passedElement.ValueKind == JsonValueKind.Number ? passedElement.GetInt32() : 0,
+                    Failed = item.TryGetProperty("failed", out var failedElement) && failedElement.ValueKind == JsonValueKind.Number ? failedElement.GetInt32() : 0,
+                    Duration = item.TryGetProperty("durationMs", out var durationElement) && durationElement.ValueKind == JsonValueKind.Number
+                        ? TimeSpan.FromMilliseconds(durationElement.GetDouble())
+                        : TimeSpan.Zero
+                };
+
+                suites[MakeSuiteKey(suite.Name, suite.Category)] = suite;
+            }
+
+            return true;
+        }
+        catch
+        {
+            suites.Clear();
+            return false;
+        }
     }
 }

@@ -29,19 +29,12 @@ namespace FenBrowser.Core.Network.Handlers
 
             try
             {
-                context.Response = await _httpClient.SendAsync(context.Request, ct);
+                context.Response = await SendWithProxyFallbackAsync(context.Request, ct).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {
                 // Handle timeout/cancellation
                 throw;
-            }
-            catch (HttpRequestException ex) when (IsLoopbackProxyRefusal(ex))
-            {
-                // Retry once bypassing system proxy when request was routed to a dead local proxy endpoint
-                // (for example 127.0.0.1:9).
-                var retryRequest = await CloneRequestAsync(context.Request).ConfigureAwait(false);
-                context.Response = await _noProxyClient.SendAsync(retryRequest, ct).ConfigureAwait(false);
             }
             catch (System.Exception ex)
             {
@@ -55,13 +48,48 @@ namespace FenBrowser.Core.Network.Handlers
             await next();
         }
 
-        private static bool IsLoopbackProxyRefusal(HttpRequestException ex)
+        private async Task<HttpResponseMessage> SendWithProxyFallbackAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            try
+            {
+                return await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex) when (ShouldRetryWithoutProxy(ex))
+            {
+                var retryRequest = await CloneRequestAsync(request).ConfigureAwait(false);
+                return await _noProxyClient.SendAsync(retryRequest, ct).ConfigureAwait(false);
+            }
+        }
+
+        private static bool ShouldRetryWithoutProxy(HttpRequestException ex)
         {
             var msg = ex?.ToString() ?? string.Empty;
             if (msg.Length == 0) return false;
+            return IsLoopbackProxyRefusal(msg) ||
+                   IsSocketAccessPermissionFailure(msg) ||
+                   IsProxyTunnelFailure(msg);
+        }
+
+        private static bool IsLoopbackProxyRefusal(string msg)
+        {
             return (msg.IndexOf("127.0.0.1:9", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
                     msg.IndexOf("localhost:9", System.StringComparison.OrdinalIgnoreCase) >= 0) &&
-                   msg.IndexOf("refused", System.StringComparison.OrdinalIgnoreCase) >= 0;
+                   (msg.IndexOf("refused", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("actively refused", System.StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool IsSocketAccessPermissionFailure(string msg)
+        {
+            return msg.IndexOf("forbidden by its access permissions", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   msg.IndexOf("access permissions", System.StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsProxyTunnelFailure(string msg)
+        {
+            return msg.IndexOf("proxy", System.StringComparison.OrdinalIgnoreCase) >= 0 &&
+                   (msg.IndexOf("connect", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("tunnel", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("407", System.StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage source)
