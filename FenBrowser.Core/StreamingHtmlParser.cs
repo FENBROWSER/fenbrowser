@@ -89,7 +89,7 @@ namespace FenBrowser.Core
                     _buffer.Append(chunk, 0, read);
                     
                     // Parse available content
-                    ParseBufferedContent(parser);
+                    ParseBufferedContent(parser, isFinalChunk: false);
                     
                     // Compact buffer if it's getting too large
                     if (_buffer.Length > MaxBufferSize)
@@ -99,6 +99,7 @@ namespace FenBrowser.Core
                 }
                 
                 // Parse any remaining content
+                ParseBufferedContent(parser, isFinalChunk: true);
                 parser.Finalize();
                 
                 OnDocumentComplete?.Invoke(doc);
@@ -150,7 +151,7 @@ namespace FenBrowser.Core
                 ct.ThrowIfCancellationRequested();
                 
                 _buffer.Append(chunk, 0, read);
-                ParseBufferedContent(parser);
+                ParseBufferedContent(parser, isFinalChunk: false);
                 
                 // Notify progress if new elements were added
                 int currentCount = CountElements(doc);
@@ -161,6 +162,7 @@ namespace FenBrowser.Core
                 }
             }
             
+            ParseBufferedContent(parser, isFinalChunk: true);
             parser.Finalize();
             OnDocumentComplete?.Invoke(doc);
         }
@@ -191,11 +193,21 @@ namespace FenBrowser.Core
             return await Task.Run(() => _reader.Read(buffer, 0, buffer.Length), ct);
         }
 
-        private void ParseBufferedContent(IncrementalParseState state)
+        private void ParseBufferedContent(IncrementalParseState state, bool isFinalChunk)
         {
             // Parse complete tags from buffer
             while (_bufferPos < _buffer.Length)
             {
+                if (state.TryGetRawTextTagName(out var rawTextTagName))
+                {
+                    if (!ParseRawTextContent(state, rawTextTagName, isFinalChunk))
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
                 char c = _buffer[_bufferPos];
                 
                 if (c == '<')
@@ -231,6 +243,51 @@ namespace FenBrowser.Core
                     }
                 }
             }
+        }
+
+        private bool ParseRawTextContent(IncrementalParseState state, string rawTextTagName, bool isFinalChunk)
+        {
+            var currentBuffer = _buffer.ToString();
+            var closingTagPrefix = $"</{rawTextTagName}";
+            var closingTagIndex = currentBuffer.IndexOf(
+                closingTagPrefix,
+                _bufferPos,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (closingTagIndex >= 0)
+            {
+                if (closingTagIndex > _bufferPos)
+                {
+                    var text = currentBuffer.Substring(_bufferPos, closingTagIndex - _bufferPos);
+                    state.ProcessText(text);
+                    OnTextParsed?.Invoke(text);
+                }
+
+                _bufferPos = closingTagIndex;
+                return true;
+            }
+
+            var holdBack = state.GetRawTextHoldBackLength(rawTextTagName);
+            var availableTextLength = _buffer.Length - _bufferPos;
+            if (!isFinalChunk && availableTextLength <= holdBack)
+            {
+                return false;
+            }
+
+            var textLength = isFinalChunk
+                ? availableTextLength
+                : Math.Max(0, availableTextLength - holdBack);
+
+            if (textLength <= 0)
+            {
+                return false;
+            }
+
+            var textContent = currentBuffer.Substring(_bufferPos, textLength);
+            state.ProcessText(textContent);
+            OnTextParsed?.Invoke(textContent);
+            _bufferPos += textLength;
+            return true;
         }
 
         private int FindTagEnd(int start)
@@ -315,6 +372,20 @@ namespace FenBrowser.Core
         /// </summary>
         private class IncrementalParseState
         {
+            private static readonly HashSet<string> RawTextElements = new(StringComparer.OrdinalIgnoreCase)
+            {
+                "script",
+                "style",
+                "title",
+                "textarea",
+                "xmp",
+                "iframe",
+                "noembed",
+                "noframes",
+                "noscript",
+                "plaintext"
+            };
+
             private readonly Document _document;
             private readonly System.Collections.Generic.Stack<Node> _stack;
             
@@ -419,6 +490,33 @@ namespace FenBrowser.Core
                 {
                     _stack.Pop();
                 }
+            }
+
+            public bool TryGetRawTextTagName(out string tagName)
+            {
+                tagName = string.Empty;
+                if (_stack.Count <= 1 || _stack.Peek() is not Element element)
+                {
+                    return false;
+                }
+
+                if (!RawTextElements.Contains(element.TagName))
+                {
+                    return false;
+                }
+
+                tagName = element.TagName.ToLowerInvariant();
+                return true;
+            }
+
+            public int GetRawTextHoldBackLength(string rawTextTagName)
+            {
+                if (string.IsNullOrEmpty(rawTextTagName))
+                {
+                    return 0;
+                }
+
+                return rawTextTagName.Length + 3;
             }
 
             private static void ParseAttributes(Element element, string attrString)
