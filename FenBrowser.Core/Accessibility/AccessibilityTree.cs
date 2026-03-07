@@ -78,12 +78,28 @@ namespace FenBrowser.Core.Accessibility
             return node;
         }
 
+        /// <summary>
+        /// Builds a normalized platform-facing accessibility snapshot for validation/export.
+        /// </summary>
+        public PlatformAccessibilitySnapshot ExportPlatformSnapshot(AccessibilityTargetPlatform platform)
+        {
+            EnsureBuilt();
+            return PlatformAccessibilitySnapshotBuilder.Build(this, platform);
+        }
+
+        /// <summary>
+        /// Fired whenever the tree is invalidated (DOM mutation, ARIA change, etc.).
+        /// Platform A11y bridges subscribe to this to push change notifications.
+        /// </summary>
+        public event Action TreeInvalidated;
+
         /// <summary>Marks the entire tree as dirty so it will be rebuilt on next access.</summary>
         public void Invalidate()
         {
             _dirty = true;
             _root = null;
             _nodeIndex.Clear();
+            TreeInvalidated?.Invoke();
         }
 
         /// <summary>

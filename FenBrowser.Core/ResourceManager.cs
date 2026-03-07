@@ -11,6 +11,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Security;
+using FenBrowser.Core.Security.Corb;
 using System.Net.Http.Headers;
 
 namespace FenBrowser.Core
@@ -41,6 +42,18 @@ namespace FenBrowser.Core
         AllowFrom,
     }
 
+    public enum ReferrerPolicyDirective
+    {
+        StrictOriginWhenCrossOrigin,
+        NoReferrer,
+        NoReferrerWhenDowngrade,
+        SameOrigin,
+        Origin,
+        StrictOrigin,
+        OriginWhenCrossOrigin,
+        UnsafeUrl,
+    }
+
     public class FetchResult
     {
         public FetchStatus Status;
@@ -63,6 +76,7 @@ namespace FenBrowser.Core
         /// Null for DENY / SAMEORIGIN / None.
         /// </summary>
         public string XFrameAllowFromUri { get; set; }
+        public ReferrerPolicyDirective ReferrerPolicy { get; set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
     }
 
     public sealed class ResourceManager
@@ -78,6 +92,7 @@ namespace FenBrowser.Core
         private readonly FenBrowser.Core.Cache.ShardedCache<ImgEntry> _imgCache = new FenBrowser.Core.Cache.ShardedCache<ImgEntry>(64);
 
         public Uri LastTextResponseUri { get; private set; }
+        public ReferrerPolicyDirective ActiveReferrerPolicy { get; private set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
 
 
 
@@ -100,6 +115,7 @@ namespace FenBrowser.Core
 
         private readonly bool _isPrivate;
         private static int _policyBindingDiagnosticsLogged;
+        private static readonly CorbFilter SharedCorbFilter = new();
 
         public CspPolicy ActivePolicy { get; set; }
 
@@ -247,6 +263,293 @@ namespace FenBrowser.Core
             if (hostA.EndsWith("." + hostB, StringComparison.OrdinalIgnoreCase)) return true;
             if (hostB.EndsWith("." + hostA, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        private static bool IsSameOrigin(Uri left, Uri right)
+        {
+            if (left == null || right == null || !left.IsAbsoluteUri || !right.IsAbsoluteUri)
+            {
+                return false;
+            }
+
+            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+                   left.Port == right.Port;
+        }
+
+        private static bool IsDowngrade(Uri referer, Uri request)
+        {
+            return referer != null &&
+                   request != null &&
+                   string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(request.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static ReferrerPolicyDirective ParseReferrerPolicy(HttpResponseMessage response)
+        {
+            if (response?.Headers == null || !response.Headers.TryGetValues("Referrer-Policy", out var values))
+            {
+                return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+            }
+
+            ReferrerPolicyDirective? parsed = null;
+            foreach (var headerValue in values)
+            {
+                if (string.IsNullOrWhiteSpace(headerValue))
+                {
+                    continue;
+                }
+
+                var tokens = headerValue.Split(',');
+                foreach (var tokenGroup in tokens)
+                {
+                    var tokenParts = tokenGroup.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var rawToken in tokenParts)
+                    {
+                        var token = rawToken.Trim().ToLowerInvariant();
+                        switch (token)
+                        {
+                            case "no-referrer":
+                                parsed = ReferrerPolicyDirective.NoReferrer;
+                                break;
+                            case "no-referrer-when-downgrade":
+                                parsed = ReferrerPolicyDirective.NoReferrerWhenDowngrade;
+                                break;
+                            case "same-origin":
+                                parsed = ReferrerPolicyDirective.SameOrigin;
+                                break;
+                            case "origin":
+                                parsed = ReferrerPolicyDirective.Origin;
+                                break;
+                            case "strict-origin":
+                                parsed = ReferrerPolicyDirective.StrictOrigin;
+                                break;
+                            case "origin-when-cross-origin":
+                                parsed = ReferrerPolicyDirective.OriginWhenCrossOrigin;
+                                break;
+                            case "unsafe-url":
+                                parsed = ReferrerPolicyDirective.UnsafeUrl;
+                                break;
+                            case "strict-origin-when-cross-origin":
+                                parsed = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+                                break;
+                        }
+                    }
+                }
+            }
+
+            return parsed ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+        }
+
+        private static bool IsFrameEmbeddingAllowed(
+            XFrameOptionsPolicy policy,
+            string allowFromUri,
+            Uri embeddingDocumentUri,
+            Uri framedDocumentUri)
+        {
+            switch (policy)
+            {
+                case XFrameOptionsPolicy.None:
+                    return true;
+                case XFrameOptionsPolicy.Deny:
+                    return false;
+                case XFrameOptionsPolicy.SameOrigin:
+                    return IsSameOrigin(embeddingDocumentUri, framedDocumentUri);
+                case XFrameOptionsPolicy.AllowFrom:
+                    if (string.IsNullOrWhiteSpace(allowFromUri) || embeddingDocumentUri == null)
+                    {
+                        return false;
+                    }
+
+                    if (!Uri.TryCreate(allowFromUri, UriKind.Absolute, out var allowedUri))
+                    {
+                        return false;
+                    }
+
+                    return IsSameOrigin(embeddingDocumentUri, allowedUri);
+                default:
+                    return true;
+            }
+        }
+
+        private static Uri ComputeReferrerHeader(Uri candidate, Uri requestUri, ReferrerPolicyDirective policy)
+        {
+            if (candidate == null || requestUri == null || !candidate.IsAbsoluteUri || !requestUri.IsAbsoluteUri)
+            {
+                return null;
+            }
+
+            var sameOrigin = IsSameOrigin(candidate, requestUri);
+            var downgrade = IsDowngrade(candidate, requestUri);
+            var originOnly = ExtractOrigin(candidate);
+
+            switch (policy)
+            {
+                case ReferrerPolicyDirective.NoReferrer:
+                    return null;
+                case ReferrerPolicyDirective.NoReferrerWhenDowngrade:
+                    return downgrade ? null : candidate;
+                case ReferrerPolicyDirective.SameOrigin:
+                    return sameOrigin ? candidate : null;
+                case ReferrerPolicyDirective.Origin:
+                    return originOnly;
+                case ReferrerPolicyDirective.StrictOrigin:
+                    return downgrade ? null : originOnly;
+                case ReferrerPolicyDirective.OriginWhenCrossOrigin:
+                    return sameOrigin ? candidate : originOnly;
+                case ReferrerPolicyDirective.UnsafeUrl:
+                    return candidate;
+                case ReferrerPolicyDirective.StrictOriginWhenCrossOrigin:
+                default:
+                    if (sameOrigin) return candidate;
+                    return downgrade ? null : originOnly;
+            }
+        }
+
+        private static void ApplyRefererHeader(HttpRequestMessage req, Uri refererCandidate, Uri requestUri, ReferrerPolicyDirective policy)
+        {
+            var computed = ComputeReferrerHeader(refererCandidate, requestUri, policy);
+            if (computed == null)
+            {
+                return;
+            }
+
+            try
+            {
+                req.Headers.Referrer = computed;
+            }
+            catch
+            {
+                AddHeaderSafe(req, "Referer", computed.AbsoluteUri);
+            }
+        }
+
+        private static bool IsNavigationDestination(string secFetchDest)
+        {
+            var normalized = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized == "document" || normalized == "iframe";
+        }
+
+        private static string DetermineFetchMode(string secFetchDest)
+        {
+            var normalized = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalized == "document" || normalized == "iframe")
+            {
+                return "navigate";
+            }
+
+            if (normalized == "style" ||
+                normalized == "script" ||
+                normalized == "image" ||
+                normalized == "font" ||
+                normalized == "audio" ||
+                normalized == "video" ||
+                normalized == "track" ||
+                normalized == "object" ||
+                normalized == "embed")
+            {
+                return "no-cors";
+            }
+
+            return "cors";
+        }
+
+        private static bool ShouldApplyCorb(string fetchMode, string secFetchDest)
+        {
+            if (!string.Equals(fetchMode, "no-cors", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var normalized = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(normalized))
+            {
+                return false;
+            }
+
+            return normalized != "document" && normalized != "iframe";
+        }
+
+        private bool ShouldBlockCorb(
+            string fetchMode,
+            string secFetchDest,
+            Uri requestOriginCandidate,
+            Uri responseUri,
+            HttpResponseMessage response,
+            ReadOnlySpan<byte> responseBodyPrefix,
+            out string blockReason)
+        {
+            blockReason = null;
+            if (!ShouldApplyCorb(fetchMode, secFetchDest))
+            {
+                return false;
+            }
+
+            var requestOrigin = ExtractOrigin(requestOriginCandidate);
+            if (requestOrigin == null || responseUri == null)
+            {
+                return false;
+            }
+
+            string contentType = response?.Content?.Headers?.ContentType?.ToString();
+            string contentTypeOptions = null;
+            if (response?.Headers != null &&
+                response.Headers.TryGetValues("X-Content-Type-Options", out var xctoValues))
+            {
+                contentTypeOptions = string.Join(",", xctoValues);
+            }
+
+            var corbResult = SharedCorbFilter.Evaluate(
+                fetchMode,
+                requestOrigin.AbsoluteUri,
+                responseUri.AbsoluteUri,
+                contentType,
+                contentTypeOptions,
+                responseBodyPrefix);
+
+            if (corbResult.Verdict != CorbVerdict.Block)
+            {
+                return false;
+            }
+
+            BlockedRequestCount++;
+            BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+            blockReason = corbResult.Reason;
+            FenLogger.Warn(
+                $"[CORB] Blocked cross-origin {secFetchDest} response '{responseUri}' for origin '{requestOrigin}'. {corbResult.Reason}",
+                LogCategory.Network);
+            return true;
+        }
+
+        private static string DecodeTextResponse(byte[] buffer, string charset)
+        {
+            if (buffer == null || buffer.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(charset))
+            {
+                try
+                {
+                    return Encoding.GetEncoding(charset.Trim().Trim('"')).GetString(buffer);
+                }
+                catch
+                {
+                }
+            }
+
+            return Encoding.UTF8.GetString(buffer);
+        }
+
+        private void AdoptResponseReferrerPolicy(HttpResponseMessage response, string secFetchDest)
+        {
+            if (!IsNavigationDestination(secFetchDest))
+            {
+                return;
+            }
+
+            ActiveReferrerPolicy = ParseReferrerPolicy(response);
         }
 
         private static string HashForFile(string key)
@@ -414,7 +717,12 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
                     var effectiveReferer = refererOriginal ?? previousRequest;
-                    if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
+                    AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
+                    var fetchMode = DetermineFetchMode(secFetchDest);
+                    AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
+                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
+                    var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
+                    AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -658,7 +966,12 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
                     var effectiveReferer = refererOriginal ?? previousRequest;
-                    if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
+                    AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
+                    var fetchMode = DetermineFetchMode(secFetchDest);
+                    AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
+                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
+                    var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
+                    AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -784,8 +1097,12 @@ namespace FenBrowser.Core
                     };
                 }
 
-                string text = null;
-                try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
+                byte[] bodyBytes = null;
+                var corbFetchMode = DetermineFetchMode(secFetchDest);
+                try
+                {
+                    bodyBytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                }
                 catch (Exception bodyEx)
                 {
                     return new FetchResult
@@ -798,6 +1115,31 @@ namespace FenBrowser.Core
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
                     };
                 }
+
+                if (ShouldBlockCorb(
+                    corbFetchMode,
+                    secFetchDest,
+                    refererOriginal,
+                    finalUri,
+                    resp,
+                    bodyBytes.AsSpan(0, Math.Min(bodyBytes.Length, 512)),
+                    out var corbReason))
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = corbReason,
+                        StatusCode = (int)resp.StatusCode,
+                        FinalUri = finalUri,
+                        ContentType = ct,
+                        Headers = resp.Headers,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                    };
+                }
+
+                var text = DecodeTextResponse(bodyBytes, resp.Content?.Headers?.ContentType?.CharSet);
 
                 // [Verification] Register source truth
                 FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
@@ -822,6 +1164,36 @@ namespace FenBrowser.Core
                     }
                 }
 
+                var referrerPolicy = ParseReferrerPolicy(resp);
+                AdoptResponseReferrerPolicy(resp, secFetchDest);
+
+                if (string.Equals(secFetchDest, "iframe", StringComparison.OrdinalIgnoreCase) &&
+                    !IsFrameEmbeddingAllowed(xFramePolicy, xFrameAllowFrom, refererOriginal, finalUri))
+                {
+                    BlockedRequestCount++;
+                    BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                    FenLogger.Warn(
+                        $"[XFO] Blocked frame embedding for '{finalUri}' due to policy '{xFramePolicy}'" +
+                        $"{(string.IsNullOrWhiteSpace(xFrameAllowFrom) ? string.Empty : $" ({xFrameAllowFrom})")}",
+                        LogCategory.Network);
+
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = "Blocked by X-Frame-Options policy",
+                        StatusCode = (int)resp.StatusCode,
+                        FinalUri = finalUri,
+                        ContentType = ct,
+                        Headers = resp.Headers,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        XFrameOptions = xFramePolicy,
+                        XFrameAllowFromUri = xFrameAllowFrom,
+                        ReferrerPolicy = referrerPolicy,
+                    };
+                }
+
                 return new FetchResult {
                     Status = FetchStatus.Success,
                     Content = text,
@@ -834,6 +1206,7 @@ namespace FenBrowser.Core
                     RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
                     XFrameOptions = xFramePolicy,
                     XFrameAllowFromUri = xFrameAllowFrom,
+                    ReferrerPolicy = referrerPolicy,
                 };
             }
             catch (Exception ex) {
@@ -867,14 +1240,16 @@ namespace FenBrowser.Core
                 if (destLower == "document" || destLower == "iframe") fetchMode = "navigate";
                 else if (destLower == "style" || destLower == "script" || destLower == "image" || destLower == "font") fetchMode = "no-cors";
                 AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
-                if (referer != null) AddHeaderSafe(req, "Referer", referer.AbsoluteUri);
-                AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(referer, url));
+                var computedReferer = ComputeReferrerHeader(referer, url, ActiveReferrerPolicy);
+                ApplyRefererHeader(req, referer, url, ActiveReferrerPolicy);
+                AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, url));
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
                 try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
+                AdoptResponseReferrerPolicy(resp, secFetchDest);
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
                 string text = null; try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); } catch (Exception bodyEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] body " + url + " ex=" + bodyEx.Message); } catch { } }
                 if (string.IsNullOrEmpty(text)) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptEmpty] url=" + url); } catch { } }
@@ -887,6 +1262,17 @@ namespace FenBrowser.Core
         public async Task<Stream> FetchImageAsync(Uri url, Uri referer = null)
         {
             if (url == null) return null;
+            if (referer != null &&
+                referer.IsAbsoluteUri &&
+                url.IsAbsoluteUri &&
+                string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            {
+                BlockedRequestCount++;
+                BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                FenLogger.Warn($"[MixedContent] Blocked insecure image '{url}' from secure document '{referer}'", LogCategory.Network);
+                return null;
+            }
 
             // CSP Check
             if (ActivePolicy != null && !ActivePolicy.IsAllowed("img-src", url, ExtractOrigin(referer)))
@@ -971,10 +1357,10 @@ namespace FenBrowser.Core
             var refererOriginal = referer;
             Uri previousRequest = null;
 
-            try
-            {
-                var _startImg = DateTimeOffset.UtcNow;
-                Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
+                try
+                {
+                    var _startImg = DateTimeOffset.UtcNow;
+                    Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
                 while (hops < 5)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
@@ -985,7 +1371,7 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "Sec-Fetch-Dest", "image");
                     AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
                     var effectiveReferer = refererOriginal ?? previousRequest;
-                    if (effectiveReferer != null) AddHeaderSafe(req, "Referer", effectiveReferer.AbsoluteUri);
+                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
@@ -1013,6 +1399,18 @@ namespace FenBrowser.Core
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
+                if (ShouldBlockCorb(
+                    "no-cors",
+                    "image",
+                    refererOriginal,
+                    finalUri,
+                    resp,
+                    buf.AsSpan(0, Math.Min(buf.Length, 512)),
+                    out _))
+                {
+                    return null;
+                }
 
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
                 
@@ -1036,6 +1434,18 @@ namespace FenBrowser.Core
         public async Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
+            if (string.Equals(secFetchDest, "image", StringComparison.OrdinalIgnoreCase) &&
+                referer != null &&
+                referer.IsAbsoluteUri &&
+                url.IsAbsoluteUri &&
+                string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            {
+                BlockedRequestCount++;
+                BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                FenLogger.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
+                return null;
+            }
             
             // CSP Check (fonts, media, etc)
             if (ActivePolicy != null)
@@ -1058,7 +1468,7 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "*/*" : accept);
                     if (!string.IsNullOrWhiteSpace(secFetchDest)) AddHeaderSafe(req, "Sec-Fetch-Dest", secFetchDest);
                     AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
-                    if (referer != null) AddHeaderSafe(req, "Referer", referer.AbsoluteUri);
+                    ApplyRefererHeader(req, referer, current, ActiveReferrerPolicy);
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
@@ -1089,6 +1499,18 @@ namespace FenBrowser.Core
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
+                if (ShouldBlockCorb(
+                    "no-cors",
+                    secFetchDest,
+                    referer,
+                    finalUri,
+                    resp,
+                    buf.AsSpan(0, Math.Min(buf.Length, 512)),
+                    out _))
+                {
+                    return null;
+                }
                 return buf;
             }
             catch { return null; }
@@ -1128,6 +1550,9 @@ namespace FenBrowser.Core
             {
                 // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
                 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var originUri = GetCorsOrigin(request);
+                ApplyCorsOriginHeader(request, originUri);
+                await EnsureCorsPreflightAsync(request, originUri, cts.Token).ConfigureAwait(false);
                 var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
                 return response;
             }
@@ -1136,6 +1561,75 @@ namespace FenBrowser.Core
                 FenLogger.Error($"[ResourceManager] SendAsync failed: {ex.Message}", LogCategory.Network);
                 throw;
             }
+        }
+
+        private static Uri GetCorsOrigin(HttpRequestMessage request)
+        {
+            if (CorsHandler.TryGetOriginUri(request, out var headerOrigin))
+            {
+                return headerOrigin;
+            }
+
+            return ExtractOrigin(request.Headers.Referrer);
+        }
+
+        private static void ApplyCorsOriginHeader(HttpRequestMessage request, Uri originUri)
+        {
+            if (request?.RequestUri == null || originUri == null || CorsHandler.IsSameOrigin(request.RequestUri, originUri))
+            {
+                return;
+            }
+
+            if (request.Headers.Contains("Origin"))
+            {
+                return;
+            }
+
+            var originHeader = CorsHandler.SerializeOrigin(originUri);
+            if (!string.IsNullOrWhiteSpace(originHeader))
+            {
+                request.Headers.TryAddWithoutValidation("Origin", originHeader);
+            }
+        }
+
+        private async Task EnsureCorsPreflightAsync(HttpRequestMessage request, Uri originUri, CancellationToken token)
+        {
+            if (!CorsHandler.RequiresPreflight(request, originUri))
+            {
+                return;
+            }
+
+            using var preflight = new HttpRequestMessage(HttpMethod.Options, request.RequestUri);
+            var originHeader = CorsHandler.SerializeOrigin(originUri);
+            if (!string.IsNullOrWhiteSpace(originHeader))
+            {
+                preflight.Headers.TryAddWithoutValidation("Origin", originHeader);
+            }
+
+            preflight.Headers.TryAddWithoutValidation("Access-Control-Request-Method", request.Method.Method.ToUpperInvariant());
+            var requestedHeaders = CorsHandler.GetCorsUnsafeRequestHeaderNames(request);
+            if (requestedHeaders.Count > 0)
+            {
+                preflight.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", string.Join(", ", requestedHeaders));
+            }
+
+            if (!preflight.Headers.Contains("User-Agent"))
+            {
+                preflight.Headers.Add("User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
+            }
+
+            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+
+            using var preflightResponse = await SendRequestTrackedAsync(preflight, token).ConfigureAwait(false);
+            if (CorsHandler.IsPreflightAllowed(preflightResponse, request, originUri))
+            {
+                return;
+            }
+
+            FenLogger.Warn($"[CORS] Preflight blocked {request.Method.Method} {request.RequestUri}", LogCategory.Network);
+            throw new HttpRequestException($"Blocked by CORS preflight: {request.RequestUri}");
         }
 
         private async Task<HttpResponseMessage> SendRequestTrackedAsync(HttpRequestMessage req, CancellationToken token)

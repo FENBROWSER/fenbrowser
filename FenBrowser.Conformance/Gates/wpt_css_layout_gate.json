@@ -1,0 +1,16 @@
+{
+  "name": "Milestone D CSS/Layout/Reftest Gate",
+  "suite": "wpt",
+  "expectedCategory": "css",
+  "currentResultPath": "Results/wpt_css_layout_results.json",
+  "baselineResultPath": "Results/wpt_css_layout_baseline.json",
+  "requiredArtifacts": [
+    "Results/wpt_css_layout_results.json"
+  ],
+  "minimumTotal": 1,
+  "minimumPassRate": 90.0,
+  "maximumUnexpectedFailures": 0,
+  "maximumTimeouts": 0,
+  "requireNoNewRegressions": true,
+  "requireZeroNoAssertionFailures": false
+}

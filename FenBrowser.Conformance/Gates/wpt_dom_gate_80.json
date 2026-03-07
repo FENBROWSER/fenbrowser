@@ -1,0 +1,20 @@
+{
+  "name": "Milestone C DOM/Event Gate 80%",
+  "suite": "wpt",
+  "expectedCategory": "dom",
+  "currentResultPath": "Results/wpt_results_latest.json",
+  "baselineResultPath": "Results/dom100_after_event_core_fix.json",
+  "expectedFailuresPath": "FenBrowser.Conformance/Gates/wpt_dom_expected_failures.txt",
+  "requiredArtifacts": [
+    "Results/wpt_results_latest.json",
+    "Results/dom100_after_event_core_fix.json",
+    "wpt_results.md",
+    "FenBrowser.Conformance/Gates/wpt_dom_expected_failures.txt"
+  ],
+  "minimumTotal": 100,
+  "minimumPassRate": 80.0,
+  "maximumUnexpectedFailures": 0,
+  "maximumTimeouts": 0,
+  "requireNoNewRegressions": true,
+  "requireZeroNoAssertionFailures": true
+}
