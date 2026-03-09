@@ -31,6 +31,9 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var ctx = new StackingContext(root);
             ProcessChildren(root, ctx);
+            // Sort once at build time so GetPaintOrder() never mutates.
+            ctx.NegativeZ.Sort((a, b) => a.ZIndex.CompareTo(b.ZIndex));
+            ctx.PositiveZ.Sort((a, b) => a.ZIndex.CompareTo(b.ZIndex));
             return ctx;
         }
 
@@ -45,7 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
                 bool isOpacity = child.ComputedStyle?.Opacity < 1.0f;
                 // Simplified check
                 
-                if (isPositioned && hasZIndex || isOpacity)
+                if ((isPositioned && hasZIndex) || isOpacity)
                 {
                     // New Context
                     var childCtx = Build(child);
@@ -83,40 +86,31 @@ namespace FenBrowser.FenEngine.Rendering
 
         public IEnumerable<LayoutBox> GetPaintOrder()
         {
-            // 1. Background/Border of root (handled by caller usually, or yield root first?)
-            // Yield root first for bg? No, root is container.
-            
-            // 2. Negative Z
-            ctx_NegativeZ.Sort((a,b) => a.ZIndex.CompareTo(b.ZIndex));
-            foreach(var c in NegativeZ) 
+            // Paint order per CSS2.1 §E.2 appendix (Elaborate description of Stacking Contexts).
+            // Lists are pre-sorted during Build(); no mutation happens here.
+
+            // Step 2: Negative Z child contexts (most-negative first).
+            foreach (var c in NegativeZ)
             {
                 yield return c.Root;
-                foreach(var b in c.GetPaintOrder()) yield return b;
+                foreach (var b in c.GetPaintOrder()) yield return b;
             }
-            
-            // 3. Block Level (Non-positioned)
-            foreach(var b in BlockLevel) yield return b;
-            
-            // 4. Floats
-            foreach(var b in FloatLevel) yield return b;
-            
-            // 5. Inline Level (Content)
-            foreach(var b in InlineLevel) yield return b;
-            
-            // 6. Positioned (z-index: auto) -> Handled as PositiveZ(0)
-            
-            // 7. Positive Z
-            PositiveZ.Sort((a,b) => a.ZIndex.CompareTo(b.ZIndex));
-            foreach(var c in PositiveZ) 
+
+            // Step 3: Block-level non-positioned descendants.
+            foreach (var b in BlockLevel) yield return b;
+
+            // Step 4: Floating descendants.
+            foreach (var b in FloatLevel) yield return b;
+
+            // Step 5: Inline-level (and positioned z-index:auto) descendants.
+            foreach (var b in InlineLevel) yield return b;
+
+            // Step 6+7: Positive-Z child contexts (z-index:auto proxied as z=0, then ascending).
+            foreach (var c in PositiveZ)
             {
-                 // Render the context root (background/border)
-                 yield return c.Root;
-                 // Render children
-                 foreach(var b in c.GetPaintOrder()) yield return b;
+                yield return c.Root;
+                foreach (var b in c.GetPaintOrder()) yield return b;
             }
         }
-        
-        // Fix for recursive access in GetPaintOrder (field name mismatch in pseudo code)
-        private List<StackingContext> ctx_NegativeZ => NegativeZ;
     }
 }
