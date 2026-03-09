@@ -26,6 +26,7 @@
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
     <ProjectReference Include="..\FenBrowser.DevTools\FenBrowser.DevTools.csproj" />
     <ProjectReference Include="..\FenBrowser.Host\FenBrowser.Host.csproj" />
+    <ProjectReference Include="..\FenBrowser.WPT\FenBrowser.WPT.csproj" />
   </ItemGroup>
 
 </Project>
