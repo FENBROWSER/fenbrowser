@@ -59,6 +59,17 @@ public sealed class WPTConfig
     public int ChunkSize { get; set; } = 500;
 
     /// <summary>
+    /// Number of isolated child workers to use for batch execution.
+    /// Values greater than 1 force process isolation for crash safety.
+    /// </summary>
+    public int WorkerCount { get; set; } = 1;
+
+    /// <summary>
+    /// Force process-isolated execution even with a single worker.
+    /// </summary>
+    public bool IsolateProcess { get; set; } = false;
+
+    /// <summary>
     /// Auto-discover the WPT root path relative to the current executable.
     /// Walks up directory tree looking for the wpt/ folder.
     /// </summary>
