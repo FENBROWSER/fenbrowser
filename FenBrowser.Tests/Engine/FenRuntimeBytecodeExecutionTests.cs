@@ -4,6 +4,7 @@ using FenBrowser.FenEngine.Core.Bytecode;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Security;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine
@@ -421,6 +422,173 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(3, cVal.AsObject().Get("v").AsNumber());
             Assert.Equal(4, ((FenValue)rt.GetGlobal("C")).AsObject().Get("a").AsNumber());
             Assert.Equal(7, ((FenValue)rt.GetGlobal("classOut")).AsNumber());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_ClassComputedAccessorsInForHead_UseEvaluatedKeys()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var empty = {};
+                var C, value, staticValue;
+
+                for (C = class {
+                    get ['x' in empty]() { return 'via get'; }
+                    set ['x' in empty](param) { value = param; }
+                    static get ['x' in empty]() { return 'via static get'; }
+                    static set ['x' in empty](param) { staticValue = param; }
+                }; ; ) {
+                    value = C.prototype.false;
+                    C.prototype.false = 'via set';
+                    staticValue = C.false;
+                    C.false = 'via static set';
+                    break;
+                }
+
+                var classComputedAccessorOut = value + '|' + staticValue;
+            ");
+
+            Assert.Equal("via set|via static set", ((FenValue)rt.GetGlobal("classComputedAccessorOut")).AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_ClassFieldDirectEval_AllowsNewTargetAndReturnsUndefined()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var executed = false;
+                var C = class {
+                    #x = eval('executed = true; new.target;');
+                    read() { return this.#x; }
+                };
+                var c = new C();
+                var evalFieldOut = executed + ':' + (c.read() === undefined);
+            ");
+
+            Assert.Equal("true:true", ((FenValue)rt.GetGlobal("evalFieldOut")).AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_DerivedClassFieldDirectEval_AllowsSuperProperty()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var executed = false;
+                var A = class { };
+                A.prototype.x = 7;
+                var C = class extends A {
+                    #x = eval('executed = true; super.x;');
+                };
+                new C();
+                var evalSuperOut = executed;
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("evalSuperOut")).AsBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_NewTarget_IsAllowedInDefaultParameters()
+        {
+            var rt = CreateRuntime();
+            rt.Context.Permissions.Grant(JsPermissions.Eval);
+            rt.ExecuteSimple(@"
+                var ctorOk = false;
+                var callOk = false;
+                function check(expected, actual = new.target) {
+                    if (expected === undefined) {
+                        callOk = (actual === undefined);
+                    } else {
+                        ctorOk = (actual === expected);
+                    }
+                }
+                new check(check);
+                check(undefined);
+                var originalOk = ctorOk && callOk;
+
+                ctorOk = false;
+                callOk = false;
+                var checkSource = check.toString();
+                var evaldCheck = eval('(' + checkSource + ')');
+                new evaldCheck(evaldCheck);
+                evaldCheck(undefined);
+                var evalOk = ctorOk && callOk;
+                var newTargetDefaultsOut = originalOk && evalOk;
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("newTargetDefaultsOut")).AsBoolean());
+            var checkSource = ((FenValue)rt.GetGlobal("checkSource")).AsString();
+            Assert.Contains("function check", checkSource);
+            Assert.DoesNotContain("var ctorOk", checkSource);
+            Assert.DoesNotContain("assert._isSameValue", checkSource);
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_NewTarget_IsAllowedInMethods()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var objectOk = false;
+                var objectGetterOk = false;
+                var objectSetterOk = false;
+                var classMethodOk = false;
+                var classGetterOk = false;
+                var classSetterOk = false;
+                var ctorOk = false;
+
+                let ol = {
+                    olTest(arg) { objectOk = (arg === 4) && (new.target === undefined); },
+                    get ol() { objectGetterOk = (new.target === undefined); return 1; },
+                    set ol(arg) { objectSetterOk = (arg === 4) && (new.target === undefined); }
+                };
+
+                class Cl {
+                    constructor() { ctorOk = (new.target === Cl); }
+                    clTest(arg) { classMethodOk = (arg === 4) && (new.target === undefined); }
+                    get cl() { classGetterOk = (new.target === undefined); return 1; }
+                    set cl(arg) { classSetterOk = (arg === 4) && (new.target === undefined); }
+                }
+
+                ol.olTest(4);
+                ol.ol;
+                ol.ol = 4;
+                var clInst = new Cl();
+                clInst.clTest(4);
+                clInst.cl;
+                clInst.cl = 4;
+
+                var newTargetMethodsOut = objectOk && objectGetterOk && objectSetterOk && classMethodOk && classGetterOk && classSetterOk && ctorOk;
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("newTargetMethodsOut")).AsBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_SuperProperty_WorksInObjectAndClassMethods()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var objectCallOk = false;
+                var classCallOk = false;
+                var chainTypeError = false;
+
+                class ToStringTest {
+                    constructor() { this.foo = 'rhinoceros'; }
+                    test() { classCallOk = (super.toString() === super['toString']()) && (super.toString() === this.toString()); }
+                }
+
+                let toStrOL = {
+                    test() { objectCallOk = (super.toString() === super['toString']()) && (super.toString() === this.toString()); },
+                    access() { super.foo.bar; }
+                };
+
+                new ToStringTest().test();
+                toStrOL.test();
+                try { toStrOL.access(); } catch (e) { chainTypeError = true; }
+
+                var superPropertyMethodsOut = objectCallOk && classCallOk && chainTypeError;
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("superPropertyMethodsOut")).AsBoolean());
         }
 
     }

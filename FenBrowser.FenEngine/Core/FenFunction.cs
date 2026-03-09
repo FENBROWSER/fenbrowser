@@ -29,7 +29,9 @@ namespace FenBrowser.FenEngine.Core
         public bool IsAsync { get; set; }
         public bool IsGenerator { get; set; }
         public bool IsArrowFunction { get; set; }
+        public bool IsMethodDefinition { get; set; }
         public bool NeedsArgumentsObject { get; set; } = true;
+        public IObject HomeObject { get; set; }
 
         // JIT Support
         public int CallCount { get; set; }
