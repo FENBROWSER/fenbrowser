@@ -56,6 +56,8 @@ namespace FenBrowser.Host
         public float DpiScale => _dpiScale;
         public int LogicalWidth => _logicalWidth;
         public int LogicalHeight => _logicalHeight;
+        public bool IsMainThreadInitialized => _mainThreadId != 0;
+        public bool IsOnMainThread => _mainThreadId == 0 || Environment.CurrentManagedThreadId == _mainThreadId;
 
         private WindowManager() { }
 

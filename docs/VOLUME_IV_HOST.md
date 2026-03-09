@@ -663,3 +663,29 @@ _End of Volume IV_
   unless `FEN_AUTO_START_TARGET_PROCESSES=0` disables that behavior.
 - The runtime also now exposes the current auxiliary sessions for broker-side routing.
 - This is a concrete Milestone `A2` process-migration tranche, but not full feature migration: network, GPU, and utility work still need more host subsystems moved onto those channels.
+
+### 6.34 Host Repaint Thread-Ownership Hardening (2026-03-09)
+
+- `FenBrowser.Host/Widgets/Widget.cs`
+  - Widget invalidation is now main-thread-owned.
+  - Off-thread `Invalidate(...)` calls no longer mutate `DirtyRect` directly; they are coalesced and marshaled onto the host main thread before bubbling through the widget tree.
+- `FenBrowser.Host/WindowManager.cs`
+  - Added explicit host thread-state surface (`IsMainThreadInitialized`, `IsOnMainThread`) so UI-facing code can cheaply guard thread ownership.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Active-tab URL, title, and loading-state callbacks now marshal onto the UI thread before touching `ToolbarWidget`, `StatusBarWidget`, the root invalidation path, or the native window title.
+- `FenBrowser.Tests/Host/WidgetInvalidationDispatchTests.cs`
+  - Added a regression proving that background-thread invalidation queues work for the UI thread instead of mutating widget dirty state inline.
+- Net effect:
+  - Host repaint progress no longer depends on incidental mouse-move invalidations to wake visible UI state after engine/background callbacks.
+  - Dirty-region ownership is now consistent with the Host threading model, reducing intermittent “blank until hover/mouse move” behavior on Google and similar pages.
+
+### 6.35 Host Committed-Frame Preservation During Progressive Parse/Re-cascade (2026-03-09)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Host frame recording now preserves the last committed `SKPicture` whenever the engine has temporarily cleared computed styles during progressive parse checkpoints or dynamic re-cascade.
+  - If a committed frame already exists and the host only has a DOM snapshot without computed styles, `RecordFrame(...)` now defers the swap instead of replacing the visible frame with a transient structural/unstyled frame.
+- `FenBrowser.Tests/Host/BrowserIntegrationFrameStabilityTests.cs`
+  - Added a regression proving that a committed frame is retained when styles are temporarily unavailable.
+- Net effect:
+  - Complex pages like Google no longer flicker by swapping a good frame out for a styleless checkpoint frame and then swapping back once CSS catches up.
+  - Visible content remains stable across parse-progress and recascade churn, reducing the “disappears and reappears” symptom without blocking later styled frame commits.

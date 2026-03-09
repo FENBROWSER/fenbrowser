@@ -643,6 +643,16 @@ public class BrowserIntegration
             FenLogger.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
             return; 
         }
+
+        // Preserve the last committed frame while parse checkpoints / recascade paths
+        // temporarily clear computed styles. Replacing a good frame with a structural
+        // snapshot causes visible disappear/reappear flicker on complex pages.
+        if ((_styles == null || _styles.Count == 0) && HasCommittedFrame())
+        {
+            _needsRepaint = false;
+            FenLogger.Debug("[BrowserIntegration] RecordFrame deferred: keeping committed frame until styles are ready.", LogCategory.Rendering);
+            return;
+        }
         
         // Guard: Ensure we have a valid HTML element
         string rootTag = _root?.TagName?.ToUpperInvariant() ?? "";
@@ -730,6 +740,14 @@ public class BrowserIntegration
         catch (Exception ex)
         {
             FenLogger.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
+        }
+    }
+
+    private bool HasCommittedFrame()
+    {
+        lock (_frameLock)
+        {
+            return _currentFrame != null;
         }
     }
     
