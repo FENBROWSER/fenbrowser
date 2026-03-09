@@ -334,12 +334,13 @@ namespace FenBrowser.Core.Accessibility
             get
             {
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return false;
-                // Check if AT-SPI2 bus is available
                 try
                 {
-                    var envVar = Environment.GetEnvironmentVariable("AT_SPI_BUS_ADDRESS") ??
-                                 Environment.GetEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS");
-                    return !string.IsNullOrEmpty(envVar);
+                    // AT_SPI_BUS_ADDRESS is set by at-spi2-registryd and is the definitive
+                    // indicator that an AT-SPI2 bus is running for this session.
+                    // DBUS_SESSION_BUS_ADDRESS alone does not imply AT-SPI2 is active.
+                    return !string.IsNullOrEmpty(
+                        Environment.GetEnvironmentVariable("AT_SPI_BUS_ADDRESS"));
                 }
                 catch { return false; }
             }
@@ -355,35 +356,43 @@ namespace FenBrowser.Core.Accessibility
 
             if (!_available)
             {
-                FenLogger.Info("[AT-SPI] Not available on this system.", LogCategory.General);
+                FenLogger.Info("[AT-SPI] AT-SPI2 bus not found (AT_SPI_BUS_ADDRESS unset). " +
+                    "Accessibility events will not reach assistive technologies.", LogCategory.General);
                 return;
             }
 
             if (tree != null)
                 tree.TreeInvalidated += OnTreeInvalidated;
 
-            // Register with the AT-SPI2 bus via the at-spi-registryd socket.
-            // In a full implementation, we would connect to the AT-SPI2 DBus socket,
-            // register our application, and advertise our accessibility tree root.
-            FenLogger.Info("[AT-SPI] Accessibility bridge initialized.", LogCategory.General);
+            // NOTE: Full AT-SPI2 support requires connecting to the AT-SPI2 DBus socket,
+            // registering the application via org.a11y.atspi.Registry, and implementing
+            // the org.a11y.atspi.Accessible interface for each node.
+            // The current implementation routes events through the AT-SPI2 event name map
+            // but does not yet establish a DBus connection.
+            // Screen readers (Orca, etc.) will not receive these events until the DBus
+            // connection is implemented.
+            FenLogger.Warn("[AT-SPI] Bridge initialised in stub mode — DBus connection not yet " +
+                "implemented. Accessibility events will be logged but not forwarded to screen readers.",
+                LogCategory.General);
         }
 
         public void FireEvent(AccessibilityNode node, A11yEvent eventType)
         {
             if (!_available || node == null) return;
 
-            // Map to AT-SPI2 event strings (org.a11y.atspi.Event.*)
             var atspiEvent = MapAtSpiEvent(eventType);
             if (atspiEvent == null) return;
 
-            // In production: emit DBus signal via libdbus or atspi-glib
-            FenLogger.Debug($"[AT-SPI] Event '{atspiEvent}' for node '{node.Name}'", LogCategory.General);
+            // TODO: emit DBus signal on org.a11y.atspi.Event.* interface via a persistent
+            // DBus connection to AT_SPI_BUS_ADDRESS. Until then, log for diagnostics.
+            FenLogger.Debug($"[AT-SPI] (stub) Event '{atspiEvent}' for node '{node.Name}'", LogCategory.General);
         }
 
         public void FirePropertyChanged(AccessibilityNode node, string propertyName, object oldValue, object newValue)
         {
             if (!_available || node == null) return;
-            FenLogger.Debug($"[AT-SPI] PropertyChanged '{propertyName}' for node '{node.Name}'", LogCategory.General);
+            // TODO: emit org.a11y.atspi.Event.Object:property-change DBus signal.
+            FenLogger.Debug($"[AT-SPI] (stub) PropertyChanged '{propertyName}' for node '{node.Name}'", LogCategory.General);
         }
 
         public void UpdateWindowHandle(IntPtr hwnd) { /* AT-SPI2 is window-handle-independent */ }
@@ -528,23 +537,74 @@ namespace FenBrowser.Core.Accessibility
         }
     }
 
-    /// <summary>Minimal AppKit P/Invoke stubs for NSAccessibility.</summary>
+    /// <summary>
+    /// AppKit / ApplicationServices P/Invoke for NSAccessibility.
+    /// Notification posting uses the Objective-C runtime so that we avoid a hard
+    /// link against AppKit.framework (which is loaded lazily on demand).
+    /// </summary>
     internal static class NativeMacA11y
     {
-        [DllImport("libSystem.B.dylib")]
-        private static extern IntPtr objc_getClass(string name);
+        // ── Objective-C runtime ────────────────────────────────────────────────
+        [DllImport("libobjc.A.dylib", EntryPoint = "objc_getClass")]
+        private static extern IntPtr ObjcGetClass(string name);
 
+        [DllImport("libobjc.A.dylib", EntryPoint = "sel_registerName")]
+        private static extern IntPtr SelRegisterName(string name);
+
+        // objc_msgSend for id return type
+        [DllImport("libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern IntPtr ObjcMsgSend(IntPtr receiver, IntPtr selector);
+
+        // objc_msgSend for id return + const char* argument
+        [DllImport("libobjc.A.dylib", EntryPoint = "objc_msgSend")]
+        private static extern IntPtr ObjcMsgSendStr(IntPtr receiver, IntPtr selector, string arg);
+
+        // NSAccessibilityPostNotification(element, notification)
+        [DllImport("AppKit.framework/AppKit", EntryPoint = "NSAccessibilityPostNotification")]
+        private static extern void NsAccessibilityPostNotification(IntPtr element, IntPtr notificationName);
+
+        // ── ApplicationServices ────────────────────────────────────────────────
+        // AXIsProcessTrusted() — the correct way to test whether the process has
+        // been granted accessibility access by the user (System Preferences → Privacy).
+        [DllImport("ApplicationServices.framework/ApplicationServices",
+            EntryPoint = "AXIsProcessTrusted")]
+        private static extern bool AXIsProcessTrusted();
+
+        // ── Cached selectors ───────────────────────────────────────────────────
+        private static readonly Lazy<IntPtr> _selStringWithUtf8 = new Lazy<IntPtr>(
+            () => SelRegisterName("stringWithUTF8String:"));
+        private static readonly Lazy<IntPtr> _nsStringClass = new Lazy<IntPtr>(
+            () => ObjcGetClass("NSString"));
+
+        /// <summary>
+        /// Returns true only when the process has been granted Accessibility access.
+        /// Replaces the previous (always-true) NSApplication existence check.
+        /// </summary>
         public static bool AXAPIEnabled()
         {
-            try { return objc_getClass("NSApplication") != IntPtr.Zero; }
+            try { return AXIsProcessTrusted(); }
             catch { return false; }
         }
 
+        /// <summary>
+        /// Posts an NSAccessibility notification for the given element.
+        /// Creates an NSString from <paramref name="notification"/> via the ObjC runtime
+        /// then calls NSAccessibilityPostNotification.
+        /// </summary>
         public static void PostNotification(IntPtr element, string notification)
         {
-            // Full implementation would call:
-            // NSAccessibilityPostNotification(element, (NSString*)notification);
-            // via the AppKit Objective-C bridge. Stub for now.
+            if (string.IsNullOrEmpty(notification)) return;
+            try
+            {
+                // Build NSString* for the notification name.
+                var nsStr = ObjcMsgSendStr(_nsStringClass.Value, _selStringWithUtf8.Value, notification);
+                if (nsStr == IntPtr.Zero) return;
+                NsAccessibilityPostNotification(element, nsStr);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[NSAccessibility] PostNotification('{notification}') failed: {ex.Message}", LogCategory.General);
+            }
         }
     }
 

@@ -30,7 +30,26 @@ namespace FenBrowser.FenEngine.DOM
         // Public methods for internal use
         public void StopPropagation() => PropagationStopped = true;
         public void StopImmediatePropagation() { PropagationStopped = true; ImmediatePropagationStopped = true; }
-        public void PreventDefault() { if (Cancelable) DefaultPrevented = true; }
+
+        /// <summary>
+        /// Set by EventTarget when invoking a passive listener.
+        /// While true, preventDefault() is a no-op (UI Events §4.3.2 passive flag).
+        /// </summary>
+        internal bool IsPassiveContext { get; set; }
+
+        public void PreventDefault()
+        {
+            if (IsPassiveContext)
+            {
+                // UI Events §4.3.2: "If the passive flag is set, do nothing."
+                // Log once per dispatch to help developers diagnose the violation.
+                FenBrowser.Core.FenLogger.Warn(
+                    $"[Event] preventDefault() ignored inside passive listener for '{Type}'.",
+                    FenBrowser.Core.Logging.LogCategory.Events);
+                return;
+            }
+            if (Cancelable) DefaultPrevented = true;
+        }
 
         // Dynamic properties (set during dispatch)
         public Element Target { get; set; }

@@ -34,10 +34,14 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         /// <summary>
         /// Drain ALL microtasks until the queue is empty.
-        /// Microtasks enqueued during draining are also processed.
+        /// Microtasks enqueued during draining are also processed (WHATWG HTML §8.1.7.3).
+        /// Re-entrant calls (e.g. from within a microtask callback) return immediately;
+        /// the outer drain loop will pick up any newly-enqueued items on its next iteration.
         /// </summary>
         public void DrainAll()
         {
+            // Guard check and set are atomic within the same lock acquisition so no
+            // other thread can slip between them.
             lock (_lock)
             {
                 if (_isDraining)
@@ -49,6 +53,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _drainDepth = 0;
             }
 
+            int processed = 0;
             try
             {
                 while (true)
@@ -59,17 +64,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                         if (_microtasks.Count == 0)
                             break;
 
-                        _drainDepth++;
-                        if (_drainDepth > MaxDrainDepth)
+                        if (_drainDepth >= MaxDrainDepth)
                         {
                             FenLogger.Debug($"[MicrotaskQueue] Max drain depth ({MaxDrainDepth}) exceeded, clearing queue", LogCategory.Errors);
                             _microtasks.Clear();
                             break;
                         }
 
+                        _drainDepth++;
                         microtask = _microtasks.Dequeue();
                     }
 
+                    processed++;
                     try
                     {
                         microtask();
@@ -79,16 +85,20 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                         FenLogger.Debug($"[MicrotaskQueue] Microtask error: {ex.Message}", LogCategory.Errors);
                     }
                 }
-
-                FenLogger.Debug($"[MicrotaskQueue] Drain complete (processed: {_drainDepth})", LogCategory.JavaScript);
             }
             finally
             {
+                // Reset _isDraining while holding the lock so that any producer thread
+                // that enqueued after the while-loop's empty check but before this reset
+                // is guaranteed to see _isDraining = false on its next DrainAll() call
+                // (or will have already enqueued into a queue the next checkpoint will drain).
                 lock (_lock)
                 {
                     _isDraining = false;
                 }
             }
+
+            FenLogger.Debug($"[MicrotaskQueue] Drain complete (processed: {processed})", LogCategory.JavaScript);
         }
 
         /// <summary>

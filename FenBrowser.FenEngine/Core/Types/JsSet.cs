@@ -10,13 +10,21 @@ namespace FenBrowser.FenEngine.Core.Types
     {
         private class JsValueEqualityComparer : IEqualityComparer<FenValue>
         {
+            // ECMA-262 §24.1.1.2: Set key comparison uses SameValueZero.
+            // SameValueZero(x, y) differs from StrictEquals only for NaN: NaN ===SameValueZero NaN.
             public bool Equals(FenValue x, FenValue y)
             {
-                if (x.Type != y.Type) return false;
+                if (x.Type == Interfaces.ValueType.Number && double.IsNaN(x._numberValue) &&
+                    y.Type == Interfaces.ValueType.Number && double.IsNaN(y._numberValue))
+                    return true;
                 return x.StrictEquals(y);
             }
+
             public int GetHashCode(FenValue obj)
             {
+                // Normalise NaN so all NaN values land in the same bucket.
+                if (obj.Type == Interfaces.ValueType.Number && double.IsNaN(obj._numberValue))
+                    return HashCode.Combine(Interfaces.ValueType.Number, double.NaN.GetHashCode());
                 return obj.GetHashCode();
             }
         }
