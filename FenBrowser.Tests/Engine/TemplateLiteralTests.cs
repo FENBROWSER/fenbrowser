@@ -79,5 +79,15 @@ namespace FenBrowser.Tests.Engine
             var result = _runtime.ExecuteSimple(@"`\`\``");
             Assert.Equal("``", result.ToString());
         }
+
+        [Fact]
+        public void TaggedTemplate_AfterParenthesizedExpression()
+        {
+            var result = _runtime.ExecuteSimple(@"
+                var tag = function(strings) { return strings[0] + 'ok'; };
+                (0, tag)``;
+            ");
+            Assert.Equal("ok", result.ToString());
+        }
     }
 }
