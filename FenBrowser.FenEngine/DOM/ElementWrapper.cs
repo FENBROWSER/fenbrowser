@@ -3,6 +3,7 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -12,6 +13,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -24,6 +26,7 @@ namespace FenBrowser.FenEngine.DOM
         private readonly Element _element;
         private static readonly ConditionalWeakTable<Element, FenObject> s_iframeWindowByElement = new ConditionalWeakTable<Element, FenObject>();
         private static readonly ConditionalWeakTable<Element, IframeProcessAssignment> s_iframeAssignmentByElement = new ConditionalWeakTable<Element, IframeProcessAssignment>();
+        private static readonly ConditionalWeakTable<Element, ElementScrollState> s_scrollStateByElement = new ConditionalWeakTable<Element, ElementScrollState>();
         private static readonly OopifPolicy s_oopifPolicy = new OopifPolicy();
         // _context is in base
 
@@ -35,6 +38,12 @@ namespace FenBrowser.FenEngine.DOM
             public int RendererId { get; set; }
             public string RemoteOrigin { get; set; }
             public string Reason { get; set; }
+        }
+
+        private sealed class ElementScrollState
+        {
+            public double Left { get; set; }
+            public double Top { get; set; }
         }
 
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
@@ -62,6 +71,12 @@ namespace FenBrowser.FenEngine.DOM
                 
                 case "id":
                     return FenValue.FromString(_element.Id ?? "");
+
+                case "contenteditable":
+                    return FenValue.FromString(GetContentEditableState());
+
+                case "iscontenteditable":
+                    return FenValue.FromBoolean(IsContentEditable());
                 
                 case "getattribute":
                     return FenValue.FromFunction(new FenFunction("getAttribute", GetAttribute));
@@ -102,6 +117,30 @@ namespace FenBrowser.FenEngine.DOM
                     // clientHeight - inner height without scrollbar (for viewport calculations)
                     // For documentElement, return viewport height
                     return FenValue.FromNumber(GetClientHeight());
+
+                case "offsetwidth":
+                    return FenValue.FromNumber(GetOffsetDimension("width"));
+
+                case "offsetheight":
+                    return FenValue.FromNumber(GetOffsetDimension("height"));
+
+                case "scrollwidth":
+                    return FenValue.FromNumber(GetScrollWidth());
+
+                case "scrollheight":
+                    return FenValue.FromNumber(GetScrollHeight());
+
+                case "scrolltop":
+                    return FenValue.FromNumber(GetScrollTop());
+
+                case "scrollleft":
+                    return FenValue.FromNumber(GetScrollLeft());
+
+                case "scrollto":
+                    return FenValue.FromFunction(new FenFunction("scrollTo", ScrollToMethod));
+
+                case "scrollby":
+                    return FenValue.FromFunction(new FenFunction("scrollBy", ScrollByMethod));
 
                 case "getcontext":
 
@@ -702,10 +741,43 @@ namespace FenBrowser.FenEngine.DOM
                     SetTextContent(value);
                     break;
 
+                case "style":
+                {
+                    var styleText = value.AsString(context ?? _context) ?? string.Empty;
+                    if (styleText.Length == 0)
+                    {
+                        _element.RemoveAttribute("style");
+                    }
+                    else
+                    {
+                        _element.SetAttribute("style", styleText);
+                    }
+
+                    _context?.RequestRender?.Invoke();
+                    break;
+                }
+
                 case "id":
                 {
                     var idValue = value.AsString(context ?? _context);
                     _element.SetAttribute("id", idValue ?? string.Empty);
+                    break;
+                }
+
+                case "contenteditable":
+                {
+                    var normalized = (value.AsString(context ?? _context) ?? string.Empty).Trim().ToLowerInvariant();
+                    switch (normalized)
+                    {
+                        case "true":
+                        case "plaintext-only":
+                        case "false":
+                            _element.SetAttribute("contenteditable", normalized);
+                            break;
+                        default:
+                            _element.RemoveAttribute("contenteditable");
+                            break;
+                    }
                     break;
                 }
 
@@ -730,6 +802,14 @@ namespace FenBrowser.FenEngine.DOM
                     else _element.RemoveAttribute("disabled");
                     break;
 
+                case "scrolltop":
+                    SetScrollPosition(GetScrollLeft(), value.ToNumber());
+                    break;
+
+                case "scrollleft":
+                    SetScrollPosition(value.ToNumber(), GetScrollTop());
+                    break;
+
                 default:
                     base.Set(key, value, context);
                     break;
@@ -740,7 +820,46 @@ namespace FenBrowser.FenEngine.DOM
         public override bool Delete(string key, IExecutionContext context = null) => false;
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "type", "checked", "disabled", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight" };
+            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "contentEditable", "isContentEditable", "type", "checked", "disabled", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy" };
+
+        private string GetContentEditableState()
+        {
+            var attributeValue = _element.GetAttribute("contenteditable");
+            if (attributeValue == null)
+            {
+                return "inherit";
+            }
+
+            var normalized = attributeValue.Trim().ToLowerInvariant();
+            if (normalized.Length == 0 || normalized == "true")
+            {
+                return "true";
+            }
+
+            if (normalized == "plaintext-only")
+            {
+                return "plaintext-only";
+            }
+
+            if (normalized == "false")
+            {
+                return "false";
+            }
+
+            return "inherit";
+        }
+
+        private bool IsContentEditable()
+        {
+            var attributeValue = _element.GetAttribute("contenteditable");
+            if (attributeValue == null)
+            {
+                return false;
+            }
+
+            var normalized = attributeValue.Trim().ToLowerInvariant();
+            return normalized.Length == 0 || normalized == "true" || normalized == "plaintext-only";
+        }
         
         private FenValue GetContext(FenValue[] args, FenValue thisVal)
         {
@@ -1200,7 +1319,15 @@ namespace FenBrowser.FenEngine.DOM
             if (val != null)
             {
                 if (double.TryParse(val, out var d)) return d;
+                if (TryParsePixels(val, out d)) return d;
             }
+
+            var styleValue = GetInlineStyleValue(attrName);
+            if (TryParsePixels(styleValue, out var stylePixels))
+            {
+                return stylePixels;
+            }
+
             return 0;
         }
 
@@ -1226,6 +1353,362 @@ namespace FenBrowser.FenEngine.DOM
             }
             // For other elements, use height attribute or return 0
             return GetDimension("height");
+        }
+
+        private double GetOffsetDimension(string dimensionName)
+        {
+            var explicitDimension = GetDimension(dimensionName);
+            if (explicitDimension > 0)
+            {
+                return explicitDimension;
+            }
+
+            if (TryGetComputedPixels(_element, dimensionName, out var computedDimension) && computedDimension > 0)
+            {
+                return computedDimension;
+            }
+
+            var parent = _element.ParentElement;
+            if (parent != null)
+            {
+                var parentWrapper = new ElementWrapper(parent, _context);
+                var parentDisplay = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(parent)?.Display;
+                if (!string.Equals(parentDisplay, "grid", StringComparison.OrdinalIgnoreCase))
+                {
+                    var inlineDisplay = parentWrapper.GetInlineStyleValue("display");
+                    if (string.Equals(inlineDisplay?.Trim(), "grid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        parentDisplay = "grid";
+                    }
+                    else
+                    {
+                        if (!TryGetStylesheetValue(parent, "display", out parentDisplay) ||
+                            !string.Equals(parentDisplay, "grid", StringComparison.OrdinalIgnoreCase))
+                        {
+                            parentDisplay = null;
+                        }
+                    }
+                }
+
+                if (string.Equals(parentDisplay, "grid", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (TryGetComputedPixels(parent, dimensionName, out var gridTrackDimension) && gridTrackDimension > 0)
+                    {
+                        return gridTrackDimension;
+                    }
+
+                    if (TryGetStylesheetPixels(parent, dimensionName, out var stylesheetDimension) && stylesheetDimension > 0)
+                    {
+                        return stylesheetDimension;
+                    }
+
+                    var parentExplicitDimension = parentWrapper.GetDimension(dimensionName);
+                    if (parentExplicitDimension > 0)
+                    {
+                        return parentExplicitDimension;
+                    }
+                }
+            }
+
+            return dimensionName == "width"
+                ? Math.Max(GetClientWidth(), GetScrollWidth())
+                : Math.Max(GetClientHeight(), GetScrollHeight());
+        }
+
+        private static bool TryGetComputedPixels(Element element, string propertyName, out double pixels)
+        {
+            pixels = 0;
+            var computedStyle = element == null ? null : FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(element);
+            if (computedStyle?.Map?.TryGetValue(propertyName, out var rawValue) != true ||
+                string.IsNullOrWhiteSpace(rawValue))
+            {
+                return false;
+            }
+
+            rawValue = rawValue.Trim();
+            if (!rawValue.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return double.TryParse(
+                rawValue.Substring(0, rawValue.Length - 2),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out pixels);
+        }
+
+        private static bool TryGetStylesheetPixels(Element element, string propertyName, out double pixels)
+        {
+            pixels = 0;
+            return TryGetStylesheetValue(element, propertyName, out var rawValue) &&
+                   rawValue.EndsWith("px", StringComparison.OrdinalIgnoreCase) &&
+                   double.TryParse(
+                       rawValue.Substring(0, rawValue.Length - 2),
+                       System.Globalization.NumberStyles.Float,
+                       System.Globalization.CultureInfo.InvariantCulture,
+                       out pixels);
+        }
+
+        private static bool TryGetStylesheetValue(Element element, string propertyName, out string value)
+        {
+            value = string.Empty;
+            var document = element?.OwnerDocument;
+            if (document?.DocumentElement == null)
+            {
+                return false;
+            }
+
+            foreach (var node in document.DocumentElement.DescendantsAndSelf())
+            {
+                if (node is not Element styleElement ||
+                    !string.Equals(styleElement.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var cssText = styleElement.TextContent ?? string.Empty;
+                foreach (Match match in Regex.Matches(cssText, @"(?s)([^{}]+)\{([^{}]*)\}"))
+                {
+                    var selectorText = match.Groups[1].Value.Trim();
+                    var body = match.Groups[2].Value;
+                    if (selectorText.StartsWith("@", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    foreach (var selector in selectorText.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        try
+                        {
+                            if (!FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(element, selector.Trim()))
+                            {
+                                continue;
+                            }
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+
+                        foreach (var declaration in body.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            var colonIndex = declaration.IndexOf(':');
+                            if (colonIndex <= 0)
+                            {
+                                continue;
+                            }
+
+                            var name = declaration.Substring(0, colonIndex).Trim();
+                            if (!string.Equals(name, propertyName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            value = declaration.Substring(colonIndex + 1).Trim();
+                            var importantIndex = value.IndexOf("!important", StringComparison.OrdinalIgnoreCase);
+                            if (importantIndex >= 0)
+                            {
+                                value = value.Substring(0, importantIndex).Trim();
+                            }
+
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private double GetScrollWidth()
+        {
+            return Math.Max(GetClientWidth(), MeasureContentExtent("width"));
+        }
+
+        private double GetScrollHeight()
+        {
+            return Math.Max(GetClientHeight(), MeasureContentExtent("height"));
+        }
+
+        private double GetScrollTop()
+        {
+            return s_scrollStateByElement.TryGetValue(_element, out var state) ? state.Top : 0;
+        }
+
+        private double GetScrollLeft()
+        {
+            return s_scrollStateByElement.TryGetValue(_element, out var state) ? state.Left : 0;
+        }
+
+        private void SetScrollPosition(double left, double top)
+        {
+            var state = s_scrollStateByElement.GetOrCreateValue(_element);
+            state.Left = NormalizeScrollCoordinate(left, GetScrollWidth() - GetClientWidth());
+            state.Top = NormalizeScrollCoordinate(top, GetScrollHeight() - GetClientHeight());
+            _context?.RequestRender?.Invoke();
+        }
+
+        private static double NormalizeScrollCoordinate(double requested, double max)
+        {
+            if (double.IsNaN(requested) || double.IsInfinity(requested))
+            {
+                return 0;
+            }
+
+            if (max > 0)
+            {
+                return Math.Max(0, Math.Min(requested, max));
+            }
+
+            return Math.Max(0, requested);
+        }
+
+        private FenValue ScrollToMethod(FenValue[] args, FenValue thisVal)
+        {
+            double left = GetScrollLeft();
+            double top = GetScrollTop();
+
+            if (args.Length == 1 && args[0].IsObject)
+            {
+                var options = args[0].AsObject();
+                var topValue = options?.Get("top");
+                if (topValue.HasValue && !topValue.Value.IsUndefined)
+                {
+                    top = topValue.Value.ToNumber();
+                }
+
+                var leftValue = options?.Get("left");
+                if (leftValue.HasValue && !leftValue.Value.IsUndefined)
+                {
+                    left = leftValue.Value.ToNumber();
+                }
+            }
+            else
+            {
+                if (args.Length >= 1)
+                {
+                    left = args[0].ToNumber();
+                }
+
+                if (args.Length >= 2)
+                {
+                    top = args[1].ToNumber();
+                }
+            }
+
+            SetScrollPosition(left, top);
+            return FenValue.Undefined;
+        }
+
+        private FenValue ScrollByMethod(FenValue[] args, FenValue thisVal)
+        {
+            double deltaLeft = 0;
+            double deltaTop = 0;
+
+            if (args.Length == 1 && args[0].IsObject)
+            {
+                var options = args[0].AsObject();
+                var topValue = options?.Get("top");
+                if (topValue.HasValue && !topValue.Value.IsUndefined)
+                {
+                    deltaTop = topValue.Value.ToNumber();
+                }
+
+                var leftValue = options?.Get("left");
+                if (leftValue.HasValue && !leftValue.Value.IsUndefined)
+                {
+                    deltaLeft = leftValue.Value.ToNumber();
+                }
+            }
+            else
+            {
+                if (args.Length >= 1)
+                {
+                    deltaLeft = args[0].ToNumber();
+                }
+
+                if (args.Length >= 2)
+                {
+                    deltaTop = args[1].ToNumber();
+                }
+            }
+
+            SetScrollPosition(GetScrollLeft() + deltaLeft, GetScrollTop() + deltaTop);
+            return FenValue.Undefined;
+        }
+
+        private double MeasureContentExtent(string dimension)
+        {
+            if (_element.ChildNodes == null || !_element.ChildNodes.Any())
+            {
+                return 0;
+            }
+
+            double total = 0;
+            foreach (var child in _element.ChildNodes)
+            {
+                if (child is not Element childElement)
+                {
+                    continue;
+                }
+
+                var childWrapper = new ElementWrapper(childElement, _context);
+                var childSize = childWrapper.GetDimension(dimension);
+                if (string.Equals(dimension, "height", StringComparison.OrdinalIgnoreCase))
+                {
+                    total += childSize;
+                }
+                else
+                {
+                    total = Math.Max(total, childSize);
+                }
+            }
+
+            return total;
+        }
+
+        private string GetInlineStyleValue(string propertyName)
+        {
+            var style = _element.GetAttribute("style");
+            if (string.IsNullOrWhiteSpace(style))
+            {
+                return null;
+            }
+
+            var declarations = style.Split(';', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var declaration in declarations)
+            {
+                var parts = declaration.Split(':', 2);
+                if (parts.Length != 2)
+                {
+                    continue;
+                }
+
+                if (string.Equals(parts[0].Trim(), propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return parts[1].Trim();
+                }
+            }
+
+            return null;
+        }
+
+        private static bool TryParsePixels(string value, out double result)
+        {
+            result = 0;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var trimmed = value.Trim();
+            if (trimmed.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = trimmed[..^2].Trim();
+            }
+
+            return double.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result);
         }
 
         private FenValue AppendChild(FenValue[] args, FenValue thisVal)
@@ -2307,11 +2790,97 @@ namespace FenBrowser.FenEngine.DOM
                 var box = engine.GetBoxForNode(_element);
                 if (box.HasValue)
                 {
-                    return FenValue.FromObject(new DOMRectReadOnly(box.Value.Left, box.Value.Top, box.Value.Width, box.Value.Height));
+                    var resolved = ResolveBoundingRect(box);
+                    return FenValue.FromObject(new DOMRectReadOnly(resolved.Left, resolved.Top, resolved.Width, resolved.Height));
                 }
             }
-            
+
+            var syntheticRect = ResolveBoundingRect(null);
+            if (syntheticRect.Width > 0 || syntheticRect.Height > 0)
+            {
+                return FenValue.FromObject(new DOMRectReadOnly(syntheticRect.Left, syntheticRect.Top, syntheticRect.Width, syntheticRect.Height));
+            }
+
             return FenValue.FromObject(new DOMRectReadOnly(0, 0, 0, 0));
+        }
+
+        private SKRect ResolveBoundingRect(SKRect? anchorBox)
+        {
+            if (anchorBox.HasValue && anchorBox.Value.Width > 0 && anchorBox.Value.Height > 0)
+            {
+                return anchorBox.Value;
+            }
+
+            var synthetic = TryCreateSyntheticTextRect(anchorBox);
+            if (synthetic.HasValue)
+            {
+                return synthetic.Value;
+            }
+
+            return anchorBox ?? SKRect.Create(0, 0, 0, 0);
+        }
+
+        private SKRect? TryCreateSyntheticTextRect(SKRect? anchorBox)
+        {
+            var textContent = _element.TextContent ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(textContent))
+            {
+                return anchorBox;
+            }
+
+            var origin = GetSyntheticInlineOrigin(anchorBox);
+            var width = Math.Max(anchorBox?.Width ?? 0, Math.Max(1, textContent.Length) * 10);
+            var height = Math.Max(anchorBox?.Height ?? 0, 16);
+            return SKRect.Create(origin.Left, origin.Top, width, height);
+        }
+
+        private (float Left, float Top) GetSyntheticInlineOrigin(SKRect? anchorBox)
+        {
+            if (anchorBox.HasValue)
+            {
+                return (anchorBox.Value.Left, anchorBox.Value.Top);
+            }
+
+            float left = 0;
+            float top = 0;
+            if (_element.ParentNode is Element parent)
+            {
+                foreach (var sibling in parent.ChildNodes)
+                {
+                    if (ReferenceEquals(sibling, _element))
+                    {
+                        break;
+                    }
+
+                    if (sibling is Element siblingElement)
+                    {
+                        if (string.Equals(siblingElement.TagName, "br", StringComparison.OrdinalIgnoreCase))
+                        {
+                            top += 16;
+                            left = 0;
+                            continue;
+                        }
+
+                        left += EstimateSyntheticWidth(siblingElement);
+                    }
+                    else if (sibling.NodeType == NodeType.Text)
+                    {
+                        left += Math.Max(1, sibling.TextContent?.Length ?? 0) * 10;
+                    }
+                }
+            }
+
+            return (left, top);
+        }
+
+        private static float EstimateSyntheticWidth(Element element)
+        {
+            if (string.Equals(element.TagName, "br", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            return Math.Max(1, element.TextContent?.Length ?? 0) * 10;
         }
 
         private FenValue GetClientRectsMethod(FenValue[] args, FenValue thisVal)
@@ -2926,6 +3495,67 @@ namespace FenBrowser.FenEngine.DOM
     }
     public class CSSStyleDeclaration : IObject
     {
+        private static readonly Dictionary<string, string> s_propertyAliases = new(StringComparer.Ordinal)
+        {
+            ["webkitAlignContent"] = "align-content",
+            ["webkitAlignItems"] = "align-items",
+            ["webkitAlignSelf"] = "align-self",
+            ["webkitAnimation"] = "animation",
+            ["webkitAnimationDelay"] = "animation-delay",
+            ["webkitAnimationDirection"] = "animation-direction",
+            ["webkitAnimationDuration"] = "animation-duration",
+            ["webkitAnimationFillMode"] = "animation-fill-mode",
+            ["webkitAnimationIterationCount"] = "animation-iteration-count",
+            ["webkitAnimationName"] = "animation-name",
+            ["webkitAnimationPlayState"] = "animation-play-state",
+            ["webkitAnimationTimingFunction"] = "animation-timing-function",
+            ["webkitBackfaceVisibility"] = "backface-visibility",
+            ["WebKitBackgroundClip"] = "background-clip",
+            ["webkitBackgroundOrigin"] = "background-origin",
+            ["webkitBackgroundSize"] = "background-size",
+            ["webkitBorderBottomLeftRadius"] = "border-bottom-left-radius",
+            ["webkitBorderBottomRightRadius"] = "border-bottom-right-radius",
+            ["webkitBorderRadius"] = "border-radius",
+            ["webkitBorderTopLeftRadius"] = "border-top-left-radius",
+            ["webkitBorderTopRightRadius"] = "border-top-right-radius",
+            ["webkitBoxShadow"] = "box-shadow",
+            ["webkitBoxSizing"] = "box-sizing",
+            ["webkitFilter"] = "filter",
+            ["webkitFlex"] = "flex",
+            ["webkitFlexBasis"] = "flex-basis",
+            ["webkitFlexDirection"] = "flex-direction",
+            ["webkitFlexFlow"] = "flex-flow",
+            ["webkitFlexGrow"] = "flex-grow",
+            ["webkitFlexShrink"] = "flex-shrink",
+            ["webkitFlexWrap"] = "flex-wrap",
+            ["webkitJustifyContent"] = "justify-content",
+            ["webkitMask"] = "mask",
+            ["webkitMaskBoxImage"] = "mask-box-image",
+            ["webkitMaskBoxImageOutset"] = "mask-box-image-outset",
+            ["webkitMaskBoxImageRepeat"] = "mask-box-image-repeat",
+            ["webkitMaskBoxImageSlice"] = "mask-box-image-slice",
+            ["webkitMaskBoxImageSource"] = "mask-box-image-source",
+            ["webkitMaskBoxImageWidth"] = "mask-box-image-width",
+            ["webkitMaskClip"] = "mask-clip",
+            ["webkitMaskComposite"] = "mask-composite",
+            ["webkitMaskImage"] = "mask-image",
+            ["webkitMaskOrigin"] = "mask-origin",
+            ["webkitMaskPosition"] = "mask-position",
+            ["webkitMaskRepeat"] = "mask-repeat",
+            ["webkitMaskSize"] = "mask-size",
+            ["webkitOrder"] = "order",
+            ["webkitPerspective"] = "perspective",
+            ["webkitPerspectiveOrigin"] = "perspective-origin",
+            ["webkitTransform"] = "transform",
+            ["webkitTransformOrigin"] = "transform-origin",
+            ["webkitTransformStyle"] = "transform-style",
+            ["webkitTransition"] = "transition",
+            ["webkitTransitionDelay"] = "transition-delay",
+            ["webkitTransitionDuration"] = "transition-duration",
+            ["webkitTransitionProperty"] = "transition-property",
+            ["webkitTransitionTimingFunction"] = "transition-timing-function",
+        };
+
         private readonly Element _element;
         private readonly IExecutionContext _context;
         private IObject _prototype;
@@ -2939,6 +3569,23 @@ namespace FenBrowser.FenEngine.DOM
 
         public FenValue Get(string key, IExecutionContext context = null)
         {
+            static string NormalizeStyleDeclarationValue(string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return value ?? string.Empty;
+                }
+
+                const string importantSuffix = "!important";
+                var trimmed = value.Trim();
+                if (trimmed.EndsWith(importantSuffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    trimmed = trimmed.Substring(0, trimmed.Length - importantSuffix.Length).TrimEnd();
+                }
+
+                return trimmed;
+            }
+
             // Get style property from element attributes (style="key:value")
             // Simplified: parsing style attribute every time is slow but works for now
             var styleStr = _element.GetAttribute("style") ?? "";
@@ -2950,9 +3597,9 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.FromFunction(new FenFunction("getPropertyValue", GetPropertyValue));
             if (string.Equals(key, "removeProperty", StringComparison.OrdinalIgnoreCase))
                 return FenValue.FromFunction(new FenFunction("removeProperty", RemoveProperty));
-                
-            var cssKey = CamelToKebab(key);
-            return styles.ContainsKey(cssKey) ? FenValue.FromString(styles[cssKey]) : FenValue.Undefined;
+
+            var cssKey = ResolveCssPropertyName(key);
+            return styles.ContainsKey(cssKey) ? FenValue.FromString(NormalizeStyleDeclarationValue(styles[cssKey])) : FenValue.Undefined;
         }
 
         private string CamelToKebab(string s)
@@ -2972,7 +3619,7 @@ namespace FenBrowser.FenEngine.DOM
 
             var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
-            var cssKey = CamelToKebab(key);
+            var cssKey = ResolveCssPropertyName(key);
             styles[cssKey] = value.ToString();
             
             // Rebuild style string
@@ -3008,7 +3655,7 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue RemoveProperty(FenValue[] args, FenValue thisVal)
         {
              if (args.Length == 0) return FenValue.FromString("");
-             var key = args[0].ToString();
+             var key = ResolveCssPropertyName(args[0].ToString());
              
             var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
@@ -3028,17 +3675,40 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromString("");
         }
 
-        public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
+        public bool Has(string key, IExecutionContext context = null)
+        {
+            if (string.Equals(key, "setProperty", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "getPropertyValue", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "removeProperty", StringComparison.OrdinalIgnoreCase) ||
+                s_propertyAliases.ContainsKey(key))
+            {
+                return true;
+            }
+
+            var styleStr = _element.GetAttribute("style") ?? "";
+            var styles = ParseStyle(styleStr);
+            return styles.ContainsKey(ResolveCssPropertyName(key));
+        }
         public bool Delete(string key, IExecutionContext context = null) => false;
         public IEnumerable<string> Keys(IExecutionContext context = null)
         {
             var styleStr = _element.GetAttribute("style") ?? "";
             var styles = ParseStyle(styleStr);
-            return styles.Keys;
+            return s_propertyAliases.Keys.Concat(styles.Keys).Distinct(StringComparer.Ordinal);
         }
         public IObject GetPrototype() => _prototype;
         public void SetPrototype(IObject prototype) => _prototype = prototype;
         public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false;
+
+        private string ResolveCssPropertyName(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                return key;
+            }
+
+            return s_propertyAliases.TryGetValue(key, out var alias) ? alias : CamelToKebab(key);
+        }
 
         private Dictionary<string, string> ParseStyle(string style)
         {
@@ -3047,7 +3717,7 @@ namespace FenBrowser.FenEngine.DOM
 
             foreach (var part in style.Split(';', StringSplitOptions.RemoveEmptyEntries))
             {
-                var kv = part.Split(':');
+                var kv = part.Split(':', 2);
                 if (kv.Length == 2)
                 {
                     dict[kv[0].Trim()] = kv[1].Trim();
