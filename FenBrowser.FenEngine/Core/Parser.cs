@@ -41,9 +41,11 @@ namespace FenBrowser.FenEngine.Core
         private readonly bool _isModule;
         private int _functionDepth = 0;
         private int _classDepth = 0;
+        private int _classStaticBlockDepth = 0;
         private int _asyncFunctionDepth = 0;
         private int _generatorFunctionDepth = 0;
         private int _arrowFunctionDepth = 0;
+        private int _methodContextDepth = 0;
         private bool _inFormalParameters = false;
         private bool _inClassFieldInitializer = false;
         private int _moduleDeclarationNestingDepth = 0;
@@ -51,7 +53,11 @@ namespace FenBrowser.FenEngine.Core
         private bool _lastParsedParamsHasDuplicateNames = false;
         private bool _lastParsedParamsHadTrailingCommaAfterRest = false;
         private readonly Stack<HashSet<string>> _privateNameScopeStack = new Stack<HashSet<string>>();
+        private readonly Stack<bool> _classHasHeritageStack = new Stack<bool>();
         private readonly bool _allowReturnOutsideFunction = false;
+        private readonly bool _allowNewTargetOutsideFunction = false;
+        private readonly bool _allowSuperOutsideClass = false;
+        private readonly bool _allowSuperInClassFieldInitializer = false;
 
         private readonly Dictionary<TokenType, Func<Expression>> _prefixParseFns;
         private readonly Dictionary<TokenType, Func<Expression, Expression>> _infixParseFns;
@@ -104,6 +110,8 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.Dot, Precedence.Member },
             { TokenType.OptionalChain, Precedence.Member },
             { TokenType.TemplateString, Precedence.Call },
+            { TokenType.TemplateNoSubst, Precedence.Call },
+            { TokenType.TemplateHead, Precedence.Call },
             { TokenType.LBracket, Precedence.Index },
             { TokenType.Question, Precedence.Ternary },
             { TokenType.Arrow, Precedence.Assignment },
@@ -115,12 +123,18 @@ namespace FenBrowser.FenEngine.Core
             Lexer lexer,
             bool isModule = false,
             bool allowReturnOutsideFunction = false,
-            bool initialStrictMode = false)
+            bool initialStrictMode = false,
+            bool allowNewTargetOutsideFunction = false,
+            bool allowSuperOutsideClass = false,
+            bool allowSuperInClassFieldInitializer = false)
         {
             _lexer = lexer;
             _isModule = isModule;
             _allowReturnOutsideFunction = allowReturnOutsideFunction;
             _isStrictMode = initialStrictMode || isModule;
+            _allowNewTargetOutsideFunction = allowNewTargetOutsideFunction;
+            _allowSuperOutsideClass = allowSuperOutsideClass;
+            _allowSuperInClassFieldInitializer = allowSuperInClassFieldInitializer;
             _prefixParseFns = new Dictionary<TokenType, Func<Expression>>();
             _infixParseFns = new Dictionary<TokenType, Func<Expression, Expression>>();
 
@@ -227,7 +241,9 @@ namespace FenBrowser.FenEngine.Core
             RegisterInfix(TokenType.In, ParseInfixExpression);          // in
             RegisterInfix(TokenType.Increment, ParsePostfixIncrement);  // x++
             RegisterInfix(TokenType.Decrement, ParsePostfixDecrement);  // x--
-            RegisterInfix(TokenType.TemplateString, ParseTaggedTemplate);  // tag`template`
+            RegisterInfix(TokenType.TemplateString, ParseTaggedTemplate);  // Legacy tagged-template token
+            RegisterInfix(TokenType.TemplateNoSubst, ParseTaggedTemplate); // tag`template`
+            RegisterInfix(TokenType.TemplateHead, ParseTaggedTemplate);    // tag`template ${expr}`
             
             // ES6+ operators
             RegisterInfix(TokenType.OptionalChain, ParseOptionalChainExpression);  // ?.
@@ -567,7 +583,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    if (!CurTokenIs(TokenType.Identifier))
+                    if (!IsIdentifierNameToken(_curToken.Type))
                     {
                         if (IsKeywordToken(_curToken.Type) && !_contextualKeywords.Contains(_curToken.Type))
                         {
@@ -730,17 +746,35 @@ namespace FenBrowser.FenEngine.Core
             {
                 _errors.Add($"SyntaxError: Unexpected reserved word '{_curToken.Literal}'");
             }
-            if (_curToken.Type == TokenType.Super && _classDepth == 0)
+            if (_curToken.Type == TokenType.Super &&
+                _classDepth == 0 &&
+                _methodContextDepth == 0 &&
+                !_allowSuperOutsideClass)
             {
                 _errors.Add("SyntaxError: 'super' keyword unexpected here");
             }
-            if (_curToken.Type == TokenType.Super && _inClassFieldInitializer && _functionDepth == 0)
+            if (_curToken.Type == TokenType.Super &&
+                _inClassFieldInitializer &&
+                _functionDepth == 0 &&
+                !_allowSuperInClassFieldInitializer)
             {
                 _errors.Add("SyntaxError: 'super' is not valid in class field initializers");
             }
             if (_curToken.Literal == "arguments" && _inClassFieldInitializer && _functionDepth == 0)
             {
                 _errors.Add("SyntaxError: 'arguments' is not valid in class field initializers");
+            }
+            if (_classStaticBlockDepth > 0 && _functionDepth == 0)
+            {
+                if (_curToken.Literal == "await")
+                {
+                    _errors.Add("SyntaxError: Unexpected identifier 'await' in class static block");
+                }
+
+                if (_curToken.Literal == "arguments")
+                {
+                    _errors.Add("SyntaxError: Unexpected identifier 'arguments' in class static block");
+                }
             }
             if ((_asyncFunctionDepth > 0 || _isModule) && _curToken.Literal == "await")
             {
@@ -910,69 +944,30 @@ namespace FenBrowser.FenEngine.Core
         // Parse a tagged template literal: tag`Hello ${name}!`
         private Expression ParseTaggedTemplate(Expression left)
         {
+            var token = _curToken;
+            var template = ParseTemplateLiteral() as TemplateLiteral;
+            if (template == null)
+            {
+                return null;
+            }
+
             var tagged = new TaggedTemplateExpression
             {
-                Token = _curToken,
-                Tag = left
+                Token = token,
+                Tag = left,
+                Expressions = template.Expressions
             };
 
-            // The template content is in _curToken.Literal
-            // Parse the template literal content to extract strings and expressions
-            string content = _curToken.Literal;
-            
-            // Split by ${...} patterns
-            var strings = new List<string>();
-            var expressions = new List<Expression>();
-            
-            int pos = 0;
-            while (pos < content.Length)
+            foreach (var quasi in template.Quasis)
             {
-                int dollarPos = content.IndexOf("${", pos);
-                if (dollarPos == -1)
-                {
-                    // No more expressions, add the rest as a string
-                    strings.Add(content.Substring(pos));
-                    break;
-                }
-                
-                // Add the string part before ${}
-                strings.Add(content.Substring(pos, dollarPos - pos));
-                
-                // Find the matching closing brace
-                int bracePos = dollarPos + 2;
-                int depth = 1;
-                while (bracePos < content.Length && depth > 0)
-                {
-                    if (content[bracePos] == '{') depth++;
-                    else if (content[bracePos] == '}') depth--;
-                    bracePos++;
-                }
-                
-                // Extract and parse the expression
-                string exprStr = content.Substring(dollarPos + 2, bracePos - dollarPos - 3);
-                if (!string.IsNullOrWhiteSpace(exprStr))
-                {
-                    var exprLexer = new Lexer(exprStr);
-                    var exprParser = new Parser(exprLexer, initialStrictMode: _isStrictMode || _isModule);
-                    var exprProgram = exprParser.ParseProgram();
-                    if (exprProgram.Statements.Count > 0 && exprProgram.Statements[0] is ExpressionStatement exprStmt)
-                    {
-                        expressions.Add(exprStmt.Expression);
-                    }
-                }
-                
-                pos = bracePos;
+                tagged.Strings.Add(quasi?.Value ?? string.Empty);
             }
-            
-            // Ensure we have at least one string part
-            if (strings.Count == 0)
+
+            if (tagged.Strings.Count == 0)
             {
-                strings.Add("");
+                tagged.Strings.Add(string.Empty);
             }
-            
-            tagged.Strings = strings;
-            tagged.Expressions = expressions;
-            
+
             return tagged;
         }
 
@@ -1229,6 +1224,89 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private BlockStatement ParseFunctionBodyBlock(bool isAsync = false, bool isGenerator = false)
+        {
+            _functionDepth++;
+            if (isAsync)
+            {
+                _asyncFunctionDepth++;
+            }
+            if (isGenerator)
+            {
+                _generatorFunctionDepth++;
+            }
+
+            try
+            {
+                return ParseBlockStatement(consumeTerminator: false);
+            }
+            finally
+            {
+                if (isGenerator)
+                {
+                    _generatorFunctionDepth--;
+                }
+                if (isAsync)
+                {
+                    _asyncFunctionDepth--;
+                }
+                _functionDepth--;
+            }
+        }
+
+        private FunctionLiteral ParseMethodLikeFunctionLiteral(Token token, bool isAsync = false, bool isGenerator = false)
+        {
+            var funcLit = new FunctionLiteral
+            {
+                Token = token,
+                IsAsync = isAsync,
+                IsGenerator = isGenerator,
+                IsMethodDefinition = true
+            };
+
+            _functionDepth++;
+            _methodContextDepth++;
+            if (isAsync)
+            {
+                _asyncFunctionDepth++;
+            }
+            if (isGenerator)
+            {
+                _generatorFunctionDepth++;
+            }
+
+            try
+            {
+                if (!ExpectPeek(TokenType.LParen))
+                {
+                    return null;
+                }
+
+                funcLit.Parameters = ParseFunctionParameters();
+
+                if (!ExpectPeek(TokenType.LBrace))
+                {
+                    return null;
+                }
+
+                funcLit.Body = ParseBlockStatement(consumeTerminator: false);
+                return funcLit;
+            }
+            finally
+            {
+                if (isGenerator)
+                {
+                    _generatorFunctionDepth--;
+                }
+                if (isAsync)
+                {
+                    _asyncFunctionDepth--;
+                }
+                _methodContextDepth--;
+                _functionDepth--;
+            }
+        }
+
         private bool IsInvalidSingleStatementBody(Statement statement)
         {
             if (statement == null)
@@ -1307,6 +1385,11 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
 
+                if (CurTokenIs(TokenType.RBrace))
+                {
+                    block.EndPosition = _curToken.Position + 1;
+                }
+
                 if (consumeTerminator && CurTokenIs(TokenType.RBrace)) NextToken();
                 // Console.WriteLine($"[DEBUG] ParseBlockStatement Exit: consume={consumeTerminator}, Cur={_curToken.Type}, Peek={_peekToken.Type}");
 
@@ -1329,116 +1412,123 @@ namespace FenBrowser.FenEngine.Core
             var lit = new FunctionLiteral { Token = _curToken };
             lit.IsAsync = forceAsync;
             int startPos = _curToken.Position; // Capture start position
+            int previousMethodContextDepth = _methodContextDepth;
+            _methodContextDepth = 0;
             
-            // Check for generator function: function*
-            if (PeekTokenIs(TokenType.Asterisk))
-            {
-                NextToken(); // consume *
-                lit.IsGenerator = true;
-            }
-
-            if (PeekTokenIs(TokenType.Identifier) || PeekTokenIs(TokenType.Async) || PeekTokenIs(TokenType.Let) || PeekTokenIs(TokenType.Of) || PeekTokenIs(TokenType.From) || PeekTokenIs(TokenType.As) || PeekTokenIs(TokenType.Static))
-            {
-                NextToken();
-                if (!ValidateBindingIdentifier(_curToken)) return null;
-                lit.Name = _curToken.Literal;
-            }
-
-            if (!ExpectPeek(TokenType.LParen))
-            {
-                return null;
-            }
-
-            lit.Parameters = ParseFunctionParameters();
-            bool fnParamsSimple = _lastParsedParamsIsSimple;
-            bool fnParamsDuplicate = _lastParsedParamsHasDuplicateNames;
-            bool fnTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-
-            if (!ExpectPeek(TokenType.LBrace))
-            {
-                return null;
-            }
-
-            _functionDepth++;
-            if (lit.IsAsync) _asyncFunctionDepth++;
-            if (lit.IsGenerator) _generatorFunctionDepth++;
-            bool previousStrictMode = _isStrictMode;
-            bool inheritedStrictMode = _isModule || previousStrictMode;
             try
             {
-                if (inheritedStrictMode)
+                // Check for generator function: function*
+                if (PeekTokenIs(TokenType.Asterisk))
                 {
-                    _isStrictMode = true;
+                    NextToken(); // consume *
+                    lit.IsGenerator = true;
                 }
 
-                lit.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
+                if (PeekTokenIs(TokenType.Identifier) || PeekTokenIs(TokenType.Async) || PeekTokenIs(TokenType.Let) || PeekTokenIs(TokenType.Of) || PeekTokenIs(TokenType.From) || PeekTokenIs(TokenType.As) || PeekTokenIs(TokenType.Static))
+                {
+                    NextToken();
+                    if (!ValidateBindingIdentifier(_curToken)) return null;
+                    lit.Name = _curToken.Literal;
+                }
+
+                _functionDepth++;
+                if (lit.IsAsync) _asyncFunctionDepth++;
+                if (lit.IsGenerator) _generatorFunctionDepth++;
+                bool previousStrictMode = _isStrictMode;
+                bool inheritedStrictMode = _isModule || previousStrictMode;
+                try
+                {
+                    if (!ExpectPeek(TokenType.LParen))
+                    {
+                        return null;
+                    }
+
+                    lit.Parameters = ParseFunctionParameters();
+                    bool fnParamsSimple = _lastParsedParamsIsSimple;
+                    bool fnParamsDuplicate = _lastParsedParamsHasDuplicateNames;
+                    bool fnTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
+
+                    if (!ExpectPeek(TokenType.LBrace))
+                    {
+                        return null;
+                    }
+
+                    if (inheritedStrictMode)
+                    {
+                        _isStrictMode = true;
+                    }
+
+                    lit.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
+
+                    if (lit.IsAsync)
+                    {
+                        if (fnTrailingCommaAfterRest)
+                        {
+                            _errors.Add("SyntaxError: Rest parameter must be last formal parameter");
+                        }
+
+                        if (ContainsUseStrictDirective(lit.Body) && !fnParamsSimple)
+                        {
+                            _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
+                        }
+
+                        if (ParametersContainIdentifier(lit.Parameters, "await"))
+                        {
+                            _errors.Add("SyntaxError: Unexpected identifier 'await' in async function parameters");
+                        }
+
+                        if (BodyHasLexicalParameterNameCollision(lit.Body, lit.Parameters))
+                        {
+                            _errors.Add("SyntaxError: Formal parameter name conflicts with a lexical declaration in function body");
+                        }
+                    }
+
+                    if (fnParamsDuplicate)
+                    {
+                        bool isStrict = _isModule || _isStrictMode || ContainsUseStrictDirective(lit.Body);
+                        bool isRestricted = lit.IsAsync || lit.IsGenerator || !fnParamsSimple;
+
+                        if (isStrict || isRestricted)
+                        {
+                            _errors.Add("SyntaxError: Duplicate parameter name not allowed in this context");
+                        }
+                    }
+
+                    bool functionIsStrict = _isModule || inheritedStrictMode || ContainsUseStrictDirective(lit.Body);
+                    lit.IsStrict = functionIsStrict;
+                    if (functionIsStrict)
+                    {
+                        if (BodyContainsWithStatement(lit.Body))
+                        {
+                            _errors.Add("SyntaxError: Strict mode code may not include a with statement");
+                        }
+
+                        if (BodyContainsLegacyOctalLiteral(lit.Body))
+                        {
+                            _errors.Add("SyntaxError: Legacy octal literals are not allowed in strict mode");
+                        }
+                    }
+                }
+                finally
+                {
+                    _isStrictMode = previousStrictMode;
+                    if (lit.IsGenerator) _generatorFunctionDepth--;
+                    if (lit.IsAsync) _asyncFunctionDepth--;
+                    _functionDepth--;
+                }
+
+                int endPos = lit.Body?.EndPosition ?? -1;
+                if (startPos >= 0 && endPos > startPos && _lexer.Source != null && endPos <= _lexer.Source.Length)
+                {
+                    lit.Source = _lexer.Source.Substring(startPos, endPos - startPos);
+                }
+
+                return lit;
             }
             finally
             {
-                _isStrictMode = previousStrictMode;
-                if (lit.IsGenerator) _generatorFunctionDepth--;
-                if (lit.IsAsync) _asyncFunctionDepth--;
-                _functionDepth--;
+                _methodContextDepth = previousMethodContextDepth;
             }
-
-            if (lit.IsAsync)
-            {
-                if (fnTrailingCommaAfterRest)
-                {
-                    _errors.Add("SyntaxError: Rest parameter must be last formal parameter");
-                }
-
-                if (ContainsUseStrictDirective(lit.Body) && !fnParamsSimple)
-                {
-                    _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
-                }
-
-                if (ParametersContainIdentifier(lit.Parameters, "await"))
-                {
-                    _errors.Add("SyntaxError: Unexpected identifier 'await' in async function parameters");
-                }
-
-                if (BodyHasLexicalParameterNameCollision(lit.Body, lit.Parameters))
-                {
-                    _errors.Add("SyntaxError: Formal parameter name conflicts with a lexical declaration in function body");
-                }
-            }
-
-            if (fnParamsDuplicate)
-            {
-                bool isStrict = _isModule || _isStrictMode || ContainsUseStrictDirective(lit.Body);
-                bool isRestricted = lit.IsAsync || lit.IsGenerator || !fnParamsSimple;
-
-                if (isStrict || isRestricted)
-                {
-                    _errors.Add("SyntaxError: Duplicate parameter name not allowed in this context");
-                }
-            }
-
-            bool functionIsStrict = _isModule || inheritedStrictMode || ContainsUseStrictDirective(lit.Body);
-            lit.IsStrict = functionIsStrict;
-            if (functionIsStrict)
-            {
-                if (BodyContainsWithStatement(lit.Body))
-                {
-                    _errors.Add("SyntaxError: Strict mode code may not include a with statement");
-                }
-
-                if (BodyContainsLegacyOctalLiteral(lit.Body))
-                {
-                    _errors.Add("SyntaxError: Legacy octal literals are not allowed in strict mode");
-                }
-            }
-
-            // ES2019: Capture source code
-            // _curToken is now RBrace of the body
-            int endPos = _curToken.Position + 1; // +1 to include closing brace
-            if (startPos >= 0 && endPos > startPos && _lexer.Source != null && endPos <= _lexer.Source.Length)
-            {
-                lit.Source = _lexer.Source.Substring(startPos, endPos - startPos);
-            }
-
-            return lit;
         }
         
         private Expression ParseYieldExpression()
@@ -1781,6 +1871,21 @@ namespace FenBrowser.FenEngine.Core
         {
             var exp = new CallExpression { Token = _curToken, Function = function };
             exp.Arguments = ParseCallArguments();
+
+            if (_inClassFieldInitializer &&
+                function is Identifier identifier &&
+                string.Equals(identifier.Value, "eval", StringComparison.Ordinal))
+            {
+                return new DirectEvalExpression
+                {
+                    Token = exp.Token,
+                    Source = exp.Arguments.Count > 0 ? exp.Arguments[0] : new UndefinedLiteral(),
+                    AllowNewTarget = true,
+                    ForceUndefinedNewTarget = true,
+                    AllowSuperProperty = _classHasHeritageStack.Count > 0 && _classHasHeritageStack.Peek()
+                };
+            }
+
             return exp;
         }
 
@@ -1868,7 +1973,7 @@ namespace FenBrowser.FenEngine.Core
                 
                 if (CurTokenIs(TokenType.Identifier) && _curToken.Literal == "target")
                 {
-                    if ((_functionDepth - _arrowFunctionDepth) == 0)
+                    if ((_functionDepth - _arrowFunctionDepth) == 0 && !_allowNewTargetOutsideFunction)
                     {
                         _errors.Add("SyntaxError: new.target expression is not allowed here");
                     }
@@ -1909,6 +2014,20 @@ namespace FenBrowser.FenEngine.Core
             return array;
         }
 
+        private Expression ParseComputedPropertyKeyExpression()
+        {
+            bool previousNoIn = _noIn;
+            _noIn = false;
+            try
+            {
+                return ParseExpression(Precedence.Lowest);
+            }
+            finally
+            {
+                _noIn = previousNoIn;
+            }
+        }
+
         private Expression ParseObjectLiteral()
         {
             var obj = new ObjectLiteral { Token = _curToken };
@@ -1940,7 +2059,7 @@ namespace FenBrowser.FenEngine.Core
                     {
                         // Computed generator: { *[expr]() {} }
                         NextToken();
-                        genComputedKey = ParseExpression(Precedence.Lowest);
+                        genComputedKey = ParseComputedPropertyKeyExpression();
                         if (!ExpectPeek(TokenType.RBracket)) return null;
                         genKey = $"__computed_gen_{obj.Pairs.Count}";
                     }
@@ -1951,28 +2070,22 @@ namespace FenBrowser.FenEngine.Core
 
                     if (PeekTokenIs(TokenType.LParen))
                     {
-                        NextToken(); // Move to '('
-                        var genParams = ParseFunctionParameters();
+                        var genFunc = ParseMethodLikeFunctionLiteral(_curToken, isGenerator: true);
+                        if (genFunc == null) return null;
                         bool genParamsSimple = _lastParsedParamsIsSimple;
                         bool genParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                         bool genTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-                        if (PeekTokenIs(TokenType.LBrace))
-                        {
-                            NextToken();
-                            var genBody = ParseBlockStatement(consumeTerminator: false);
-                            ValidateMethodParameterEarlyErrors(
-                                genParams,
-                                genBody,
-                                genParamsSimple,
-                                genParamsDuplicate,
-                                genTrailingCommaAfterRest,
-                                false);
-                            var genFunc = new FunctionLiteral { Token = _curToken, Parameters = genParams, Body = genBody, IsGenerator = true };
-                            obj.Pairs[genKey] = genFunc;
-                            if (genComputedKey != null) obj.ComputedKeys[genKey] = genComputedKey;
-                            if (PeekTokenIs(TokenType.Comma)) NextToken();
-                            continue;
-                        }
+                        ValidateMethodParameterEarlyErrors(
+                            genFunc.Parameters,
+                            genFunc.Body,
+                            genParamsSimple,
+                            genParamsDuplicate,
+                            genTrailingCommaAfterRest,
+                            false);
+                        obj.Pairs[genKey] = genFunc;
+                        if (genComputedKey != null) obj.ComputedKeys[genKey] = genComputedKey;
+                        if (PeekTokenIs(TokenType.Comma)) NextToken();
+                        continue;
                     }
                 }
 
@@ -1985,7 +2098,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     isComputed = true;
                     NextToken(); // Move past '['
-                    computedKey = ParseExpression(Precedence.Lowest);
+                    computedKey = ParseComputedPropertyKeyExpression();
                     if (!ExpectPeek(TokenType.RBracket)) return null;
                     
                     // Use a placeholder key for computed properties
@@ -2026,33 +2139,27 @@ namespace FenBrowser.FenEngine.Core
                     if (CurTokenIs(TokenType.LBracket))
                     {
                         NextToken(); // move past '['
-                        var asyncComputedKey = ParseExpression(Precedence.Lowest);
+                        var asyncComputedKey = ParseComputedPropertyKeyExpression();
                         if (!ExpectPeek(TokenType.RBracket)) return null;
                         key = $"__computed_async_{obj.Pairs.Count}";
                         if (PeekTokenIs(TokenType.LParen))
                         {
-                            NextToken();
-                            var methodParams = ParseFunctionParameters();
+                            var methodFunc = ParseMethodLikeFunctionLiteral(_curToken, isAsync: true, isGenerator: isGenerator);
+                            if (methodFunc == null) return null;
                             bool methodParamsSimple = _lastParsedParamsIsSimple;
                             bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                             bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-                            if (PeekTokenIs(TokenType.LBrace))
-                            {
-                                NextToken();
-                                var methodBody = ParseBlockStatement(consumeTerminator: false);
-                                ValidateMethodParameterEarlyErrors(
-                                    methodParams,
-                                    methodBody,
-                                    methodParamsSimple,
-                                    methodParamsDuplicate,
-                                    methodTrailingCommaAfterRest,
-                                    true);
-                                var methodFunc = new FunctionLiteral { Token = _curToken, Parameters = methodParams, Body = methodBody, IsAsync = true, IsGenerator = isGenerator };
-                                obj.Pairs[key] = methodFunc;
-                                obj.ComputedKeys[key] = asyncComputedKey;
-                                if (PeekTokenIs(TokenType.Comma)) NextToken();
-                                continue;
-                            }
+                            ValidateMethodParameterEarlyErrors(
+                                methodFunc.Parameters,
+                                methodFunc.Body,
+                                methodParamsSimple,
+                                methodParamsDuplicate,
+                                methodTrailingCommaAfterRest,
+                                true);
+                            obj.Pairs[key] = methodFunc;
+                            obj.ComputedKeys[key] = asyncComputedKey;
+                            if (PeekTokenIs(TokenType.Comma)) NextToken();
+                            continue;
                         }
                     }
                     else
@@ -2062,38 +2169,23 @@ namespace FenBrowser.FenEngine.Core
                     
                     if (PeekTokenIs(TokenType.LParen))
                     {
-                        NextToken(); // Move to '('
-                        var methodParams = ParseFunctionParameters();
+                        var methodFunc = ParseMethodLikeFunctionLiteral(_curToken, isAsync: true, isGenerator: isGenerator);
+                        if (methodFunc == null) return null;
                         bool methodParamsSimple = _lastParsedParamsIsSimple;
                         bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                         bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
+                        ValidateMethodParameterEarlyErrors(
+                            methodFunc.Parameters,
+                            methodFunc.Body,
+                            methodParamsSimple,
+                            methodParamsDuplicate,
+                            methodTrailingCommaAfterRest,
+                            true);
                         
-                        if (PeekTokenIs(TokenType.LBrace))
-                        {
-                            NextToken(); // Move to '{'
-                            var methodBody = ParseBlockStatement(consumeTerminator: false);
-                            ValidateMethodParameterEarlyErrors(
-                                methodParams,
-                                methodBody,
-                                methodParamsSimple,
-                                methodParamsDuplicate,
-                                methodTrailingCommaAfterRest,
-                                true);
-                            
-                            var methodFunc = new FunctionLiteral
-                            {
-                                Token = _curToken,
-                                Parameters = methodParams,
-                                Body = methodBody,
-                                IsAsync = true,
-                                IsGenerator = isGenerator
-                            };
-                            
-                            obj.Pairs[key] = methodFunc;
-                            
-                            if (PeekTokenIs(TokenType.Comma)) NextToken();
-                            continue;
-                        }
+                        obj.Pairs[key] = methodFunc;
+                        
+                        if (PeekTokenIs(TokenType.Comma)) NextToken();
+                        continue;
                     }
                     // If we get here, it looked like async method but wasn't fully valid?
                     // e.g. { async foo : 1 } - Invalid syntax
@@ -2114,35 +2206,29 @@ namespace FenBrowser.FenEngine.Core
                     {
                         NextToken(); // Move to '['
                         NextToken(); // Move past '['
-                        var accessorComputedKey = ParseExpression(Precedence.Lowest);
+                        var accessorComputedKey = ParseComputedPropertyKeyExpression();
                         if (!ExpectPeek(TokenType.RBracket)) return null;
                         key = $"__computed_{accessor}_{obj.Pairs.Count}";
 
                         if (PeekTokenIs(TokenType.LParen))
                         {
-                            NextToken(); // Move to '('
-                            var methodParams = ParseFunctionParameters();
+                            var methodFunc = ParseMethodLikeFunctionLiteral(_curToken);
+                            if (methodFunc == null) return null;
                             bool methodParamsSimple = _lastParsedParamsIsSimple;
                             bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                             bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-                            if (PeekTokenIs(TokenType.LBrace))
-                            {
-                                NextToken(); // Move to '{'
-                                var methodBody = ParseBlockStatement(consumeTerminator: false);
-                                ValidateMethodParameterEarlyErrors(
-                                    methodParams,
-                                    methodBody,
-                                    methodParamsSimple,
-                                    methodParamsDuplicate,
-                                    methodTrailingCommaAfterRest,
-                                    false);
-                                var methodFunc = new FunctionLiteral { Token = _curToken, Parameters = methodParams, Body = methodBody };
-                                var pairKey = $"__{accessor}_{key}";
-                                obj.Pairs[pairKey] = methodFunc;
-                                obj.ComputedKeys[pairKey] = accessorComputedKey;
-                                if (PeekTokenIs(TokenType.Comma)) NextToken();
-                                continue;
-                            }
+                            ValidateMethodParameterEarlyErrors(
+                                methodFunc.Parameters,
+                                methodFunc.Body,
+                                methodParamsSimple,
+                                methodParamsDuplicate,
+                                methodTrailingCommaAfterRest,
+                                false);
+                            var pairKey = $"__{accessor}_{key}";
+                            obj.Pairs[pairKey] = methodFunc;
+                            obj.ComputedKeys[pairKey] = accessorComputedKey;
+                            if (PeekTokenIs(TokenType.Comma)) NextToken();
+                            continue;
                         }
                     }
                     else
@@ -2152,37 +2238,24 @@ namespace FenBrowser.FenEngine.Core
 
                         if (PeekTokenIs(TokenType.LParen))
                         {
-                            NextToken(); // Move to '('
-                            var methodParams = ParseFunctionParameters();
+                            var methodFunc = ParseMethodLikeFunctionLiteral(_curToken);
+                            if (methodFunc == null) return null;
                             bool methodParamsSimple = _lastParsedParamsIsSimple;
                             bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                             bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
+                            ValidateMethodParameterEarlyErrors(
+                                methodFunc.Parameters,
+                                methodFunc.Body,
+                                methodParamsSimple,
+                                methodParamsDuplicate,
+                                methodTrailingCommaAfterRest,
+                                false);
 
-                            if (PeekTokenIs(TokenType.LBrace))
-                            {
-                                NextToken(); // Move to '{'
-                                var methodBody = ParseBlockStatement(consumeTerminator: false);
-                                ValidateMethodParameterEarlyErrors(
-                                    methodParams,
-                                    methodBody,
-                                    methodParamsSimple,
-                                    methodParamsDuplicate,
-                                    methodTrailingCommaAfterRest,
-                                    false);
+                            // Prefix key with getter/setter marker
+                            obj.Pairs[$"__{accessor}_{key}"] = methodFunc;
 
-                                var methodFunc = new FunctionLiteral
-                                {
-                                    Token = _curToken,
-                                    Parameters = methodParams,
-                                    Body = methodBody
-                                };
-
-                                // Prefix key with getter/setter marker
-                                obj.Pairs[$"__{accessor}_{key}"] = methodFunc;
-
-                                if (PeekTokenIs(TokenType.Comma)) NextToken();
-                                continue;
-                            }
+                            if (PeekTokenIs(TokenType.Comma)) NextToken();
+                            continue;
                         }
                     }
                 }
@@ -2190,51 +2263,24 @@ namespace FenBrowser.FenEngine.Core
                 // Check for method shorthand: { foo() { ... } }
                 if (PeekTokenIs(TokenType.LParen))
                 {
-                    // This MIGHT be method shorthand - parse it as such
-                    NextToken(); // Move to '('
-                    var methodParams = ParseFunctionParameters();
+                    var methodFunc = ParseMethodLikeFunctionLiteral(_curToken);
+                    if (methodFunc == null) return null;
                     bool methodParamsSimple = _lastParsedParamsIsSimple;
                     bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                     bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
+                    ValidateMethodParameterEarlyErrors(
+                        methodFunc.Parameters,
+                        methodFunc.Body,
+                        methodParamsSimple,
+                        methodParamsDuplicate,
+                        methodTrailingCommaAfterRest,
+                        false);
                     
-                    // If next is LBrace, it's definitely a method
-                    if (PeekTokenIs(TokenType.LBrace))
+                    obj.Pairs[key] = methodFunc;
+                    
+                    if (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Comma))
                     {
-                        NextToken(); // Move to '{'
-                        var methodBody = ParseBlockStatement(consumeTerminator: false);
-                        ValidateMethodParameterEarlyErrors(
-                            methodParams,
-                            methodBody,
-                            methodParamsSimple,
-                            methodParamsDuplicate,
-                            methodTrailingCommaAfterRest,
-                            false);
-                        
-                        var methodFunc = new FunctionLiteral 
-                        { 
-                            Token = _curToken, 
-                            Parameters = methodParams, 
-                            Body = methodBody 
-                        };
-                        
-                        obj.Pairs[key] = methodFunc;
-                        
-                        if (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Comma))
-                        {
-                            if (PeekTokenIs(TokenType.Eof)) break;
-                        }
-                        if (PeekTokenIs(TokenType.Comma)) NextToken();
-                        continue;
-                    }
-                    // Arrow function method: { foo: (x) => x + 1 } parsed as method call by mistake
-                    // Try to recover by treating "key" + "(args...)" as a call expression value
-                    // This happens when: obj.method(args) inside an object literal
-                    // Skip to next comma or rbrace to recover
-                    _errors.Add($"[Debug] ParseObjectLiteral: expected {{ after method params, got: {_peekToken.Type}, recovering...");
-                    // Try to continue parsing by skipping to comma or rbrace
-                    while (!PeekTokenIs(TokenType.Comma) && !PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
-                    {
-                        NextToken();
+                        if (PeekTokenIs(TokenType.Eof)) break;
                     }
                     if (PeekTokenIs(TokenType.Comma)) NextToken();
                     continue;
@@ -3033,6 +3079,11 @@ namespace FenBrowser.FenEngine.Core
                             };
                         }
 
+                        if (exp is ArrayLiteral || exp is ObjectLiteral)
+                        {
+                            ValidateBindingPattern(exp);
+                        }
+
                         return new ForOfStatement
                         {
                             Token = forToken,
@@ -3059,6 +3110,11 @@ namespace FenBrowser.FenEngine.Core
                             Object = rhsExpr,
                             Body = forInBody
                         };
+                    }
+
+                    if (exp is ArrayLiteral || exp is ObjectLiteral)
+                    {
+                        ValidateBindingPattern(exp);
                     }
 
                     return new ForInStatement
@@ -3197,6 +3253,7 @@ namespace FenBrowser.FenEngine.Core
             _classDepth++;
             _isStrictMode = true; // Class bodies are always strict mode.
             _privateNameScopeStack.Push(inheritedPrivateScope);
+            _classHasHeritageStack.Push(exp.SuperClass != null);
             try
             {
                 NextToken(); // move past '{' to first member or '}'
@@ -3227,6 +3284,7 @@ namespace FenBrowser.FenEngine.Core
             }
             finally
             {
+                _classHasHeritageStack.Pop();
                 _privateNameScopeStack.Pop();
                 _isStrictMode = prevStrictMode;
                 _classDepth--;
@@ -3277,6 +3335,7 @@ namespace FenBrowser.FenEngine.Core
             _classDepth++;
             _isStrictMode = true; // Class bodies are always strict mode.
             _privateNameScopeStack.Push(inheritedPrivateScope);
+            _classHasHeritageStack.Push(stmt.SuperClass != null);
             try
             {
                 NextToken(); // move past '{' to first member or '}'
@@ -3307,6 +3366,7 @@ namespace FenBrowser.FenEngine.Core
             }
             finally
             {
+                _classHasHeritageStack.Pop();
                 _privateNameScopeStack.Pop();
                 _isStrictMode = prevStrictMode;
                 _classDepth--;
@@ -3371,7 +3431,15 @@ namespace FenBrowser.FenEngine.Core
                 if (PeekTokenIs(TokenType.LBrace))
                 {
                     var block = new StaticBlock();
-                    block.Body = ParseBodyAsBlock();
+                    _classStaticBlockDepth++;
+                    try
+                    {
+                        block.Body = ParseBodyAsBlock();
+                    }
+                    finally
+                    {
+                        _classStaticBlockDepth--;
+                    }
                     return block;
                 }
 
@@ -3430,7 +3498,7 @@ namespace FenBrowser.FenEngine.Core
                 // Computed property key: [expression]
                 isComputed = true;
                 NextToken(); // consume '['
-                memberKey = ParseExpression(Precedence.Lowest);
+                memberKey = ParseComputedPropertyKeyExpression();
                 if (!ExpectPeek(TokenType.RBracket)) return null;
                 keyName = "[computed]";
             }
@@ -3496,7 +3564,7 @@ namespace FenBrowser.FenEngine.Core
                     {
                         isComputed = true;
                         NextToken();
-                        memberKey = ParseExpression(Precedence.Lowest);
+                        memberKey = ParseComputedPropertyKeyExpression();
                         if (!ExpectPeek(TokenType.RBracket)) return null;
                         keyName = "[computed]";
                     }
@@ -3516,27 +3584,18 @@ namespace FenBrowser.FenEngine.Core
                 var method = new MethodDefinition
                 {
                     Key = new Identifier(_curToken, keyName),
+                    ComputedKeyExpression = null,
                     Kind = "constructor",
                     Static = false,
                     IsPrivate = false,
                     Decorators = memberDecorators
                 };
 
-                var funcLit = new FunctionLiteral { Token = _curToken };
-                if (!ExpectPeek(TokenType.LParen)) return null;
-                funcLit.Parameters = ParseFunctionParameters();
+                var funcLit = ParseMethodLikeFunctionLiteral(_curToken);
+                if (funcLit == null) return null;
                 bool ctorParamsSimple = _lastParsedParamsIsSimple;
                 bool ctorParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                 bool ctorTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-                _functionDepth++;
-                try
-                {
-                    funcLit.Body = ParseBodyAsBlock();
-                }
-                finally
-                {
-                    _functionDepth--;
-                }
                 ValidateMethodParameterEarlyErrors(funcLit.Parameters, funcLit.Body, ctorParamsSimple, ctorParamsDuplicate, ctorTrailingCommaAfterRest, false);
                 method.Value = funcLit;
                 return method;
@@ -3549,6 +3608,7 @@ namespace FenBrowser.FenEngine.Core
                 var method = new MethodDefinition
                 {
                     Key = memberKey is Identifier ? (Identifier)memberKey : new Identifier(_curToken, keyName ?? ""),
+                    ComputedKeyExpression = isComputed ? memberKey : null,
                     Kind = "method",
                     Static = isStatic,
                     IsPrivate = isPrivate,
@@ -3556,25 +3616,11 @@ namespace FenBrowser.FenEngine.Core
                     Computed = isComputed
                 };
 
-                var funcLit = new FunctionLiteral { Token = _curToken, IsAsync = isAsync, IsGenerator = isGenerator };
-                if (!ExpectPeek(TokenType.LParen)) return null;
-                funcLit.Parameters = ParseFunctionParameters();
+                var funcLit = ParseMethodLikeFunctionLiteral(_curToken, isAsync: isAsync, isGenerator: isGenerator);
+                if (funcLit == null) return null;
                 bool methodParamsSimple = _lastParsedParamsIsSimple;
                 bool methodParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                 bool methodTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-                _functionDepth++;
-                if (isAsync) _asyncFunctionDepth++;
-                if (isGenerator) _generatorFunctionDepth++;
-                try
-                {
-                    funcLit.Body = ParseBodyAsBlock();
-                }
-                finally
-                {
-                    if (isGenerator) _generatorFunctionDepth--;
-                    if (isAsync) _asyncFunctionDepth--;
-                    _functionDepth--;
-                }
                 ValidateMethodParameterEarlyErrors(funcLit.Parameters, funcLit.Body, methodParamsSimple, methodParamsDuplicate, methodTrailingCommaAfterRest, isAsync);
                 method.Value = funcLit;
                 return method;
@@ -3585,6 +3631,7 @@ namespace FenBrowser.FenEngine.Core
                 var prop = new ClassProperty
                 {
                     Key = memberKey is Identifier ? (Identifier)memberKey : new Identifier(_curToken, keyName ?? ""),
+                    ComputedKeyExpression = isComputed ? memberKey : null,
                     Static = isStatic,
                     IsPrivate = isPrivate
                 };
@@ -3628,7 +3675,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 accessorIsComputed = true;
                 NextToken();
-                accessorKey = ParseExpression(Precedence.Lowest);
+                accessorKey = ParseComputedPropertyKeyExpression();
                 if (!ExpectPeek(TokenType.RBracket)) return null;
                 accessorName = "[computed]";
             }
@@ -3645,6 +3692,7 @@ namespace FenBrowser.FenEngine.Core
             var method = new MethodDefinition
             {
                 Key = accessorKey is Identifier ? (Identifier)accessorKey : new Identifier(_curToken, accessorName),
+                ComputedKeyExpression = accessorIsComputed ? accessorKey : null,
                 Kind = kind,
                 Static = isStatic,
                 IsPrivate = accessorIsPrivate,
@@ -3652,21 +3700,11 @@ namespace FenBrowser.FenEngine.Core
                 Computed = accessorIsComputed
             };
 
-            var funcLit = new FunctionLiteral { Token = _curToken };
-            if (!ExpectPeek(TokenType.LParen)) return null;
-            funcLit.Parameters = ParseFunctionParameters();
+            var funcLit = ParseMethodLikeFunctionLiteral(_curToken);
+            if (funcLit == null) return null;
             bool accessorParamsSimple = _lastParsedParamsIsSimple;
             bool accessorParamsDuplicate = _lastParsedParamsHasDuplicateNames;
             bool accessorTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
-            _functionDepth++;
-            try
-            {
-                funcLit.Body = ParseBodyAsBlock();
-            }
-            finally
-            {
-                _functionDepth--;
-            }
             ValidateMethodParameterEarlyErrors(funcLit.Parameters, funcLit.Body, accessorParamsSimple, accessorParamsDuplicate, accessorTrailingCommaAfterRest, false);
             method.Value = funcLit;
             return method;
@@ -4134,20 +4172,13 @@ namespace FenBrowser.FenEngine.Core
             var funcLit = ParseFunctionLiteral(forceAsync: true) as FunctionLiteral;
             if (funcLit != null && funcLit.Name != null)
             {
-                var asyncFunc = new AsyncFunctionExpression
+                // Async function declarations are hoisted like ordinary function
+                // declarations. Represent them as FunctionDeclarationStatement so
+                // the compiler's declaration hoisting path applies.
+                return new FunctionDeclarationStatement
                 {
                     Token = token,
-                    Name = new Identifier(token, funcLit.Name),
-                    Parameters = funcLit.Parameters,
-                    Body = funcLit.Body
-                };
-
-                return new LetStatement
-                {
-                    Token = token,
-                    Kind = DeclarationKind.Let,
-                    Name = asyncFunc.Name,
-                    Value = asyncFunc
+                    Function = funcLit
                 };
             }
 
@@ -4157,6 +4188,12 @@ namespace FenBrowser.FenEngine.Core
         private Expression ParseAwaitExpression()
         {
             var expression = new AwaitExpression { Token = _curToken };
+            if (_classStaticBlockDepth > 0 && _functionDepth == 0)
+            {
+                _errors.Add("SyntaxError: Unexpected identifier 'await' in class static block");
+                return new Identifier(_curToken, _curToken.Literal);
+            }
+
             if (_asyncFunctionDepth == 0 && !(_isModule && _functionDepth == 0 && !_inFormalParameters))
             {
                 if (!_isModule)
@@ -4215,6 +4252,12 @@ namespace FenBrowser.FenEngine.Core
                         IsAsync = true,
                         Parameters = new List<Identifier> { arg }
                     };
+
+                    AnalyzeParameterList(
+                        arrow.Parameters,
+                        out bool arrowParamsSimple,
+                        out bool arrowParamsDuplicate,
+                        out bool arrowTrailingCommaAfterRest);
                     
                     NextToken(); // Move to '=>'
                     NextToken(); // Move past '=>'
@@ -4222,20 +4265,37 @@ namespace FenBrowser.FenEngine.Core
                     // Parse body
                     _functionDepth++;
                     _asyncFunctionDepth++;
+                    bool previousStrictMode = _isStrictMode;
+                    bool inheritedStrictMode = _isModule || previousStrictMode;
                     try
                     {
+                        if (inheritedStrictMode)
+                        {
+                            _isStrictMode = true;
+                        }
+
                         _arrowFunctionDepth++;
                         if (CurTokenIs(TokenType.LBrace))
                         {
-                            arrow.Body = ParseBlockStatement(consumeTerminator: false);
+                            arrow.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
                         }
                         else
                         {
                             arrow.Body = ParseExpression(Precedence.Lowest);
                         }
+
+                        ValidateArrowFunctionEarlyErrors(
+                            arrow.Parameters,
+                            arrow.Body,
+                            arrowParamsSimple,
+                            arrowParamsDuplicate,
+                            arrowTrailingCommaAfterRest,
+                            isAsyncArrow: true,
+                            inheritedStrictMode);
                     }
                     finally
                     {
+                        _isStrictMode = previousStrictMode;
                         _arrowFunctionDepth--;
                         _asyncFunctionDepth--;
                         _functionDepth--;
@@ -4768,26 +4828,11 @@ namespace FenBrowser.FenEngine.Core
             {
                 arrow.IsAsync = true;
                 arrow.Parameters = new List<Identifier>();
-                
-                // Convert call arguments to parameters
+
+                // Convert call arguments to parameters using the same extraction rules as normal arrows.
                 foreach (var arg in callExp.Arguments)
                 {
-                    if (arg is Identifier id)
-                    {
-                        ValidateBindingIdentifier(id.Token);
-                        arrow.Parameters.Add(id);
-                    }
-                    else if (arg is AssignmentExpression assign && assign.Left is Identifier assignId)
-                    {
-                        // Default value: async (x = 1) => ...
-                        assignId.DefaultValue = assign.Right;
-                        arrow.Parameters.Add(assignId);
-                    }
-                    else
-                    {
-                         // Recover from complex patterns by creating placeholder
-                         arrow.Parameters.Add(new Identifier(arg.Token, $"__async_arg_{arrow.Parameters.Count}"));
-                    }
+                    ExtractSingleParam(arg, arrow.Parameters);
                 }
             }
             else
@@ -4796,28 +4841,49 @@ namespace FenBrowser.FenEngine.Core
                 arrow.Parameters = ExtractArrowParameters(left);
             }
 
+            AnalyzeParameterList(
+                arrow.Parameters,
+                out bool arrowParamsSimple,
+                out bool arrowParamsDuplicate,
+                out bool arrowTrailingCommaAfterRest);
 
-            
             // Console.WriteLine($"[DEBUG] ParseArrow START: Cur={_curToken.Type}");
             NextToken(); // Move past '=>'
 
             // Parse body: either block statement or expression
             _functionDepth++;
             if (arrow.IsAsync) _asyncFunctionDepth++;
+            bool previousStrictMode = _isStrictMode;
+            bool inheritedStrictMode = _isModule || previousStrictMode;
             try
             {
+                if (inheritedStrictMode)
+                {
+                    _isStrictMode = true;
+                }
+
                 _arrowFunctionDepth++;
                 if (CurTokenIs(TokenType.LBrace))
                 {
-                    arrow.Body = ParseBlockStatement(consumeTerminator: false);
+                    arrow.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
                 }
                 else
                 {
                     arrow.Body = ParseExpression(Precedence.Comma);
                 }
+
+                ValidateArrowFunctionEarlyErrors(
+                    arrow.Parameters,
+                    arrow.Body,
+                    arrowParamsSimple,
+                    arrowParamsDuplicate,
+                    arrowTrailingCommaAfterRest,
+                    arrow.IsAsync,
+                    inheritedStrictMode);
             }
             finally
             {
+                _isStrictMode = previousStrictMode;
                 _arrowFunctionDepth--;
                 if (arrow.IsAsync) _asyncFunctionDepth--;
                 _functionDepth--;
@@ -4875,6 +4941,7 @@ namespace FenBrowser.FenEngine.Core
             if (expr is AssignmentExpression destructuringAssign &&
                 (destructuringAssign.Left is ObjectLiteral || destructuringAssign.Left is ArrayLiteral))
             {
+                ValidateBindingPattern(destructuringAssign.Left);
                 var placeholder = new Identifier(
                     destructuringAssign.Left.Token,
                     destructuringAssign.Left is ObjectLiteral
@@ -4891,6 +4958,7 @@ namespace FenBrowser.FenEngine.Core
             // Object destructuring: ({a, b}) - create placeholder parameter
             if (expr is ObjectLiteral objLit)
             {
+                ValidateBindingPattern(objLit);
                 var placeholder = new Identifier(objLit.Token, $"__destructure_{parameters.Count}")
                 {
                     DestructuringPattern = objLit
@@ -4902,6 +4970,7 @@ namespace FenBrowser.FenEngine.Core
             // Array destructuring: ([a, b]) - create placeholder parameter
             if (expr is ArrayLiteral arrLit)
             {
+                ValidateBindingPattern(arrLit);
                 var placeholder = new Identifier(arrLit.Token, $"__array_destructure_{parameters.Count}")
                 {
                     DestructuringPattern = arrLit
@@ -4918,9 +4987,34 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
+            if (expr is SpreadElement spreadWithDefault && spreadWithDefault.Argument is AssignmentExpression spreadAssignment)
+            {
+                _errors.Add("SyntaxError: Rest parameter cannot have a default initializer");
+
+                if (spreadAssignment.Left is Identifier spreadAssignmentId)
+                {
+                    spreadAssignmentId.IsRest = true;
+                    parameters.Add(spreadAssignmentId);
+                    return;
+                }
+
+                if (spreadAssignment.Left is ObjectLiteral || spreadAssignment.Left is ArrayLiteral)
+                {
+                    ValidateBindingPattern(spreadAssignment.Left);
+                    var placeholder = new Identifier(spreadAssignment.Left.Token, $"__rest_{parameters.Count}")
+                    {
+                        IsRest = true,
+                        DestructuringPattern = spreadAssignment.Left
+                    };
+                    parameters.Add(placeholder);
+                    return;
+                }
+            }
+
             if (expr is SpreadElement destructuringSpread &&
                 (destructuringSpread.Argument is ObjectLiteral || destructuringSpread.Argument is ArrayLiteral))
             {
+                ValidateBindingPattern(destructuringSpread.Argument);
                 var placeholder = new Identifier(
                     destructuringSpread.Argument.Token,
                     $"__rest_{parameters.Count}")
@@ -5212,6 +5306,47 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
+        private void AnalyzeParameterList(
+            List<Identifier> parameters,
+            out bool isSimpleParameterList,
+            out bool hasDuplicateParameterNames,
+            out bool hadTrailingCommaAfterRest)
+        {
+            isSimpleParameterList = true;
+            hasDuplicateParameterNames = false;
+            hadTrailingCommaAfterRest = false;
+
+            if (parameters == null || parameters.Count == 0)
+            {
+                return;
+            }
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < parameters.Count; i++)
+            {
+                var parameter = parameters[i];
+                if (parameter == null)
+                {
+                    continue;
+                }
+
+                if (parameter.IsRest || parameter.DefaultValue != null || parameter.DestructuringPattern != null)
+                {
+                    isSimpleParameterList = false;
+                }
+
+                if (parameter.IsRest && i != parameters.Count - 1)
+                {
+                    hadTrailingCommaAfterRest = true;
+                }
+
+                if (!IsSyntheticParameterName(parameter.Value) && !seen.Add(parameter.Value))
+                {
+                    hasDuplicateParameterNames = true;
+                }
+            }
+        }
+
         private bool BodyContainsWithStatement(BlockStatement body)
         {
             if (body == null)
@@ -5338,6 +5473,58 @@ namespace FenBrowser.FenEngine.Core
             if (isAsyncMethod && ParametersContainIdentifier(parameters, "await"))
             {
                 _errors.Add("SyntaxError: Unexpected identifier 'await' in async method parameters");
+            }
+        }
+
+        private void ValidateArrowFunctionEarlyErrors(
+            List<Identifier> parameters,
+            AstNode body,
+            bool isSimpleParameterList,
+            bool hasDuplicateParameterNames,
+            bool hadTrailingCommaAfterRest,
+            bool isAsyncArrow,
+            bool inheritedStrictMode)
+        {
+            if (hadTrailingCommaAfterRest)
+            {
+                _errors.Add("SyntaxError: Rest parameter must be last formal parameter");
+            }
+
+            var blockBody = body as BlockStatement;
+            bool hasUseStrictDirective = blockBody != null && ContainsUseStrictDirective(blockBody);
+            bool isStrict = inheritedStrictMode || hasUseStrictDirective;
+
+            if (hasDuplicateParameterNames)
+            {
+                _errors.Add("SyntaxError: Duplicate parameter name not allowed in this context");
+            }
+
+            if (hasUseStrictDirective && !isSimpleParameterList)
+            {
+                _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
+            }
+
+            if (blockBody != null && BodyHasLexicalParameterNameCollision(blockBody, parameters))
+            {
+                _errors.Add("SyntaxError: Formal parameter name conflicts with a lexical declaration in function body");
+            }
+
+            if (isStrict && blockBody != null)
+            {
+                if (BodyContainsWithStatement(blockBody))
+                {
+                    _errors.Add("SyntaxError: Strict mode code may not include a with statement");
+                }
+
+                if (BodyContainsLegacyOctalLiteral(blockBody))
+                {
+                    _errors.Add("SyntaxError: Legacy octal literals are not allowed in strict mode");
+                }
+            }
+
+            if (isAsyncArrow && ParametersContainIdentifier(parameters, "await"))
+            {
+                _errors.Add("SyntaxError: Unexpected identifier 'await' in async function parameters");
             }
         }
 
@@ -5897,6 +6084,12 @@ namespace FenBrowser.FenEngine.Core
             if (_isStrictMode && (token.Literal == "eval" || token.Literal == "arguments"))
             {
                 _errors.Add($"SyntaxError: Unexpected strict mode reserved word '{token.Literal}'");
+                return false;
+            }
+
+            if (_classStaticBlockDepth > 0 && _functionDepth == 0 && token.Literal == "await")
+            {
+                _errors.Add("SyntaxError: Unexpected identifier 'await' in class static block");
                 return false;
             }
 

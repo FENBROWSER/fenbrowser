@@ -146,6 +146,38 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Parse_TaggedTemplate_AfterParenthesizedExpression_NoErrors()
+        {
+            var parser = CreateParser("var out = (0, tag)``;");
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+
+            var statement = Assert.IsType<LetStatement>(program.Statements.Single());
+            var tagged = Assert.IsType<TaggedTemplateExpression>(statement.Value);
+            Assert.Single(tagged.Strings);
+            Assert.Equal(string.Empty, tagged.Strings[0]);
+        }
+
+        [Fact]
+        public void Parse_AnonymousClass_WithAdjacentMethods_AndComputedIterator_NoErrors()
+        {
+            var input = @"
+                var UrlParams = class {
+                    get(a) { var b = this.wa.get(a); return b || []; }
+                    set(a, b) { this.Aa = null; this.wa.set(a, [b]); this.oa.set(a, this.Ba.Bc(b, a)); }
+                    append(a, b) { const c = this.wa.get(a) || []; c.push(b); this.wa.set(a, c); }
+                    [Symbol.iterator]() { const a = []; return a[Symbol.iterator](); }
+                };
+            ";
+
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
         public void Parse_WithStatement_SingleStatementClassDeclaration_ShouldFail()
         {
             var parser = CreateParser("with ({}) class C {}");
@@ -192,6 +224,103 @@ namespace FenBrowser.Tests.Engine
             Assert.IsType<ObjectLiteral>(parameter.DestructuringPattern);
             Assert.NotNull(parameter.DefaultValue);
             Assert.IsType<ObjectLiteral>(parameter.DefaultValue);
+        }
+
+        [Fact]
+        public void Parse_ArrowFunction_UseStrict_WithNonSimpleParams_ShouldFail()
+        {
+            var parser = CreateParser("var f = (a = 0) => { \"use strict\"; };");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("non-simple parameter list", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_AsyncArrowFunction_AwaitBindingIdentifier_ShouldFail()
+        {
+            var parser = CreateParser("async (await) => {}");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("await", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_AsyncArrowFunction_AwaitVarBindingInBody_ShouldFail()
+        {
+            var parser = CreateParser("async () => { var await; }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("await", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ArrowFunction_RestParameterWithDefault_ShouldFail()
+        {
+            var parser = CreateParser("(...args = []) => {}");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Rest parameter cannot have a default initializer", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ClassStaticBlock_AwaitIdentifierReference_ShouldFail()
+        {
+            var parser = CreateParser("class C { static { await; } }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("class static block", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ClassStaticBlock_AwaitBindingIdentifier_ShouldFail()
+        {
+            var parser = CreateParser("class C { static { class await {} } }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("class static block", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ForOf_ObjectRestNotLastInAssignmentTarget_ShouldFail()
+        {
+            var parser = CreateParser("for ({ ...rest, value } of items) {}");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Rest element must be last in object binding pattern", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ClassAccessor_ComputedNameWithInInsideForHead_NoErrors()
+        {
+            var input = @"
+                var empty = {};
+                var C, value;
+                for (C = class { get ['x' in empty]() { return 'via get'; } }; ; ) {
+                    value = C.prototype.false;
+                    break;
+                }
+            ";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectAccessor_ComputedNameWithInInsideForHead_NoErrors()
+        {
+            var input = @"
+                var empty = {};
+                var obj, value;
+                for (obj = { get ['x' in empty]() { return 'via get'; } }; ; ) {
+                    value = obj.false;
+                    break;
+                }
+            ";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
         }
     }
 }

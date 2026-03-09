@@ -727,6 +727,7 @@ namespace FenBrowser.FenEngine.Core
                     {
                         string privateName = ReadIdentifier();
                         var t = new Token(TokenType.PrivateIdentifier, "#" + privateName, _line, startColumn);
+                        t.Position = startPos;
                         _prevToken = t;
                         return t;
                     }
@@ -758,6 +759,7 @@ namespace FenBrowser.FenEngine.Core
                         // If identifier contains escapes, it cannot be a keyword
                         TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
                         var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
+                        t.Position = startPos;
                         _prevToken = t;
                         if (DebugMode) Console.WriteLine($"[LEXER-INTERNAL-UNICODE] Identifier/Keyword: {t.Type} '{t.Literal}'");
                         return t;
@@ -779,6 +781,7 @@ namespace FenBrowser.FenEngine.Core
                         // If identifier contains escapes, it cannot be a keyword
                         TokenType type = _hasEscapeInLastIdent ? TokenType.Identifier : LookupIdent(literal);
                         var t = new Token(type, literal, _line, startColumn, hadLineTerminator);
+                        t.Position = startPos;
                         _prevToken = t;
                         if (DebugMode) Console.WriteLine($"[LEXER-INTERNAL-DEFAULT] Identifier/Keyword: {t.Type} '{t.Literal}'");
                         return t;
@@ -790,6 +793,7 @@ namespace FenBrowser.FenEngine.Core
                         string numStr = ReadNumber(startsWithDot: false, out isBigInt, out isValid);
                         var tokenType = isValid ? (isBigInt ? TokenType.BigInt : TokenType.Number) : TokenType.Illegal;
                         var t = new Token(tokenType, numStr, _line, startColumn, hadLineTerminator);
+                        t.Position = startPos;
                         _prevToken = t;
                         return t;
                     }
