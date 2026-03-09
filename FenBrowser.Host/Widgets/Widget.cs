@@ -1,3 +1,4 @@
+using System.Threading;
 using SkiaSharp;
 using Silk.NET.Input;
 
@@ -29,6 +30,8 @@ public enum WidgetRole
 /// </summary>
 public abstract class Widget
 {
+    private int _pendingMainThreadInvalidate;
+
     /// <summary>
     /// Bounding rectangle of this widget.
     /// </summary>
@@ -235,6 +238,37 @@ public abstract class Widget
     /// Request a repaint of this widget or a specific region.
     /// </summary>
     public void Invalidate(SKRect? bounds = null)
+    {
+        if (ShouldDispatchInvalidateToUiThread())
+        {
+            QueueInvalidateOnUiThread();
+            return;
+        }
+
+        InvalidateCore(bounds);
+    }
+
+    private bool ShouldDispatchInvalidateToUiThread()
+    {
+        var windowManager = FenBrowser.Host.WindowManager.Instance;
+        return windowManager.IsMainThreadInitialized && !windowManager.IsOnMainThread;
+    }
+
+    private void QueueInvalidateOnUiThread()
+    {
+        if (Interlocked.Exchange(ref _pendingMainThreadInvalidate, 1) != 0)
+        {
+            return;
+        }
+
+        _ = FenBrowser.Host.WindowManager.Instance.RunOnMainThread(() =>
+        {
+            Interlocked.Exchange(ref _pendingMainThreadInvalidate, 0);
+            InvalidateCore(null);
+        });
+    }
+
+    private void InvalidateCore(SKRect? bounds)
     {
         var localBounds = bounds ?? new SKRect(0, 0, Bounds.Width, Bounds.Height);
         

@@ -331,6 +331,18 @@ namespace FenBrowser.Host
             return WindowManager.Instance.RunOnMainThread(action);
         }
 
+        private static void RunOnUiThread(Action action)
+        {
+            var windowManager = WindowManager.Instance;
+            if (!windowManager.IsMainThreadInitialized || windowManager.IsOnMainThread)
+            {
+                action();
+                return;
+            }
+
+            _ = windowManager.RunOnMainThread(action);
+        }
+
         private void RegisterKeyboardShortcuts()
         {
             var kbd = KeyboardDispatcher.Instance;
@@ -390,31 +402,40 @@ namespace FenBrowser.Host
 
         private void OnBrowserUrlChanged(string url)
         {
-            _toolbar.SetUrl(url);
-            UpdateBookmarkStar(url);
-            _root.Invalidate();
+            RunOnUiThread(() =>
+            {
+                _toolbar.SetUrl(url);
+                UpdateBookmarkStar(url);
+                _root?.Invalidate();
+            });
         }
 
         private void OnActiveTabLoadingChanged(BrowserTab tab)
         {
-            if (tab == null || tab != _currentActiveTab)
+            RunOnUiThread(() =>
             {
-                return;
-            }
+                if (tab == null || tab != _currentActiveTab)
+                {
+                    return;
+                }
 
-            _statusBar.SetLoading(tab.IsLoading);
-            _root?.Invalidate();
+                _statusBar.SetLoading(tab.IsLoading);
+                _root?.Invalidate();
+            });
         }
 
         private void OnActiveTabTitleChanged(BrowserTab tab)
         {
-            if (tab == null || tab != _currentActiveTab)
+            RunOnUiThread(() =>
             {
-                return;
-            }
+                if (tab == null || tab != _currentActiveTab)
+                {
+                    return;
+                }
 
-            WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
-            _root?.Invalidate();
+                WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
+                _root?.Invalidate();
+            });
         }
         
         private void UpdateBookmarkStar(string url)
