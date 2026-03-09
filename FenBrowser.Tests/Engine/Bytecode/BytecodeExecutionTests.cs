@@ -7,6 +7,7 @@ using FenBrowser.FenEngine.Core.Bytecode.Compiler;
 using FenBrowser.FenEngine.Core.Bytecode.VM;
 using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
+using Xunit.Sdk;
 
 namespace FenBrowser.Tests.Engine.Bytecode
 {
@@ -29,6 +30,55 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var env = new FenEnvironment();
             var codeBlock = _compiler.Compile(ast);
             return _vm.Execute(codeBlock, env);
+        }
+
+        private FenValue EvaluateWithDiagnostics(string js)
+        {
+            try
+            {
+                return Evaluate(js);
+            }
+            catch (Exception ex)
+            {
+                var thrownProp = ex.GetType().GetProperty("ThrownValue");
+                if (thrownProp?.GetValue(ex) is FenValue thrownValue)
+                {
+                    throw new XunitException($"JS exception: {DescribeFenValue(thrownValue)}", ex);
+                }
+
+                throw;
+            }
+        }
+
+        private static string DescribeFenValue(FenValue value)
+        {
+            if (value.IsError)
+            {
+                return value.AsError() ?? "Error";
+            }
+
+            if (value.IsObject || value.IsFunction)
+            {
+                var obj = value.AsObject();
+                if (obj != null)
+                {
+                    var name = obj.Get("name", null);
+                    var message = obj.Get("message", null);
+                    if (!name.IsUndefined || !message.IsUndefined)
+                    {
+                        var nameText = name.IsUndefined ? "Error" : name.AsString();
+                        var messageText = message.IsUndefined ? string.Empty : message.AsString();
+                        return string.IsNullOrEmpty(messageText) ? nameText : $"{nameText}: {messageText}";
+                    }
+
+                    if (obj is FenObject fenObj)
+                    {
+                        return $"[object {fenObj.InternalClass ?? "Object"}]";
+                    }
+                }
+            }
+
+            return value.AsString();
         }
 
         private FenValue Evaluate(AstNode ast, FenEnvironment? env = null)
@@ -92,6 +142,13 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("var expectedName, actualName; actualName = 'TypeError'; expectedName = 'RangeError'; expectedName + ':' + actualName;");
             Assert.Equal("RangeError:TypeError", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_AsyncFunctionDeclaration_IsHoistedLikeFunctionDeclaration()
+        {
+            var result = Evaluate("var before = typeof setupAndRegisterTests; async function setupAndRegisterTests() { return 1; } before;");
+            Assert.Equal("function", result.AsString());
         }
 
         [Fact]
@@ -467,6 +524,13 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var result = Evaluate("var a = [1, 2, 3]; delete a[1]; var has = 1 in a; var len = a.length; (has ? 100 : 0) + len;");
             Assert.Equal(3, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ArrayLengthTruncation_ShouldDropSparseIndexedElements()
+        {
+            var result = Evaluate("var arr = [0, 1, 2, 3, 4, 5, 6, 7]; arr[987654321] = 987654321; arr.length = 8; (987654321 in arr ? 100 : 0) + (typeof arr[987654321] == 'undefined' ? 10 : 0) + arr.length;");
+            Assert.Equal(18, result.AsNumber());
         }
 
         [Fact]
@@ -1089,6 +1153,27 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var result = Evaluate(code);
             Assert.Equal(60, result.AsNumber());
         }
+
+        [Fact]
+        public void Bytecode_ObjectComputedAccessorInForHead_ShouldUseEvaluatedKey()
+        {
+            var code = @"
+                var empty = {};
+                var obj, value;
+
+                for (obj = { get ['x' in empty]() { return 'via get'; }, set ['x' in empty](param) { value = param; } }; ; ) {
+                    value = obj.false;
+                    obj.false = 'via set';
+                    break;
+                }
+
+                value;
+            ";
+
+            var result = EvaluateWithDiagnostics(code);
+            Assert.Equal("via set", result.AsString());
+        }
+
     }
 }
 

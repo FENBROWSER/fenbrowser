@@ -835,6 +835,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     IsAsync = funcLit.IsAsync,
                     IsGenerator = funcLit.IsGenerator,
+                    IsMethodDefinition = funcLit.IsMethodDefinition,
+                    Source = !string.IsNullOrEmpty(funcLit.Source) ? funcLit.Source : funcLit.String(),
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
@@ -858,6 +860,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 var templateFunc = new FenFunction(asyncFuncExpr.Parameters, compiledBlock, null)
                 {
                     IsAsync = true,
+                    IsMethodDefinition = false,
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
@@ -881,6 +884,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     IsArrowFunction = true,
                     IsAsync = arrowExpr.IsAsync,
+                    IsMethodDefinition = false,
                     NeedsArgumentsObject = false,
                     LocalMap = localMap
                 };
@@ -1088,6 +1092,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     EmitInt32(callExpr.Arguments.Count);
                 }
             }
+            else if (node is DirectEvalExpression directEvalExpr)
+            {
+                Visit(directEvalExpr.Source ?? new UndefinedLiteral());
+                Emit(OpCode.DirectEval);
+
+                int directEvalFlags = 0;
+                if (directEvalExpr.AllowNewTarget)
+                {
+                    directEvalFlags |= 0x1;
+                }
+                if (directEvalExpr.ForceUndefinedNewTarget)
+                {
+                    directEvalFlags |= 0x2;
+                }
+                if (directEvalExpr.AllowSuperProperty)
+                {
+                    directEvalFlags |= 0x4;
+                }
+
+                EmitInt32(directEvalFlags);
+            }
             else if (node is NewExpression newExpr)
             {
                 Visit(newExpr.Constructor);
@@ -1286,37 +1311,102 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitObjectLiteral(ObjectLiteral objLit)
         {
+            string objectVariable = NextSyntheticName("object_literal");
             Emit(OpCode.MakeObject);
             EmitInt32(0);
+            EmitStoreVarByName(objectVariable);
+            Emit(OpCode.Pop);
 
             foreach (var pair in objLit.Pairs)
             {
-                Emit(OpCode.Dup);
+                string valueVariable = null;
+                if (pair.Value is FunctionLiteral functionLiteral && functionLiteral.IsMethodDefinition)
+                {
+                    valueVariable = NextSyntheticName("object_method");
+                    Visit(pair.Value);
+                    EmitStoreVarByName(valueVariable);
+                    Emit(OpCode.Pop);
+
+                    EmitLoadVarByName(valueVariable);
+                    EmitLoadVarByName(objectVariable);
+                    Emit(OpCode.SetFunctionHomeObject);
+                    EmitStoreVarByName(valueVariable);
+                    Emit(OpCode.Pop);
+                }
 
                 if (pair.Key.StartsWith("__spread_", StringComparison.Ordinal) && pair.Value is SpreadElement spreadElement)
                 {
+                    EmitLoadVarByName(objectVariable);
                     Visit(spreadElement.Argument);
                     Emit(OpCode.ObjectSpread);
+                    EmitStoreVarByName(objectVariable);
                     Emit(OpCode.Pop);
                     continue;
                 }
 
-                if (pair.Key.StartsWith("__computed_", StringComparison.Ordinal) &&
-                    objLit.ComputedKeys.TryGetValue(pair.Key, out var computedKeyExpr))
+                if (pair.Key.StartsWith("__get_", StringComparison.Ordinal) ||
+                    pair.Key.StartsWith("__set_", StringComparison.Ordinal))
                 {
-                    Visit(computedKeyExpr);
+                    bool isGetter = pair.Key.StartsWith("__get_", StringComparison.Ordinal);
+                    string accessorMarker = isGetter ? "__get_" : "__set_";
+
+                    EmitLoadVarByName(objectVariable);
+                    if (objLit.ComputedKeys.TryGetValue(pair.Key, out var accessorComputedKey))
+                    {
+                        int markerIdx = AddConstant(FenValue.FromString(accessorMarker));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(markerIdx);
+                        Visit(accessorComputedKey);
+                        Emit(OpCode.Add);
+                    }
+                    else
+                    {
+                        int keyConstIdx = AddConstant(FenValue.FromString(pair.Key));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(keyConstIdx);
+                    }
+
+                    if (!string.IsNullOrEmpty(valueVariable))
+                    {
+                        EmitLoadVarByName(valueVariable);
+                    }
+                    else
+                    {
+                        Visit(pair.Value);
+                    }
+                    Emit(OpCode.StoreProp);
+                    Emit(OpCode.Pop);
                 }
                 else
                 {
-                    int keyConstIdx = AddConstant(FenValue.FromString(pair.Key));
-                    Emit(OpCode.LoadConst);
-                    EmitInt32(keyConstIdx);
-                }
+                    EmitLoadVarByName(objectVariable);
 
-                Visit(pair.Value);
-                Emit(OpCode.StoreProp);
-                Emit(OpCode.Pop);
+                    if (pair.Key.StartsWith("__computed_", StringComparison.Ordinal) &&
+                        objLit.ComputedKeys.TryGetValue(pair.Key, out var computedKeyExpr))
+                    {
+                        Visit(computedKeyExpr);
+                    }
+                    else
+                    {
+                        int keyConstIdx = AddConstant(FenValue.FromString(pair.Key));
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(keyConstIdx);
+                    }
+
+                    if (!string.IsNullOrEmpty(valueVariable))
+                    {
+                        EmitLoadVarByName(valueVariable);
+                    }
+                    else
+                    {
+                        Visit(pair.Value);
+                    }
+                    Emit(OpCode.StoreProp);
+                    Emit(OpCode.Pop);
+                }
             }
+
+            EmitLoadVarByName(objectVariable);
         }
 
         private static bool ContainsSpread(List<Expression> arguments)
@@ -2790,10 +2880,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             EmitStoreVarByName(methodVariable);
             Emit(OpCode.Pop);
 
-            string methodName = methodDefinition.IsPrivate
-                ? "#" + methodDefinition.Key.Value
-                : methodDefinition.Key.Value;
-            EmitDefineDataProperty(targetVariable, methodName, methodVariable, enumerable: false);
+            EmitLoadVarByName(methodVariable);
+            EmitLoadVarByName(targetVariable);
+            Emit(OpCode.SetFunctionHomeObject);
+            EmitStoreVarByName(methodVariable);
+            Emit(OpCode.Pop);
+
+            if (string.Equals(methodDefinition.Kind, "get", StringComparison.Ordinal) ||
+                string.Equals(methodDefinition.Kind, "set", StringComparison.Ordinal))
+            {
+                EmitDefineAccessorProperty(targetVariable, methodDefinition, methodVariable, enumerable: false);
+                return;
+            }
+
+            EmitDefineMethodProperty(targetVariable, methodDefinition, methodVariable, enumerable: false);
         }
 
         private void EmitInstallClassStaticProperty(string className, ClassProperty classProperty)
@@ -2802,10 +2902,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 return;
             }
-
-            string propertyName = classProperty.IsPrivate
-                ? "#" + (classProperty.Key?.Value ?? string.Empty)
-                : (classProperty.Key?.Value ?? string.Empty);
 
             string valueVariable = NextSyntheticName("class_static_prop");
             if (classProperty.Value != null)
@@ -2819,7 +2915,51 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             EmitStoreVarByName(valueVariable);
             Emit(OpCode.Pop);
 
-            EmitDefineDataProperty(className, propertyName, valueVariable, enumerable: true);
+            EmitDefineClassProperty(className, classProperty, valueVariable, enumerable: true);
+        }
+
+        private void EmitDefineMethodProperty(string objectVariableName, MethodDefinition methodDefinition, string valueVariableName, bool enumerable)
+        {
+            if (methodDefinition == null)
+            {
+                return;
+            }
+
+            string propertyName = methodDefinition.IsPrivate
+                ? "#" + (methodDefinition.Key?.Value ?? string.Empty)
+                : (methodDefinition.Key?.Value ?? string.Empty);
+
+            if (methodDefinition.Computed && methodDefinition.ComputedKeyExpression != null)
+            {
+                string keyVariable = NextSyntheticName("computed_method_key");
+                StoreExpressionInVariable(methodDefinition.ComputedKeyExpression, keyVariable);
+                EmitDefineDataPropertyByVariable(objectVariableName, keyVariable, valueVariableName, enumerable);
+                return;
+            }
+
+            EmitDefineDataProperty(objectVariableName, propertyName, valueVariableName, enumerable);
+        }
+
+        private void EmitDefineClassProperty(string objectVariableName, ClassProperty classProperty, string valueVariableName, bool enumerable)
+        {
+            if (classProperty == null)
+            {
+                return;
+            }
+
+            string propertyName = classProperty.IsPrivate
+                ? "#" + (classProperty.Key?.Value ?? string.Empty)
+                : (classProperty.Key?.Value ?? string.Empty);
+
+            if (classProperty.ComputedKeyExpression != null)
+            {
+                string keyVariable = NextSyntheticName("computed_class_prop_key");
+                StoreExpressionInVariable(classProperty.ComputedKeyExpression, keyVariable);
+                EmitDefineDataPropertyByVariable(objectVariableName, keyVariable, valueVariableName, enumerable);
+                return;
+            }
+
+            EmitDefineDataProperty(objectVariableName, propertyName, valueVariableName, enumerable);
         }
 
         private void EmitDefineDataProperty(string objectVariableName, string propertyName, string valueVariableName, bool enumerable)
@@ -2850,6 +2990,90 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             int propertyNameIdx = AddConstant(FenValue.FromString(propertyName));
             Emit(OpCode.LoadConst);
             EmitInt32(propertyNameIdx);
+            EmitLoadVarByName(descriptorVariable);
+            Emit(OpCode.CallMethod);
+            EmitInt32(3);
+            Emit(OpCode.Pop);
+        }
+
+        private void EmitDefineDataPropertyByVariable(string objectVariableName, string propertyKeyVariableName, string valueVariableName, bool enumerable)
+        {
+            if (string.IsNullOrEmpty(objectVariableName) || string.IsNullOrEmpty(propertyKeyVariableName) || string.IsNullOrEmpty(valueVariableName))
+            {
+                return;
+            }
+
+            string descriptorVariable = NextSyntheticName("prop_desc");
+            Emit(OpCode.MakeObject);
+            EmitInt32(0);
+            EmitStoreVarByName(descriptorVariable);
+            Emit(OpCode.Pop);
+
+            EmitStoreDescriptorField(descriptorVariable, "value", () => EmitLoadVarByName(valueVariableName));
+            EmitStoreDescriptorField(descriptorVariable, "writable", () => Emit(OpCode.LoadTrue));
+            EmitStoreDescriptorField(descriptorVariable, "enumerable", () => Emit(enumerable ? OpCode.LoadTrue : OpCode.LoadFalse));
+            EmitStoreDescriptorField(descriptorVariable, "configurable", () => Emit(OpCode.LoadTrue));
+
+            EmitLoadVarByName("Object");
+            Emit(OpCode.Dup);
+            int definePropertyKeyIdx = AddConstant(FenValue.FromString("defineProperty"));
+            Emit(OpCode.LoadConst);
+            EmitInt32(definePropertyKeyIdx);
+            Emit(OpCode.LoadProp);
+            EmitLoadVarByName(objectVariableName);
+            EmitLoadVarByName(propertyKeyVariableName);
+            EmitLoadVarByName(descriptorVariable);
+            Emit(OpCode.CallMethod);
+            EmitInt32(3);
+            Emit(OpCode.Pop);
+        }
+
+        private void EmitDefineAccessorProperty(string objectVariableName, MethodDefinition methodDefinition, string accessorFunctionVariableName, bool enumerable)
+        {
+            if (string.IsNullOrEmpty(objectVariableName) || methodDefinition == null || string.IsNullOrEmpty(accessorFunctionVariableName))
+            {
+                return;
+            }
+
+            string descriptorVariable = NextSyntheticName("accessor_desc");
+            Emit(OpCode.MakeObject);
+            EmitInt32(0);
+            EmitStoreVarByName(descriptorVariable);
+            Emit(OpCode.Pop);
+
+            if (string.Equals(methodDefinition.Kind, "get", StringComparison.Ordinal))
+            {
+                EmitStoreDescriptorField(descriptorVariable, "get", () => EmitLoadVarByName(accessorFunctionVariableName));
+            }
+            else
+            {
+                EmitStoreDescriptorField(descriptorVariable, "set", () => EmitLoadVarByName(accessorFunctionVariableName));
+            }
+            EmitStoreDescriptorField(descriptorVariable, "enumerable", () => Emit(enumerable ? OpCode.LoadTrue : OpCode.LoadFalse));
+            EmitStoreDescriptorField(descriptorVariable, "configurable", () => Emit(OpCode.LoadTrue));
+
+            EmitLoadVarByName("Object");
+            Emit(OpCode.Dup);
+            int definePropertyKeyIdx = AddConstant(FenValue.FromString("defineProperty"));
+            Emit(OpCode.LoadConst);
+            EmitInt32(definePropertyKeyIdx);
+            Emit(OpCode.LoadProp);
+            EmitLoadVarByName(objectVariableName);
+
+            if (methodDefinition.Computed && methodDefinition.ComputedKeyExpression != null)
+            {
+                Visit(methodDefinition.ComputedKeyExpression);
+            }
+            else
+            {
+                string propertyName = methodDefinition.IsPrivate
+                    ? "#" + (methodDefinition.Key?.Value ?? string.Empty)
+                    : (methodDefinition.Key?.Value ?? string.Empty);
+                int propertyNameIdx = AddConstant(FenValue.FromString(propertyName));
+                Emit(OpCode.LoadConst);
+                EmitInt32(propertyNameIdx);
+            }
+
             EmitLoadVarByName(descriptorVariable);
             Emit(OpCode.CallMethod);
             EmitInt32(3);
@@ -4170,6 +4394,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Name = funcDecl.Function.Name,
                 IsAsync = funcDecl.Function.IsAsync,
                 IsGenerator = funcDecl.Function.IsGenerator,
+                IsMethodDefinition = funcDecl.Function.IsMethodDefinition,
+                Source = !string.IsNullOrEmpty(funcDecl.Function.Source) ? funcDecl.Function.Source : funcDecl.Function.String(),
                 NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                 LocalMap = localMap
             };

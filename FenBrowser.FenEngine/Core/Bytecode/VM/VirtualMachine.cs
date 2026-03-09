@@ -21,6 +21,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
     public class VirtualMachine
     {
         private const int CachedIndexKeyCount = 2048;
+        private const int DirectEvalAllowNewTargetFlag = 0x1;
+        private const int DirectEvalForceUndefinedNewTargetFlag = 0x2;
+        private const int DirectEvalAllowSuperPropertyFlag = 0x4;
         private static readonly string[] s_cachedIndexKeys = BuildCachedIndexKeys();
         private static readonly ConditionalWeakTable<CodeBlock, string[]> s_stringConstantCache = new ConditionalWeakTable<CodeBlock, string[]>();
         private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>> s_loadPropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>>();
@@ -84,8 +87,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private sealed class BytecodeArrayObject : FenObject
         {
+            private const int MaxDenseCapacity = 65536;
+            private const int MaxDenseGap = 1024;
             private FenValue[] _elements = new FenValue[8];
             private bool[] _present = new bool[8];
+            private readonly SortedDictionary<int, FenValue> _sparseElements = new SortedDictionary<int, FenValue>();
             private int _length;
 
             public BytecodeArrayObject()
@@ -111,7 +117,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     return;
                 }
 
+                if (ShouldStoreSparse(index))
+                {
+                    _sparseElements[index] = value;
+                    if (index >= _length)
+                    {
+                        _length = index + 1;
+                    }
+
+                    return;
+                }
+
                 EnsureCapacity(index + 1);
+                _sparseElements.Remove(index);
                 _elements[index] = value;
                 _present[index] = true;
                 if (index >= _length)
@@ -122,9 +140,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             public bool TryGetElement(int index, out FenValue value)
             {
-                if ((uint)index < (uint)_length && _present[index])
+                if ((uint)index < (uint)_elements.Length && _present[index])
                 {
                     value = _elements[index];
+                    return true;
+                }
+
+                if ((uint)index < (uint)_length && _sparseElements.TryGetValue(index, out value))
+                {
                     return true;
                 }
 
@@ -141,15 +164,29 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 if (newLength < _length)
                 {
-                    for (int i = newLength; i < _length; i++)
+                    int denseClearEnd = Math.Min(_length, _elements.Length);
+                    for (int i = Math.Min(newLength, denseClearEnd); i < denseClearEnd; i++)
                     {
                         _present[i] = false;
                         _elements[i] = FenValue.Undefined;
                     }
-                }
-                else if (newLength > _elements.Length)
-                {
-                    EnsureCapacity(newLength);
+
+                    if (_sparseElements.Count > 0)
+                    {
+                        var sparseKeysToRemove = new List<int>();
+                        foreach (var sparseKey in _sparseElements.Keys)
+                        {
+                            if (sparseKey >= newLength)
+                            {
+                                sparseKeysToRemove.Add(sparseKey);
+                            }
+                        }
+
+                        foreach (var sparseKey in sparseKeysToRemove)
+                        {
+                            _sparseElements.Remove(sparseKey);
+                        }
+                    }
                 }
 
                 _length = newLength;
@@ -196,7 +233,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 if (TryParseArrayIndex(key, out int index))
                 {
-                    return (uint)index < (uint)_length && _present[index];
+                    return ((uint)index < (uint)_elements.Length && _present[index])
+                        || ((uint)index < (uint)_length && _sparseElements.ContainsKey(index));
                 }
 
                 return base.Has(key, context);
@@ -211,11 +249,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 if (TryParseArrayIndex(key, out int index))
                 {
-                    if ((uint)index < (uint)_length)
+                    if ((uint)index < (uint)_elements.Length)
                     {
                         _present[index] = false;
                         _elements[index] = FenValue.Undefined;
                     }
+
+                    _sparseElements.Remove(index);
 
                     return true;
                 }
@@ -225,11 +265,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             public override IEnumerable<string> Keys(FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
             {
-                for (int i = 0; i < _length; i++)
+                int denseCount = Math.Min(_length, _elements.Length);
+                for (int i = 0; i < denseCount; i++)
                 {
                     if (_present[i])
                     {
                         yield return IndexKey(i);
+                    }
+                }
+
+                foreach (var sparseKey in _sparseElements.Keys)
+                {
+                    if (sparseKey < _length)
+                    {
+                        yield return IndexKey(sparseKey);
                     }
                 }
 
@@ -244,11 +293,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             public override IEnumerable<string> GetOwnPropertyNames()
             {
-                for (int i = 0; i < _length; i++)
+                int denseCount = Math.Min(_length, _elements.Length);
+                for (int i = 0; i < denseCount; i++)
                 {
                     if (_present[i])
                     {
                         yield return IndexKey(i);
+                    }
+                }
+
+                foreach (var sparseKey in _sparseElements.Keys)
+                {
+                    if (sparseKey < _length)
+                    {
+                        yield return IndexKey(sparseKey);
                     }
                 }
 
@@ -278,6 +336,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 Array.Resize(ref _elements, newSize);
                 Array.Resize(ref _present, newSize);
+            }
+
+            private bool ShouldStoreSparse(int index)
+            {
+                if (index < _elements.Length)
+                {
+                    return false;
+                }
+
+                int gapFromLogicalEnd = index - _length;
+                return index >= MaxDenseCapacity || gapFromLogicalEnd > MaxDenseGap;
             }
 
             private static bool TryParseArrayIndex(string key, out int index)
@@ -497,6 +566,46 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public void Dispose() { }
         }
 
+        private sealed class SuperReferenceObject : FenObject
+        {
+            private readonly FenBrowser.FenEngine.Core.Interfaces.IObject _baseObject;
+            private readonly FenValue _receiver;
+
+            public SuperReferenceObject(FenBrowser.FenEngine.Core.Interfaces.IObject baseObject, FenValue receiver)
+            {
+                _baseObject = baseObject;
+                _receiver = receiver;
+            }
+
+            public override FenValue Get(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (_baseObject == null)
+                {
+                    return FenValue.Undefined;
+                }
+
+                FenValue value = _baseObject is FenObject fenBase
+                    ? fenBase.GetWithReceiver(key, _receiver, context)
+                    : _baseObject.Get(key, context);
+
+                if (value.IsFunction)
+                {
+                    var targetFunction = value.AsFunction();
+                    if (targetFunction != null)
+                    {
+                        var boundFunction = new FenFunction(targetFunction.Name, (args, thisVal) =>
+                            targetFunction.Invoke(args, context, _receiver))
+                        {
+                            IsConstructor = false
+                        };
+                        return FenValue.FromFunction(boundFunction);
+                    }
+                }
+
+                return value;
+            }
+        }
+
         /// <summary>
         /// Represents a suspended generator. Holds its own private VirtualMachine so that
         /// the generator's stack/frames are fully isolated from the caller.
@@ -596,7 +705,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                     var newEnv = new FenEnvironment(_func.Env);
                     InitializeFunctionFastStore(_func, newEnv);
-                    if (_func.LocalMap != null && !string.IsNullOrEmpty(_func.Name) && _func.LocalMap.ContainsKey(_func.Name))
+                    if (!string.IsNullOrEmpty(_func.Name))
                         SetFunctionBinding(_func, newEnv, _func.Name, FenValue.FromFunction(_func));
                     if (!_func.IsArrowFunction)
                         SetFunctionBinding(_func, newEnv, "this", FenValue.Undefined);
@@ -724,6 +833,102 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             return FenValue.Undefined;
+        }
+
+        private static void BindSuperReference(FenFunction func, FenEnvironment env, FenValue thisValue)
+        {
+            if (func?.HomeObject == null || env == null)
+            {
+                return;
+            }
+
+            var superBase = func.HomeObject.GetPrototype();
+            if (superBase == null)
+            {
+                return;
+            }
+
+            env.Set("super", FenValue.FromObject(new SuperReferenceObject(superBase, thisValue)));
+        }
+
+        private FenValue ExecuteDirectEval(FenValue sourceValue, CallFrame frame, int directEvalFlags)
+        {
+            if (!sourceValue.IsString)
+            {
+                return sourceValue;
+            }
+
+            var code = sourceValue.AsString() ?? string.Empty;
+            bool inheritStrict = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+            bool allowNewTarget = (directEvalFlags & DirectEvalAllowNewTargetFlag) != 0;
+            bool forceUndefinedNewTarget = (directEvalFlags & DirectEvalForceUndefinedNewTargetFlag) != 0;
+            bool allowSuperProperty = (directEvalFlags & DirectEvalAllowSuperPropertyFlag) != 0;
+
+            Program program;
+            Parser parser;
+            try
+            {
+                var lexer = new Lexer(code);
+                parser = new Parser(
+                    lexer,
+                    allowReturnOutsideFunction: false,
+                    initialStrictMode: inheritStrict,
+                    allowNewTargetOutsideFunction: allowNewTarget,
+                    allowSuperOutsideClass: allowSuperProperty,
+                    allowSuperInClassFieldInitializer: allowSuperProperty);
+                program = parser.ParseProgram();
+            }
+            catch (FenSyntaxError)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ThrowJsError("SyntaxError", ex.Message);
+                return FenValue.Undefined;
+            }
+
+            if (parser.Errors.Count > 0)
+            {
+                ThrowJsError("SyntaxError", parser.Errors[0]);
+            }
+
+            CodeBlock compiledBlock;
+            try
+            {
+                var compiler = new Bytecode.Compiler.BytecodeCompiler(isEval: true);
+                compiledBlock = compiler.Compile(program);
+            }
+            catch (FenSyntaxError)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ThrowJsError("SyntaxError", ex.Message);
+                return FenValue.Undefined;
+            }
+
+            var evalEnvironment = new FenEnvironment(frame.Environment);
+            evalEnvironment.StrictMode = inheritStrict;
+
+            var thisBinding = ResolveVariableSafe(frame, "this");
+            evalEnvironment.Set("this", thisBinding);
+
+            if (allowSuperProperty && thisBinding.IsObject)
+            {
+                var receiverObject = thisBinding.AsObject();
+                var homeObject = receiverObject?.GetPrototype();
+                var superBase = homeObject?.GetPrototype();
+                if (superBase != null)
+                {
+                    evalEnvironment.Set("super", FenValue.FromObject(new SuperReferenceObject(superBase, thisBinding)));
+                }
+            }
+
+            var nestedVm = new VirtualMachine();
+            var evalNewTarget = forceUndefinedNewTarget ? FenValue.Undefined : frame.NewTarget;
+            return nestedVm.Execute(compiledBlock, evalEnvironment, evalNewTarget);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1281,12 +1486,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
         {
+            return Execute(initialBlock, initialEnv, FenValue.Undefined);
+        }
+
+        public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, FenValue initialNewTarget)
+        {
             _sp = 0;
             _completionValue = FenValue.Undefined;
             _frameCount = 0;
             
             // Push initial frame
-            PushFrame(initialBlock, initialEnv, 0);
+            var initialFrame = PushFrame(initialBlock, initialEnv, 0);
+            initialFrame.NewTarget = initialNewTarget;
 
             return RunLoop();
         }
@@ -1796,8 +2007,11 @@ run_loop_restart:
                                 newFunc.IsArrowFunction = templateFunc.IsArrowFunction;
                                 newFunc.IsAsync = templateFunc.IsAsync;
                                 newFunc.IsGenerator = templateFunc.IsGenerator;
+                                newFunc.IsMethodDefinition = templateFunc.IsMethodDefinition;
+                                newFunc.Source = templateFunc.Source;
                                 newFunc.NeedsArgumentsObject = templateFunc.NeedsArgumentsObject;
                                 newFunc.LocalMap = templateFunc.LocalMap;
+                                newFunc.HomeObject = templateFunc.HomeObject;
 
                                 if (!newFunc.IsArrowFunction)
                                 {
@@ -1855,14 +2069,16 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
                                     // Bind 'this': undefined for strict-mode-like behaviour; arrow functions inherit from closure
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame));
+                                        var thisValue = func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame);
+                                        SetFunctionBinding(func, newEnv, "this", thisValue);
+                                        BindSuperReference(func, newEnv, thisValue);
                                     }
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
@@ -1916,13 +2132,15 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
                                     if (!func.IsArrowFunction)
                                     {
-                                        SetFunctionBinding(func, newEnv, "this", func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame));
+                                        var thisValue = func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame);
+                                        SetFunctionBinding(func, newEnv, "this", thisValue);
+                                        BindSuperReference(func, newEnv, thisValue);
                                     }
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
@@ -1973,7 +2191,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -1981,6 +2199,7 @@ run_loop_restart:
                                     {
                                         var thisVal = receiver;
                                         SetFunctionBinding(func, newEnv, "this", thisVal);
+                                        BindSuperReference(func, newEnv, thisVal);
                                     }
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
@@ -2028,7 +2247,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2036,6 +2255,7 @@ run_loop_restart:
                                     {
                                         var thisVal = receiver;
                                         SetFunctionBinding(func, newEnv, "this", thisVal);
+                                        BindSuperReference(func, newEnv, thisVal);
                                     }
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
@@ -2103,11 +2323,12 @@ run_loop_restart:
                                      
                                     // Bind 'this' to newObj
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
                                     SetFunctionBinding(func, newEnv, "this", FenValue.FromObject(newObj));
+                                    BindSuperReference(func, newEnv, FenValue.FromObject(newObj));
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
                                     _sp = argStart - 1; // Pop constructor + args
@@ -2166,11 +2387,12 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (func.LocalMap != null && !string.IsNullOrEmpty(func.Name) && func.LocalMap.ContainsKey(func.Name))
+                                    if (!string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
                                     SetFunctionBinding(func, newEnv, "this", FenValue.FromObject(newObj));
+                                    BindSuperReference(func, newEnv, FenValue.FromObject(newObj));
                                     BindFunctionArgumentsFromArrayLike(func, newEnv, argsObject, argCount);
 
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
@@ -2697,6 +2919,27 @@ run_loop_restart:
                             case OpCode.LoadNewTarget:
                             {
                                 _stack[_sp++] = frame.NewTarget;
+                                break;
+                            }
+                            case OpCode.SetFunctionHomeObject:
+                            {
+                                var homeObjectValue = _stack[--_sp];
+                                var functionValue = _stack[--_sp];
+                                if ((functionValue.IsFunction || functionValue.IsObject) &&
+                                    functionValue.AsObject() is FenFunction function &&
+                                    homeObjectValue.IsObject)
+                                {
+                                    function.HomeObject = homeObjectValue.AsObject();
+                                }
+
+                                _stack[_sp++] = functionValue;
+                                break;
+                            }
+                            case OpCode.DirectEval:
+                            {
+                                int directEvalFlags = ReadInt32(instructions, ref frame);
+                                var sourceValue = _stack[--_sp];
+                                _stack[_sp++] = ExecuteDirectEval(sourceValue, frame, directEvalFlags);
                                 break;
                             }
                             case OpCode.Await:

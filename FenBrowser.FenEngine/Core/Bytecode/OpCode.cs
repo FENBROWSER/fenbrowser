@@ -104,6 +104,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         Await = 0x7B,
         EnterWith = 0x7C,
         ExitWith = 0x7D,
+        DirectEval = 0x7E,
+        SetFunctionHomeObject = 0x7F,
 
         // 0xFF: End of program
         Halt = 0xFF

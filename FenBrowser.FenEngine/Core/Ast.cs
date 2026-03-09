@@ -205,6 +205,7 @@ namespace FenBrowser.FenEngine.Core
     public class BlockStatement : Statement
     {
         public List<Statement> Statements { get; set; } = new List<Statement>();
+        public int EndPosition { get; set; } = -1;
 
         public override string String()
         {
@@ -268,6 +269,7 @@ namespace FenBrowser.FenEngine.Core
         public BlockStatement Body { get; set; }
         public bool IsGenerator { get; set; } = false; // function* syntax
         public bool IsAsync { get; set; } = false;
+        public bool IsMethodDefinition { get; set; } = false;
         public string Source { get; set; } // ES2019: Original source code
         public bool IsStrict { get; set; } = false;
 
@@ -351,6 +353,19 @@ namespace FenBrowser.FenEngine.Core
             sb.Append(string.Join(", ", args));
             sb.Append(")");
             return sb.ToString();
+        }
+    }
+
+    public class DirectEvalExpression : Expression
+    {
+        public Expression Source { get; set; }
+        public bool AllowNewTarget { get; set; }
+        public bool ForceUndefinedNewTarget { get; set; }
+        public bool AllowSuperProperty { get; set; }
+
+        public override string String()
+        {
+            return $"eval({Source?.String() ?? string.Empty})";
         }
     }
 
@@ -661,6 +676,7 @@ namespace FenBrowser.FenEngine.Core
     public class MethodDefinition : Statement
     {
         public Identifier Key { get; set; }
+        public Expression ComputedKeyExpression { get; set; }
         public FunctionLiteral Value { get; set; }
         public string Kind { get; set; } // "constructor", "method", "get", "set"
         public bool Static { get; set; }
@@ -683,6 +699,7 @@ namespace FenBrowser.FenEngine.Core
     public class ClassProperty : Statement
     {
         public Identifier Key { get; set; }
+        public Expression ComputedKeyExpression { get; set; }
         public Expression Value { get; set; }
         public bool Static { get; set; }
         public bool IsPrivate { get; set; } // true if #field
