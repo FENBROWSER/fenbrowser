@@ -8112,6 +8112,370 @@ namespace FenBrowser.FenEngine.Core
             // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ getComputedStyle Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
             var getComputedStyleFn = FenValue.FromFunction(new FenFunction("getComputedStyle", (args, thisVal) =>
             {
+                static string ToCamelCase(string propertyName)
+                {
+                    if (string.IsNullOrEmpty(propertyName) || propertyName.IndexOf('-') < 0)
+                    {
+                        return propertyName ?? string.Empty;
+                    }
+
+                    var parts = propertyName.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0)
+                    {
+                        return propertyName;
+                    }
+
+                    var builder = new System.Text.StringBuilder(parts[0]);
+                    for (int i = 1; i < parts.Length; i++)
+                    {
+                        if (parts[i].Length == 0)
+                        {
+                            continue;
+                        }
+
+                        builder.Append(char.ToUpperInvariant(parts[i][0]));
+                        if (parts[i].Length > 1)
+                        {
+                            builder.Append(parts[i].Substring(1));
+                        }
+                    }
+
+                    return builder.ToString();
+                }
+
+                static string NormalizeBorderLineWidthValue(string value)
+                {
+                    if (string.IsNullOrWhiteSpace(value))
+                    {
+                        return value ?? string.Empty;
+                    }
+
+                    var trimmed = value.Trim();
+                    if (!trimmed.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return trimmed;
+                    }
+
+                    if (!double.TryParse(trimmed.Substring(0, trimmed.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numeric))
+                    {
+                        return trimmed;
+                    }
+
+                    if (numeric <= 0)
+                    {
+                        return "0px";
+                    }
+
+                    var rounded = numeric < 1 ? 1 : Math.Floor(numeric);
+                    return rounded.ToString(System.Globalization.CultureInfo.InvariantCulture) + "px";
+                }
+
+                static string NormalizeComputedValue(string propertyName, string value)
+                {
+                    if (propertyName != null &&
+                        (propertyName.Contains("border", StringComparison.OrdinalIgnoreCase) || string.Equals(propertyName, "outline-width", StringComparison.OrdinalIgnoreCase)) &&
+                        propertyName.EndsWith("width", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return NormalizeBorderLineWidthValue(value);
+                    }
+
+                    return value ?? string.Empty;
+                }
+
+                bool IsCurrentColorSentinel(SkiaSharp.SKColor color)
+                {
+                    return color.Red == 255 && color.Green == 0 && color.Blue == 255 && color.Alpha == 1;
+                }
+
+                string SerializeComputedColor(SkiaSharp.SKColor color)
+                {
+                    if (color.Alpha >= 255)
+                    {
+                        return $"rgb({color.Red}, {color.Green}, {color.Blue})";
+                    }
+
+                    var alpha = Math.Round(color.Alpha / 255.0, 3);
+                    return string.Format(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        "rgba({0}, {1}, {2}, {3:0.###})",
+                        color.Red,
+                        color.Green,
+                        color.Blue,
+                        alpha);
+                }
+
+                Dictionary<string, string> ParseInlineStyleMap(string styleText)
+                {
+                    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    if (string.IsNullOrWhiteSpace(styleText))
+                    {
+                        return result;
+                    }
+
+                    foreach (var declaration in styleText.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var colonIndex = declaration.IndexOf(':');
+                        if (colonIndex <= 0 || colonIndex >= declaration.Length - 1)
+                        {
+                            continue;
+                        }
+
+                        var name = declaration.Substring(0, colonIndex).Trim();
+                        var value = declaration.Substring(colonIndex + 1).Trim();
+                        if (name.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        result[name] = value;
+                    }
+
+                    return result;
+                }
+
+                List<string> SplitFunctionArguments(string input)
+                {
+                    var result = new List<string>();
+                    if (string.IsNullOrEmpty(input))
+                    {
+                        return result;
+                    }
+
+                    var depth = 0;
+                    var start = 0;
+                    for (var i = 0; i < input.Length; i++)
+                    {
+                        var c = input[i];
+                        if (c == '(')
+                        {
+                            depth++;
+                        }
+                        else if (c == ')')
+                        {
+                            depth = Math.Max(0, depth - 1);
+                        }
+                        else if (c == ',' && depth == 0)
+                        {
+                            result.Add(input.Substring(start, i - start).Trim());
+                            start = i + 1;
+                        }
+                    }
+
+                    if (start < input.Length)
+                    {
+                        result.Add(input.Substring(start).Trim());
+                    }
+
+                    return result;
+                }
+
+                bool TryExtractFunctionBody(string value, string functionName, out string inner)
+                {
+                    inner = string.Empty;
+                    if (string.IsNullOrWhiteSpace(value))
+                    {
+                        return false;
+                    }
+
+                    var trimmed = value.Trim();
+                    if (!trimmed.StartsWith(functionName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    var open = trimmed.IndexOf('(');
+                    var close = trimmed.LastIndexOf(')');
+                    if (open <= 0 || close <= open)
+                    {
+                        return false;
+                    }
+
+                    inner = trimmed.Substring(open + 1, close - open - 1);
+                    return true;
+                }
+
+                double ToLinearComponent(byte component)
+                {
+                    var srgb = component / 255.0;
+                    return srgb <= 0.04045
+                        ? srgb / 12.92
+                        : Math.Pow((srgb + 0.055) / 1.055, 2.4);
+                }
+
+                SkiaSharp.SKColor PickBlackOrWhiteContrast(SkiaSharp.SKColor color)
+                {
+                    var luminance =
+                        0.2126 * ToLinearComponent(color.Red) +
+                        0.7152 * ToLinearComponent(color.Green) +
+                        0.0722 * ToLinearComponent(color.Blue);
+
+                    var contrastWithBlack = (luminance + 0.05) / 0.05;
+                    var contrastWithWhite = 1.05 / (luminance + 0.05);
+                    return contrastWithWhite >= contrastWithBlack
+                        ? SkiaSharp.SKColors.White
+                        : SkiaSharp.SKColors.Black;
+                }
+
+                bool UsesDarkColorScheme(
+                    FenBrowser.Core.Css.CssComputed computedStyle,
+                    IReadOnlyDictionary<string, string> inlineStyles)
+                {
+                    var fallback = FenBrowser.FenEngine.Rendering.CssParser.PrefersDarkMode;
+                    string scheme = null;
+                    if (inlineStyles != null && inlineStyles.TryGetValue("color-scheme", out var inlineScheme))
+                    {
+                        scheme = inlineScheme;
+                    }
+                    else if (computedStyle?.Map?.TryGetValue("color-scheme", out var computedScheme) == true)
+                    {
+                        scheme = computedScheme;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(scheme))
+                    {
+                        return fallback;
+                    }
+
+                    var normalized = scheme.Trim().ToLowerInvariant();
+                    if (normalized == "dark")
+                    {
+                        return true;
+                    }
+
+                    if (normalized == "light")
+                    {
+                        return false;
+                    }
+
+                    return fallback;
+                }
+
+                bool TryResolveComputedColor(
+                    string rawValue,
+                    string currentColorValue,
+                    bool useDarkScheme,
+                    out SkiaSharp.SKColor color)
+                {
+                    color = default;
+                    if (string.IsNullOrWhiteSpace(rawValue))
+                    {
+                        return false;
+                    }
+
+                    var trimmed = rawValue.Trim();
+                    if (string.Equals(trimmed, "currentcolor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.IsNullOrWhiteSpace(currentColorValue) ||
+                            string.Equals(currentColorValue.Trim(), trimmed, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+
+                        return TryResolveComputedColor(currentColorValue, string.Empty, useDarkScheme, out color);
+                    }
+
+                    if (TryExtractFunctionBody(trimmed, "light-dark", out var lightDarkInner))
+                    {
+                        var parts = SplitFunctionArguments(lightDarkInner);
+                        if (parts.Count >= 2)
+                        {
+                            var branch = useDarkScheme ? parts[1] : parts[0];
+                            return TryResolveComputedColor(branch, currentColorValue, useDarkScheme, out color);
+                        }
+
+                        return false;
+                    }
+
+                    if (TryExtractFunctionBody(trimmed, "contrast-color", out var contrastInner))
+                    {
+                        if (!TryResolveComputedColor(contrastInner, currentColorValue, useDarkScheme, out var baseColor))
+                        {
+                            return false;
+                        }
+
+                        color = PickBlackOrWhiteContrast(baseColor);
+                        return true;
+                    }
+
+                    var parsed = FenBrowser.FenEngine.Rendering.CssParser.ParseColor(trimmed);
+                    if (!parsed.HasValue)
+                    {
+                        return false;
+                    }
+
+                    if (IsCurrentColorSentinel(parsed.Value))
+                    {
+                        if (string.IsNullOrWhiteSpace(currentColorValue) ||
+                            string.Equals(currentColorValue.Trim(), trimmed, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return false;
+                        }
+
+                        return TryResolveComputedColor(currentColorValue, string.Empty, useDarkScheme, out color);
+                    }
+
+                    color = parsed.Value;
+                    return true;
+                }
+
+                string ResolveCurrentColorValue(
+                    FenBrowser.Core.Css.CssComputed computedStyle,
+                    IReadOnlyDictionary<string, string> inlineStyles)
+                {
+                    var useDarkScheme = UsesDarkColorScheme(computedStyle, inlineStyles);
+                    if (inlineStyles != null && inlineStyles.TryGetValue("color", out var inlineColor) &&
+                        TryResolveComputedColor(inlineColor, string.Empty, useDarkScheme, out var inlineResolved))
+                    {
+                        return SerializeComputedColor(inlineResolved);
+                    }
+
+                    if (computedStyle?.ForegroundColor.HasValue == true)
+                    {
+                        return SerializeComputedColor(computedStyle.ForegroundColor.Value);
+                    }
+
+                    if (computedStyle?.Map?.TryGetValue("color", out var computedColor) == true &&
+                        TryResolveComputedColor(computedColor, string.Empty, useDarkScheme, out var resolvedComputedColor))
+                    {
+                        return SerializeComputedColor(resolvedComputedColor);
+                    }
+
+                    return "rgb(0, 0, 0)";
+                }
+
+                string ResolveComputedCssValue(
+                    string propertyName,
+                    string rawValue,
+                    FenBrowser.Core.Css.CssComputed computedStyle,
+                    IReadOnlyDictionary<string, string> inlineStyles)
+                {
+                    var normalized = NormalizeComputedValue(propertyName, rawValue);
+                    if (string.IsNullOrWhiteSpace(rawValue))
+                    {
+                        return normalized;
+                    }
+
+                    var lowerProperty = propertyName?.ToLowerInvariant() ?? string.Empty;
+                    var looksLikeColorValue =
+                        lowerProperty.Contains("color", StringComparison.Ordinal) ||
+                        string.Equals(lowerProperty, "fill", StringComparison.Ordinal) ||
+                        string.Equals(lowerProperty, "stroke", StringComparison.Ordinal) ||
+                        rawValue.Contains("light-dark(", StringComparison.OrdinalIgnoreCase) ||
+                        rawValue.Contains("contrast-color(", StringComparison.OrdinalIgnoreCase) ||
+                        rawValue.Contains("currentcolor", StringComparison.OrdinalIgnoreCase);
+
+                    if (!looksLikeColorValue)
+                    {
+                        return normalized;
+                    }
+
+                    var useDarkScheme = UsesDarkColorScheme(computedStyle, inlineStyles);
+                    var currentColorValue = ResolveCurrentColorValue(computedStyle, inlineStyles);
+                    return TryResolveComputedColor(rawValue, currentColorValue, useDarkScheme, out var resolvedColor)
+                        ? SerializeComputedColor(resolvedColor)
+                        : normalized;
+                }
+
                 if (args.Length == 0) return FenValue.FromObject(new FenObject());
                 if (args[0].IsObject)
                 {
@@ -8132,88 +8496,204 @@ namespace FenBrowser.FenEngine.Core
                     }
                     else
                     {
-                        var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl);
-                        if (computedStyle != null)
+                        FenObject CreateComputedStyleObject(IReadOnlyDictionary<string, string> values)
                         {
-                            var csObj = new FenObject();
-                            // Expose as a proxy-like object with getPropertyValue
-                            csObj.Set("getPropertyValue", FenValue.FromFunction(new FenFunction("getPropertyValue",
-                                (gpArgs, gpThis) =>
+                            var styleObject = new FenObject();
+                            styleObject.Set("getPropertyValue", FenValue.FromFunction(new FenFunction("getPropertyValue",
+                                (gpArgs, _) =>
                                 {
-                                    if (gpArgs.Length == 0) return FenValue.FromString("");
-                                    var prop = gpArgs[0].ToString();
-                                    var normalizedProp =
-                                        string.Equals(prop, "grid-row-gap", StringComparison.OrdinalIgnoreCase) ? "row-gap" :
-                                        string.Equals(prop, "grid-column-gap", StringComparison.OrdinalIgnoreCase) ? "column-gap" :
-                                        string.Equals(prop, "grid-gap", StringComparison.OrdinalIgnoreCase) ? "gap" :
-                                        prop;
-
-                                    string ReadGapValue(string key)
+                                    if (gpArgs.Length == 0)
                                     {
-                                        string value = null;
-                                        if (computedStyle.Map?.ContainsKey(key) == true)
-                                        {
-                                            value = computedStyle.Map[key];
-                                        }
-                                        else if (computedStyle.Map?.ContainsKey("grid-" + key) == true)
-                                        {
-                                            value = computedStyle.Map["grid-" + key];
-                                        }
-
-                                        value = (value ?? string.Empty).Trim().ToLowerInvariant();
-                                        if (string.IsNullOrEmpty(value)) return "normal";
-                                        if (value == "0") return "0px";
-                                        return value;
+                                        return FenValue.FromString(string.Empty);
                                     }
 
-                                    string val;
-                                    if (string.Equals(normalizedProp, "row-gap", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        val = ReadGapValue("row-gap");
-                                    }
-                                    else if (string.Equals(normalizedProp, "column-gap", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        val = ReadGapValue("column-gap");
-                                    }
-                                    else if (string.Equals(normalizedProp, "gap", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        var row = ReadGapValue("row-gap");
-                                        var column = ReadGapValue("column-gap");
-                                        val = row == column ? row : row + " " + column;
-                                    }
-                                    else
-                                    {
-                                        val = computedStyle.Map?.ContainsKey(normalizedProp) == true
-                                            ? computedStyle.Map[normalizedProp]
-                                            : "";
-                                    }
-                                    return FenValue.FromString(val ?? "");
+                                    var propertyName = gpArgs[0].ToString();
+                                    return FenValue.FromString(values.TryGetValue(propertyName, out var propertyValue)
+                                        ? NormalizeComputedValue(propertyName, propertyValue)
+                                        : string.Empty);
                                 })));
-                            // Common properties
-                            if (computedStyle.Map != null)
+
+                            var propertyCount = 0;
+                            foreach (var kvp in values)
                             {
-                                foreach (var kvp in computedStyle.Map)
-                                    csObj.Set(kvp.Key, FenValue.FromString(kvp.Value ?? ""));
+                                var normalizedValue = NormalizeComputedValue(kvp.Key, kvp.Value);
+                                styleObject.Set(kvp.Key, FenValue.FromString(normalizedValue));
+                                var camelName = ToCamelCase(kvp.Key);
+                                if (!string.Equals(camelName, kvp.Key, StringComparison.Ordinal))
+                                {
+                                    styleObject.Set(camelName, FenValue.FromString(normalizedValue));
+                                }
+
+                                propertyCount++;
                             }
 
-                            csObj.Set("display", FenValue.FromString(computedStyle.Display ?? "block"));
-                            csObj.Set("visibility", FenValue.FromString(computedStyle.Visibility ?? "visible"));
-                            csObj.Set("position", FenValue.FromString(computedStyle.Position ?? "static"));
-                            var rowGap = computedStyle.Map?.ContainsKey("row-gap") == true ? computedStyle.Map["row-gap"] :
-                                         computedStyle.Map?.ContainsKey("grid-row-gap") == true ? computedStyle.Map["grid-row-gap"] : "normal";
-                            var columnGap = computedStyle.Map?.ContainsKey("column-gap") == true ? computedStyle.Map["column-gap"] :
-                                            computedStyle.Map?.ContainsKey("grid-column-gap") == true ? computedStyle.Map["grid-column-gap"] : "normal";
-                            rowGap = string.Equals(rowGap, "0", StringComparison.Ordinal) ? "0px" : (string.IsNullOrWhiteSpace(rowGap) ? "normal" : rowGap);
-                            columnGap = string.Equals(columnGap, "0", StringComparison.Ordinal) ? "0px" : (string.IsNullOrWhiteSpace(columnGap) ? "normal" : columnGap);
-                            var shorthandGap = rowGap == columnGap ? rowGap : rowGap + " " + columnGap;
-                            csObj.Set("row-gap", FenValue.FromString(rowGap));
-                            csObj.Set("column-gap", FenValue.FromString(columnGap));
-                            csObj.Set("gap", FenValue.FromString(shorthandGap));
-                            csObj.Set("grid-row-gap", FenValue.FromString(rowGap));
-                            csObj.Set("grid-column-gap", FenValue.FromString(columnGap));
-                            csObj.Set("grid-gap", FenValue.FromString(shorthandGap));
-                            return FenValue.FromObject(csObj);
+                            styleObject.Set("length", FenValue.FromNumber(propertyCount));
+                            return styleObject;
                         }
+
+                        var pseudoText = args.Length > 1 ? args[1].ToString() : string.Empty;
+                        if (!string.IsNullOrWhiteSpace(pseudoText) &&
+                            pseudoText.IndexOf("highlight", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            if (HighlightApiBindings.TryResolveComputedHighlightStyles(nativeEl, pseudoText, out var highlightValues))
+                            {
+                                return FenValue.FromObject(CreateComputedStyleObject(highlightValues));
+                            }
+
+                            return FenValue.FromObject(CreateComputedStyleObject(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)));
+                        }
+
+                        var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl) ?? new FenBrowser.Core.Css.CssComputed();
+                        var inlineStyles = ParseInlineStyleMap(nativeEl.GetAttribute("style") ?? string.Empty);
+                        var resolvedValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                        void SetResolvedProperty(string propertyName, string propertyValue)
+                        {
+                            if (string.IsNullOrEmpty(propertyName))
+                            {
+                                return;
+                            }
+
+                            var resolvedValue = ResolveComputedCssValue(propertyName, propertyValue, computedStyle, inlineStyles);
+                            resolvedValues[propertyName] = resolvedValue ?? string.Empty;
+                        }
+
+                        if (computedStyle.Map != null)
+                        {
+                            foreach (var kvp in computedStyle.Map)
+                            {
+                                SetResolvedProperty(kvp.Key, kvp.Value);
+                            }
+                        }
+
+                        if (computedStyle.ForegroundColor.HasValue)
+                        {
+                            SetResolvedProperty("color", SerializeComputedColor(computedStyle.ForegroundColor.Value));
+                        }
+
+                        if (computedStyle.BackgroundColor.HasValue)
+                        {
+                            SetResolvedProperty("background-color", SerializeComputedColor(computedStyle.BackgroundColor.Value));
+                        }
+
+                        foreach (var inlineStyle in inlineStyles)
+                        {
+                            SetResolvedProperty(inlineStyle.Key, inlineStyle.Value);
+                        }
+
+                        var csObj = new FenObject();
+                        // Expose as a proxy-like object with getPropertyValue
+                        csObj.Set("getPropertyValue", FenValue.FromFunction(new FenFunction("getPropertyValue",
+                            (gpArgs, gpThis) =>
+                            {
+                                if (gpArgs.Length == 0) return FenValue.FromString("");
+                                var prop = gpArgs[0].ToString();
+                                var normalizedProp =
+                                    string.Equals(prop, "grid-row-gap", StringComparison.OrdinalIgnoreCase) ? "row-gap" :
+                                    string.Equals(prop, "grid-column-gap", StringComparison.OrdinalIgnoreCase) ? "column-gap" :
+                                    string.Equals(prop, "grid-gap", StringComparison.OrdinalIgnoreCase) ? "gap" :
+                                    prop;
+
+                                string ReadGapValue(string key)
+                                {
+                                    string value = null;
+                                    if (computedStyle.Map?.ContainsKey(key) == true)
+                                    {
+                                        value = computedStyle.Map[key];
+                                    }
+                                    else if (computedStyle.Map?.ContainsKey("grid-" + key) == true)
+                                    {
+                                        value = computedStyle.Map["grid-" + key];
+                                    }
+
+                                    value = (value ?? string.Empty).Trim().ToLowerInvariant();
+                                    if (string.IsNullOrEmpty(value)) return "normal";
+                                    if (value == "0") return "0px";
+                                    return value;
+                                }
+
+                                string val;
+                                if (string.Equals(normalizedProp, "row-gap", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    val = ReadGapValue("row-gap");
+                                }
+                                else if (string.Equals(normalizedProp, "column-gap", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    val = ReadGapValue("column-gap");
+                                }
+                                else if (string.Equals(normalizedProp, "gap", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var row = ReadGapValue("row-gap");
+                                    var column = ReadGapValue("column-gap");
+                                    val = row == column ? row : row + " " + column;
+                                }
+                                else
+                                {
+                                    val = resolvedValues.TryGetValue(normalizedProp, out var resolvedValue)
+                                        ? resolvedValue
+                                        : "";
+                                }
+                                return FenValue.FromString(NormalizeComputedValue(normalizedProp, val));
+                            })));
+                        // Common properties
+                        if (resolvedValues.Count > 0)
+                        {
+                            foreach (var kvp in resolvedValues)
+                            {
+                                var normalizedValue = NormalizeComputedValue(kvp.Key, kvp.Value);
+                                csObj.Set(kvp.Key, FenValue.FromString(normalizedValue));
+                                var camelName = ToCamelCase(kvp.Key);
+                                if (!string.Equals(camelName, kvp.Key, StringComparison.Ordinal))
+                                {
+                                    csObj.Set(camelName, FenValue.FromString(normalizedValue));
+                                }
+                            }
+                        }
+
+                        csObj.Set("display", FenValue.FromString(computedStyle.Display ?? "block"));
+                        csObj.Set("visibility", FenValue.FromString(computedStyle.Visibility ?? "visible"));
+                        csObj.Set("position", FenValue.FromString(computedStyle.Position ?? "static"));
+                        var containValue = resolvedValues.TryGetValue("contain", out var containResolved) && !string.IsNullOrWhiteSpace(containResolved)
+                            ? containResolved
+                            : "none";
+                        csObj.Set("contain", FenValue.FromString(containValue));
+                        var contentVisibilityValue = resolvedValues.TryGetValue("content-visibility", out var contentVisibilityResolved) && !string.IsNullOrWhiteSpace(contentVisibilityResolved)
+                            ? contentVisibilityResolved
+                            : "visible";
+                        csObj.Set("content-visibility", FenValue.FromString(contentVisibilityValue));
+                        csObj.Set("contentVisibility", FenValue.FromString(contentVisibilityValue));
+                        var rowGap = computedStyle.Map?.ContainsKey("row-gap") == true ? computedStyle.Map["row-gap"] :
+                                     computedStyle.Map?.ContainsKey("grid-row-gap") == true ? computedStyle.Map["grid-row-gap"] : "normal";
+                        var columnGap = computedStyle.Map?.ContainsKey("column-gap") == true ? computedStyle.Map["column-gap"] :
+                                        computedStyle.Map?.ContainsKey("grid-column-gap") == true ? computedStyle.Map["grid-column-gap"] : "normal";
+                        rowGap = string.Equals(rowGap, "0", StringComparison.Ordinal) ? "0px" : (string.IsNullOrWhiteSpace(rowGap) ? "normal" : rowGap);
+                        columnGap = string.Equals(columnGap, "0", StringComparison.Ordinal) ? "0px" : (string.IsNullOrWhiteSpace(columnGap) ? "normal" : columnGap);
+                        var shorthandGap = rowGap == columnGap ? rowGap : rowGap + " " + columnGap;
+                        csObj.Set("row-gap", FenValue.FromString(rowGap));
+                        csObj.Set("column-gap", FenValue.FromString(columnGap));
+                        csObj.Set("gap", FenValue.FromString(shorthandGap));
+                        csObj.Set("grid-row-gap", FenValue.FromString(rowGap));
+                        csObj.Set("grid-column-gap", FenValue.FromString(columnGap));
+                        csObj.Set("grid-gap", FenValue.FromString(shorthandGap));
+
+                        var borderWidth = computedStyle.Map?.ContainsKey("border-width") == true
+                            ? computedStyle.Map["border-width"]
+                            : computedStyle.Map?.ContainsKey("border-top-width") == true
+                                && string.Equals(computedStyle.Map["border-top-width"], computedStyle.Map.GetValueOrDefault("border-right-width"), StringComparison.Ordinal)
+                                && string.Equals(computedStyle.Map["border-top-width"], computedStyle.Map.GetValueOrDefault("border-bottom-width"), StringComparison.Ordinal)
+                                && string.Equals(computedStyle.Map["border-top-width"], computedStyle.Map.GetValueOrDefault("border-left-width"), StringComparison.Ordinal)
+                                    ? computedStyle.Map["border-top-width"]
+                                    : string.Empty;
+                        borderWidth = NormalizeComputedValue("border-width", borderWidth);
+                        csObj.Set("border-width", FenValue.FromString(borderWidth));
+                        csObj.Set("borderWidth", FenValue.FromString(borderWidth));
+
+                        var outlineWidth = NormalizeComputedValue(
+                            "outline-width",
+                            computedStyle.Map?.ContainsKey("outline-width") == true ? computedStyle.Map["outline-width"] : string.Empty);
+                        csObj.Set("outline-width", FenValue.FromString(outlineWidth));
+                        csObj.Set("outlineWidth", FenValue.FromString(outlineWidth));
+                        return FenValue.FromObject(csObj);
                     }
                 }
 
@@ -13618,16 +14098,56 @@ namespace FenBrowser.FenEngine.Core
 
             RegisterLegacyNamedGlobals(root);
 
+            var fontLoadingBindings = FontLoadingBindings.CreateForDocument(documentWrapper, _context);
+            documentWrapper.AttachFonts(fontLoadingBindings.Fonts);
+            SetGlobal("FontFace", fontLoadingBindings.FontFaceConstructor);
+            SetGlobal("FontFaceSetLoadEvent", fontLoadingBindings.FontFaceSetLoadEventConstructor);
+
+            var highlightBindings = HighlightApiBindings.Create(_context);
+            SetGlobal("StaticRange", highlightBindings.StaticRangeConstructor);
+            SetGlobal("Highlight", highlightBindings.HighlightConstructor);
+            SetGlobal("HighlightRegistry", highlightBindings.HighlightRegistryConstructor);
+
+            var rangePrototype = new FenObject();
+            var rangeConstructor = new FenFunction("Range", (args, _) =>
+            {
+                var rangeWrapper = new RangeWrapper(new FenBrowser.Core.Dom.V2.Range(root as Document ?? root.OwnerDocument ?? new Document()), _context);
+                rangeWrapper.SetPrototype(rangePrototype);
+                return FenValue.FromObject(rangeWrapper);
+            });
+            rangeConstructor.Prototype = rangePrototype;
+            rangeConstructor.Set("prototype", FenValue.FromObject(rangePrototype));
+            rangePrototype.SetBuiltin("constructor", FenValue.FromFunction(rangeConstructor));
+            SetGlobal("Range", FenValue.FromFunction(rangeConstructor));
+
+            var cssValue = GetGlobal("CSS");
+            if (cssValue.IsObject)
+            {
+                cssValue.AsObject().Set("highlights", FenValue.FromObject(highlightBindings.Registry));
+            }
+
+            if (window.IsObject)
+            {
+                var windowObject = window.AsObject();
+                windowObject.Set("Range", FenValue.FromFunction(rangeConstructor));
+                windowObject.Set("StaticRange", highlightBindings.StaticRangeConstructor);
+                windowObject.Set("Highlight", highlightBindings.HighlightConstructor);
+                windowObject.Set("HighlightRegistry", highlightBindings.HighlightRegistryConstructor);
+            }
+
             // Create Document constructor/prototype for scripts that check Document.prototype
             var documentPrototype = new FenObject();
-            // fonts is not supported, so hasOwnProperty("fonts") should return false
             documentPrototype.Set("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty",
                 (args, thisVal) =>
                 {
                     if (args.Length > 0)
                     {
                         var propName = args[0].ToString();
-                        // We don't have fonts, so return false for "fonts"
+                        if (string.Equals(propName, "fonts", StringComparison.Ordinal))
+                        {
+                            return FenValue.FromBoolean(true);
+                        }
+
                         return FenValue.FromBoolean(propName != "fonts");
                     }
 

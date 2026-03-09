@@ -5,6 +5,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Workers
 {
@@ -68,6 +69,11 @@ namespace FenBrowser.FenEngine.Workers
         {
             // self reference (points to this)
             Set("self", FenValue.FromObject(this));
+
+            var fontLoadingBindings = FontLoadingBindings.CreateForWorker(Runtime.Context);
+            Set("fonts", FenValue.FromObject(fontLoadingBindings.Fonts));
+            Set("FontFace", fontLoadingBindings.FontFaceConstructor);
+            Set("FontFaceSetLoadEvent", fontLoadingBindings.FontFaceSetLoadEventConstructor);
 
             // name property (DedicatedWorkerGlobalScope)
             Set("name", FenValue.FromString(_name));
