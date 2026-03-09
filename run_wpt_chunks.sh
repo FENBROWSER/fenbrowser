@@ -2,6 +2,7 @@
 EXE="/c/Users/udayk/Videos/fenbrowser-test/FenBrowser.WPT/bin/Release/net8.0/FenBrowser.WPT.exe"
 START=${1:-5}
 END=${2:-20}
+WORKERS=${3:-10}
 
 for chunk in $(seq $START $END); do
   # RAM check
@@ -10,7 +11,7 @@ for chunk in $(seq $START $END); do
     echo "[RAM WARNING] Only ${FREE_KB}KB free. Stopping before chunk $chunk."
     break
   fi
-  echo "=== Starting chunk $chunk | Free RAM: ${FREE_KB}KB ==="
-  $EXE run_chunk $chunk 2>&1 | tail -2
+  echo "=== Starting chunk $chunk | Workers: ${WORKERS} | Free RAM: ${FREE_KB}KB ==="
+  $EXE run_chunk $chunk --workers $WORKERS 2>&1 | tail -2
   echo "=== Chunk $chunk done ==="
 done

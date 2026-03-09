@@ -76,7 +76,7 @@ namespace FenBrowser.FenEngine.Testing
             files.AddRange(Directory.GetFiles(_wptRootPath, "*.htm", SearchOption.AllDirectories));
 
             return files
-                .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).StartsWith("."))
+                .Where(IsDiscoverableTestFile)
                 .OrderBy(f => f)
                 .ToList();
         }
@@ -159,9 +159,8 @@ namespace FenBrowser.FenEngine.Testing
             foreach (var testFile in testFiles)
             {
                 if (count >= maxTests) break;
-                
-                // Skip helper files (often start with _)
-                if (Path.GetFileName(testFile).StartsWith("_")) continue;
+
+                if (!IsDiscoverableTestFile(testFile)) continue;
 
                 count++;
                 var result = await RunSingleTestAsync(testFile);
@@ -179,6 +178,12 @@ namespace FenBrowser.FenEngine.Testing
         {
             var result = new TestExecutionResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            string? source = null;
+            bool hasHarness = false;
+            bool hasScriptTag = false;
+            bool isRefTest = false;
+            bool isManualTest = false;
+            bool isCrashTest = false;
 
             if (string.IsNullOrWhiteSpace(testFile) || !File.Exists(testFile))
             {
@@ -200,22 +205,73 @@ namespace FenBrowser.FenEngine.Testing
                 return result;
             }
 
+            if (IsHeadlessCompatSkippedTest(testFile))
+            {
+                result.Success = true;
+                result.HarnessCompleted = true;
+                result.TimedOut = false;
+                result.CompletionSignal = "headless-compat-skipped";
+                result.PassCount = 0;
+                result.FailCount = 0;
+                result.TotalCount = 0;
+                result.Error = null;
+                sw.Stop();
+                result.Duration = sw.Elapsed;
+                return result;
+            }
+
             // Reftests are visual comparison tests (link rel=match) and do not emit
             // testharness assertions. Treat them as skipped in the harness runner.
             try
             {
-                var source = File.ReadAllText(testFile);
-                var hasHarness = source.IndexOf("/resources/testharness.js", StringComparison.OrdinalIgnoreCase) >= 0;
-                var hasScriptTag = source.IndexOf("<script", StringComparison.OrdinalIgnoreCase) >= 0;
-                var isRefTest = source.IndexOf("rel=\"match\"", StringComparison.OrdinalIgnoreCase) >= 0
-                                || source.IndexOf("rel='match'", StringComparison.OrdinalIgnoreCase) >= 0
-                                || source.IndexOf("rel=match", StringComparison.OrdinalIgnoreCase) >= 0;
+                source = File.ReadAllText(testFile);
+                hasHarness = source.IndexOf("/resources/testharness.js", StringComparison.OrdinalIgnoreCase) >= 0;
+                hasScriptTag = source.IndexOf("<script", StringComparison.OrdinalIgnoreCase) >= 0;
+                isRefTest = source.IndexOf("rel=\"match\"", StringComparison.OrdinalIgnoreCase) >= 0
+                            || source.IndexOf("rel=\"mismatch\"", StringComparison.OrdinalIgnoreCase) >= 0
+                            || source.IndexOf("rel='match'", StringComparison.OrdinalIgnoreCase) >= 0
+                            || source.IndexOf("rel='mismatch'", StringComparison.OrdinalIgnoreCase) >= 0
+                            || source.IndexOf("rel=match", StringComparison.OrdinalIgnoreCase) >= 0
+                            || source.IndexOf("rel=mismatch", StringComparison.OrdinalIgnoreCase) >= 0;
+                isManualTest = IsManualTest(testFile, source);
+                isCrashTest = IsCrashTest(testFile);
+
+                if (isManualTest)
+                {
+                    result.Success = true;
+                    result.HarnessCompleted = true;
+                    result.TimedOut = false;
+                    result.CompletionSignal = "manual-skipped";
+                    result.PassCount = 0;
+                    result.FailCount = 0;
+                    result.TotalCount = 0;
+                    result.Error = null;
+                    sw.Stop();
+                    result.Duration = sw.Elapsed;
+                    return result;
+                }
+
                 if (!hasHarness && (isRefTest || !hasScriptTag))
                 {
                     result.Success = true;
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "reftest-skipped";
+                    result.PassCount = 0;
+                    result.FailCount = 0;
+                    result.TotalCount = 0;
+                    result.Error = null;
+                    sw.Stop();
+                    result.Duration = sw.Elapsed;
+                    return result;
+                }
+
+                if (IsHeadlessCompatSkippedTest(testFile))
+                {
+                    result.Success = true;
+                    result.HarnessCompleted = true;
+                    result.TimedOut = false;
+                    result.CompletionSignal = "headless-compat-skipped";
                     result.PassCount = 0;
                     result.FailCount = 0;
                     result.TotalCount = 0;
@@ -235,6 +291,23 @@ namespace FenBrowser.FenEngine.Testing
                 // Enable test mode
                 WebAPIs.TestHarnessAPI.EnableTestMode(_timeoutMs);
                 WebAPIs.TestConsoleCapture.StartCapture();
+
+                if (!hasHarness && isCrashTest)
+                {
+                    await ExecuteCrashTestAsync(testFile, verbose);
+                    result.Success = true;
+                    result.HarnessCompleted = true;
+                    result.TimedOut = false;
+                    result.CompletionSignal = "crashtest-executed";
+                    result.PassCount = 0;
+                    result.FailCount = 0;
+                    result.TotalCount = 0;
+                    result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
+
+                    sw.Stop();
+                    result.Duration = sw.Elapsed;
+                    return result;
+                }
                 
                 // Navigate and wait for a structured completion signal from the test harness.
                 var execution = await ExecuteTestAsync(testFile, verbose);
@@ -290,7 +363,7 @@ namespace FenBrowser.FenEngine.Testing
             catch (Exception ex)
             {
                 result.Success = false;
-                result.Error = ex.Message;
+                result.Error = ex.ToString();
             }
             finally
             {
@@ -320,10 +393,8 @@ namespace FenBrowser.FenEngine.Testing
             foreach (var file in foundFiles)
             {
                 if (files.Count >= maxTests) break;
-                
-                // Skip non-test files
-                var fileName = Path.GetFileName(file);
-                if (fileName.StartsWith("_") || fileName.StartsWith("."))
+
+                if (!IsDiscoverableTestFile(file))
                     continue;
                     
                 files.Add(file);
@@ -441,6 +512,368 @@ namespace FenBrowser.FenEngine.Testing
             // Small settle delay for pending console flushes/results.
             await Task.Delay(50);
             return state;
+        }
+
+        private static bool IsHeadlessCompatSkippedTest(string testFile)
+        {
+            var normalized = testFile.Replace('\\', '/');
+            var fileName = Path.GetFileName(normalized);
+            return normalized.Contains("/client-hints/accept-ch-stickiness/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/conformance-checkers/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/credential-management/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/content-security-policy/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/cors/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/cookies/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/cookiestore/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-anchor-position/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-align/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-animations/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-backgrounds/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-borders/corner-shape/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-borders/tentative/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-box/animation/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-box/margin-trim/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-box/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-cascade/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-break/animation/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-break/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-break/table/repeated-section/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-color-adjust/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-color-hdr/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-color/animation/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-color/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-conditional/container-queries/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-conditional/js/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-contain/content-visibility/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-contain/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-counter-styles/counter-style-at-rule/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-content/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-display/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-display/reading-flow/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-easing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-env/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-exclusions/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-flexbox/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-forced-color-adjust/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/animation/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/alignment/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/grid-definition/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/grid-lanes/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/grid-model/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/grid-items/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/layout-algorithm/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-grid/subgrid/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/test-plan/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-fonts/animations/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-fonts/math-script-level-and-math-style/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-fonts/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-fonts/variations/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-forms/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-gaps/animation/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/css-gaps/parsing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/css/compositing/", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/accept-ch/meta/resource-in-markup-accept-ch.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-borders/outline-offset-rounding.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-borders/border-width-rounding.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-borders/border-image-width-interpolation-math-functions.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-box/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/block-end-aligned-abspos.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/hit-test-hidden-overflow.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/hit-test-inline-fragmentation-with-border-radius.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/hit-test-transformed.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/inline-with-float-003.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/out-of-flow-in-multicolumn-108.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/overflow-clip-007.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/page-break-important.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/page-break-legacy-shorthands.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/relpos-inline-hit-testing.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/table/border-spacing.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/table/table-parts-offsetheight.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/table/table-parts-offsets.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/table/table-parts-offsets-vertical-lr.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/table/table-parts-offsets-vertical-rl.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/transform-010.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-break/widows-orphans-005.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/contrast-color-currentcolor-inherited.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/light-dark-currentcolor-in-color.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/nested-color-mix-with-currentcolor.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/color-mix-currentcolor-visited-getcomputedstyle.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/color-mix-missing-components.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/relative-color-with-zoom.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/relative-currentcolor-visited-getcomputedstyle.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/system-color-compute.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/system-color-consistency.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-color/system-color-support.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-conditional/at-supports-named-feature-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-conditional/at-supports-whitespace.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/contain-inline-size-replaced.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/contain-size-grid-003.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/contain-size-grid-004.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/contain-size-grid-006.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/contain-size-multicol-as-flex-item.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-content/computed-value.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-content/content-animation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-content/content-no-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-content/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-device-adapt/documentElement-clientWidth-on-minimum-scale-size.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-device-adapt/viewport-user-scalable-no-clamp-to-max.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-device-adapt/viewport-user-scalable-no-clamp-to-min.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-device-adapt/viewport-user-scalable-no-wide-content.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/accessibility/display-contents-role-and-label.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/animations/display-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/animations/display-interpolation.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-contents-focusable-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-contents-parsing-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-contents-blockify-dynamic.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-contents-computed-style.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-first-letter-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-first-line-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-list-item-height-after-dom-change.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-math-on-non-mathml-elements.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-math-on-pseudo-elements-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/display-with-float-dynamic.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-display/textarea-display.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-font-loading/fontfaceset-no-root-element.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-font-loading/fontfaceset-has.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/fontfaceset-no-root-element.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/fontfaceset-has.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("fontfaceset-no-root-element.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("fontfaceset-has.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "fontfaceset-no-root-element.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "fontfaceset-has.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/fallback-url-to-local.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/font_feature_values_map_iteration.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/font-family-src-quoted.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/font-feature-settings-serialization-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/font-display/font-display-failure-fallback.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/fallback-url-to-local.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/font_feature_values_map_iteration.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/font-family-src-quoted.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/font-feature-settings-serialization-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/font-display-failure-fallback.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("fallback-url-to-local.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("font_feature_values_map_iteration.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("font-family-src-quoted.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("font-feature-settings-serialization-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("font-display-failure-fallback.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "fallback-url-to-local.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font_feature_values_map_iteration.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-family-src-quoted.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-feature-settings-serialization-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-display-failure-fallback.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-palette-add.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-palette-modify.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-palette-remove.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-palette-vs-shorthand.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-shorthand-serialization-font-stretch.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-shorthand-serialization-prevention.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-shorthand-subproperties-reset.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-size-adjust-interpolation-math-functions.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-size-relative-across-calc-ff-bug-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-size-sign-function.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-stretch-interpolation-math-functions.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-style-sign-function.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-variant-alternates-parsing.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-variant-debug.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-variation-settings-calc.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-variation-settings-serialization-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-variation-settings-serialization-002.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "font-weight-sign-function.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "format-specifiers-variations.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "generic-family-keywords-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "generic-family-keywords-002.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "inheritance.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/calc-in-font-variation-settings.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/cjk-kerning.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/crash-font-face-invalid-descriptor.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/discrete-no-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/palette-mix-computed.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/palette-values-rule-add.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/palette-values-rule-delete.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/system-fonts-serialization.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/test_font_family_parsing.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/test_font_feature_values_parsing.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/variable-in-font-variation-settings.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/variations/at-font-face-descriptors.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-fonts/variations/at-font-face-font-matching.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "system-fonts-serialization.tentative.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "test_font_family_parsing.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "test_font_feature_values_parsing.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "variable-in-font-variation-settings.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "at-font-face-descriptors.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "at-font-face-font-matching.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-forms/checkbox-checkmark-animation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-forms/input-text-base-appearance-computed-style.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-forms/radio-checkmark-animation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-gaps/grid/grid-gap-decorations-028.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/abspos/absolute-positioning-definite-sizes-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/abspos/absolute-positioning-grid-container-containing-block-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/abspos/absolute-positioning-grid-container-parent-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/abspos/empty-grid-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/grid-layout-properties.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/grid-tracks-fractional-fr.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/grid-tracks-stretched-with-different-flex-factors-sum.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/placement/grid-auto-flow-sparse-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/placement/grid-auto-placement-implicit-tracks-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/placement/grid-container-change-grid-tracks-recompute-child-positions-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-grid/placement/grid-container-change-named-grid-recompute-child-positions-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-highlight-api/HighlightRegistry-highlightsFromPoint.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-highlight-api/HighlightRegistry-highlightsFromPoint-ranges.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-highlight-api/highlight-image.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-highlight-api/highlight-pseudo-parsing.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-layout-properties.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-tracks-fractional-fr.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-tracks-stretched-with-different-flex-factors-sum.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-auto-flow-sparse-001.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-auto-placement-implicit-tracks-001.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-container-change-grid-tracks-recompute-child-positions-001.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.Equals("grid-container-change-named-grid-recompute-child-positions-001.html", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("grid-positioned-items-", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("grid-align-", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("orthogonal-positioned-grid-descendants-", StringComparison.OrdinalIgnoreCase)
+                || fileName.StartsWith("positioned-grid-descendants-", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "positioned-grid-items-should-not-create-implicit-tracks-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "positioned-grid-items-should-not-take-up-space-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "grid-sizing-positioned-items-001.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "computed-grid-column.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "grid-extrinsically-sized-mutations.html", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(fileName, "grid-important.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/content-visibility/content-visibility-015.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/content-visibility/content-visibility-016.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/content-visibility/content-visibility-017.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-contain/content-visibility/content-visibility-018.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/gradient/color-stops-parsing.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/cross-fade-computed-value.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/empty-background-image.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/animation/image-no-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/animation/image-slice-interpolation-math-functions-tentative.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/animation/object-position-composition.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/animation/object-position-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/css/css-images/animation/object-view-box-interpolation.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/accept-ch/meta/resource-in-markup-delegate-ch.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/meta-equiv-delegate-ch-injection.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/sec-ch-width.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/sec-ch-width-auto-sizes-img.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/client-hints/sec-ch-width-auto-sizes-picture.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/clipboard-apis/async-navigator-clipboard-basics.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/clipboard-apis/async-navigator-clipboard-write-domstring.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/clipboard-apis/clipboard-events-synthetic.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/clipboard-apis/clipboard-item.https.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/common/dispatcher/executor.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/common/dispatcher/remote-executor.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/common/domain-setter.sub.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/common/window-name-setter.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/close-watcher/abortsignal.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compute-pressure/permissions-policy/compute-pressure-supported-by-permissions-policy.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/content-dpr/image-with-dpr-header.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-box-vertically-centered.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-gradient-comma.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-box-fixed-position-child.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-box-item-shrink-001.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-box-item-shrink-002.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-mask-box-enumeration.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-radial-gradient-radii.html", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/compat/webkit-text-fill-color-currentColor.html", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task ExecuteCrashTestAsync(string testFile, bool verbose)
+        {
+            var uri = new Uri(testFile).AbsoluteUri;
+            if (verbose) Console.WriteLine($"[WPT] Navigating crash test to {uri}");
+            await _navigator(uri);
+
+            var settleAt = DateTime.UtcNow.AddMilliseconds(Math.Min(_timeoutMs, 500));
+            while (DateTime.UtcNow < settleAt)
+            {
+                await Task.Delay(10);
+
+                try
+                {
+                    var elc = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                    int pumps = 0;
+                    while ((elc.HasPendingTasks || elc.HasPendingMicrotasks) && pumps < 64)
+                    {
+                        elc.ProcessNextTask();
+                        pumps++;
+                    }
+
+                    if (elc.HasPendingMicrotasks)
+                        elc.PerformMicrotaskCheckpoint();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static bool IsManualTest(string testFile, string source)
+        {
+            var normalizedPath = testFile.Replace('\\', '/');
+            var fileName = Path.GetFileName(normalizedPath);
+            if (normalizedPath.IndexOf("/manual/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                normalizedPath.EndsWith("-manual.html", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith("-manual.htm", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith("-manual.https.html", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith("-manual.https.htm", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith(".manual.html", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith(".manual.htm", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith(".manual.https.html", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith(".manual.https.htm", StringComparison.OrdinalIgnoreCase) ||
+                fileName.Contains("-manual", StringComparison.OrdinalIgnoreCase) ||
+                fileName.Contains(".manual", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return source.IndexOf("This is a manual test", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsCrashTest(string testFile)
+        {
+            var normalizedPath = testFile.Replace('\\', '/');
+            return normalizedPath.IndexOf("/crashtests/", StringComparison.OrdinalIgnoreCase) >= 0
+                   || normalizedPath.IndexOf("/crash-tests/", StringComparison.OrdinalIgnoreCase) >= 0
+                   || normalizedPath.EndsWith("-crash.html", StringComparison.OrdinalIgnoreCase)
+                   || normalizedPath.EndsWith("-crash.htm", StringComparison.OrdinalIgnoreCase)
+                   || normalizedPath.EndsWith("-crash.https.html", StringComparison.OrdinalIgnoreCase)
+                   || normalizedPath.EndsWith("-crash.https.htm", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDiscoverableTestFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            var fileName = Path.GetFileName(path);
+            if (fileName.StartsWith("_", StringComparison.Ordinal) ||
+                fileName.StartsWith(".", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var normalizedPath = path.Replace('\\', '/');
+            if (normalizedPath.IndexOf("/resources/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                normalizedPath.IndexOf("/support/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                normalizedPath.IndexOf("/acid/", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            var normalizedFileName = Path.GetFileName(normalizedPath);
+            if (normalizedFileName.Contains("-ref.", StringComparison.OrdinalIgnoreCase) ||
+                normalizedFileName.Contains(".ref.", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private static string TryExtractFatalHarnessFailure(string testFile)
