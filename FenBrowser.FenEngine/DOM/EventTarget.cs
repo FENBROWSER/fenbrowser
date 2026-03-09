@@ -274,16 +274,25 @@ namespace FenBrowser.FenEngine.DOM
                     var evtVal = FenValue.FromObject(evt);
                     var args = new FenValue[] { evtVal };
 
-                    if (context.ExecuteFunction != null && callback.IsFunction)
+                    // UI Events §4.3.2: passive listeners must not be able to call preventDefault().
+                    if (listener.Passive) evt.IsPassiveContext = true;
+                    try
                     {
-                        context.ThisBinding = callbackThis;
-                        context.ExecuteFunction(callback, args);
+                        if (context.ExecuteFunction != null && callback.IsFunction)
+                        {
+                            context.ThisBinding = callbackThis;
+                            context.ExecuteFunction(callback, args);
+                        }
+                        else
+                        {
+                            context.CheckCallStackLimit();
+                            context.CheckExecutionTimeLimit();
+                            callbackFn.Invoke(args, context, callbackThis);
+                        }
                     }
-                    else
+                    finally
                     {
-                        context.CheckCallStackLimit();
-                        context.CheckExecutionTimeLimit();
-                        callbackFn.Invoke(args, context, callbackThis);
+                        if (listener.Passive) evt.IsPassiveContext = false;
                     }
 
                     // Mirror top-level invoker semantics so assignment-based legacy flags
@@ -424,6 +433,10 @@ namespace FenBrowser.FenEngine.DOM
                 var cap = capVal.IsBoolean && capVal.ToBoolean();
                 if (cap != capturePhase) continue;
 
+                // UI Events §4.3.2: honour passive flag so preventDefault() is suppressed.
+                var passiveVal = entry.Get("passive", context);
+                var isPassive = passiveVal.IsBoolean && passiveVal.ToBoolean();
+                if (isPassive) evt.IsPassiveContext = true;
                 try
                 {
                     callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
@@ -431,6 +444,10 @@ namespace FenBrowser.FenEngine.DOM
                 catch (Exception ex)
                 {
                     FenLogger.Error($"[EventTarget] FenRuntime listener error for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                }
+                finally
+                {
+                    if (isPassive) evt.IsPassiveContext = false;
                 }
 
                 var onceVal = entry.Get("once", context);

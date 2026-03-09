@@ -9,29 +9,29 @@ namespace FenBrowser.Host.ProcessIsolation
 {
     /// <summary>
     /// Manages a cross-process shared memory region for transferring rendered frame pixels.
-    /// Each tab gets one fixed 32MB region (max 4K resolution at BGRA32).
-    /// The renderer child creates it; the host opens it.
+    /// Each tab's region is sized to its actual window dimensions (capped at 4K UHD),
+    /// so a 1280×720 tab uses ~3.5MB instead of the former fixed 33MB.
+    /// The renderer child creates it; the host opens it by mapping the entire file (size=0).
     /// </summary>
     public sealed class FrameSharedMemory : IDisposable
     {
-        // Max frame size: 4K UHD
+        // Absolute upper bound — no single tab can exceed 4K UHD.
         public const int MaxWidth = 3840;
         public const int MaxHeight = 2160;
-        public const int BytesPerPixel = 4; // BGRA
-        public const int RegionBytes = MaxWidth * MaxHeight * BytesPerPixel; // ~33MB
+        public const int BytesPerPixel = 4; // BGRA32
 
         // Header layout at start of MMF (32 bytes):
-        // [0..3]   int FrameWidth
-        // [4..7]   int FrameHeight
-        // [8..11]  uint SequenceNumber
-        // [12..15] int Reserved
+        // [0..3]   int  FrameWidth        — width of the most-recently-written frame
+        // [4..7]   int  FrameHeight       — height of the most-recently-written frame
+        // [8..11]  uint SequenceNumber    — incremented on every WriteFrame
+        // [12..15] int  RegionCapacity    — pixel-byte capacity of this MMF (excluding header)
         // [16..31] padding
-        // Pixel data starts at offset 32
+        // Pixel data starts at offset 32.
         private const int HeaderSize = 32;
-        private const int OffsetWidth = 0;
-        private const int OffsetHeight = 4;
-        private const int OffsetSeq = 8;
-        private const long TotalSize = HeaderSize + RegionBytes;
+        private const int OffsetWidth    = 0;
+        private const int OffsetHeight   = 4;
+        private const int OffsetSeq      = 8;
+        private const int OffsetCapacity = 12;
 
         private readonly string _mmfName;
         private readonly string _readyEventName;
@@ -39,10 +39,12 @@ namespace FenBrowser.Host.ProcessIsolation
         private MemoryMappedViewAccessor _accessor;
         private EventWaitHandle _readyEvent;
         private readonly bool _isWriter;
+        private readonly int _regionCapacity; // pixel bytes, excluding header
         private bool _disposed;
 
         private FrameSharedMemory(string mmfName, string readyEventName, bool isWriter,
-            MemoryMappedFile mmf, MemoryMappedViewAccessor accessor, EventWaitHandle readyEvent)
+            MemoryMappedFile mmf, MemoryMappedViewAccessor accessor, EventWaitHandle readyEvent,
+            int regionCapacity)
         {
             _mmfName = mmfName;
             _readyEventName = readyEventName;
@@ -50,6 +52,15 @@ namespace FenBrowser.Host.ProcessIsolation
             _mmf = mmf;
             _accessor = accessor;
             _readyEvent = readyEvent;
+            _regionCapacity = regionCapacity;
+        }
+
+        /// <summary>Compute the pixel-byte capacity for a given window size (capped at 4K).</summary>
+        public static int ComputeRegionCapacity(int windowWidth, int windowHeight)
+        {
+            int w = Math.Max(1, Math.Min(windowWidth,  MaxWidth));
+            int h = Math.Max(1, Math.Min(windowHeight, MaxHeight));
+            return w * h * BytesPerPixel;
         }
 
         public static string MakeMmfName(int tabId, int parentPid) =>
@@ -60,10 +71,16 @@ namespace FenBrowser.Host.ProcessIsolation
 
         /// <summary>
         /// Writer constructor (renderer child): creates the MMF and ready event.
+        /// The MMF is sized to the actual window dimensions (capped at 4K) rather than
+        /// a fixed 33MB ceiling, so memory usage scales with the real viewport.
         /// Falls back from Global\ to session-local naming if access is denied.
         /// </summary>
-        public static FrameSharedMemory CreateForWriter(int tabId, int parentPid)
+        public static FrameSharedMemory CreateForWriter(int tabId, int parentPid,
+            int windowWidth = MaxWidth, int windowHeight = MaxHeight)
         {
+            int regionCapacity = ComputeRegionCapacity(windowWidth, windowHeight);
+            long totalSize = HeaderSize + regionCapacity;
+
             var baseMmfName = MakeMmfName(tabId, parentPid);
             var baseEventName = MakeEventName(tabId, parentPid);
 
@@ -75,7 +92,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 var candidate = prefix + baseMmfName;
                 try
                 {
-                    mmf = MemoryMappedFile.CreateNew(candidate, TotalSize, MemoryMappedFileAccess.ReadWrite);
+                    mmf = MemoryMappedFile.CreateNew(candidate, totalSize, MemoryMappedFileAccess.ReadWrite);
                     usedMmfName = candidate;
                     break;
                 }
@@ -114,10 +131,14 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            var accessor = mmf.CreateViewAccessor(0, TotalSize, MemoryMappedFileAccess.ReadWrite);
+            // Map the full region and record the capacity in the header so the reader
+            // can validate frames without needing the size out-of-band.
+            var accessor = mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
+            accessor.Write(OffsetCapacity, regionCapacity);
 
-            FenLogger.Info($"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', size={TotalSize} bytes.", LogCategory.General);
-            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: true, mmf, accessor, readyEvent);
+            FenLogger.Info($"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', " +
+                $"window={windowWidth}×{windowHeight}, regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
+            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: true, mmf, accessor, readyEvent, regionCapacity);
         }
 
         /// <summary>
@@ -181,10 +202,19 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            var accessor = mmf.CreateViewAccessor(0, TotalSize, MemoryMappedFileAccess.ReadWrite);
+            // size=0 maps the entire file — no need to know the region size upfront.
+            var accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
 
-            FenLogger.Info($"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}'.", LogCategory.General);
-            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: false, mmf, accessor, readyEvent);
+            // Read the capacity the writer stamped into the header.
+            int regionCapacity = accessor.ReadInt32(OffsetCapacity);
+            if (regionCapacity <= 0 || regionCapacity > MaxWidth * MaxHeight * BytesPerPixel)
+            {
+                FenLogger.Warn($"[FrameSharedMemory] Invalid region capacity {regionCapacity} in header; clamping to max.", LogCategory.General);
+                regionCapacity = MaxWidth * MaxHeight * BytesPerPixel;
+            }
+
+            FenLogger.Info($"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
+            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: false, mmf, accessor, readyEvent, regionCapacity);
         }
 
         /// <summary>
@@ -196,9 +226,9 @@ namespace FenBrowser.Host.ProcessIsolation
             if (_accessor == null || _disposed) return;
 
             int pixelBytes = width * height * BytesPerPixel;
-            if (pixelBytes > RegionBytes)
+            if (pixelBytes > _regionCapacity)
             {
-                FenLogger.Warn($"[FrameSharedMemory] Frame too large: {width}x{height} ({pixelBytes} bytes > {RegionBytes}).", LogCategory.Rendering);
+                FenLogger.Warn($"[FrameSharedMemory] Frame too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
                 return;
             }
 
@@ -243,9 +273,9 @@ namespace FenBrowser.Host.ProcessIsolation
             if (width <= 0 || height <= 0) return null;
 
             int pixelBytes = width * height * BytesPerPixel;
-            if (pixelBytes > RegionBytes)
+            if (pixelBytes > _regionCapacity)
             {
-                FenLogger.Warn($"[FrameSharedMemory] Read: reported frame dimensions too large: {width}x{height}.", LogCategory.Rendering);
+                FenLogger.Warn($"[FrameSharedMemory] Read: reported frame dimensions too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
                 return null;
             }
 

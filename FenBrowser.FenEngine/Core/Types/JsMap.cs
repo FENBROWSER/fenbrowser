@@ -10,14 +10,24 @@ namespace FenBrowser.FenEngine.Core.Types
     {
         private class JsValueEqualityComparer : IEqualityComparer<IValue>
         {
+            // ECMA-262 §24.1.1.2: Map key comparison uses SameValueZero.
+            // SameValueZero(x, y) differs from StrictEquals only for NaN: NaN ===SameValueZero NaN.
             public bool Equals(IValue x, IValue y)
             {
                 if (ReferenceEquals(x, y)) return true;
-                if (x  == null || y  == null) return false;
+                if (x == null || y == null) return false;
+                if (x is FenValue xv && y is FenValue yv &&
+                    xv.Type == Interfaces.ValueType.Number && double.IsNaN(xv._numberValue) &&
+                    yv.Type == Interfaces.ValueType.Number && double.IsNaN(yv._numberValue))
+                    return true;
                 return x.StrictEquals(y);
             }
+
             public int GetHashCode(IValue obj)
             {
+                // Normalise NaN so all NaN keys land in the same bucket.
+                if (obj is FenValue v && v.Type == Interfaces.ValueType.Number && double.IsNaN(v._numberValue))
+                    return HashCode.Combine(Interfaces.ValueType.Number, double.NaN.GetHashCode());
                 return obj.GetHashCode();
             }
         }

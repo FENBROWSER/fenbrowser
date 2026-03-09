@@ -156,6 +156,10 @@ namespace FenBrowser.FenEngine.Scripting
         {
             if (string.IsNullOrWhiteSpace(source)) return string.Empty;
 
+            // Pre-join multi-line export { ... } blocks into single lines so the
+            // per-line processor below can parse them in one pass.
+            source = CollapseMultiLineNamedExports(source);
+
             var sb = new StringBuilder();
             bool defaultDeclared = false;
 
@@ -165,12 +169,16 @@ namespace FenBrowser.FenEngine.Scripting
                 while ((line = reader.ReadLine()) != null)
                 {
                     var trimmed = line.TrimStart();
+
+                    // ── import statements ──────────────────────────────────────────────
+                    // Stripped; importers rely on exported names being in global scope.
                     if (trimmed.StartsWith("import ", StringComparison.Ordinal))
                     {
                         sb.AppendLine("// import stripped: " + trimmed);
                         continue;
                     }
 
+                    // ── export default ────────────────────────────────────────────────
                     if (trimmed.StartsWith("export default ", StringComparison.Ordinal))
                     {
                         var tail = line.Substring(line.IndexOf("export default ", StringComparison.Ordinal) + "export default ".Length);
@@ -184,16 +192,46 @@ namespace FenBrowser.FenEngine.Scripting
                         continue;
                     }
 
-                    if (trimmed.StartsWith("export {", StringComparison.Ordinal) || trimmed.StartsWith("export *", StringComparison.Ordinal))
+                    // ── export * from '...' ───────────────────────────────────────────
+                    // Cannot resolve without a full module graph; strip.
+                    if (trimmed.StartsWith("export *", StringComparison.Ordinal))
                     {
-                        sb.AppendLine("// export stripped: " + trimmed);
+                        sb.AppendLine("// re-export stripped: " + trimmed);
                         continue;
                     }
 
+                    // ── export { a, b as c [, ...] } [from '...'] ────────────────────
+                    // Re-exports (with 'from') cannot be resolved here; strip them.
+                    // Named local exports: publish each binding onto window so that
+                    // sibling modules whose import statements were stripped can find them
+                    // as globals — matching how stripped `import { a }` resolves names.
+                    if (trimmed.StartsWith("export {", StringComparison.Ordinal))
+                    {
+                        bool isReExport = trimmed.Contains(" from '") || trimmed.Contains(" from \"");
+                        if (isReExport)
+                        {
+                            sb.AppendLine("// re-export stripped: " + trimmed);
+                            continue;
+                        }
+
+                        EmitNamedExportBindings(trimmed, sb);
+                        continue;
+                    }
+
+                    // ── export function / export class / export const / export let / export var ──
+                    // Strip the `export` keyword; the declaration remains in scope and the
+                    // name is subsequently registered on window by the generic emit below.
                     if (trimmed.StartsWith("export ", StringComparison.Ordinal))
                     {
                         var idx = line.IndexOf("export ", StringComparison.Ordinal);
                         if (idx >= 0) line = line.Remove(idx, "export ".Length);
+                        trimmed = line.TrimStart();
+
+                        // After stripping 'export', emit the declaration then register the name
+                        // on window for cross-module visibility.
+                        sb.AppendLine(line);
+                        EmitInlineExportBinding(trimmed, sb);
+                        continue;
                     }
 
                     sb.AppendLine(line);
@@ -201,6 +239,98 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return sb.ToString();
+        }
+
+        // Emits window assignments for `export { a, b as c }` bindings.
+        private static void EmitNamedExportBindings(string trimmed, StringBuilder sb)
+        {
+            var braceOpen = trimmed.IndexOf('{');
+            var braceClose = trimmed.IndexOf('}');
+            if (braceOpen < 0 || braceClose <= braceOpen)
+            {
+                sb.AppendLine("// export stripped (unparseable): " + trimmed);
+                return;
+            }
+
+            var inner = trimmed.Substring(braceOpen + 1, braceClose - braceOpen - 1);
+            sb.AppendLine("// named export → global bindings:");
+            foreach (var binding in inner.Split(','))
+            {
+                var parts = binding.Trim().Split(new[] { " as " }, 2, StringSplitOptions.None);
+                var localName   = parts[0].Trim();
+                var exportedName = parts.Length > 1 ? parts[1].Trim() : localName;
+                if (string.IsNullOrEmpty(localName)) continue;
+                // ECMA-262 §16.2.3 ExportClause: publish localName as exportedName in global scope.
+                sb.AppendLine($"try {{ if (typeof window !== 'undefined' && typeof {localName} !== 'undefined') window['{exportedName}'] = {localName}; }} catch(e) {{}}");
+            }
+        }
+
+        // For `export function foo`, `export const x = ...`, etc. — after stripping `export`,
+        // register the declared name on window for cross-module visibility.
+        private static void EmitInlineExportBinding(string declLine, StringBuilder sb)
+        {
+            string name = null;
+            if (declLine.StartsWith("function ", StringComparison.Ordinal) ||
+                declLine.StartsWith("async function ", StringComparison.Ordinal) ||
+                declLine.StartsWith("function* ", StringComparison.Ordinal))
+            {
+                // function foo(...) { → extract "foo"
+                var afterKeyword = declLine.IndexOf("function", StringComparison.Ordinal) + "function".Length;
+                if (declLine[afterKeyword] == '*') afterKeyword++; // generator
+                name = ExtractIdentifier(declLine, afterKeyword);
+            }
+            else if (declLine.StartsWith("class ", StringComparison.Ordinal))
+            {
+                name = ExtractIdentifier(declLine, "class ".Length);
+            }
+            // const/let/var: registration via `export { name }` pattern is emitted separately
+            // when the user writes `export const x = …`; the declaration itself is already global.
+
+            if (!string.IsNullOrEmpty(name))
+                sb.AppendLine($"try {{ if (typeof window !== 'undefined' && typeof {name} !== 'undefined') window['{name}'] = {name}; }} catch(e) {{}}");
+        }
+
+        private static string ExtractIdentifier(string s, int startIndex)
+        {
+            while (startIndex < s.Length && (s[startIndex] == ' ' || s[startIndex] == '\t'))
+                startIndex++;
+            int end = startIndex;
+            while (end < s.Length && (char.IsLetterOrDigit(s[end]) || s[end] == '_' || s[end] == '$'))
+                end++;
+            return end > startIndex ? s.Substring(startIndex, end - startIndex) : null;
+        }
+
+        // Collapses multi-line `export {\n  a,\n  b\n}` into a single line so the
+        // per-line processor can handle it.  Only collapses export-brace blocks.
+        private static string CollapseMultiLineNamedExports(string source)
+        {
+            // Fast path: no multi-line export block
+            if (!System.Text.RegularExpressions.Regex.IsMatch(source, @"export\s*\{[^}]*\n", System.Text.RegularExpressions.RegexOptions.None))
+                return source;
+
+            var result = new StringBuilder(source.Length);
+            bool inExportBrace = false;
+            foreach (char ch in source)
+            {
+                if (!inExportBrace)
+                {
+                    result.Append(ch);
+                    // Detect start of export { by checking the last few chars
+                    if (ch == '{')
+                    {
+                        var s = result.ToString();
+                        if (System.Text.RegularExpressions.Regex.IsMatch(s, @"export\s*\{$"))
+                            inExportBrace = true;
+                    }
+                }
+                else
+                {
+                    if (ch == '\n' || ch == '\r') result.Append(' ');
+                    else result.Append(ch);
+                    if (ch == '}') inExportBrace = false;
+                }
+            }
+            return result.ToString();
         }
 
         private sealed class ModuleCode
