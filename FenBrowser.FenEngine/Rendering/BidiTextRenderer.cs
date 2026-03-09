@@ -181,64 +181,119 @@ namespace FenBrowser.FenEngine.Rendering
 
         #region Level Resolution
 
+        // UAX#9 §3.3–3.4 (simplified — no embedding-level stack; handles common LTR/RTL mixing).
         private static int[] ResolveEmbeddingLevels(BidiType[] types, int baseLevel)
         {
-            var levels = new int[types.Length];
-            
-            // Initialize with base level
-            for (int i = 0; i < levels.Length; i++)
+            // Work on a mutable type array so W-rules can modify classifications in place.
+            var t = (BidiType[])types.Clone();
+
+            // W1: NSM inherits the type of the preceding character.
+            for (int i = 0; i < t.Length; i++)
             {
-                levels[i] = baseLevel;
+                if (t[i] == BidiType.NSM)
+                    t[i] = i > 0 ? t[i - 1] : ((baseLevel & 1) == 1 ? BidiType.R : BidiType.L);
             }
 
-            // Resolve strong types
-            int currentLevel = baseLevel;
-            for (int i = 0; i < types.Length; i++)
+            // W2: EN following AL becomes AN.
+            var lastStrong = (baseLevel & 1) == 1 ? BidiType.R : BidiType.L;
+            for (int i = 0; i < t.Length; i++)
             {
-                switch (types[i])
-                {
-                    case BidiType.L:
-                        levels[i] = currentLevel;
-                        if (currentLevel % 2 == 1) currentLevel--; // Back to LTR
-                        break;
-                    case BidiType.R:
-                    case BidiType.AL:
-                        levels[i] = currentLevel % 2 == 0 ? currentLevel + 1 : currentLevel;
-                        currentLevel = levels[i];
-                        break;
-                    case BidiType.EN:
-                    case BidiType.AN:
-                        // Numbers take direction from surrounding context
-                        levels[i] = currentLevel;
-                        break;
-                    default:
-                        levels[i] = currentLevel;
-                        break;
-                }
+                if (t[i] == BidiType.R || t[i] == BidiType.L || t[i] == BidiType.AL) lastStrong = t[i];
+                else if (t[i] == BidiType.EN && lastStrong == BidiType.AL) t[i] = BidiType.AN;
             }
 
-            // Resolve neutrals (take direction from surrounding strong types)
-            ResolveNeutrals(types, levels);
+            // W3: AL → R.
+            for (int i = 0; i < t.Length; i++)
+                if (t[i] == BidiType.AL) t[i] = BidiType.R;
+
+            // W4: Single ES/CS between matching number types inherits that type.
+            for (int i = 1; i < t.Length - 1; i++)
+            {
+                if ((t[i] == BidiType.ES || t[i] == BidiType.CS) &&
+                    t[i - 1] == t[i + 1] &&
+                    (t[i - 1] == BidiType.EN || t[i - 1] == BidiType.AN))
+                    t[i] = t[i - 1];
+            }
+
+            // W5: ET adjacent to EN becomes EN.
+            for (int i = 0; i < t.Length; i++)
+            {
+                if (t[i] == BidiType.ET &&
+                    ((i > 0 && t[i - 1] == BidiType.EN) ||
+                     (i < t.Length - 1 && t[i + 1] == BidiType.EN)))
+                    t[i] = BidiType.EN;
+            }
+
+            // W6: Remaining separators and terminators → ON.
+            for (int i = 0; i < t.Length; i++)
+                if (t[i] == BidiType.ES || t[i] == BidiType.ET || t[i] == BidiType.CS)
+                    t[i] = BidiType.ON;
+
+            // W7: EN following last strong L → L.
+            lastStrong = (baseLevel & 1) == 1 ? BidiType.R : BidiType.L;
+            for (int i = 0; i < t.Length; i++)
+            {
+                if (t[i] == BidiType.R || t[i] == BidiType.L) lastStrong = t[i];
+                else if (t[i] == BidiType.EN && lastStrong == BidiType.L) t[i] = BidiType.L;
+            }
+
+            // Assign levels from resolved strong types.
+            var levels = new int[t.Length];
+            for (int i = 0; i < t.Length; i++)
+            {
+                if (t[i] == BidiType.R)      levels[i] = (baseLevel & ~1) | 1; // next odd
+                else if (t[i] == BidiType.L) levels[i] = baseLevel & ~1;       // next even
+                else                          levels[i] = baseLevel;
+            }
+
+            // N1-N2: Neutrals between same-direction strong types take that direction;
+            // otherwise take the embedding direction.
+            ResolveNeutrals(t, levels, baseLevel);
+
+            // L1: Reset trailing whitespace/separators to base level.
+            for (int i = t.Length - 1; i >= 0; i--)
+            {
+                if (t[i] == BidiType.WS || t[i] == BidiType.S || t[i] == BidiType.B)
+                    levels[i] = baseLevel;
+                else if (t[i] != BidiType.NSM)
+                    break;
+            }
 
             return levels;
         }
 
-        private static void ResolveNeutrals(BidiType[] types, int[] levels)
+        private static void ResolveNeutrals(BidiType[] t, int[] levels, int baseLevel)
         {
-            for (int i = 0; i < types.Length; i++)
+            BidiType embedDir = (baseLevel & 1) == 1 ? BidiType.R : BidiType.L;
+
+            for (int i = 0; i < t.Length; i++)
             {
-                if (types[i] == BidiType.WS || types[i] == BidiType.ON ||
-                    types[i] == BidiType.ES || types[i] == BidiType.CS)
+                if (!IsNeutral(t[i])) continue;
+
+                // Find the nearest preceding strong type.
+                BidiType before = embedDir;
+                for (int j = i - 1; j >= 0; j--)
                 {
-                    // Look for surrounding strong characters
-                    int prevLevel = i > 0 ? levels[i - 1] : levels[i];
-                    int nextLevel = i < levels.Length - 1 ? levels[i + 1] : levels[i];
-                    
-                    // Take the higher level (more embedded)
-                    levels[i] = Math.Max(prevLevel, nextLevel);
+                    if (t[j] == BidiType.L || t[j] == BidiType.R) { before = t[j]; break; }
                 }
+
+                // Find the nearest following strong type.
+                BidiType after = embedDir;
+                for (int j = i + 1; j < t.Length; j++)
+                {
+                    if (t[j] == BidiType.L || t[j] == BidiType.R) { after = t[j]; break; }
+                }
+
+                // N1: Same strong type on both sides → take that type.
+                // N2: Otherwise → take embedding direction.
+                BidiType resolved = (before == after) ? before : embedDir;
+                levels[i] = resolved == BidiType.R ? (levels[i] | 1) : (levels[i] & ~1);
             }
         }
+
+        private static bool IsNeutral(BidiType t)
+            => t == BidiType.WS || t == BidiType.ON || t == BidiType.S ||
+               t == BidiType.B  || t == BidiType.BN;
 
         #endregion
 
