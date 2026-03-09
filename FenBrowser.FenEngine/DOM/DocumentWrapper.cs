@@ -25,6 +25,7 @@ namespace FenBrowser.FenEngine.DOM
         private IObject _prototype;
         private string _readyState = "loading"; // Spec compliant default
         private readonly Dictionary<string, FenValue> _expando = new Dictionary<string, FenValue>(StringComparer.Ordinal);
+        private FenObject _fonts;
         public object NativeObject { get; set; }
 
         public DocumentWrapper(Node root, IExecutionContext context, Uri baseUri = null)
@@ -132,6 +133,9 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "domain":
                     return FenValue.FromString(_baseUri?.Host ?? "");
+
+                case "fonts":
+                    return _fonts != null ? FenValue.FromObject(_fonts) : FenValue.Undefined;
 
                 case "implementation":
                     // DOMImplementation interface
@@ -292,7 +296,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "implementation" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -354,6 +358,11 @@ namespace FenBrowser.FenEngine.DOM
             
             // Dispatch readystatechange
             DispatchEventInternal(new DomEvent("readystatechange", false, false, false, _context));
+        }
+
+        internal void AttachFonts(FenObject fonts)
+        {
+            _fonts = fonts;
         }
 
         private void DispatchEventInternal(DomEvent evt)
