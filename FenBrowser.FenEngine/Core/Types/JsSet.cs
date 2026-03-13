@@ -37,6 +37,10 @@ namespace FenBrowser.FenEngine.Core.Types
             _context = context;
             Set("size", FenValue.FromNumber(0));
 
+            // ECMA-262 §24.2.3.12: Set.prototype[@@toStringTag] = "Set"
+            if (JsSymbol.ToStringTag != null)
+                Set(JsSymbol.ToStringTag.ToPropertyKey(), FenValue.FromString("Set"));
+
             Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
             {
                 var val = args.Length > 0 ? args[0] : FenValue.Undefined;

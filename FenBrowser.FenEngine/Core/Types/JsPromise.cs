@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Engine;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.EventLoop;
 
@@ -20,6 +22,10 @@ namespace FenBrowser.FenEngine.Core.Types
         private readonly List<Reaction> _reactions = new List<Reaction>();
         private readonly IExecutionContext _context;
 
+        // WHATWG §9.4 — unhandled rejection tracking
+        // True when this promise was rejected and no rejection handler was yet attached.
+        private bool _rejectionIsUnhandled = false;
+
         /// <summary>True when the promise has been resolved or rejected.</summary>
         public bool IsSettled => _state != PromiseState.Pending;
         /// <summary>True when the promise was fulfilled.</summary>
@@ -34,6 +40,60 @@ namespace FenBrowser.FenEngine.Core.Types
             public JsPromise Capability;
             public FenValue OnFulfilled;
             public FenValue OnRejected;
+        }
+
+        private static FenValue NormalizeRejectionReason(FenValue reason)
+        {
+            if (!reason.IsError)
+            {
+                return reason;
+            }
+
+            var raw = reason.AsError() ?? "Error";
+            var name = "Error";
+            var message = raw;
+            var colonIndex = raw.IndexOf(':');
+            if (colonIndex > 0)
+            {
+                name = raw.Substring(0, colonIndex).Trim();
+                message = raw.Substring(colonIndex + 1).TrimStart();
+            }
+
+            var error = new FenObject { InternalClass = "Error" };
+            error.Set("name", FenValue.FromString(name));
+            error.Set("message", FenValue.FromString(message));
+            return FenValue.FromObject(error);
+        }
+
+        private static List<string> GetPromiseInputKeys(FenObject source, IExecutionContext context)
+        {
+            var keys = new List<string>();
+            if (source == null)
+            {
+                return keys;
+            }
+
+            var lengthValue = source.Get("length", context);
+            if (lengthValue.IsNumber)
+            {
+                int length = (int)lengthValue.ToNumber();
+                if (length < 0)
+                {
+                    length = 0;
+                }
+
+                for (int i = 0; i < length; i++)
+                {
+                    keys.Add(i.ToString());
+                }
+
+                return keys;
+            }
+
+            return source.Keys(context)
+                .Where(key => !string.Equals(key, "length", StringComparison.Ordinal))
+                .OrderBy(key => int.TryParse(key, out var n) ? n : int.MaxValue)
+                .ToList();
         }
 
         // --- Constructors ---
@@ -146,9 +206,32 @@ namespace FenBrowser.FenEngine.Core.Types
         private void RejectPromise(FenValue reason)
         {
             if (_state != PromiseState.Pending) return;
-            _result = reason;
+            _result = NormalizeRejectionReason(reason);
             _state = PromiseState.Rejected;
+
+            // WHATWG §9.4 — HostPromiseRejectionTracker (operation: "reject")
+            // If no rejection handler is currently attached, mark as potentially unhandled.
+            bool hasRejectionHandler = _reactions.Any(r => r.OnRejected.IsFunction);
+            if (!hasRejectionHandler)
+            {
+                _rejectionIsUnhandled = true;
+                // Schedule microtask to check — if still unhandled after current microtask checkpoint,
+                // emit the warning (handlers may be attached synchronously after rejection).
+                EventLoopCoordinator.Instance.ScheduleMicrotask(CheckUnhandledRejection);
+            }
+
             TriggerReactions();
+        }
+
+        private void CheckUnhandledRejection()
+        {
+            // WHATWG §9.4 — HostPromiseRejectionTracker (operation: "handle" check)
+            // If _rejectionIsUnhandled is still true here, no handler was attached.
+            if (_rejectionIsUnhandled)
+            {
+                var reasonStr = _result.IsUndefined ? "(undefined)" : _result.ToString();
+                FenLogger.Warn($"[Promise] Unhandled promise rejection: {reasonStr}", LogCategory.JavaScript);
+            }
         }
 
         private void TriggerReactions()
@@ -216,6 +299,13 @@ namespace FenBrowser.FenEngine.Core.Types
             }
             else
             {
+                // WHATWG §9.4 — HostPromiseRejectionTracker (operation: "handle")
+                // A rejection handler is now being attached to an already-rejected promise — it is handled.
+                if (_state == PromiseState.Rejected && onRejected.IsFunction)
+                {
+                    _rejectionIsUnhandled = false;
+                }
+
                 EventLoopCoordinator.Instance.ScheduleMicrotask(() => ExecuteReaction(reaction));
             }
 
@@ -281,14 +371,14 @@ namespace FenBrowser.FenEngine.Core.Types
             
             if (!(iterable.AsObject() is FenObject arr))
             {
-                resultPromise.ResolvePromise(FenValue.FromObject(new FenObject()));
+                resultPromise.ResolvePromise(FenValue.FromObject(FenObject.CreateArray()));
                 return resultPromise;
             }
             
-            var keys = arr.Keys().OrderBy(k => int.TryParse(k, out var n) ? n : int.MaxValue).ToList();
+            var keys = GetPromiseInputKeys(arr, context);
             if (keys.Count == 0)
             {
-                resultPromise.ResolvePromise(FenValue.FromObject(new FenObject()));
+                resultPromise.ResolvePromise(FenValue.FromObject(FenObject.CreateArray()));
                 return resultPromise;
             }
             
@@ -316,7 +406,7 @@ namespace FenBrowser.FenEngine.Core.Types
                         remaining--;
                         if (remaining == 0)
                         {
-                            var resultArray = new FenObject { InternalClass = "Array" };
+                            var resultArray = FenObject.CreateArray();
                             for (int j = 0; j < results.Length; j++)
                             {
                                 resultArray.Set(j.ToString(), results[j], context);
@@ -352,7 +442,7 @@ namespace FenBrowser.FenEngine.Core.Types
             }
             
             bool settled = false;
-            foreach (var key in arr.Keys())
+            foreach (var key in GetPromiseInputKeys(arr, context))
             {
                 var item = arr.Get(key, context);
                 JsPromise promise = item.AsObject() as JsPromise;
@@ -396,17 +486,17 @@ namespace FenBrowser.FenEngine.Core.Types
                 // Reject with AggregateError for empty iterable
                 var aggError = new FenObject { InternalClass = "AggregateError" };
                 aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
-                aggError.Set("errors", FenValue.FromObject(new FenObject { InternalClass = "Array" }), context);
+                aggError.Set("errors", FenValue.FromObject(FenObject.CreateArray()), context);
                 resultPromise.RejectPromise(FenValue.FromObject(aggError));
                 return resultPromise;
             }
             
-            var keys = arr.Keys().ToList();
+            var keys = GetPromiseInputKeys(arr, context);
             if (keys.Count == 0)
             {
                 var aggError = new FenObject { InternalClass = "AggregateError" };
                 aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
-                aggError.Set("errors", FenValue.FromObject(new FenObject { InternalClass = "Array" }), context);
+                aggError.Set("errors", FenValue.FromObject(FenObject.CreateArray()), context);
                 resultPromise.RejectPromise(FenValue.FromObject(aggError));
                 return resultPromise;
             }
@@ -443,7 +533,7 @@ namespace FenBrowser.FenEngine.Core.Types
                         {
                             var aggError = new FenObject { InternalClass = "AggregateError" };
                             aggError.Set("message", FenValue.FromString("All promises were rejected"), context);
-                            var errArray = new FenObject { InternalClass = "Array" };
+                            var errArray = FenObject.CreateArray();
                             for (int i = 0; i < errors.Count; i++)
                             {
                                 errArray.Set(i.ToString(), errors[i], context);
@@ -467,17 +557,15 @@ namespace FenBrowser.FenEngine.Core.Types
             
             if (!(iterable.AsObject() is FenObject arr))
             {
-                var emptyArray = new FenObject { InternalClass = "Array" };
-                emptyArray.Set("length", FenValue.FromNumber(0), context);
+                var emptyArray = FenObject.CreateArray();
                 resultPromise.ResolvePromise(FenValue.FromObject(emptyArray));
                 return resultPromise;
             }
             
-            var keys = arr.Keys().OrderBy(k => int.TryParse(k, out var n) ? n : int.MaxValue).ToList();
+            var keys = GetPromiseInputKeys(arr, context);
             if (keys.Count == 0)
             {
-                var emptyArray = new FenObject { InternalClass = "Array" };
-                emptyArray.Set("length", FenValue.FromNumber(0), context);
+                var emptyArray = FenObject.CreateArray();
                 resultPromise.ResolvePromise(FenValue.FromObject(emptyArray));
                 return resultPromise;
             }
@@ -505,7 +593,7 @@ namespace FenBrowser.FenEngine.Core.Types
                         remaining--;
                         if (remaining == 0)
                         {
-                            var resultArray = new FenObject { InternalClass = "Array" };
+                            var resultArray = FenObject.CreateArray();
                             for (int j = 0; j < results.Length; j++)
                             {
                                 resultArray.Set(j.ToString(), FenValue.FromObject(results[j]), context);

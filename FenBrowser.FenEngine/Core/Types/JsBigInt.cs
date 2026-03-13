@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Errors;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.FenEngine.Core.Types
@@ -45,9 +46,8 @@ namespace FenBrowser.FenEngine.Core.Types
 
         public double ToNumber()
         {
-            // BigInt cannot be directly converted to Number in JS (throws TypeError)
-            // But we return approximate value for internal use
-            return (double)_value;
+            // ECMA-262 §7.2.2: BigInt cannot be converted to Number — must throw TypeError
+            throw new FenTypeError("TypeError: Cannot convert a BigInt value to a number");
         }
 
         public override string ToString() => _value.ToString() + "n";
@@ -114,14 +114,16 @@ namespace FenBrowser.FenEngine.Core.Types
         public static JsBigInt Divide(JsBigInt left, JsBigInt right)
         {
             if (right._value == BigInteger.Zero)
-                throw new DivideByZeroException("Division by zero");
+                // ECMA-262 §21.2.3: BigInt division by zero must throw RangeError
+                throw new FenRangeError("RangeError: Division by zero");
             return new JsBigInt(left._value / right._value);
         }
 
         public static JsBigInt Remainder(JsBigInt left, JsBigInt right)
         {
             if (right._value == BigInteger.Zero)
-                throw new DivideByZeroException("Division by zero");
+                // ECMA-262 §21.2.3: BigInt division by zero must throw RangeError
+                throw new FenRangeError("RangeError: Division by zero");
             return new JsBigInt(left._value % right._value);
         }
 
@@ -177,7 +179,9 @@ namespace FenBrowser.FenEngine.Core.Types
 
         public static JsBigInt FromNumber(double value)
         {
-            // Truncate to integer
+            // ECMA-262 §21.2.1.1: BigInt() from a non-integer double must throw RangeError
+            if (double.IsNaN(value) || double.IsInfinity(value) || Math.Floor(value) != value)
+                throw new FenRangeError($"RangeError: The number {value} cannot be converted to a BigInt because it is not an integer");
             return new JsBigInt(new BigInteger(value));
         }
 

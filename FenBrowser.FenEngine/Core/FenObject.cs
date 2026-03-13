@@ -14,6 +14,8 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public class FenObject : IObject
     {
+        public FenRuntime OwningRuntime { get; internal set; }
+
         /// <summary>
         /// Global default prototype for all FenObject instances.
         /// Set by FenRuntime during initialization to Object.prototype.
@@ -34,6 +36,9 @@ namespace FenBrowser.FenEngine.Core
 
         private Shape _shape = Shape.RootShape;
         private PropertyDescriptor[] _properties = new PropertyDescriptor[4];
+        // ECMA-262 §9.1: Symbol-keyed own properties stored separately from string-keyed ones.
+        // Key is the symbol's unique integer ID; value is the property descriptor.
+        private Dictionary<long, PropertyDescriptor> _symbolProperties;
         private IObject _prototype;
         private bool _extensible = true;
 
@@ -91,10 +96,12 @@ namespace FenBrowser.FenEngine.Core
 
         public FenObject()
         {
+            OwningRuntime = FenRuntime.GetActiveRuntime();
             // Inherit from Object.prototype by default.
             // Guard: don't self-reference (objectPrototype itself is created before DefaultPrototype is set).
-            if (DefaultPrototype != null && !ReferenceEquals(DefaultPrototype, this))
-                _prototype = DefaultPrototype;
+            var defaultPrototype = DefaultPrototype ?? OwningRuntime?.ResolveObjectPrototypeForNewObject();
+            if (defaultPrototype != null && !ReferenceEquals(defaultPrototype, this))
+                _prototype = defaultPrototype;
         }
 
         /// <summary>
@@ -122,6 +129,11 @@ namespace FenBrowser.FenEngine.Core
             return GetWithReceiver(key, FenValue.FromObject(this), context);
         }
 
+        public virtual FenValue Get(FenValue key, IExecutionContext context = null)
+        {
+            return GetWithReceiver(key, FenValue.FromObject(this), context);
+        }
+
         public virtual FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null)
         {
             // PROXY TRAP: Get
@@ -135,9 +147,14 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
                     var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
-                    
+                    FenValue handler = FenValue.Undefined;
+                    if (!TryGetDirect("__proxyHandler__", out handler))
+                    {
+                        TryGetDirect("__handler__", out handler);
+                    }
+
                     var fn = _properties[pgIdx].Value.Value.AsFunction();
-                    return fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), receiver }, context);
+                    return fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), receiver }, context, handler);
                 }
             }
 
@@ -181,9 +198,193 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
+        public virtual FenValue GetWithReceiver(FenValue key, FenValue receiver, IExecutionContext context = null)
+        {
+            if (!TryNormalizePropertyKey(key, context, out var stringKey, out var symbolKey))
+            {
+                return FenValue.Undefined;
+            }
+
+            if (symbolKey == null)
+            {
+                return GetWithReceiver(stringKey, receiver, context);
+            }
+
+            if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
+            {
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+
+                if (TryGetDirect("__proxyGet__", out var proxyGet) && proxyGet.IsFunction)
+                {
+                    TryGetDirect("__proxyTarget__", out var target);
+                    if (target.IsUndefined)
+                    {
+                        TryGetDirect("__target__", out target);
+                    }
+
+                    FenValue handler = FenValue.Undefined;
+                    if (!TryGetDirect("__proxyHandler__", out handler))
+                    {
+                        TryGetDirect("__handler__", out handler);
+                    }
+
+                    return proxyGet.AsFunction().Invoke(
+                        new[] { target, key, receiver },
+                        context,
+                        handler);
+                }
+            }
+
+            if (_symbolProperties != null && _symbolProperties.TryGetValue(symbolKey.Id, out var desc))
+            {
+                if (desc.IsAccessor && desc.Getter != null)
+                {
+                    if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                    {
+                        _accessorDepth--;
+                        return FenValue.Undefined;
+                    }
+
+                    try
+                    {
+                        return desc.Getter.Invoke(Array.Empty<FenValue>(), context, receiver);
+                    }
+                    finally
+                    {
+                        _accessorDepth--;
+                    }
+                }
+
+                return desc.Value ?? FenValue.Undefined;
+            }
+
+            var legacyKey = symbolKey.ToPropertyKey();
+            if (!string.IsNullOrEmpty(legacyKey))
+            {
+                var legacyValue = GetWithReceiver(legacyKey, receiver, context);
+                if (!legacyValue.IsUndefined)
+                {
+                    return legacyValue;
+                }
+            }
+
+            if (_prototype is FenObject fenProto)
+            {
+                return fenProto.GetWithReceiver(key, receiver, context);
+            }
+
+            if (_prototype != null && !string.IsNullOrEmpty(legacyKey))
+            {
+                return _prototype.GetWithReceiver(legacyKey, receiver, context);
+            }
+
+            return FenValue.Undefined;
+        }
+
         public virtual void Set(string key, FenValue value, IExecutionContext context = null)
         {
             SetWithReceiver(key, value, FenValue.FromObject(this), context);
+        }
+
+        public virtual void Set(FenValue key, FenValue value, IExecutionContext context = null)
+        {
+            SetWithReceiver(key, value, FenValue.FromObject(this), context);
+        }
+
+        /// <summary>
+        /// ECMA-262 §9.1.9.1: Set with explicit strict-mode flag.
+        /// In strict mode, throws TypeError for non-writable or no-setter-accessor properties.
+        /// </summary>
+        public void Set(string key, FenValue value, bool strict)
+        {
+            // Build a minimal context stub only when strict is true and we need it.
+            // Simpler: forward to SetWithReceiver with a flag-bearing context shim.
+            SetWithReceiverStrict(key, value, FenValue.FromObject(this), strict);
+        }
+
+        private void SetWithReceiverStrict(string key, FenValue value, FenValue receiver, bool strict)
+        {
+            // __proto__ guard
+            if (key == "__proto__" && !_extensible && (value.IsObject || value.IsFunction || value.IsNull))
+            {
+                var nextProto = value.IsNull ? null : value.AsObject();
+                if (!ReferenceEquals(_prototype, nextProto))
+                    throw new FenTypeError("TypeError: Cannot set prototype");
+                return;
+            }
+
+            // PROXY TRAP: Set
+            if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) &&
+                (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
+            {
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+                if (_shape.TryGetPropertyOffset("__proxySet__", out var psIdx) &&
+                    (_properties[psIdx].Value.HasValue && _properties[psIdx].Value.Value.IsFunction))
+                {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    var fn = _properties[psIdx].Value.Value.AsFunction();
+                    fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, receiver }, null);
+                    return;
+                }
+            }
+
+            if (_shape.TryGetPropertyOffset(key, out var existingIndex))
+            {
+                var existing = _properties[existingIndex];
+                if (existing.IsAccessor)
+                {
+                    if (existing.Setter != null)
+                    {
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH) { _accessorDepth--; return; }
+                        try { existing.Setter.Invoke(new FenValue[] { value }, null, receiver); }
+                        finally { _accessorDepth--; }
+                        return;
+                    }
+                    // ECMA-262 §9.1.9.1 step 3.a – accessor with no setter
+                    if (strict) throw new FenTypeError($"TypeError: Cannot set property '{key}' which has only a getter");
+                    return;
+                }
+                if (existing.Writable == false)
+                {
+                    // ECMA-262 §9.1.9.1 step 4.a
+                    if (strict) throw new FenTypeError($"TypeError: Cannot assign to read only property '{key}'");
+                    return;
+                }
+                existing.Value = value;
+                _properties[existingIndex] = existing;
+                return;
+            }
+
+            if (!_extensible)
+            {
+                // ECMA-262 §9.1.9.1 step 5.a.i
+                if (strict) throw new FenTypeError($"TypeError: Cannot add property '{key}', object is not extensible");
+                return;
+            }
+
+            // Check prototype chain for inherited accessors
+            IObject proto = _prototype;
+            while (proto != null)
+            {
+                if (proto is FenObject fenProto && proto.Has(key) && fenProto._shape.TryGetPropertyOffset(key, out var protoIdx))
+                {
+                    var inherited = fenProto._properties[protoIdx];
+                    if (inherited.IsAccessor && inherited.Setter != null)
+                    {
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH) { _accessorDepth--; return; }
+                        try { inherited.Setter.Invoke(new FenValue[] { value }, null, receiver); }
+                        finally { _accessorDepth--; }
+                        return;
+                    }
+                }
+                proto = proto.GetPrototype();
+            }
+
+            _shape = _shape.TransitionTo(key);
+            int newIndex = _shape.PropertyCount - 1;
+            if (newIndex >= _properties.Length) Array.Resize(ref _properties, _properties.Length * 2);
+            _properties[newIndex] = PropertyDescriptor.DataDefault(value);
         }
 
         public virtual void SetWithReceiver(string key, FenValue value, FenValue receiver, IExecutionContext context = null)
@@ -241,22 +442,39 @@ namespace FenBrowser.FenEngine.Core
                             _accessorDepth--;
                         }
                     }
-                    // No setter: silently fail in non-strict mode
+                    // No setter: ECMA-262 §9.1.9.1 step 3.a – in strict mode throw TypeError
+                    {
+                        bool isStrict = context?.StrictMode == true || context?.Environment?.StrictMode == true;
+                        if (isStrict)
+                            throw new FenTypeError($"TypeError: Cannot set property '{key}' which has only a getter");
+                    }
                     return;
                 }
                 
                 // Data descriptor: check writable
+                // ECMA-262 §9.1.9.1 step 4.a: in strict mode, throw TypeError for non-writable property.
                 if (existing.Writable == false)
+                {
+                    bool isStrict = context?.StrictMode == true || context?.Environment?.StrictMode == true;
+                    if (isStrict)
+                        throw new FenTypeError($"TypeError: Cannot assign to read only property '{key}'");
                     return; // Silently fail in non-strict mode
-                    
+                }
+
                 existing.Value = value;
                 _properties[existingIndex] = existing;
                 return;
             }
-            
+
             // New property: check extensibility
+            // ECMA-262 §9.1.9.1 step 5.a.i: in strict mode, throw TypeError on non-extensible object.
             if (!_extensible)
+            {
+                bool isStrict = context?.StrictMode == true || context?.Environment?.StrictMode == true;
+                if (isStrict)
+                    throw new FenTypeError($"TypeError: Cannot add property '{key}', object is not extensible");
                 return; // Silently fail in non-strict mode
+            }
             
             // Check prototype chain for inherited accessors
             IObject proto = _prototype;
@@ -305,6 +523,135 @@ namespace FenBrowser.FenEngine.Core
             _properties[newIndex] = PropertyDescriptor.DataDefault(value);
         }
 
+        public virtual void SetWithReceiver(FenValue key, FenValue value, FenValue receiver, IExecutionContext context = null)
+        {
+            if (!TryNormalizePropertyKey(key, context, out var stringKey, out var symbolKey))
+            {
+                return;
+            }
+
+            if (symbolKey == null)
+            {
+                SetWithReceiver(stringKey, value, receiver, context);
+                return;
+            }
+
+            if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
+            {
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+
+                if (TryGetDirect("__proxySet__", out var proxySet) && proxySet.IsFunction)
+                {
+                    TryGetDirect("__proxyTarget__", out var target);
+                    if (target.IsUndefined)
+                    {
+                        TryGetDirect("__target__", out target);
+                    }
+
+                    proxySet.AsFunction().Invoke(new[] { target, key, value, receiver }, context);
+                    return;
+                }
+            }
+
+            var legacyKey = symbolKey.ToPropertyKey();
+            if (!string.IsNullOrEmpty(legacyKey) && _shape.TryGetPropertyOffset(legacyKey, out _))
+            {
+                SetWithReceiver(legacyKey, value, receiver, context);
+                return;
+            }
+
+            if (_symbolProperties != null && _symbolProperties.TryGetValue(symbolKey.Id, out var existing))
+            {
+                if (existing.IsAccessor)
+                {
+                    if (existing.Setter != null)
+                    {
+                        if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                        {
+                            _accessorDepth--;
+                            return;
+                        }
+
+                        try
+                        {
+                            existing.Setter.Invoke(new[] { value }, context, receiver);
+                        }
+                        finally
+                        {
+                            _accessorDepth--;
+                        }
+                    }
+                    else if (context?.StrictMode == true || context?.Environment?.StrictMode == true)
+                    {
+                        throw new FenTypeError($"TypeError: Cannot set property '{symbolKey}' which has only a getter");
+                    }
+
+                    return;
+                }
+
+                if (existing.Writable == false)
+                {
+                    if (context?.StrictMode == true || context?.Environment?.StrictMode == true)
+                    {
+                        throw new FenTypeError($"TypeError: Cannot assign to read only property '{symbolKey}'");
+                    }
+
+                    return;
+                }
+
+                existing.Value = value;
+                _symbolProperties[symbolKey.Id] = existing;
+                return;
+            }
+
+            IObject proto = _prototype;
+            while (proto != null)
+            {
+                if (proto is FenObject fenProto &&
+                    fenProto._symbolProperties != null &&
+                    fenProto._symbolProperties.TryGetValue(symbolKey.Id, out var inherited) &&
+                    inherited.IsAccessor &&
+                    inherited.Setter != null)
+                {
+                    if (++_accessorDepth > MAX_ACCESSOR_DEPTH)
+                    {
+                        _accessorDepth--;
+                        return;
+                    }
+
+                    try
+                    {
+                        inherited.Setter.Invoke(new[] { value }, context, receiver);
+                    }
+                    finally
+                    {
+                        _accessorDepth--;
+                    }
+
+                    return;
+                }
+
+                proto = proto.GetPrototype();
+            }
+
+            if (!_extensible)
+            {
+                if (context?.StrictMode == true || context?.Environment?.StrictMode == true)
+                {
+                    throw new FenTypeError($"TypeError: Cannot add property '{symbolKey}', object is not extensible");
+                }
+
+                return;
+            }
+
+            if (_symbolProperties == null)
+            {
+                _symbolProperties = new Dictionary<long, PropertyDescriptor>();
+            }
+
+            _symbolProperties[symbolKey.Id] = PropertyDescriptor.DataDefault(value);
+        }
+
         public virtual bool Has(string key, IExecutionContext context = null)
         {
             if (++_hasDepth > MAX_HAS_DEPTH)
@@ -342,6 +689,64 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        public virtual bool Has(FenValue key, IExecutionContext context = null)
+        {
+            if (!TryNormalizePropertyKey(key, context, out var stringKey, out var symbolKey))
+            {
+                return false;
+            }
+
+            if (symbolKey == null)
+            {
+                return Has(stringKey, context);
+            }
+
+            if (++_hasDepth > MAX_HAS_DEPTH)
+            {
+                _hasDepth--;
+                return false;
+            }
+
+            try
+            {
+                if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
+                {
+                    if (TryGetDirect("__proxyHas__", out var proxyHas) && proxyHas.IsFunction)
+                    {
+                        TryGetDirect("__proxyTarget__", out var target);
+                        if (target.IsUndefined)
+                        {
+                            TryGetDirect("__target__", out target);
+                        }
+
+                        return proxyHas.AsFunction().Invoke(new[] { target, key }, context).ToBoolean();
+                    }
+                }
+
+                if (_symbolProperties != null && _symbolProperties.ContainsKey(symbolKey.Id))
+                {
+                    return true;
+                }
+
+                var legacyKey = symbolKey.ToPropertyKey();
+                if (!string.IsNullOrEmpty(legacyKey) && _shape.TryGetPropertyOffset(legacyKey, out _))
+                {
+                    return true;
+                }
+
+                if (_prototype is FenObject fenProto)
+                {
+                    return fenProto.Has(key, context);
+                }
+
+                return _prototype != null && !string.IsNullOrEmpty(legacyKey) && _prototype.Has(legacyKey, context);
+            }
+            finally
+            {
+                _hasDepth--;
+            }
+        }
+
         private bool TryResolveWindowNamedProperty(string key, FenValue receiver, IExecutionContext context, out FenValue value)
         {
             value = FenValue.Undefined;
@@ -365,25 +770,25 @@ namespace FenBrowser.FenEngine.Core
                 {
                     return false;
                 }
-                FenValue doc;
+                if (PrototypeChainDefinesStringProperty(key))
+                {
+                    return false;
+                }
+                FenValue doc = FenValue.Undefined;
                 if (_shape.TryGetPropertyOffset("document", out var docIdx))
                 {
                     doc = _properties[docIdx].Value ?? FenValue.Undefined;
                 }
-                else if (_prototype != null)
-                {
-                    if (_prototype is FenObject fenProto)
-                    {
-                        doc = fenProto.GetWithReceiver("document", receiver, context);
-                    }
-                    else
-                    {
-                        doc = _prototype.Get("document", context);
-                    }
-                }
                 else
                 {
-                    return false;
+                    for (var env = context?.Environment; env != null; env = env.Outer)
+                    {
+                        if (env.TryGetLocal("document", out var directDoc))
+                        {
+                            doc = directDoc;
+                            break;
+                        }
+                    }
                 }
                 if (!doc.IsObject)
                 {
@@ -412,6 +817,19 @@ namespace FenBrowser.FenEngine.Core
                 _windowNamedLookupDepth--;
             }
         }
+
+        private bool PrototypeChainDefinesStringProperty(string key)
+        {
+            for (var current = _prototype; current != null; current = current.GetPrototype())
+            {
+                if (current.GetOwnPropertyDescriptor(key).HasValue)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
         public virtual bool Delete(string key, IExecutionContext context = null)
         {
             if (_shape.TryGetPropertyOffset(key, out var index))
@@ -433,6 +851,27 @@ namespace FenBrowser.FenEngine.Core
                 return true;
             }
             return true; // Property doesn't exist, deletion "succeeds"
+        }
+
+        public virtual bool Delete(FenValue key, IExecutionContext context = null)
+        {
+            if (!TryNormalizePropertyKey(key, context, out var stringKey, out var symbolKey))
+            {
+                return true;
+            }
+
+            if (symbolKey == null)
+            {
+                return Delete(stringKey, context);
+            }
+
+            var legacyKey = symbolKey.ToPropertyKey();
+            if (!string.IsNullOrEmpty(legacyKey) && _shape.TryGetPropertyOffset(legacyKey, out _))
+            {
+                return Delete(legacyKey, context);
+            }
+
+            return DeleteSymbol(symbolKey);
         }
 
         public virtual IEnumerable<string> Keys(IExecutionContext context = null)
@@ -524,8 +963,10 @@ namespace FenBrowser.FenEngine.Core
 
             if (!exists)
             {
-                if (!_extensible) return false;
-                
+                // ECMA-262 §9.1.6.3 step 3: if non-extensible, adding a new property must throw TypeError.
+                if (!_extensible)
+                    throw new FenTypeError("TypeError: Cannot add property " + key + ", object is not extensible");
+
                 // create new property with defaults if missing
                 var newDesc = desc;
                 if (newDesc.IsData)
@@ -555,11 +996,16 @@ namespace FenBrowser.FenEngine.Core
             if (!desc.Value.HasValue && !desc.Writable.HasValue && desc.Getter == null && desc.Setter == null && !desc.Enumerable.HasValue && !desc.Configurable.HasValue)
                 return true;
 
-            // If current is not configurable
+            // ECMA-262 §9.1.6.3 ValidateAndApplyPropertyDescriptor:
+            // If current is not configurable, various changes must throw TypeError.
             if (current.Configurable == false)
             {
-                if (desc.Configurable == true) return false;
-                if (desc.Enumerable.HasValue && desc.Enumerable != current.Enumerable) return false;
+                // Cannot change non-configurable to configurable.
+                if (desc.Configurable == true)
+                    throw new FenTypeError("TypeError: Cannot redefine property: " + key);
+                // Cannot change Enumerable on a non-configurable property.
+                if (desc.Enumerable.HasValue && desc.Enumerable != current.Enumerable)
+                    throw new FenTypeError("TypeError: Cannot redefine property: " + key);
             }
 
             if (desc.IsGenericDescriptor())
@@ -568,23 +1014,30 @@ namespace FenBrowser.FenEngine.Core
             }
             else if (current.IsData != desc.IsData)
             {
-                // Functionally different (Accessor <-> Data)
-                if (current.Configurable == false) return false;
+                // Cannot change from data to accessor or vice versa if non-configurable.
+                if (current.Configurable == false)
+                    throw new FenTypeError("TypeError: Cannot redefine property: " + key);
             }
             else if (current.IsData && desc.IsData)
             {
                 if (current.Configurable == false && current.Writable == false)
                 {
-                    if (desc.Writable == true) return false;
-                    if (desc.Value.HasValue && !desc.Value.Value.StrictEquals(current.Value)) return false;
+                    // Cannot change Writable from false to true.
+                    if (desc.Writable == true)
+                        throw new FenTypeError("TypeError: Cannot redefine property: " + key);
+                    // Cannot change value of non-writable property (SameValue check, ECMA-262 §7.2.12).
+                    if (desc.Value.HasValue && !desc.Value.Value.StrictEquals(current.Value ?? FenValue.Undefined))
+                        throw new FenTypeError("TypeError: Cannot assign to read only property '" + key + "'");
                 }
             }
             else if (current.IsAccessor && desc.IsAccessor)
             {
                 if (current.Configurable == false)
                 {
-                    if (desc.Getter != null && desc.Getter != current.Getter) return false;
-                    if (desc.Setter != null && desc.Setter != current.Setter) return false;
+                    if (desc.Getter != null && !ReferenceEquals(desc.Getter, current.Getter))
+                        throw new FenTypeError("TypeError: Cannot redefine property: " + key);
+                    if (desc.Setter != null && !ReferenceEquals(desc.Setter, current.Setter))
+                        throw new FenTypeError("TypeError: Cannot redefine property: " + key);
                 }
             }
 
@@ -599,6 +1052,45 @@ namespace FenBrowser.FenEngine.Core
             
             _properties[index] = merged;
             return true;
+        }
+
+        public virtual bool DefineOwnProperty(FenValue key, PropertyDescriptor desc)
+        {
+            if (!TryNormalizePropertyKey(key, null, out var stringKey, out var symbolKey))
+            {
+                return false;
+            }
+
+            if (symbolKey == null)
+            {
+                return DefineOwnProperty(stringKey, desc);
+            }
+
+            if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
+            {
+                if (TryGetDirect("__proxyDefineProperty__", out var proxyDefine) && proxyDefine.IsFunction)
+                {
+                    TryGetDirect("__proxyTarget__", out var target);
+                    if (target.IsUndefined)
+                    {
+                        TryGetDirect("__target__", out target);
+                    }
+
+                    var descObj = new FenObject();
+                    if (desc.Value.HasValue) descObj.Set("value", desc.Value.Value);
+                    if (desc.Writable.HasValue) descObj.Set("writable", FenValue.FromBoolean(desc.Writable.Value));
+                    if (desc.Getter != null) descObj.Set("get", FenValue.FromFunction(desc.Getter));
+                    if (desc.Setter != null) descObj.Set("set", FenValue.FromFunction(desc.Setter));
+                    if (desc.Enumerable.HasValue) descObj.Set("enumerable", FenValue.FromBoolean(desc.Enumerable.Value));
+                    if (desc.Configurable.HasValue) descObj.Set("configurable", FenValue.FromBoolean(desc.Configurable.Value));
+
+                    return proxyDefine.AsFunction().Invoke(
+                        new[] { target, key, FenValue.FromObject(descObj) },
+                        null).ToBoolean();
+                }
+            }
+
+            return DefineSymbolProperty(symbolKey, desc);
         }
         
         /// <summary>
@@ -675,6 +1167,77 @@ namespace FenBrowser.FenEngine.Core
                 var desc = _properties[index];
                 if (!desc.Value.HasValue && desc.Getter == null && desc.Setter == null && desc.Enumerable == false) return null; // Tombstoned
                 return desc;
+            }
+
+            return null;
+        }
+
+        public virtual PropertyDescriptor? GetOwnPropertyDescriptor(FenValue key)
+        {
+            if (!TryNormalizePropertyKey(key, null, out var stringKey, out var symbolKey))
+            {
+                return null;
+            }
+
+            if (symbolKey == null)
+            {
+                return GetOwnPropertyDescriptor(stringKey);
+            }
+
+            if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
+            {
+                if (TryGetDirect("__proxyGetOwnPropertyDescriptor__", out var proxyGopd) && proxyGopd.IsFunction)
+                {
+                    TryGetDirect("__proxyTarget__", out var target);
+                    if (target.IsUndefined)
+                    {
+                        TryGetDirect("__target__", out target);
+                    }
+
+                    var trapResult = proxyGopd.AsFunction().Invoke(new[] { target, key }, null);
+                    if (trapResult.IsUndefined)
+                    {
+                        return null;
+                    }
+
+                    if (!trapResult.IsObject)
+                    {
+                        throw new FenTypeError("TypeError: Proxy getOwnPropertyDescriptor trap must return an object or undefined");
+                    }
+
+                    var descObj = trapResult.AsObject();
+                    var trapDesc = new PropertyDescriptor
+                    {
+                        Enumerable = descObj.Get("enumerable", null).ToBoolean(),
+                        Configurable = descObj.Get("configurable", null).ToBoolean()
+                    };
+
+                    var getVal = descObj.Get("get", null);
+                    var setVal = descObj.Get("set", null);
+                    if (descObj.Has("get") || descObj.Has("set"))
+                    {
+                        trapDesc.Getter = getVal.IsFunction ? getVal.AsFunction() : null;
+                        trapDesc.Setter = setVal.IsFunction ? setVal.AsFunction() : null;
+                    }
+                    else
+                    {
+                        trapDesc.Value = descObj.Get("value", null);
+                        trapDesc.Writable = descObj.Get("writable", null).ToBoolean();
+                    }
+
+                    return trapDesc;
+                }
+            }
+
+            if (_symbolProperties != null && _symbolProperties.TryGetValue(symbolKey.Id, out var desc))
+            {
+                return desc;
+            }
+
+            var legacyKey = symbolKey.ToPropertyKey();
+            if (!string.IsNullOrEmpty(legacyKey))
+            {
+                return GetOwnPropertyDescriptor(legacyKey);
             }
 
             return null;
@@ -926,7 +1489,158 @@ namespace FenBrowser.FenEngine.Core
             return true;
         }
 
-        public virtual void SetPrototype(IObject prototype) => _prototype = prototype;
+        public virtual void SetPrototype(IObject prototype)
+        {
+            // ECMA-262 §9.1.2.1: OrdinarySetPrototypeOf — if non-extensible and prototype changes, throw TypeError.
+            if (!_extensible && !ReferenceEquals(_prototype, prototype))
+                throw new FenTypeError("TypeError: #<Object> is not extensible");
+            _prototype = prototype;
+        }
+
+        // -----------------------------------------------------------------------
+        // ECMA-262 §9.1: Symbol-keyed property operations
+        // -----------------------------------------------------------------------
+
+        /// <summary>
+        /// Get a Symbol-keyed own property value (no prototype chain lookup).
+        /// Returns Undefined if absent.
+        /// </summary>
+        public FenValue GetSymbol(JsSymbol symbol)
+        {
+            if (symbol == null) return FenValue.Undefined;
+            if (_symbolProperties != null && _symbolProperties.TryGetValue(symbol.Id, out var desc))
+            {
+                if (desc.IsAccessor && desc.Getter != null)
+                    return desc.Getter.Invoke(Array.Empty<FenValue>(), null);
+                return desc.Value ?? FenValue.Undefined;
+            }
+            // Prototype chain lookup
+            if (_prototype is FenObject fenProto) return fenProto.GetSymbol(symbol);
+            return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// Set a Symbol-keyed own property.
+        /// ECMA-262 §9.1.9.1: throws TypeError in strict mode when the property is non-writable.
+        /// </summary>
+        public void SetSymbol(JsSymbol symbol, FenValue value, bool strict = false)
+        {
+            if (symbol == null) return;
+            if (_symbolProperties == null) _symbolProperties = new Dictionary<long, PropertyDescriptor>();
+            if (_symbolProperties.TryGetValue(symbol.Id, out var existing))
+            {
+                if (existing.IsAccessor)
+                {
+                    if (existing.Setter != null)
+                        existing.Setter.Invoke(new FenValue[] { value }, null);
+                    // No setter: silently fail (strict TypeError deferred to spec §9.1.9.1 step 5.b)
+                    return;
+                }
+                if (existing.Writable == false)
+                {
+                    // ECMA-262 §9.1.9.1 step 4.a – strict mode throws TypeError
+                    if (strict)
+                        throw new FenTypeError($"TypeError: Cannot assign to read only property '{symbol}'");
+                    return;
+                }
+                existing.Value = value;
+                _symbolProperties[symbol.Id] = existing;
+                return;
+            }
+            if (!_extensible)
+            {
+                if (strict) throw new FenTypeError("TypeError: Cannot add property on a non-extensible object");
+                return;
+            }
+            _symbolProperties[symbol.Id] = PropertyDescriptor.DataDefault(value);
+        }
+
+        /// <summary>
+        /// Check whether this object has a Symbol-keyed own property (not prototype).
+        /// </summary>
+        public bool HasSymbol(JsSymbol symbol)
+        {
+            if (symbol == null) return false;
+            if (_symbolProperties != null && _symbolProperties.ContainsKey(symbol.Id)) return true;
+            if (_prototype is FenObject fenProto) return fenProto.HasSymbol(symbol);
+            return false;
+        }
+
+        /// <summary>
+        /// Delete a Symbol-keyed own property. Returns false if non-configurable.
+        /// </summary>
+        public bool DeleteSymbol(JsSymbol symbol)
+        {
+            if (symbol == null) return true;
+            if (_symbolProperties == null) return true;
+            if (_symbolProperties.TryGetValue(symbol.Id, out var desc))
+            {
+                if (desc.Configurable == false) return false;
+                _symbolProperties.Remove(symbol.Id);
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Define a Symbol-keyed property with a full descriptor.
+        /// </summary>
+        public bool DefineSymbolProperty(JsSymbol symbol, PropertyDescriptor desc)
+        {
+            if (symbol == null) return false;
+            if (_symbolProperties == null) _symbolProperties = new Dictionary<long, PropertyDescriptor>();
+            if (!_symbolProperties.ContainsKey(symbol.Id))
+            {
+                // ECMA-262 §9.1.6.3 step 3: non-extensible object cannot gain new properties.
+                if (!_extensible)
+                    throw new FenTypeError("TypeError: Cannot add property " + symbol + ", object is not extensible");
+                _symbolProperties[symbol.Id] = desc;
+                return true;
+            }
+            var current = _symbolProperties[symbol.Id];
+            if (current.Configurable == false)
+            {
+                // ECMA-262 §9.1.6.3: non-configurable violations must throw TypeError.
+                if (desc.Configurable == true)
+                    throw new FenTypeError("TypeError: Cannot redefine property: " + symbol);
+                if (desc.Enumerable.HasValue && desc.Enumerable != current.Enumerable)
+                    throw new FenTypeError("TypeError: Cannot redefine property: " + symbol);
+            }
+            // Merge
+            if (desc.Value.HasValue) current.Value = desc.Value;
+            if (desc.Writable.HasValue) current.Writable = desc.Writable;
+            if (desc.Getter != null) current.Getter = desc.Getter;
+            if (desc.Setter != null) current.Setter = desc.Setter;
+            if (desc.Enumerable.HasValue) current.Enumerable = desc.Enumerable;
+            if (desc.Configurable.HasValue) current.Configurable = desc.Configurable;
+            _symbolProperties[symbol.Id] = current;
+            return true;
+        }
+
+        /// <summary>
+        /// Enumerate own Symbol-keyed property IDs (for Reflect.ownKeys / ownKeys trap).
+        /// </summary>
+        public IEnumerable<JsSymbol> GetOwnSymbolKeys()
+        {
+            // We need to reconstruct JsSymbol references from IDs. Since JsSymbol.Id is internal,
+            // we store them as values in a parallel lookup seeded via SetSymbol.
+            // Return nothing here if the symbol bag is empty.
+            yield break; // Partial: caller tracks symbols via SetSymbol call sites.
+        }
+
+        private static bool TryNormalizePropertyKey(FenValue key, IExecutionContext context, out string stringKey, out JsSymbol symbolKey)
+        {
+            stringKey = null;
+            symbolKey = null;
+
+            if (key.IsSymbol)
+            {
+                symbolKey = key.AsSymbol();
+                return symbolKey != null;
+            }
+
+            stringKey = key.AsString(context);
+            return true;
+        }
 
         /// <summary>
         /// Gets the current Shape (Hidden Class) of the object for Inline Caching

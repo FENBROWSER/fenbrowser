@@ -20,7 +20,11 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly MicrotaskQueue _microtaskQueue = new();
         private readonly Queue<Action> _animationFrameCallbacks = new();
         private readonly object _animationLock = new();
-        
+
+        // WHATWG §4.7.3 — MutationObserver notify steps queue
+        private readonly Queue<Action> _mutationObserverCallbacks = new Queue<Action>();
+        private readonly object _moLock = new object();
+
         private bool _layoutDirty = false;
         private bool _layoutRunThisTick = false;
         private Action _renderCallback = null;
@@ -77,6 +81,50 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public void EnqueueMicrotask(Action microtask)
         {
             ScheduleMicrotask(microtask);
+        }
+
+        #endregion
+
+        #region MutationObserver Batch Delivery (WHATWG §4.7.3)
+
+        /// <summary>
+        /// Queue a MutationObserver notify callback for delivery at the next microtask checkpoint.
+        /// Per WHATWG HTML §4.7.3 "notify mutation observers" steps.
+        /// </summary>
+        public void QueueMutationObserverMicrotask(Action callback)
+        {
+            if (callback == null) return;
+            lock (_moLock)
+            {
+                _mutationObserverCallbacks.Enqueue(callback);
+            }
+        }
+
+        /// <summary>
+        /// Deliver all pending MutationObserver records, then drain microtasks again.
+        /// Called after each microtask checkpoint per WHATWG spec §4.7.3.
+        /// </summary>
+        private void DeliverMutationObserverRecords()
+        {
+            List<Action> toDeliver;
+            lock (_moLock)
+            {
+                if (_mutationObserverCallbacks.Count == 0) return;
+                toDeliver = new List<Action>(_mutationObserverCallbacks);
+                _mutationObserverCallbacks.Clear();
+            }
+
+            foreach (var cb in toDeliver)
+            {
+                try { cb(); }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[EventLoop] MutationObserver callback error: {ex.Message}", LogCategory.DOM);
+                }
+            }
+
+            // Per spec: perform another microtask checkpoint after MO delivery
+            _microtaskQueue.DrainAll();
         }
 
         #endregion
@@ -183,23 +231,27 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             // CRITICAL: Ensure we are not re-entering Microtask phase recursively
             EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
-            
+
             EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
                 // DRAIN LOOP: Keep draining until empty.
-                // NOTE: DrainAll() inside MicrotaskQueue should ideally handle the loop, 
+                // NOTE: DrainAll() inside MicrotaskQueue should ideally handle the loop,
                 // but if new microtasks are queued during execution, we must ensure they run
                 // in the SAME checkpoint, without leaving/re-entering the phase.
                 // Assuming _microtaskQueue.DrainAll() handles internal looping.
                 // If not, we would wrap it: while (_microtaskQueue.HasPendingMicrotasks) _microtaskQueue.DrainAll();
-                
+
                 _microtaskQueue.DrainAll();
             }
             finally
             {
                 EngineContext.Current.EndPhase();
             }
+
+            // WHATWG §4.7.3: After draining microtasks, deliver pending MutationObserver records.
+            // DeliverMutationObserverRecords() is called outside Microtasks phase to avoid phase re-entrancy.
+            DeliverMutationObserverRecords();
         }
 
         /// <summary>
@@ -356,6 +408,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             lock (_animationLock)
             {
                 _animationFrameCallbacks.Clear();
+            }
+            lock (_moLock)
+            {
+                _mutationObserverCallbacks.Clear();
             }
             _layoutDirty = false;
             FenLogger.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Errors;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.FenEngine.Core.Types
@@ -74,8 +75,8 @@ namespace FenBrowser.FenEngine.Core.Types
 
         public double ToNumber()
         {
-            // TypeError in real JS - symbols cannot be converted to numbers
-            return double.NaN;
+            // ECMA-262 §7.1.3.1: Converting a Symbol to a number must throw TypeError
+            throw new FenTypeError("TypeError: Cannot convert a Symbol value to a number");
         }
 
         public override string ToString()

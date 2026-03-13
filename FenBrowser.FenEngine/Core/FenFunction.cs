@@ -57,6 +57,11 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public bool IsConstructor { get; set; } = true;
 
+        /// <summary>
+        /// Internal slot for bound functions: the callable target passed to bind().
+        /// </summary>
+        public FenFunction BoundTargetFunction { get; set; }
+
         private int _nativeLength = -1;
         /// <summary>
         /// Explicit length for native functions. -1 means compute from Parameters.Count.
@@ -96,7 +101,7 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
-            Name = "anonymous"; // setter stores name property
+            Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty(); // Parameters.Count → length
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
@@ -108,7 +113,7 @@ namespace FenBrowser.FenEngine.Core
             BytecodeBlock = bytecodeBlock;
             Env = env;
             IsNative = false;
-            Name = "anonymous_bytecode"; // setter stores name property
+            Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty();
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
@@ -120,7 +125,7 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
-            Name = "arrow"; // setter stores name property
+            Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty();
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
@@ -209,13 +214,34 @@ namespace FenBrowser.FenEngine.Core
                         ProxyTarget.Type != Interfaces.ValueType.Undefined ? ProxyTarget : FenValue.FromObject(this),
                         thisVal,
                         FenValue.FromObject(argsArray)
-                    }, context);
+                    }, context, FenValue.FromObject(handlerObj));
                 }
             }
 
             if (IsNative)
             {
+                if (OwningRuntime != null)
+                {
+                    return OwningRuntime.RunWithRealmActivation(() => NativeImplementation(args, actualThis));
+                }
+
                 return NativeImplementation(args, actualThis);
+            }
+
+            // Lazy-compile AST-backed functions on first Invoke (ECMA-262 §10.2).
+            // BytecodeBlock may be null when the function was created from a parsed AST
+            // (e.g. via eval() or the Function() constructor) and not yet compiled.
+            if (BytecodeBlock == null && Body != null)
+            {
+                try
+                {
+                    var lazyCompiler = new Bytecode.Compiler.BytecodeCompiler();
+                    BytecodeBlock = lazyCompiler.Compile(Body);
+                }
+                catch (Exception)
+                {
+                    // Fall through — the null-check below will return an error gracefully.
+                }
             }
 
             if (BytecodeBlock == null)
@@ -223,7 +249,38 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromError("Bytecode-only mode: AST-backed function invocation is not supported.");
             }
 
+            if (!IsAsync && !IsGenerator)
+            {
+                return InvokeViaDirectBytecode(args, context, actualThis);
+            }
+
             return InvokeViaBytecodeThunk(args, context, actualThis);
+        }
+
+        private FenValue InvokeViaDirectBytecode(FenValue[] args, IExecutionContext context, FenValue thisBinding)
+        {
+            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? new FenEnvironment();
+            var newEnv = new FenEnvironment(baseEnv);
+            if (BytecodeBlock != null && BytecodeBlock.IsStrict)
+            {
+                newEnv.StrictMode = true;
+            }
+
+            InitializeFastStore(newEnv);
+            if (!string.IsNullOrEmpty(Name))
+            {
+                SetBinding(newEnv, Name, FenValue.FromFunction(this));
+            }
+
+            if (!IsArrowFunction)
+            {
+                SetBinding(newEnv, "this", thisBinding);
+            }
+
+            BindArguments(newEnv, args);
+
+            var vm = new Bytecode.VM.VirtualMachine();
+            return vm.Execute(BytecodeBlock, newEnv);
         }
 
         private FenValue InvokeViaBytecodeThunk(FenValue[] args, IExecutionContext context, FenValue thisBinding)
@@ -247,6 +304,97 @@ namespace FenBrowser.FenEngine.Core
             var thunk = new Bytecode.CodeBlock(instructionBytes.ToArray(), constants);
             var vm = new Bytecode.VM.VirtualMachine();
             return vm.Execute(thunk, baseEnv);
+        }
+
+        private void InitializeFastStore(FenEnvironment env)
+        {
+            if (env == null || LocalMap == null || LocalMap.Count == 0)
+            {
+                return;
+            }
+
+            env.InitializeFastStore(LocalMap.Count);
+            env.ConfigureFastSlots(LocalMap);
+        }
+
+        private void SetBinding(FenEnvironment env, string name, FenValue value)
+        {
+            env.Set(name, value);
+            if (LocalMap != null && LocalMap.TryGetValue(name, out int localSlot))
+            {
+                env.SetFast(localSlot, value);
+            }
+        }
+
+        private void BindArguments(FenEnvironment env, FenValue[] args)
+        {
+            var effectiveArgs = args ?? Array.Empty<FenValue>();
+
+            if (!IsArrowFunction && NeedsArgumentsObject)
+            {
+                var argumentsObj = new FenObject
+                {
+                    InternalClass = "Arguments"
+                };
+
+                for (int i = 0; i < effectiveArgs.Length; i++)
+                {
+                    argumentsObj.Set(i.ToString(), effectiveArgs[i]);
+                }
+
+                argumentsObj.Set("length", FenValue.FromNumber(effectiveArgs.Length));
+                argumentsObj.Set("callee", FenValue.FromFunction(this));
+
+                var paramNames = new FenObject();
+                if (Parameters != null)
+                {
+                    for (int i = 0; i < Parameters.Count && i < effectiveArgs.Length; i++)
+                    {
+                        var parameter = Parameters[i];
+                        if (parameter == null || parameter.IsRest || string.IsNullOrEmpty(parameter.Value))
+                        {
+                            continue;
+                        }
+
+                        paramNames.Set(i.ToString(), FenValue.FromString(parameter.Value));
+                    }
+                }
+
+                argumentsObj.Set("__paramNames__", FenValue.FromObject(paramNames));
+                SetBinding(env, "arguments", FenValue.FromObject(argumentsObj));
+            }
+
+            if (Parameters == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < Parameters.Count; i++)
+            {
+                var parameter = Parameters[i];
+                if (parameter == null || string.IsNullOrEmpty(parameter.Value))
+                {
+                    continue;
+                }
+
+                if (parameter.IsRest)
+                {
+                    var restArray = FenObject.CreateArray();
+                    int restIndex = 0;
+                    for (int j = i; j < effectiveArgs.Length; j++)
+                    {
+                        restArray.Set(restIndex.ToString(), effectiveArgs[j]);
+                        restIndex++;
+                    }
+
+                    restArray.Set("length", FenValue.FromNumber(restIndex));
+                    SetBinding(env, parameter.Value, FenValue.FromObject(restArray));
+                    break;
+                }
+
+                var argValue = i < effectiveArgs.Length ? effectiveArgs[i] : FenValue.Undefined;
+                SetBinding(env, parameter.Value, argValue);
+            }
         }
 
         private static FenObject CreateArrayLikeArgumentsObject(FenValue[] args)

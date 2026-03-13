@@ -141,10 +141,13 @@ namespace FenBrowser.FenEngine.Core
         public bool IsSymbol => Type == Interfaces.ValueType.Symbol;
         public bool IsBigInt => Type == Interfaces.ValueType.BigInt;
         public bool IsError => Type == Interfaces.ValueType.Error;
+        public bool IsHtmlDdaObject => (Type == Interfaces.ValueType.Object || Type == Interfaces.ValueType.Function) &&
+                                       _refValue is Interfaces.IHtmlDdaObject;
 
         // IValue Implementation
         public bool ToBoolean() => AsBoolean();
         public double ToNumber() => AsNumber();
+        public string ToString2() => AsString();
         public override string ToString() => AsString();
         public IObject ToObject() => AsObject();
         
@@ -165,6 +168,10 @@ namespace FenBrowser.FenEngine.Core
             
             // Step 2-3: null == undefined (bidirectional)
             if ((a.IsNull && b.IsUndefined) || (a.IsUndefined && b.IsNull)) return true;
+
+            // Annex B [[IsHTMLDDA]] special-case
+            if (a.IsHtmlDdaObject && (b.IsNull || b.IsUndefined)) return true;
+            if (b.IsHtmlDdaObject && (a.IsNull || a.IsUndefined)) return true;
             
             // Step 4-5: Number == String -> convert string to number
             if (a.IsNumber && b.IsString) return a._numberValue == b.AsNumber();
@@ -195,6 +202,8 @@ namespace FenBrowser.FenEngine.Core
                 case Interfaces.ValueType.Null:
                 case Interfaces.ValueType.Undefined: return false;
                 case Interfaces.ValueType.Symbol: return true;
+                case Interfaces.ValueType.Object:
+                case Interfaces.ValueType.Function: return !IsHtmlDdaObject;
                 default: return true; 
             }
         }
