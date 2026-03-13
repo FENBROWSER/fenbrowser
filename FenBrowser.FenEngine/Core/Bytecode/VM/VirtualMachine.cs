@@ -207,6 +207,31 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return base.Get(key, context);
             }
 
+            public override FenValue GetWithReceiver(string key, FenValue receiver, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    return FenValue.FromNumber(_length);
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    return TryGetElement(index, out var value) ? value : FenValue.Undefined;
+                }
+
+                return base.GetWithReceiver(key, receiver, context);
+            }
+
+            public override FenValue GetWithReceiver(FenValue key, FenValue receiver, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (key.IsString)
+                {
+                    return GetWithReceiver(key.AsString(), receiver, context);
+                }
+
+                return base.GetWithReceiver(key, receiver, context);
+            }
+
             public override void Set(string key, FenValue value, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
             {
                 if (string.Equals(key, "length", StringComparison.Ordinal))
@@ -809,6 +834,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             ThrowJsError("ReferenceError", message);
         }
 
+        /// <summary>
+        /// Converts a FenValue.Error (returned by native functions) into a real thrown JS exception.
+        /// ECMA-262: native built-ins must throw — returning an Error-typed value is a legacy
+        /// internal convention that we normalize at every native call-site boundary.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void ThrowIfNativeError(in FenValue result)
+        {
+            if (result.Type == JsValueType.Throw)
+            {
+                throw new JsUncaughtException(result.GetThrownValue());
+            }
+
+            if (result.Type != JsValueType.Error) return;
+            var msg = result.AsString() ?? string.Empty;
+            var colonIdx = msg.IndexOf(':');
+            if (colonIdx > 0)
+            {
+                var prefix = msg.Substring(0, colonIdx);
+                if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
+                    prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
+                {
+                    ThrowJsError(prefix, msg.Substring(colonIdx + 1).TrimStart());
+                    return;
+                }
+            }
+            ThrowJsError("Error", msg);
+        }
+
         private FenValue ResolveNonStrictThisBinding(CallFrame frame)
         {
             if (frame != null)
@@ -926,9 +980,110 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
             }
 
+            // ECMA-262 Annex B §B.3.3.1: Pre-initialize block-scoped function names in the enclosing
+            // variable-declaration environment (outer scope) before the eval code runs.
+            // This handles cases like: eval("if (true) { function f() {} }") — 'f' must exist in the
+            // outer var scope as undefined before eval executes, and be updated to the function value after.
+            var annexBNames = compiledBlock.AnnexBBlockFunctionNames;
+            if (annexBNames != null && annexBNames.Count > 0 && !inheritStrict)
+            {
+                var outerVarEnv = frame.Environment.GetVarDeclarationEnvironment();
+                foreach (var blockFnName in annexBNames)
+                {
+                    if (!outerVarEnv.HasLocalBinding(blockFnName))
+                    {
+                        outerVarEnv.Set(blockFnName, FenValue.Undefined);
+                    }
+                }
+            }
+
             var nestedVm = new VirtualMachine();
             var evalNewTarget = forceUndefinedNewTarget ? FenValue.Undefined : frame.NewTarget;
-            return nestedVm.Execute(compiledBlock, evalEnvironment, evalNewTarget);
+            var evalResult = nestedVm.Execute(compiledBlock, evalEnvironment, evalNewTarget);
+
+            // ECMA-262 Annex B §B.3.3.1: After eval execution, propagate the final values of
+            // block-scoped function bindings up to the outer variable-declaration scope.
+            if (annexBNames != null && annexBNames.Count > 0 && !inheritStrict)
+            {
+                var outerVarEnv = frame.Environment.GetVarDeclarationEnvironment();
+                foreach (var blockFnName in annexBNames)
+                {
+                    var blockFnValue = evalEnvironment.Get(blockFnName);
+                    if (!blockFnValue.IsUndefined)
+                    {
+                        outerVarEnv.Set(blockFnName, blockFnValue);
+                    }
+                }
+            }
+
+            return evalResult;
+        }
+
+        /// <summary>
+        /// Lazily compiles the AST body of a FenFunction to a CodeBlock and stores it on the function.
+        /// Implements ECMA-262 §10.2: Function objects may be created from parsed AST and compiled on demand.
+        /// Throws FenTypeError if compilation fails.
+        /// </summary>
+        private static void LazyCompileAstFunction(FenFunction func)
+        {
+            if (func.BytecodeBlock != null)
+            {
+                return; // already compiled
+            }
+
+            if (func.Body == null)
+            {
+                throw new FenTypeError("TypeError: Function has neither bytecode nor an AST body.");
+            }
+
+            try
+            {
+                var lazyCompiler = new Compiler.BytecodeCompiler();
+                // Build a callable body the same way the up-front compiler does (handles
+                // expression-body arrows, default/destructuring params, etc.).
+                var compiledBlock = lazyCompiler.Compile(
+                    BuildCallableBodyStatic(func.Body, func.Parameters));
+                func.BytecodeBlock = compiledBlock;
+            }
+            catch (FenSyntaxError)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new FenTypeError($"TypeError: Function compilation failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Static helper that mirrors BytecodeCompiler.BuildCallableBody for use in the VM
+        /// during lazy compilation of AST-backed functions.
+        /// </summary>
+        private static AstNode BuildCallableBodyStatic(AstNode body, List<Identifier> parameters)
+        {
+            BlockStatement normalizedBody;
+            if (body is BlockStatement blockBody)
+            {
+                normalizedBody = blockBody;
+            }
+            else if (body is Expression exprBody)
+            {
+                var syntheticBlock = new BlockStatement();
+                syntheticBlock.Statements.Add(new ReturnStatement { ReturnValue = exprBody });
+                normalizedBody = syntheticBlock;
+            }
+            else
+            {
+                // Fallback: wrap in a block with the node as a statement
+                var fallbackBlock = new BlockStatement();
+                if (body is Statement stmt)
+                {
+                    fallbackBlock.Statements.Add(stmt);
+                }
+                return fallbackBlock;
+            }
+
+            return normalizedBody;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1532,7 +1687,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     }
                 }
             }
-                
+                 
             var frame = _callFrames[_frameCount];
             if (frame == null)
             {
@@ -1569,7 +1724,14 @@ run_loop_restart:
                             case OpCode.LoadConst:
                             {
                                 int constIndex = ReadInt32(instructions, ref frame);
-                                _stack[_sp++] = constants[constIndex];
+                                var constant = constants[constIndex];
+                                if (constant.IsObject && constant.AsObject() is FenObject constantObject &&
+                                    constantObject.InternalClass == "RegExp")
+                                {
+                                    EnsureRegExpPrototype(constantObject, frame);
+                                }
+
+                                _stack[_sp++] = constant;
                                 break;
                             }
                             case OpCode.LoadNull:
@@ -1870,6 +2032,7 @@ run_loop_restart:
                                 var value = _stack[--_sp];
                                 var declarationEnv = frame.Environment.GetVarDeclarationEnvironment();
                                 declarationEnv.Set(varName, value);
+                                declarationEnv.SyncGlobalDeclarationBinding(varName, value);
                                 if (CanUseBindingCache(frame))
                                 {
                                     frame.RemoveCachedBindingEnvironment(varName);
@@ -1897,6 +2060,7 @@ run_loop_restart:
                                 {
                                     declarationEnv.Set(varName, FenValue.Undefined);
                                 }
+                                declarationEnv.SyncGlobalDeclarationBinding(varName, declarationEnv.Get(varName));
                                 if (CanUseBindingCache(frame))
                                 {
                                     frame.RemoveCachedBindingEnvironment(varName);
@@ -2042,17 +2206,20 @@ run_loop_restart:
                                     }
 
                                     _sp = argStart - 1; // Pop callee + args
-                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
-                                    {
-                                        _stack[_sp++] = func.Invoke(args, null, FenValue.Undefined);
-                                    }
-                                    else
-                                    {
-                                        _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined); // Phase 1: no 'this' ctx
-                                    }
+                                    // Route native calls through FenFunction.Invoke so the owning runtime
+                                    // can activate the correct realm and preserve built-in semantics.
+                                    var callResult = func.Invoke(args, null, FenValue.Undefined);
+                                    ThrowIfNativeError(callResult);
+                                    _stack[_sp++] = callResult;
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
                                     if (func.IsGenerator)
                                     {
                                         // Generator call: capture args and return a suspended GeneratorObject
@@ -2089,10 +2256,6 @@ run_loop_restart:
                                     newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame; // Break out of inner loop to process new frame
                                 }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
-                                }
                                 break;
                             }
                             case OpCode.CallFromArray:
@@ -2108,17 +2271,18 @@ run_loop_restart:
                                 if (func.IsNative)
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
-                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
-                                    {
-                                        _stack[_sp++] = func.Invoke(args, null, FenValue.Undefined);
-                                    }
-                                    else
-                                    {
-                                        _stack[_sp++] = func.NativeImplementation(args, FenValue.Undefined);
-                                    }
+                                    var callFromArrayResult = func.Invoke(args, null, FenValue.Undefined);
+                                    ThrowIfNativeError(callFromArrayResult);
+                                    _stack[_sp++] = callFromArrayResult;
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
                                     if (func.IsGenerator)
                                     {
                                         var genArgs = ExtractArrayLikeValues(argsArrayVal);
@@ -2149,10 +2313,6 @@ run_loop_restart:
                                     newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame;
                                 }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
-                                }
                                 break;
                             }
                             case OpCode.CallMethod:
@@ -2174,17 +2334,30 @@ run_loop_restart:
                                     }
 
                                     _sp = argStart - 2; // Pop receiver + callee + args
-                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
-                                    {
-                                        _stack[_sp++] = func.Invoke(args, null, receiver);
-                                    }
-                                    else
-                                    {
-                                        _stack[_sp++] = func.NativeImplementation(args, receiver);
-                                    }
+                                    var callMethodResult = func.Invoke(args, null, receiver);
+                                    ThrowIfNativeError(callMethodResult);
+                                    _stack[_sp++] = callMethodResult;
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
+                                    if (func.IsGenerator)
+                                    {
+                                        var genArgs = new FenValue[argCount];
+                                        if (argCount > 0)
+                                        {
+                                            Array.Copy(_stack, argStart, genArgs, 0, argCount);
+                                        }
+                                        _sp = argStart - 2;
+                                        _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
+                                        break;
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {
@@ -2210,10 +2383,6 @@ run_loop_restart:
                                     newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame;
                                 }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
-                                }
                                 break;
                             }
                             case OpCode.CallMethodFromArray:
@@ -2230,17 +2399,25 @@ run_loop_restart:
                                 if (func.IsNative)
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
-                                    if (!func.ProxyHandler.IsUndefined && func.ProxyHandler.IsObject)
-                                    {
-                                        _stack[_sp++] = func.Invoke(args, null, receiver);
-                                    }
-                                    else
-                                    {
-                                        _stack[_sp++] = func.NativeImplementation(args, receiver);
-                                    }
+                                    var callMethodFromArrayResult = func.Invoke(args, null, receiver);
+                                    ThrowIfNativeError(callMethodFromArrayResult);
+                                    _stack[_sp++] = callMethodFromArrayResult;
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
+                                    if (func.IsGenerator)
+                                    {
+                                        var genArgs = ExtractArrayLikeValues(argsArrayVal);
+                                        _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
+                                        break;
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {
@@ -2263,10 +2440,6 @@ run_loop_restart:
                                     newFrame.NewTarget = FenValue.Undefined;
                                     newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame;
-                                }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed function calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -2310,17 +2483,24 @@ run_loop_restart:
                                     // Native constructors usually ignore 'this' passed in and return their own newly created object,
                                     // or we pass newObj as 'this' depending on FenRuntime design.
                                     var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
-                                    if (result.IsObject) _stack[_sp++] = result;
+                                    ThrowIfNativeError(result);
+                                    if (result.IsObject || result.IsFunction) _stack[_sp++] = result;
                                     else _stack[_sp++] = FenValue.FromObject(newObj);
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed constructors on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {
                                         newEnv.StrictMode = true;
                                     }
-                                     
+
                                     // Bind 'this' to newObj
                                     InitializeFunctionFastStore(func, newEnv);
                                     if (!string.IsNullOrEmpty(func.Name))
@@ -2332,17 +2512,13 @@ run_loop_restart:
                                     BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
 
                                     _sp = argStart - 1; // Pop constructor + args
-                                     
+
                                     var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
                                     newFrame.IsConstruct = true;
                                     newFrame.ConstructedObject = newObj;
                                     newFrame.NewTarget = constructorVal;
-                                    
+
                                     goto fetch_frame;
-                                }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed constructor calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -2376,11 +2552,18 @@ run_loop_restart:
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
                                     var result = func.NativeImplementation(args, FenValue.FromObject(newObj));
-                                    if (result.IsObject) _stack[_sp++] = result;
+                                    ThrowIfNativeError(result);
+                                    if (result.IsObject || result.IsFunction) _stack[_sp++] = result;
                                     else _stack[_sp++] = FenValue.FromObject(newObj);
                                 }
-                                else if (func.BytecodeBlock != null)
+                                else if (func.BytecodeBlock != null || func.Body != null)
                                 {
+                                    // Lazy-compile AST-backed constructors on first call (ECMA-262 §10.2)
+                                    if (func.BytecodeBlock == null)
+                                    {
+                                        LazyCompileAstFunction(func);
+                                    }
+
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {
@@ -2401,10 +2584,6 @@ run_loop_restart:
                                     newFrame.NewTarget = constructorVal;
 
                                     goto fetch_frame;
-                                }
-                                else
-                                {
-                                    throw new FenTypeError("TypeError: AST-backed constructor calls are not supported in bytecode-only mode.");
                                 }
                                 break;
                             }
@@ -2446,9 +2625,8 @@ run_loop_restart:
                                     var key = PropertyKey(prop);
                                     if (objectRef is FenObject fenObj)
                                     {
-                                        // Lazy-link RegExp literal objects to RegExp.prototype so
-                                        // methods like test/exec/compile are found via prototype chain.
-                                        if (fenObj.GetPrototype() == null && fenObj.InternalClass == "RegExp")
+                                        // Keep regex literals linked to the active realm's RegExp.prototype.
+                                        if (fenObj.InternalClass == "RegExp")
                                         {
                                             EnsureRegExpPrototype(fenObj, frame);
                                         }
@@ -2460,7 +2638,7 @@ run_loop_restart:
                                             break;
                                         }
 
-                                        var value = fenObj.Get(key);
+                                        var value = fenObj.GetWithReceiver(key, obj);
                                         _stack[_sp++] = value;
                                         PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: false);
                                     }
@@ -2557,6 +2735,7 @@ run_loop_restart:
 
                                         var cache = GetStorePropertyInlineCache(frame.Block);
                                         bool inlineCacheHit = false;
+                                        bool storePropStrict = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
                                         if (cache.TryGetValue(instructionOffset, out var pic) && !pic.Megamorphic)
                                         {
                                             var shape = fenObj.GetShape();
@@ -2576,6 +2755,11 @@ run_loop_restart:
                                                             _stack[_sp++] = value;
                                                             inlineCacheHit = true;
                                                         }
+                                                        else if (!descriptor.IsAccessor && descriptor.Writable == false && storePropStrict)
+                                                        {
+                                                            // ECMA-262 §9.1.9.1 step 4.a: strict-mode TypeError for non-writable
+                                                            throw new FenTypeError($"TypeError: Cannot assign to read only property '{key}'");
+                                                        }
                                                     }
                                                     break;
                                                 }
@@ -2587,7 +2771,7 @@ run_loop_restart:
                                             break;
                                         }
 
-                                        fenObj.Set(key, value);
+                                        fenObj.Set(key, value, storePropStrict);
                                         PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: true);
                                     }
                                     else
@@ -2895,6 +3079,12 @@ run_loop_restart:
                             {
                                 var val = _stack[--_sp];
                                 string typeStr = "object";
+                                if (val.IsHtmlDdaObject)
+                                {
+                                    _stack[_sp++] = FenValue.FromString("undefined");
+                                    break;
+                                }
+
                                 switch (val.Type)
                                 {
                                     case JsValueType.Undefined: typeStr = "undefined"; break;
@@ -2980,7 +3170,7 @@ run_loop_restart:
 
                                 // If this was a constructor call, returning a primitive yields the constructed object.
                                 // Returning an object yields that object.
-                                if (frame.IsConstruct && !result.IsObject)
+                                if (frame.IsConstruct && !result.IsObject && !result.IsFunction)
                                 {
                                     result = FenValue.FromObject(frame.ConstructedObject);
                                 }
@@ -3120,6 +3310,19 @@ run_loop_restart:
             }
             catch (Exception ex)
             {
+                if (ex is FenError fenError)
+                {
+                    var thrownValue = CreateHostExceptionValue(fenError);
+                    if (_frameCount > 0)
+                    {
+                        var top = _callFrames[_frameCount - 1];
+                        HandleException(thrownValue, ref top);
+                        goto run_loop_restart;
+                    }
+
+                    throw new JsUncaughtException(thrownValue);
+                }
+
                 if (TryExtractThrownValue(ex, out var thrown))
                 {
                     if (_frameCount > 0)
@@ -3133,56 +3336,7 @@ run_loop_restart:
                 }
 
                 // Unwind and handle .NET exceptions gracefully
-                // Parse error type from message prefix (e.g. "TypeError: ...")
-                string rawMsg = ex.Message;
-                string errType = "Error";
-                string errMsg = rawMsg;
-                var colonIdx = rawMsg.IndexOf(':');
-                if (colonIdx > 0)
-                {
-                    var prefix = rawMsg.Substring(0, colonIdx);
-                    if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
-                        prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
-                    {
-                        errType = prefix;
-                        errMsg = rawMsg.Substring(colonIdx + 1).TrimStart();
-                    }
-                }
-
-                FenValue errorObj;
-                // Try to create a properly-typed error object using the registered constructor
-                bool madeTyped = false;
-                if (_frameCount > 0)
-                {
-                    try
-                    {
-                        var env = _callFrames[_frameCount - 1].Environment;
-                        var ctorVal = env.Get(errType);
-                        if (ctorVal.IsFunction)
-                        {
-                            var errCtor = ctorVal.AsFunction() as FenFunction;
-                            var protoVal = errCtor?.Get("prototype") ?? FenValue.Undefined;
-                            var errObj = new FenObject();
-                            if (protoVal.IsObject) errObj.SetPrototype(protoVal.AsObject());
-                            errObj.Set("name", FenValue.FromString(errType));
-                            errObj.Set("message", FenValue.FromString(errMsg));
-                            errObj.Set("stack", FenValue.FromString($"{errType}: {errMsg}\n    at <anonymous>"));
-                            errorObj = FenValue.FromObject(errObj);
-                            madeTyped = true;
-                        }
-                        else { errorObj = FenValue.Undefined; }
-                    }
-                    catch { errorObj = FenValue.Undefined; }
-                }
-                else { errorObj = FenValue.Undefined; }
-
-                if (!madeTyped)
-                {
-                    var plainErr = new FenObject();
-                    plainErr.Set("message", FenValue.FromString(errMsg));
-                    plainErr.Set("name", FenValue.FromString(errType));
-                    errorObj = FenValue.FromObject(plainErr);
-                }
+                var errorObj = CreateHostExceptionValue(ex);
 
                 if (_frameCount > 0)
                 {
@@ -3198,6 +3352,71 @@ run_loop_restart:
             }
 
             return FenValue.Undefined;
+        }
+
+        private FenValue CreateHostExceptionValue(Exception ex)
+        {
+            string rawMsg = ex?.Message ?? "Error";
+            string errType = "Error";
+            string errMsg = rawMsg;
+
+            if (ex is FenError fenError)
+            {
+                errType = fenError.Type switch
+                {
+                    ErrorType.Type => "TypeError",
+                    ErrorType.Range => "RangeError",
+                    ErrorType.Reference => "ReferenceError",
+                    ErrorType.Syntax => "SyntaxError",
+                    _ => "Error"
+                };
+            }
+            else
+            {
+                var colonIdx = rawMsg.IndexOf(':');
+                if (colonIdx > 0)
+                {
+                    var prefix = rawMsg.Substring(0, colonIdx);
+                    if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
+                        prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
+                    {
+                        errType = prefix;
+                        errMsg = rawMsg.Substring(colonIdx + 1).TrimStart();
+                    }
+                }
+            }
+
+            if (_frameCount > 0)
+            {
+                try
+                {
+                    var env = _callFrames[_frameCount - 1].Environment;
+                    var ctorVal = env.Get(errType);
+                    if (ctorVal.IsFunction)
+                    {
+                        var errCtor = ctorVal.AsFunction() as FenFunction;
+                        var protoVal = errCtor?.Get("prototype") ?? FenValue.Undefined;
+                        var errObj = new FenObject();
+                        if (protoVal.IsObject)
+                        {
+                            errObj.SetPrototype(protoVal.AsObject());
+                        }
+
+                        errObj.Set("name", FenValue.FromString(errType));
+                        errObj.Set("message", FenValue.FromString(errMsg));
+                        errObj.Set("stack", FenValue.FromString($"{errType}: {errMsg}\n    at <anonymous>"));
+                        return FenValue.FromObject(errObj);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            var plainErr = new FenObject();
+            plainErr.Set("name", FenValue.FromString(errType));
+            plainErr.Set("message", FenValue.FromString(errMsg));
+            return FenValue.FromObject(plainErr);
         }
 
         private string FormatExceptionValue(FenValue value)
@@ -3250,7 +3469,7 @@ run_loop_restart:
                 // rather than propagating host exceptions through callers.
                 if (frame.IsAsyncFunction)
                 {
-                    var rejection = WrapAsyncReturnValue(FenValue.FromError(exceptionValue.AsString()));
+                    var rejection = FenValue.FromObject(JsPromise.Reject(exceptionValue, null));
                     _frameCount--;
                     _sp = frame.StackBase;
 
@@ -3642,7 +3861,12 @@ run_loop_restart:
 
             if (promise.IsSettled)
             {
-                return promise.IsFulfilled ? promise.Result : FenValue.FromError(promise.Result.ToString());
+                if (promise.IsFulfilled)
+                {
+                    return promise.Result;
+                }
+
+                throw new JsThrownValueException(promise.Result);
             }
 
             const int maxPumps = 5000;
@@ -3682,7 +3906,12 @@ run_loop_restart:
 
             if (promise.IsSettled)
             {
-                return promise.IsFulfilled ? promise.Result : FenValue.FromError(promise.Result.ToString());
+                if (promise.IsFulfilled)
+                {
+                    return promise.Result;
+                }
+
+                throw new JsThrownValueException(promise.Result);
             }
 
             return FenValue.Undefined;
@@ -3808,7 +4037,7 @@ run_loop_restart:
         private void EnsureRegExpPrototype(FenObject regexObj, CallFrame frame)
         {
             var proto = GetPrimitivePrototype(frame, "RegExp");
-            if (proto != null)
+            if (proto != null && !ReferenceEquals(regexObj.GetPrototype(), proto))
             {
                 regexObj.SetPrototype(proto);
             }

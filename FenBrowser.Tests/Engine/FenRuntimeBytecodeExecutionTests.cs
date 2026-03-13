@@ -6,6 +6,7 @@ using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Security;
 using Xunit;
+using System.Linq;
 
 namespace FenBrowser.Tests.Engine
 {
@@ -86,6 +87,300 @@ namespace FenBrowser.Tests.Engine
 
             rt.ExecuteSimple("var answer = inc(41);");
             Assert.Equal(42, ((FenValue)rt.GetGlobal("answer")).AsNumber());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_CapturesIterationBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var saved;
+                for (const v of [true]) {
+                    saved = () => v;
+                }
+                var captured = saved();
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("captured")).ToBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_CalledInsideIteration_CapturesIterationBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var captured;
+                for (const v of [true]) {
+                    var saved = () => v;
+                    captured = saved();
+                }
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("captured")).ToBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_ReturnedFromHelper_CapturesIterationBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function helper(func) {
+                    return func();
+                }
+
+                var captured;
+                for (const v of [true]) {
+                    captured = helper(() => v);
+                }
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("captured")).ToBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_ReturnedFromTwoArgHelper_CapturesIterationBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function helper(func, message) {
+                    return func();
+                }
+
+                var captured;
+                for (const v of [true]) {
+                    captured = helper(() => v, 'msg');
+                }
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("captured")).ToBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_StoredInLocalWithinTwoArgHelper_CapturesIterationBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function helper(func, message) {
+                    var value = func();
+                    return value;
+                }
+
+                var captured;
+                for (const v of [true]) {
+                    captured = helper(() => v, 'msg');
+                }
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("captured")).ToBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ArrayLiteral_Exposes_Length_And_Index_Access_In_Bytecode()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var values = ['A', 'z'];
+                var valueCount = values.length;
+                var firstValue = values[0];
+                var secondValue = values[1];
+            ");
+
+            Assert.Equal(2, ((FenValue)rt.GetGlobal("valueCount")).AsNumber());
+            Assert.Equal("A", ((FenValue)rt.GetGlobal("firstValue")).AsString());
+            Assert.Equal("z", ((FenValue)rt.GetGlobal("secondValue")).AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_AsyncHelperLoopCapture_PreservesClosureAndMessage()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var probe = async function() {
+                    function helper(func, message) {
+                        globalThis.directCaptureValue = func();
+                        return new Promise(function(resolve) {
+                            globalThis.captureValue = func();
+                            globalThis.captureMessage = message;
+                            resolve();
+                        });
+                    }
+
+                    for (const v of [true]) {
+                        await helper(() => v, '@@asyncIterator = boolean');
+                        return [
+                            directCaptureValue,
+                            typeof directCaptureValue,
+                            String(directCaptureValue),
+                            captureValue,
+                            typeof captureValue,
+                            String(captureValue),
+                            captureMessage,
+                            typeof captureMessage,
+                            String(captureMessage)
+                        ];
+                    }
+                };
+
+                var probeOut = probe();
+            ");
+
+            var promiseValue = (FenValue)rt.GetGlobal("probeOut");
+            var promise = Assert.IsType<JsPromise>(promiseValue.AsObject());
+            Assert.True(promise.IsFulfilled);
+
+            var result = Assert.IsAssignableFrom<FenObject>(promise.Result.AsObject());
+            Assert.Equal("boolean", result.Get("1").AsString());
+            Assert.Equal("true", result.Get("2").AsString());
+            Assert.Equal("boolean", result.Get("4").AsString());
+            Assert.Equal("true", result.Get("5").AsString());
+            Assert.Equal("@@asyncIterator = boolean", result.Get("6").AsString());
+            Assert.Equal("string", result.Get("7").AsString());
+            Assert.Equal("@@asyncIterator = boolean", result.Get("8").AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_AsyncForOfHelperCall_PreservesCapturedLoopBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var probe = async function() {
+                    function helper(func, message) {
+                        return [func(), typeof func(), message];
+                    }
+
+                    for (const v of [true]) {
+                        return helper(() => v, '@@asyncIterator = boolean');
+                    }
+                };
+
+                var probeOut = probe();
+            ");
+
+            var promiseValue = (FenValue)rt.GetGlobal("probeOut");
+            var promise = Assert.IsType<JsPromise>(promiseValue.AsObject());
+            Assert.True(promise.IsFulfilled);
+
+            var result = Assert.IsAssignableFrom<FenObject>(promise.Result.AsObject());
+            Assert.Equal("true", result.Get("0").AsString());
+            Assert.Equal("boolean", result.Get("1").AsString());
+            Assert.Equal("@@asyncIterator = boolean", result.Get("2").AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_AsyncForOfTwoArgHelperDirectReturn_PreservesCapturedLoopBinding()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var probe = async function() {
+                    function helper(func, message) {
+                        return func();
+                    }
+
+                    for (const v of [true]) {
+                        return helper(() => v, '@@asyncIterator = boolean');
+                    }
+                };
+
+                var probeOut = probe();
+            ");
+
+            var promiseValue = (FenValue)rt.GetGlobal("probeOut");
+            var promise = Assert.IsType<JsPromise>(promiseValue.AsObject());
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal("true", promise.Result.AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_AsyncForOfHelperCall_ArrowTemplateLoadsCapturedName()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var probe = async function() {
+                    function helper(func, message) {
+                        return [func(), typeof func(), message];
+                    }
+
+                    for (const v of [true]) {
+                        return helper(() => v, '@@asyncIterator = boolean');
+                    }
+                };
+            ");
+
+            var probeFn = rt.GetGlobal("probe").AsFunction();
+            Assert.NotNull(probeFn);
+            Assert.NotNull(probeFn.BytecodeBlock);
+
+            var nestedFunctions = probeFn.BytecodeBlock.Constants
+                .Where(v => v.IsFunction)
+                .Select(v => v.AsFunction())
+                .Where(f => f?.BytecodeBlock != null)
+                .ToList();
+
+            var arrowTemplate = Assert.Single(nestedFunctions.Where(f => f.IsArrowFunction));
+            Assert.Contains(FenValue.FromString("v"), arrowTemplate.BytecodeBlock.Constants);
+            Assert.DoesNotContain((byte)OpCode.LoadLocal, arrowTemplate.BytecodeBlock.Instructions);
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_PassedThroughHelper_PreservesCapturedValue()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function helper(func, message) {
+                    var value = func();
+                    return {
+                        result: value,
+                        resultString: String(value),
+                        functionType: typeof func,
+                        resultType: typeof value,
+                        message: message
+                    };
+                }
+
+                var report;
+                for (const v of [true]) {
+                    report = helper(() => v, '@@asyncIterator = boolean');
+                }
+
+                directCaptureValue = report.result;
+                directCaptureString = report.resultString;
+                directCaptureType = report.functionType;
+                directCaptureResultType = report.resultType;
+                helperMessage = report.message;
+            ");
+
+            Assert.Equal("boolean", ((FenValue)rt.GetGlobal("directCaptureType")).AsString());
+            Assert.Equal("boolean", ((FenValue)rt.GetGlobal("directCaptureResultType")).AsString());
+            Assert.True(((FenValue)rt.GetGlobal("directCaptureValue")).ToBoolean());
+            Assert.Equal("true", ((FenValue)rt.GetGlobal("directCaptureString")).AsString());
+            Assert.Equal("@@asyncIterator = boolean", ((FenValue)rt.GetGlobal("helperMessage")).AsString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_ForOfConstClosure_AssignedBeforeHelper_PreservesCapturedValue()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function helper(func, message) {
+                    return {
+                        result: func(),
+                        message: message
+                    };
+                }
+
+                var saved;
+                var report;
+                for (const v of [true]) {
+                    saved = () => v;
+                    report = helper(saved, '@@asyncIterator = boolean');
+                }
+
+                directCaptureValue = report.result;
+                helperMessage = report.message;
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("directCaptureValue")).ToBoolean());
+            Assert.Equal("@@asyncIterator = boolean", ((FenValue)rt.GetGlobal("helperMessage")).AsString());
         }
 
         [Fact]
@@ -589,6 +884,21 @@ namespace FenBrowser.Tests.Engine
             ");
 
             Assert.True(((FenValue)rt.GetGlobal("superPropertyMethodsOut")).AsBoolean());
+        }
+
+        [Fact]
+        public void ExecuteSimple_BytecodeFirst_PlainObjectsInheritObjectPrototype()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var plainObjectProtoOut =
+                    Object.getPrototypeOf({}) === Object.prototype &&
+                    typeof ({}).toString === 'function' &&
+                    ({}).toString() === '[object Object]' &&
+                    String({}) === '[object Object]';
+            ");
+
+            Assert.True(((FenValue)rt.GetGlobal("plainObjectProtoOut")).AsBoolean());
         }
 
     }

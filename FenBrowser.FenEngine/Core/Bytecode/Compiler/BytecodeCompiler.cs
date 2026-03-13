@@ -28,6 +28,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
+        private readonly bool _forceStrictRoot;
+        private bool _currentCompileIsStrict;
         private int _visitDepth;
         private const int MaxVisitDepth = 128;
         [ThreadStatic]
@@ -37,23 +39,32 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private int _scopeDepth;
         private bool _insideBlock;
         private string _currentInferredName;
+        // Annex B §B.3.3.1: block-scoped function names found during eval compilation
+        private List<string> _annexBBlockFunctionNames;
+        private readonly HashSet<FunctionDeclarationStatement> _annexBVarScopedBlockFunctions = new HashSet<FunctionDeclarationStatement>();
 
         public BytecodeCompiler(bool isEval = false)
             : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
         {
         }
 
-        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool isEval = false)
+        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool isEval = false, bool forceStrictRoot = false)
         {
             _enableLocalSlots = enableLocalSlots;
             _functionParameters = functionParameters;
             _functionName = functionName;
             _isEval = isEval;
+            _forceStrictRoot = forceStrictRoot;
         }
 
-        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName)
+        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName, bool forceStrictRoot = false)
         {
-            return new BytecodeCompiler(enableLocalSlots: true, functionParameters: parameters, functionName: functionName, isEval: false);
+            return new BytecodeCompiler(
+                enableLocalSlots: true,
+                functionParameters: parameters,
+                functionName: functionName,
+                isEval: false,
+                forceStrictRoot: forceStrictRoot);
         }
 
         public CodeBlock Compile(AstNode root)
@@ -78,14 +89,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _localSlotByName.Clear();
             _localSlotNames.Clear();
             _topLevelHoistedFunctions.Clear();
+            _annexBVarScopedBlockFunctions.Clear();
             _visitDepth = 0;
+            _currentCompileIsStrict = _forceStrictRoot || IsStrictRoot(root);
 
             if (_enableLocalSlots)
             {
                 InitializeLocalBindings(root);
             }
 
+            AnalyzeAnnexBBlockFunctions(root);
             HoistTopLevelFunctionDeclarations(root);
+            HoistVarDeclarations(root);
 
             // Annex B: Pre-initialize var-scoped bindings for block-scoped function declarations (eval only)
             if (_isEval)
@@ -101,7 +116,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             var localSlots = _enableLocalSlots ? new List<string>(_localSlotNames) : null;
             var codeBlock = new CodeBlock(_instructions.ToArray(), new List<FenValue>(_constants), localSlots)
             {
-                IsStrict = IsStrictRoot(root)
+                IsStrict = _currentCompileIsStrict,
+                AnnexBBlockFunctionNames = _isEval ? _annexBBlockFunctionNames : null
             };
             return codeBlock;
             }
@@ -170,17 +186,84 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 || string.Equals(value, "'use strict'", StringComparison.Ordinal);
         }
 
+        private static string GetFunctionSourceText(FunctionLiteral functionLiteral, string fallbackName)
+        {
+            if (!string.IsNullOrEmpty(functionLiteral?.Source))
+            {
+                return functionLiteral.Source;
+            }
+
+            if (functionLiteral == null)
+            {
+                return "function() { }";
+            }
+
+            string effectiveName = !string.IsNullOrEmpty(functionLiteral.Name)
+                ? functionLiteral.Name
+                : (fallbackName ?? string.Empty);
+            string parameterList = FormatFunctionParameterList(functionLiteral.Parameters);
+
+            if (functionLiteral.IsMethodDefinition)
+            {
+                string asyncPrefix = functionLiteral.IsAsync ? "async " : string.Empty;
+                string generatorMarker = functionLiteral.IsGenerator ? "*" : string.Empty;
+                return $"{asyncPrefix}{generatorMarker}{effectiveName}({parameterList}) {{ }}";
+            }
+
+            string functionAsyncPrefix = functionLiteral.IsAsync ? "async " : string.Empty;
+            string functionGeneratorMarker = functionLiteral.IsGenerator ? "*" : string.Empty;
+            string functionNameSegment = string.IsNullOrEmpty(effectiveName) ? string.Empty : $" {effectiveName}";
+            return $"{functionAsyncPrefix}function{functionGeneratorMarker}{functionNameSegment}({parameterList}) {{ }}";
+        }
+
+        private static string FormatFunctionParameterList(List<Identifier> parameters)
+        {
+            if (parameters == null || parameters.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var names = new List<string>(parameters.Count);
+            foreach (var parameter in parameters)
+            {
+                string name;
+                if (parameter?.DestructuringPattern != null)
+                {
+                    name = parameter.DestructuringPattern is ArrayLiteral ? "[]" : "{}";
+                }
+                else
+                {
+                    name = string.IsNullOrEmpty(parameter?.Value) ? "_" : parameter.Value;
+                }
+
+                if (parameter?.IsRest == true)
+                {
+                    name = "..." + name;
+                }
+
+                if (parameter?.DefaultValue != null)
+                {
+                    name += " = undefined";
+                }
+
+                names.Add(name);
+            }
+
+            return string.Join(", ", names);
+        }
+
         private void HoistBlockFunctions(AstNode root)
         {
-            // Annex B: Traverse the AST to find block-scoped function declarations and
+            // Annex B §B.3.3.1: Traverse the AST to find block-scoped function declarations and
             // pre-initialize their names to undefined in the enclosing function/global scope.
-            
+            // In eval code this also requires pre-initializing the outer variable scope (done in the VM).
+
             var functionToHoist = new List<FunctionDeclarationStatement>();
-            
+
             void TraverseForHoisting(AstNode node, bool isTopLevel)
             {
                 if (node == null) return;
-                
+
                 if (node is Program prog)
                 {
                     foreach (var stmt in prog.Statements) TraverseForHoisting(stmt, true);
@@ -191,7 +274,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else if (node is FunctionDeclarationStatement funcDecl)
                 {
-                    if (!isTopLevel)
+                    if (!isTopLevel && _annexBVarScopedBlockFunctions.Contains(funcDecl))
                     {
                         functionToHoist.Add(funcDecl);
                     }
@@ -228,17 +311,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else if (node is LabeledStatement labelStmt) TraverseForHoisting(labelStmt.Body, false);
             }
-            
+
             TraverseForHoisting(root, true);
-            
-            // Now emit the global variable initialization for these functions explicitly
+
+            // Collect names for Annex B outer-scope pre-initialization (used by ExecuteDirectEval)
+            _annexBBlockFunctionNames = new List<string>();
+
+            // Now emit the eval-scope variable initialization for these functions explicitly
             foreach (var hoisted in functionToHoist)
             {
                 if (string.IsNullOrEmpty(hoisted.Function?.Name)) continue;
-                
+
                 Emit(OpCode.LoadUndefined);
-                EmitStoreVarByName(hoisted.Function.Name);
+                EmitStoreVarDeclarationByName(hoisted.Function.Name);
                 Emit(OpCode.Pop);
+
+                _annexBBlockFunctionNames.Add(hoisted.Function.Name);
             }
         }
 
@@ -273,6 +361,105 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
                 EmitFunctionDeclaration(functionDeclaration);
                 _topLevelHoistedFunctions.Add(functionDeclaration);
+            }
+        }
+
+        private void HoistVarDeclarations(AstNode root)
+        {
+            var hoistedNames = new HashSet<string>(StringComparer.Ordinal);
+
+            void Collect(AstNode node)
+            {
+                if (node == null)
+                {
+                    return;
+                }
+
+                switch (node)
+                {
+                    case Program program:
+                        foreach (var statement in program.Statements)
+                        {
+                            Collect(statement);
+                        }
+                        break;
+                    case BlockStatement block:
+                        foreach (var statement in block.Statements)
+                        {
+                            Collect(statement);
+                        }
+                        break;
+                    case LetStatement letStatement when letStatement.Kind == DeclarationKind.Var:
+                        if (!string.IsNullOrEmpty(letStatement.Name?.Value))
+                        {
+                            hoistedNames.Add(letStatement.Name.Value);
+                        }
+                        break;
+                    case ForInStatement forInStatement when forInStatement.BindingKind == DeclarationKind.Var:
+                        if (!string.IsNullOrEmpty(forInStatement.Variable?.Value))
+                        {
+                            hoistedNames.Add(forInStatement.Variable.Value);
+                        }
+                        Collect(forInStatement.Body);
+                        break;
+                    case ForOfStatement forOfStatement when forOfStatement.BindingKind == DeclarationKind.Var:
+                        if (!string.IsNullOrEmpty(forOfStatement.Variable?.Value))
+                        {
+                            hoistedNames.Add(forOfStatement.Variable.Value);
+                        }
+                        Collect(forOfStatement.Body);
+                        break;
+                    case IfStatement ifStatement:
+                        Collect(ifStatement.Consequence);
+                        Collect(ifStatement.Alternative);
+                        break;
+                    case WhileStatement whileStatement:
+                        Collect(whileStatement.Body);
+                        break;
+                    case DoWhileStatement doWhileStatement:
+                        Collect(doWhileStatement.Body);
+                        break;
+                    case ForStatement forStatement:
+                        Collect(forStatement.Init);
+                        Collect(forStatement.Body);
+                        break;
+                    case TryStatement tryStatement:
+                        Collect(tryStatement.Block);
+                        Collect(tryStatement.CatchBlock);
+                        Collect(tryStatement.FinallyBlock);
+                        break;
+                    case SwitchStatement switchStatement:
+                        if (switchStatement.Cases != null)
+                        {
+                            foreach (var switchCase in switchStatement.Cases)
+                            {
+                                if (switchCase.Consequent == null)
+                                {
+                                    continue;
+                                }
+
+                                foreach (var statement in switchCase.Consequent)
+                                {
+                                    Collect(statement);
+                                }
+                            }
+                        }
+                        break;
+                    case LabeledStatement labeledStatement:
+                        Collect(labeledStatement.Body);
+                        break;
+                    case FunctionDeclarationStatement:
+                    case FunctionLiteral:
+                    case ClassStatement:
+                        break;
+                }
+            }
+
+            Collect(root);
+
+            foreach (var hoistedName in hoistedNames)
+            {
+                EmitDeclareVarByName(hoistedName);
             }
         }
         private void Visit(AstNode node)
@@ -655,9 +842,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is AssignmentExpression assign)
             {
+                var inferredName = GetInferredAssignmentName(assign.Left);
                 if (assign.Left is Identifier idNode)
                 {
-                    Visit(assign.Right);
+                    VisitFunctionWithInferredName(assign.Right, inferredName);
                     EmitUpdateVarByName(idNode.Value);
                 }
                 else if (assign.Left is MemberExpression assignMember)
@@ -666,14 +854,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     int idx = AddConstant(FenValue.FromString(assignMember.Property));
                     Emit(OpCode.LoadConst);
                     EmitInt32(idx);
-                    Visit(assign.Right);
+                    VisitFunctionWithInferredName(assign.Right, inferredName);
                     Emit(OpCode.StoreProp);
                 }
                 else if (assign.Left is IndexExpression assignIndex)
                 {
                     Visit(assignIndex.Left);
                     Visit(assignIndex.Index);
-                    Visit(assign.Right);
+                    VisitFunctionWithInferredName(assign.Right, inferredName);
                     Emit(OpCode.StoreProp);
                 }
                 else if (assign.Left is ArrayLiteral || assign.Left is ObjectLiteral)
@@ -715,7 +903,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else if (letStmt.Value != null)
                 {
-                    Visit(letStmt.Value);
+                    var inferredName = letStmt.Name?.Value;
+                    if (!string.IsNullOrEmpty(inferredName))
+                    {
+                        VisitFunctionWithInferredName(letStmt.Value, inferredName);
+                    }
+                    else
+                    {
+                        Visit(letStmt.Value);
+                    }
                     if (letStmt.Name != null)
                     {
                         if (letStmt.Kind == DeclarationKind.Var)
@@ -756,7 +952,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     foreach (var s in blockStmt.Statements)
                     {
-                        if (s is LetStatement || s is ClassStatement)
+                        if (s is LetStatement || s is ClassStatement || s is FunctionDeclarationStatement)
                         {
                             needsScope = true;
                             break;
@@ -779,14 +975,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 Visit(ifStmt.Condition);
                 int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
-                
-                Visit(ifStmt.Consequence);
+
+                VisitScopedStatementClause(ifStmt.Consequence);
 
                 if (ifStmt.Alternative != null)
                 {
                     int jumpOverAltOffset = EmitJump(OpCode.Jump);
                     PatchJump(jumpIfFalseOffset);
-                    Visit(ifStmt.Alternative);
+                    VisitScopedStatementClause(ifStmt.Alternative);
                     PatchJump(jumpOverAltOffset);
                 }
                 else
@@ -826,9 +1022,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
                 string functionName = !string.IsNullOrEmpty(funcLit.Name) ? funcLit.Name : _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName);
+                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName, funcLit.IsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
-                compiledBlock.IsStrict = compiledBlock.IsStrict || funcLit.IsStrict;
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
                 var templateFunc = new FenFunction(funcLit.Parameters, compiledBlock, null)
@@ -836,7 +1031,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     IsAsync = funcLit.IsAsync,
                     IsGenerator = funcLit.IsGenerator,
                     IsMethodDefinition = funcLit.IsMethodDefinition,
-                    Source = !string.IsNullOrEmpty(funcLit.Source) ? funcLit.Source : funcLit.String(),
+                    Source = GetFunctionSourceText(funcLit, functionName),
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
@@ -853,7 +1048,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
                 string asyncFunctionName = asyncFuncExpr.Name?.Value ?? _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName);
+                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName, _currentCompileIsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -876,7 +1071,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
-                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, _currentInferredName);
+                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, _currentInferredName, _currentCompileIsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -1323,7 +1518,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 if (pair.Value is FunctionLiteral functionLiteral && functionLiteral.IsMethodDefinition)
                 {
                     valueVariable = NextSyntheticName("object_method");
-                    Visit(pair.Value);
+                    VisitFunctionWithInferredName(pair.Value, GetObjectLiteralInferredName(pair.Key));
                     EmitStoreVarByName(valueVariable);
                     Emit(OpCode.Pop);
 
@@ -1372,7 +1567,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     else
                     {
-                        Visit(pair.Value);
+                        VisitFunctionWithInferredName(pair.Value, GetObjectLiteralInferredName(pair.Key));
                     }
                     Emit(OpCode.StoreProp);
                     Emit(OpCode.Pop);
@@ -1399,7 +1594,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     else
                     {
-                        Visit(pair.Value);
+                        VisitFunctionWithInferredName(pair.Value, GetObjectLiteralInferredName(pair.Key));
                     }
                     Emit(OpCode.StoreProp);
                     Emit(OpCode.Pop);
@@ -1743,6 +1938,25 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             throw new FenSyntaxError($"Compiler: {owner} requires expression-bodied block in Bytecode Phase.");
         }
 
+        private void VisitScopedStatementClause(Statement statement)
+        {
+            bool needsScope = statement is FunctionDeclarationStatement;
+            if (needsScope)
+            {
+                Emit(OpCode.PushScope);
+            }
+
+            bool previousInsideBlock = _insideBlock;
+            _insideBlock = needsScope || previousInsideBlock;
+            Visit(statement);
+            _insideBlock = previousInsideBlock;
+
+            if (needsScope)
+            {
+                Emit(OpCode.PopScope);
+            }
+        }
+
         private void EmitWhileStatement(WhileStatement whileStmt, string labelName = null)
         {
             int loopStart = _instructions.Count;
@@ -1936,6 +2150,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 ? GetLoopBindingNames(forOfStmt.Variable, forOfStmt.DestructuringPattern)
                 : null;
 
+            // ECMA-262 §14.7.5.10: for await..of uses async iteration protocol.
+            bool isAsyncIteration = forOfStmt.IsAwait;
+
             if (hasLexicalBinding)
             {
                 Emit(OpCode.PushScope);
@@ -1949,7 +2166,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Emit(OpCode.PopScope);
             }
 
-            Emit(OpCode.MakeValuesIterator);
+            // Choose sync or async iterator creation
+            Emit(isAsyncIteration ? OpCode.MakeAsyncValuesIterator : OpCode.MakeValuesIterator);
 
             int loopStart = _instructions.Count;
             var breakContext = PushBreakContext(hasLexicalBinding ? 1 : 0);
@@ -1957,8 +2175,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             var labelContext = labelName != null ? PushLabelContext(labelName, loopContext) : null;
 
             Emit(OpCode.Dup);
-            Emit(OpCode.IteratorMoveNext);
-            int jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+            // For async iteration: call .next() and await the promise before checking done
+            int jumpIfFalseOffset;
+            if (isAsyncIteration)
+            {
+                Emit(OpCode.IteratorAwaitMoveNext);
+                jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+            }
+            else
+            {
+                Emit(OpCode.IteratorMoveNext);
+                jumpIfFalseOffset = EmitJump(OpCode.JumpIfFalse);
+            }
 
             Emit(OpCode.Dup);
             Emit(OpCode.IteratorCurrent);
@@ -2481,14 +2709,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
-            Visit(methodDefinition.Value);
+            VisitFunctionWithInferredName(methodDefinition.Value, GetMethodInferredName(methodDefinition));
         }
 
         private void EmitClassProperty(ClassProperty classProperty)
         {
             if (classProperty?.Value != null)
             {
-                Visit(classProperty.Value);
+                VisitFunctionWithInferredName(classProperty.Value, GetClassPropertyInferredName(classProperty));
             }
             else
             {
@@ -2577,7 +2805,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (exportDeclaration.DefaultExpression != null)
             {
-                Visit(exportDeclaration.DefaultExpression);
+                if (CanUseInferredName(exportDeclaration.DefaultExpression))
+                {
+                    VisitWithInferredName(exportDeclaration.DefaultExpression, "default");
+                }
+                else
+                {
+                    Visit(exportDeclaration.DefaultExpression);
+                }
+                string defaultLocalBinding = GetDefaultExportLocalBindingName(exportDeclaration.DefaultExpression);
+                if (!string.IsNullOrEmpty(defaultLocalBinding))
+                {
+                    EmitStoreVarByName(defaultLocalBinding);
+                }
                 EmitStoreVarByName(GetExportBindingName("default"));
                 Emit(OpCode.Pop);
                 Emit(OpCode.LoadUndefined);
@@ -2660,6 +2900,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
 
             Emit(OpCode.LoadUndefined);
+        }
+
+        private static string GetDefaultExportLocalBindingName(Expression defaultExpression)
+        {
+            return defaultExpression switch
+            {
+                FunctionLiteral functionLiteral when !string.IsNullOrEmpty(functionLiteral.Name) => functionLiteral.Name,
+                AsyncFunctionExpression asyncFunctionExpression when asyncFunctionExpression.Name != null && !string.IsNullOrEmpty(asyncFunctionExpression.Name.Value) => asyncFunctionExpression.Name.Value,
+                ClassExpression classExpression when classExpression.Name != null && !string.IsNullOrEmpty(classExpression.Name.Value) => classExpression.Name.Value,
+                _ => null
+            };
         }
 
         private void EmitClassExpression(ClassExpression classExpression)
@@ -2876,7 +3127,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             Emit(OpCode.Pop);
 
             string methodVariable = NextSyntheticName("class_method_value");
-            Visit(methodDefinition.Value);
+            VisitFunctionWithInferredName(methodDefinition.Value, GetMethodInferredName(methodDefinition));
             EmitStoreVarByName(methodVariable);
             Emit(OpCode.Pop);
 
@@ -2906,7 +3157,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             string valueVariable = NextSyntheticName("class_static_prop");
             if (classProperty.Value != null)
             {
-                Visit(classProperty.Value);
+                VisitFunctionWithInferredName(classProperty.Value, GetClassPropertyInferredName(classProperty));
             }
             else
             {
@@ -4014,6 +4265,275 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
+        private void AnalyzeAnnexBBlockFunctions(AstNode root)
+        {
+            if (_currentCompileIsStrict)
+            {
+                return;
+            }
+
+            static void AddLexicalName(HashSet<string> names, Identifier identifier)
+            {
+                if (!string.IsNullOrEmpty(identifier?.Value))
+                {
+                    names.Add(identifier.Value);
+                }
+            }
+
+            static HashSet<string> CollectImmediateLexicalNames(IReadOnlyList<Statement> statements)
+            {
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                if (statements == null)
+                {
+                    return names;
+                }
+
+                foreach (var statement in statements)
+                {
+                    switch (statement)
+                    {
+                        case LetStatement letStatement when letStatement.Kind != DeclarationKind.Var:
+                            AddLexicalName(names, letStatement.Name);
+                            break;
+                        case ClassStatement classStatement:
+                            AddLexicalName(names, classStatement.Name);
+                            break;
+                    }
+                }
+
+                return names;
+            }
+
+            var lexicalBlockers = new Stack<HashSet<string>>();
+            var parameterBlockers = new Stack<HashSet<string>>();
+
+            void Traverse(AstNode node, bool isTopLevel)
+            {
+                if (node == null)
+                {
+                    return;
+                }
+
+                switch (node)
+                {
+                    case Program program:
+                        lexicalBlockers.Push(CollectImmediateLexicalNames(program.Statements));
+                        parameterBlockers.Push(new HashSet<string>(StringComparer.Ordinal));
+                        foreach (var statement in program.Statements)
+                        {
+                            Traverse(statement, true);
+                        }
+                        parameterBlockers.Pop();
+                        lexicalBlockers.Pop();
+                        break;
+
+                    case BlockStatement block:
+                        lexicalBlockers.Push(CollectImmediateLexicalNames(block.Statements));
+                        foreach (var statement in block.Statements)
+                        {
+                            Traverse(statement, false);
+                        }
+                        lexicalBlockers.Pop();
+                        break;
+
+                    case FunctionDeclarationStatement functionDeclaration:
+                        if (!isTopLevel && !string.IsNullOrEmpty(functionDeclaration.Function?.Name))
+                        {
+                            bool blocked = false;
+                            foreach (var names in lexicalBlockers)
+                            {
+                                if (names.Contains(functionDeclaration.Function.Name))
+                                {
+                                    blocked = true;
+                                    break;
+                                }
+                            }
+
+                            if (!blocked)
+                            {
+                                foreach (var names in parameterBlockers)
+                                {
+                                    if (names.Contains(functionDeclaration.Function.Name))
+                                    {
+                                        blocked = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!blocked)
+                            {
+                                _annexBVarScopedBlockFunctions.Add(functionDeclaration);
+                            }
+                        }
+                        break;
+
+                    case IfStatement ifStatement:
+                        Traverse(ifStatement.Consequence, false);
+                        Traverse(ifStatement.Alternative, false);
+                        break;
+
+                    case WhileStatement whileStatement:
+                        Traverse(whileStatement.Body, false);
+                        break;
+
+                    case DoWhileStatement doWhileStatement:
+                        Traverse(doWhileStatement.Body, false);
+                        break;
+
+                    case ForStatement forStatement:
+                        Traverse(forStatement.Body, false);
+                        break;
+
+                    case ForInStatement forInStatement:
+                        Traverse(forInStatement.Body, false);
+                        break;
+
+                    case ForOfStatement forOfStatement:
+                        Traverse(forOfStatement.Body, false);
+                        break;
+
+                    case TryStatement tryStatement:
+                    {
+                        Traverse(tryStatement.Block, false);
+                        if (tryStatement.CatchBlock != null)
+                        {
+                            var catchNames = new HashSet<string>(StringComparer.Ordinal);
+                            AddLexicalName(catchNames, tryStatement.CatchParameter);
+                            lexicalBlockers.Push(catchNames);
+                            Traverse(tryStatement.CatchBlock, false);
+                            lexicalBlockers.Pop();
+                        }
+                        Traverse(tryStatement.FinallyBlock, false);
+                        break;
+                    }
+
+                    case SwitchStatement switchStatement:
+                        if (switchStatement.Cases == null)
+                        {
+                            break;
+                        }
+
+                        foreach (var switchCase in switchStatement.Cases)
+                        {
+                            if (switchCase.Consequent == null)
+                            {
+                                continue;
+                            }
+
+                            lexicalBlockers.Push(CollectImmediateLexicalNames(switchCase.Consequent));
+                            foreach (var statement in switchCase.Consequent)
+                            {
+                                Traverse(statement, false);
+                            }
+                            lexicalBlockers.Pop();
+                        }
+                        break;
+
+                    case LabeledStatement labeledStatement:
+                        Traverse(labeledStatement.Body, false);
+                        break;
+
+                    case FunctionLiteral functionLiteral:
+                    {
+                        var parameterNames = new HashSet<string>(StringComparer.Ordinal);
+                        if (functionLiteral.Parameters != null)
+                        {
+                            foreach (var parameter in functionLiteral.Parameters)
+                            {
+                                AddLexicalName(parameterNames, parameter);
+                            }
+                        }
+
+                        parameterBlockers.Push(parameterNames);
+                        Traverse(functionLiteral.Body, true);
+                        parameterBlockers.Pop();
+                        break;
+                    }
+                }
+            }
+
+            Traverse(root, true);
+        }
+
+        private void VisitFunctionWithInferredName(AstNode node, string inferredName)
+        {
+            if (!CanUseInferredName(node) || string.IsNullOrEmpty(inferredName))
+            {
+                Visit(node);
+                return;
+            }
+
+            VisitWithInferredName(node, inferredName);
+        }
+
+        private static string GetInferredAssignmentName(Expression target)
+        {
+            return target switch
+            {
+                Identifier identifier => identifier.Value,
+                MemberExpression member => member.Property,
+                _ => null
+            };
+        }
+
+        private static string GetMethodInferredName(MethodDefinition methodDefinition)
+        {
+            if (methodDefinition == null || methodDefinition.Key == null || methodDefinition.Computed)
+            {
+                return null;
+            }
+
+            string methodName = methodDefinition.Key.Value;
+            if (string.IsNullOrEmpty(methodName))
+            {
+                return null;
+            }
+
+            return methodDefinition.IsPrivate ? $"#{methodName}" : methodName;
+        }
+
+        private static string GetClassPropertyInferredName(ClassProperty classProperty)
+        {
+            if (classProperty == null || classProperty.Key == null || classProperty.ComputedKeyExpression != null)
+            {
+                return null;
+            }
+
+            string propertyName = classProperty.Key.Value;
+            if (string.IsNullOrEmpty(propertyName))
+            {
+                return null;
+            }
+
+            return classProperty.IsPrivate ? $"#{propertyName}" : propertyName;
+        }
+
+        private static string GetObjectLiteralInferredName(string propertyKey)
+        {
+            if (string.IsNullOrEmpty(propertyKey))
+            {
+                return null;
+            }
+
+            if (propertyKey.StartsWith("__computed_", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (propertyKey.StartsWith("__get_", StringComparison.Ordinal))
+            {
+                return propertyKey.Substring("__get_".Length);
+            }
+
+            if (propertyKey.StartsWith("__set_", StringComparison.Ordinal))
+            {
+                return propertyKey.Substring("__set_".Length);
+            }
+
+            return propertyKey;
+        }
+
         private static bool CanInferAnonymousClassName(ClassExpression classExpression)
         {
             if (classExpression == null)
@@ -4384,9 +4904,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
         {
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name);
+            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name, funcDecl.Function.IsStrict);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
-            compiledBlock.IsStrict = compiledBlock.IsStrict || funcDecl.Function.IsStrict;
             var localMap = BuildFunctionLocalMap(compiledBlock);
 
             var templateFunc = new FenFunction(funcDecl.Function.Parameters, compiledBlock, null)
@@ -4395,7 +4914,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 IsAsync = funcDecl.Function.IsAsync,
                 IsGenerator = funcDecl.Function.IsGenerator,
                 IsMethodDefinition = funcDecl.Function.IsMethodDefinition,
-                Source = !string.IsNullOrEmpty(funcDecl.Function.Source) ? funcDecl.Function.Source : funcDecl.Function.String(),
+                Source = GetFunctionSourceText(funcDecl.Function, funcDecl.Function.Name),
                 NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                 LocalMap = localMap
             };
@@ -4406,7 +4925,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             if (funcDecl.Function.Name != null)
             {
-                EmitStoreVarByName(funcDecl.Function.Name);
+                bool isBlockScopedFunction = _insideBlock && !_topLevelHoistedFunctions.Contains(funcDecl);
+                if (isBlockScopedFunction)
+                {
+                    EmitStoreVarByName(funcDecl.Function.Name);
+                    if (_annexBVarScopedBlockFunctions.Contains(funcDecl))
+                    {
+                        EmitStoreVarDeclarationByName(funcDecl.Function.Name);
+                    }
+                }
+                else
+                {
+                    EmitStoreVarDeclarationByName(funcDecl.Function.Name);
+                }
             }
 
             // Function declaration is a statement; consume stored value result.

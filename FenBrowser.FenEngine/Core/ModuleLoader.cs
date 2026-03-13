@@ -369,6 +369,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 // Create module environment
                 var moduleEnv = new FenEnvironment(_globalEnv);
+                moduleEnv.AttachLiveModuleExports(exportObj);
 
                 // Set current module path for nested imports
                 var previousModulePath = _context.CurrentModulePath;
@@ -386,6 +387,7 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 CopyModuleExports(moduleEnv, exportObj);
+                exportObj.Freeze();
 
                 return exportObj;
             }
@@ -416,6 +418,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 // Create module environment
                 var moduleEnv = new FenEnvironment(_globalEnv);
+                moduleEnv.AttachLiveModuleExports(exportObj);
 
                 // Set current module path for nested imports
                 var previousModulePath = _context.CurrentModulePath;
@@ -433,6 +436,7 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 CopyModuleExports(moduleEnv, exportObj);
+                exportObj.Freeze();
 
                 return exportObj;
             }

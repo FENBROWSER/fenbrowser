@@ -169,6 +169,7 @@ namespace FenBrowser.FenEngine.Core
         public int Column { get; }
         public int Position { get; set; } // Added for source slicing
         public bool HadLineTerminatorBefore { get; set; }
+        public bool HasLegacyOctalEscape { get; set; }
 
         public Token(TokenType type, string literal, int line, int column, bool hadLineTerminatorBefore = false)
         {
@@ -201,6 +202,7 @@ namespace FenBrowser.FenEngine.Core
         // Used by --> HTML close comment detection.
         private bool _precedingLineTerminator = false;
         private static readonly Dictionary<string, TokenType> Keywords;
+        public bool TreatHtmlLikeCommentsAsComments { get; set; } = true;
 
         public static bool DebugMode = false;
 
@@ -407,7 +409,7 @@ namespace FenBrowser.FenEngine.Core
                         ReadChar();
                         // HTML close comment: --> at start of a line (after a line terminator or
                         // a multi-line block comment) is a line comment per Annex B.
-                        if (hadLineTerminator && PeekChar() == '>')
+                        if (TreatHtmlLikeCommentsAsComments && hadLineTerminator && PeekChar() == '>')
                         {
                             ReadChar(); // consume >
                             // skip to end of line
@@ -524,7 +526,8 @@ namespace FenBrowser.FenEngine.Core
                 case '<':
                     // HTML open comment: <!-- treated as a single-line comment (Annex B)
                     // Safe multi-char peek using _input/_readPosition without consuming.
-                    if (_readPosition < _input.Length && _input[_readPosition] == '!' &&
+                    if (TreatHtmlLikeCommentsAsComments &&
+                        _readPosition < _input.Length && _input[_readPosition] == '!' &&
                         _readPosition + 1 < _input.Length && _input[_readPosition + 1] == '-' &&
                         _readPosition + 2 < _input.Length && _input[_readPosition + 2] == '-')
                     {
@@ -708,8 +711,10 @@ namespace FenBrowser.FenEngine.Core
                 case '"':
                 case '\'':
                     bool stringValid;
-                    string str = ReadString(_ch, out stringValid);
+                    bool hasLegacyOctalEscape;
+                    string str = ReadString(_ch, out stringValid, out hasLegacyOctalEscape);
                     token = new Token(stringValid ? TokenType.String : TokenType.Illegal, str, _line, startColumn);
+                    token.HasLegacyOctalEscape = hasLegacyOctalEscape;
                     token.HadLineTerminatorBefore = hadLineTerminator;
                     token.Position = startPos;
                     _prevToken = token;
@@ -1246,17 +1251,19 @@ namespace FenBrowser.FenEngine.Core
             return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
         }
 
-        private string ReadString(char quote, out bool isValid)
+        private string ReadString(char quote, out bool isValid, out bool hasLegacyOctalEscape)
         {
             isValid = true;
+            hasLegacyOctalEscape = false;
             var sb = new StringBuilder();
             ReadChar(); // Move past opening quote
             
             while (_ch != quote && _ch != '\0')
             {
-                if (IsLineTerminator(_ch))
+                if (_ch == '\n' || _ch == '\r')
                 {
-                    // Unescaped line terminators are not allowed in string literals.
+                    // Raw CR/LF are not allowed in string literals. U+2028/U+2029 are
+                    // permitted literal contents in string literals.
                     isValid = false;
                     break;
                 }
@@ -1264,6 +1271,18 @@ namespace FenBrowser.FenEngine.Core
                 if (_ch == '\\')
                 {
                     ReadChar(); // Consume backslash
+                    if (_ch == 'u')
+                    {
+                        if (!TryReadUnicodeEscape(sb))
+                        {
+                            isValid = false;
+                            break;
+                        }
+
+                        ReadChar();
+                        continue;
+                    }
+
                     switch (_ch)
                     {
                         case 'n': sb.Append('\n'); break;
@@ -1272,36 +1291,42 @@ namespace FenBrowser.FenEngine.Core
                         case 'b': sb.Append('\b'); break;
                         case 'f': sb.Append('\f'); break;
                         case 'v': sb.Append('\v'); break;
-                        case '0': sb.Append('\0'); break;
+                        case '0':
+                            if (IsOctalDigit(PeekChar()))
+                            {
+                                hasLegacyOctalEscape = true;
+                                sb.Append(ReadLegacyOctalEscape());
+                                break;
+                            }
+                            if (PeekChar() == '8' || PeekChar() == '9')
+                            {
+                                hasLegacyOctalEscape = true;
+                            }
+                            sb.Append('\0');
+                            break;
+                        case '1':
+                        case '2':
+                        case '3':
+                        case '4':
+                        case '5':
+                        case '6':
+                        case '7':
+                            hasLegacyOctalEscape = true;
+                            sb.Append(ReadLegacyOctalEscape());
+                            break;
+                        case '8':
+                        case '9':
+                            hasLegacyOctalEscape = true;
+                            sb.Append(_ch);
+                            break;
                         case '\\': sb.Append('\\'); break;
                         case '\'': sb.Append('\''); break;
                         case '"': sb.Append('"'); break;
                         case '/': sb.Append('/'); break;
-                        case 'x': // \xHH - 2 hex digits
+                        case 'x':
+                            if (!TryReadHexEscape(sb, 2))
                             {
-                                ReadChar();
-                                if (IsHexDigit(_ch))
-                                {
-                                    char h1 = _ch;
-                                    ReadChar();
-                                    if (IsHexDigit(_ch))
-                                    {
-                                        char h2 = _ch;
-                                        int code = Convert.ToInt32(new string(new[] { h1, h2 }), 16);
-                                        sb.Append((char)code);
-                                    }
-                                    else
-                                    {
-                                        sb.Append('x');
-                                        sb.Append(h1);
-                                        continue; // Don't ReadChar at end
-                                    }
-                                }
-                                else
-                                {
-                                    sb.Append('x');
-                                    continue; // Don't ReadChar at end
-                                }
+                                isValid = false;
                             }
                             break;
                         case 'u': // \uHHHH or \u{HHHH} - ES2015 Unicode code point escape
@@ -1361,6 +1386,11 @@ namespace FenBrowser.FenEngine.Core
                             sb.Append(_ch);
                             break;
                     }
+
+                    if (!isValid)
+                    {
+                        break;
+                    }
                 }
                 else
                 {
@@ -1378,6 +1408,107 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return sb.ToString();
+        }
+
+        private bool TryReadHexEscape(StringBuilder sb, int length)
+        {
+            var digits = new char[length];
+            for (int i = 0; i < length; i++)
+            {
+                ReadChar();
+                if (!IsHexDigit(_ch))
+                {
+                    return false;
+                }
+
+                digits[i] = _ch;
+            }
+
+            int code = Convert.ToInt32(new string(digits), 16);
+            sb.Append((char)code);
+            return true;
+        }
+
+        private bool TryReadUnicodeEscape(StringBuilder sb)
+        {
+            ReadChar();
+            if (_ch == '{')
+            {
+                var hexBuf = new StringBuilder();
+                ReadChar();
+                while (_ch != '}' && _ch != '\0')
+                {
+                    if (!IsHexDigit(_ch))
+                    {
+                        return false;
+                    }
+
+                    hexBuf.Append(_ch);
+                    ReadChar();
+                }
+
+                if (_ch != '}' || hexBuf.Length == 0)
+                {
+                    return false;
+                }
+
+                int cp = Convert.ToInt32(hexBuf.ToString(), 16);
+                if (cp > 0x10FFFF)
+                {
+                    return false;
+                }
+
+                sb.Append(char.ConvertFromUtf32(cp));
+                return true;
+            }
+
+            if (!IsHexDigit(_ch))
+            {
+                return false;
+            }
+
+            var digits = new char[4];
+            digits[0] = _ch;
+            for (int i = 1; i < digits.Length; i++)
+            {
+                ReadChar();
+                if (!IsHexDigit(_ch))
+                {
+                    return false;
+                }
+
+                digits[i] = _ch;
+            }
+
+            int code = Convert.ToInt32(new string(digits), 16);
+            sb.Append((char)code);
+            return true;
+        }
+
+        private char ReadLegacyOctalEscape()
+        {
+            var digits = new StringBuilder();
+            digits.Append(_ch);
+
+            if (IsOctalDigit(PeekChar()))
+            {
+                ReadChar();
+                digits.Append(_ch);
+
+                if (digits[0] <= '3' && IsOctalDigit(PeekChar()))
+                {
+                    ReadChar();
+                    digits.Append(_ch);
+                }
+            }
+
+            int code = Convert.ToInt32(digits.ToString(), 8);
+            return (char)code;
+        }
+
+        private bool IsOctalDigit(char ch)
+        {
+            return ch >= '0' && ch <= '7';
         }
 
         private bool IsLetter(char ch)

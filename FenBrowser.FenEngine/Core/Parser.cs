@@ -130,6 +130,7 @@ namespace FenBrowser.FenEngine.Core
         {
             _lexer = lexer;
             _isModule = isModule;
+            _lexer.TreatHtmlLikeCommentsAsComments = !isModule;
             _allowReturnOutsideFunction = allowReturnOutsideFunction;
             _isStrictMode = initialStrictMode || isModule;
             _allowNewTargetOutsideFunction = allowNewTargetOutsideFunction;
@@ -346,6 +347,10 @@ namespace FenBrowser.FenEngine.Core
             }
 
             ValidateModuleTopLevelEarlyErrors(program);
+            if (_isStrictMode && ProgramContainsLegacyOctalLiteral(program))
+            {
+                _errors.Add("SyntaxError: Legacy octal literals are not allowed in strict mode");
+            }
             program.IsStrict = _isStrictMode;
             return program;
         }
@@ -354,6 +359,19 @@ namespace FenBrowser.FenEngine.Core
         {
             // Debug via errors to ensure visibility
             // _errors.Add($"[DEBUG-STMT] ParseStatement: {_curToken.Type}");
+
+            if (CurTokenIs(TokenType.Await) &&
+                !_peekToken.HadLineTerminatorBefore &&
+                _peekToken.Type == TokenType.Identifier &&
+                string.Equals(_peekToken.Literal, "using", StringComparison.Ordinal))
+            {
+                return ParseUsingDeclarationStatement(isAwaitUsing: true);
+            }
+
+            if (_isModule && IsModuleHtmlCommentTokenStart())
+            {
+                _errors.Add("SyntaxError: HTML-like comments are not allowed in module code");
+            }
             
             switch (_curToken.Type)
             {
@@ -458,6 +476,10 @@ namespace FenBrowser.FenEngine.Core
                 case TokenType.Semicolon:
                     return null; // Ignore empty statements
                 case TokenType.Identifier:
+                     if (string.Equals(_curToken.Literal, "using", StringComparison.Ordinal))
+                     {
+                         return ParseUsingDeclarationStatement(isAwaitUsing: false);
+                     }
                      if (PeekTokenIs(TokenType.Colon))
                      {
                          return ParseLabeledStatement();
@@ -484,6 +506,28 @@ namespace FenBrowser.FenEngine.Core
                 return ParseLabeledStatement();
             }
             return ParseExpressionStatement();
+        }
+
+        private Statement ParseUsingDeclarationStatement(bool isAwaitUsing)
+        {
+            if (isAwaitUsing)
+            {
+                NextToken(); // move from 'await' to contextual 'using'
+            }
+
+            var usingToken = _curToken;
+            var declarationToken = new Token(
+                TokenType.Const,
+                isAwaitUsing ? "await using" : "using",
+                usingToken.Line,
+                usingToken.Column,
+                usingToken.HadLineTerminatorBefore)
+            {
+                Position = usingToken.Position
+            };
+
+            _curToken = declarationToken;
+            return ParseLetStatement();
         }
 
         private LabeledStatement ParseLabeledStatement()
@@ -802,16 +846,12 @@ namespace FenBrowser.FenEngine.Core
         {
             var literal = _curToken.Literal;
 
-            // Check for legacy octal literals in strict mode (e.g. 01, 012)
-            if (_isStrictMode && literal.Length > 1 && literal[0] == '0')
+            // In strict mode, both LegacyOctalIntegerLiteral (070) and
+            // NonOctalDecimalIntegerLiteral (078/079) are early errors.
+            if (_isStrictMode && IsLegacyStyleLeadingZeroIntegerLiteral(literal))
             {
-                char c = literal[1];
-                // If it's not a standard prefix (x, o, b) and not a decimal point or exponent, it's a legacy octal
-                if (c != 'x' && c != 'X' && c != 'o' && c != 'O' && c != 'b' && c != 'B' && c != '.' && c != 'e' && c != 'E')
-                {
-                    _errors.Add($"SyntaxError: Legacy octal literals are not allowed in strict mode: {literal}");
-                    return null;
-                }
+                _errors.Add($"SyntaxError: Legacy octal literals are not allowed in strict mode: {literal}");
+                return null;
             }
 
             // Handle hex (0x), octal (0o), binary (0b) prefixes
@@ -846,6 +886,19 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            if (IsLegacyOctalIntegerLiteral(literal))
+            {
+                try
+                {
+                    long legacyOctalVal = Convert.ToInt64(literal, 8);
+                    return new IntegerLiteral { Token = _curToken, Value = legacyOctalVal };
+                }
+                catch
+                {
+                    // Fall through to ordinary numeric parsing below.
+                }
+            }
+
             if (long.TryParse(literal, out var longValue))
             {
                 return new IntegerLiteral { Token = _curToken, Value = longValue };
@@ -858,6 +911,51 @@ namespace FenBrowser.FenEngine.Core
 
             _errors.Add($"could not parse {literal} as number");
             return null;
+        }
+
+        private static bool IsLegacyStyleLeadingZeroIntegerLiteral(string literal)
+        {
+            if (string.IsNullOrEmpty(literal) || literal.Length <= 1 || literal[0] != '0')
+            {
+                return false;
+            }
+
+            char second = literal[1];
+            if (second == 'x' || second == 'X' ||
+                second == 'o' || second == 'O' ||
+                second == 'b' || second == 'B' ||
+                second == '.' || second == 'e' || second == 'E')
+            {
+                return false;
+            }
+
+            for (int i = 1; i < literal.Length; i++)
+            {
+                if (!char.IsDigit(literal[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsLegacyOctalIntegerLiteral(string literal)
+        {
+            if (!IsLegacyStyleLeadingZeroIntegerLiteral(literal))
+            {
+                return false;
+            }
+
+            for (int i = 1; i < literal.Length; i++)
+            {
+                if (literal[i] < '0' || literal[i] > '7')
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
         
         private Expression ParseBigIntLiteral()
@@ -1055,7 +1153,8 @@ namespace FenBrowser.FenEngine.Core
                         }
                         else
                         {
-                            arrow.Body = ParseExpression(Precedence.Lowest);
+                            // Concise arrow bodies are AssignmentExpression, not comma expressions.
+                            arrow.Body = ParseExpression(Precedence.Assignment);
                         }
                     }
                     finally
@@ -1164,8 +1263,13 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            bool consequenceHasBraces = PeekTokenIs(TokenType.LBrace);
             statement.Consequence = ParseBodyAsBlock();
             if (statement.Consequence == null) return null;
+            if (!consequenceHasBraces && statement.Consequence.Statements.Count > 0)
+            {
+                ReportInvalidSingleStatementBody(statement.Consequence.Statements[0], "if statement");
+            }
 
             if (PeekTokenIs(TokenType.Else))
             {
@@ -1186,7 +1290,14 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
+                    bool alternativeHasBraces = PeekTokenIs(TokenType.LBrace);
                     statement.Alternative = ParseBodyAsBlock();
+                    if (!alternativeHasBraces &&
+                        statement.Alternative is BlockStatement alternativeBlock &&
+                        alternativeBlock.Statements.Count > 0)
+                    {
+                        ReportInvalidSingleStatementBody(alternativeBlock.Statements[0], "if statement");
+                    }
                 }
             }
 
@@ -1307,6 +1418,11 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private bool AllowsAnnexBBlockFunctions()
+        {
+            return !_isModule && !_isStrictMode;
+        }
+
         private bool IsInvalidSingleStatementBody(Statement statement)
         {
             if (statement == null)
@@ -1320,7 +1436,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return statement is ClassStatement ||
-                   statement is FunctionDeclarationStatement ||
+                   (statement is FunctionDeclarationStatement && !AllowsAnnexBBlockFunctions()) ||
                    (statement is LetStatement declaration && declaration.Kind != DeclarationKind.Var);
         }
 
@@ -3652,6 +3768,13 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
 
+                if (!PeekTokenIs(TokenType.Semicolon) &&
+                    !PeekTokenIs(TokenType.RBrace) &&
+                    !_peekToken.HadLineTerminatorBefore)
+                {
+                    _errors.Add("SyntaxError: Class fields must be separated by a line terminator or semicolon");
+                }
+
                 // Skip optional semicolon
                 if (PeekTokenIs(TokenType.Semicolon))
                 {
@@ -3891,6 +4014,7 @@ namespace FenBrowser.FenEngine.Core
                 if (!IsIdentifierNameToken(_curToken.Type) && !CurTokenIs(TokenType.String)) return specifiers;
                  
                 var ident = new Identifier(_curToken, _curToken.Literal);
+                ValidateModuleStringNameIfNeeded(_curToken, "import");
                 specifier.Imported = ident;
                 specifier.Local = ident; // Default to same name
 
@@ -3975,21 +4099,25 @@ namespace FenBrowser.FenEngine.Core
             {
                 stmt.Declaration = ParseStatement();
             }
-            else if (CurTokenIs(TokenType.Asterisk))
+            else if (CurTokenIs(TokenType.Asterisk) ||
+                     (CurTokenIs(TokenType.String) && _curToken.Literal == "*"))
             {
-                // export * from "module" 
+                // export * from "module"
                 // export * as ns from "module"
+                // export * as "name" from "module"
+                // export "*" as "name" from "module"
                 var starToken = _curToken;
                 NextToken(); // consume *
                  
                 if (CurTokenIs(TokenType.As))
                 {
                     NextToken(); // consume as
-                    if (!IsIdentifierNameToken(_curToken.Type))
+                    if (!IsIdentifierNameToken(_curToken.Type) && !CurTokenIs(TokenType.String))
                     {
                         _errors.Add($"Expected identifier name after 'export * as', got {_curToken.Type}");
                         return null;
                     }
+                    ValidateModuleStringNameIfNeeded(_curToken, "export");
                     var ns = new Identifier(_curToken, _curToken.Literal);
                     
                     var spec = new ExportSpecifier 
@@ -4044,6 +4172,7 @@ namespace FenBrowser.FenEngine.Core
                     else
                     {
                         var localName = new Identifier(_curToken, _curToken.Literal);
+                        ValidateModuleStringNameIfNeeded(_curToken, "export");
                         Identifier exportedName = localName;
                         
                         // Check if next is 'as'
@@ -4057,6 +4186,7 @@ namespace FenBrowser.FenEngine.Core
                                 _errors.Add($"Expected identifier after 'as', got {_curToken.Type}");
                                 return null;
                             }
+                            ValidateModuleStringNameIfNeeded(_curToken, "export");
                             exportedName = new Identifier(_curToken, _curToken.Literal);
                         }
                         
@@ -4281,7 +4411,8 @@ namespace FenBrowser.FenEngine.Core
                         }
                         else
                         {
-                            arrow.Body = ParseExpression(Precedence.Lowest);
+                            // Concise arrow bodies are AssignmentExpression, so argument-list commas stay with the outer call.
+                            arrow.Body = ParseExpression(Precedence.Assignment);
                         }
 
                         ValidateArrowFunctionEarlyErrors(
@@ -4600,7 +4731,9 @@ namespace FenBrowser.FenEngine.Core
                     return;
 
                 case FunctionDeclarationStatement functionDeclaration:
-                    if (functionDeclaration.Function != null && !string.IsNullOrEmpty(functionDeclaration.Function.Name))
+                    if (!AllowsAnnexBBlockFunctions() &&
+                        functionDeclaration.Function != null &&
+                        !string.IsNullOrEmpty(functionDeclaration.Function.Name))
                     {
                         names.Add(functionDeclaration.Function.Name);
                     }
@@ -4869,7 +5002,8 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    arrow.Body = ParseExpression(Precedence.Comma);
+                    // Concise arrow bodies are AssignmentExpression, not comma expressions.
+                    arrow.Body = ParseExpression(Precedence.Assignment);
                 }
 
                 ValidateArrowFunctionEarlyErrors(
@@ -5364,20 +5498,33 @@ namespace FenBrowser.FenEngine.Core
                 return false;
             }
 
-            return AstContains(body, ast =>
+            return AstContains(body, HasLegacyOctalLiteral, skipNestedFunctions: true);
+        }
+
+        private bool ProgramContainsLegacyOctalLiteral(Program program)
+        {
+            if (program == null)
             {
-                if (ast is IntegerLiteral intLiteral)
-                {
-                    return IsLegacyOctalTokenLiteral(intLiteral.Token?.Literal);
-                }
-
-                if (ast is DoubleLiteral doubleLiteral)
-                {
-                    return IsLegacyOctalTokenLiteral(doubleLiteral.Token?.Literal);
-                }
-
                 return false;
-            }, skipNestedFunctions: true);
+            }
+
+            return AstContains(program, HasLegacyOctalLiteral, skipNestedFunctions: true);
+        }
+
+        private bool HasLegacyOctalLiteral(AstNode ast)
+        {
+            if (ast == null)
+            {
+                return false;
+            }
+
+            return ast switch
+            {
+                IntegerLiteral intLiteral => IsLegacyOctalTokenLiteral(intLiteral.Token?.Literal),
+                DoubleLiteral doubleLiteral => IsLegacyOctalTokenLiteral(doubleLiteral.Token?.Literal),
+                StringLiteral stringLiteral => stringLiteral.Token?.HasLegacyOctalEscape == true,
+                _ => false,
+            };
         }
 
         private bool IsLegacyOctalTokenLiteral(string literal)
@@ -5724,6 +5871,20 @@ namespace FenBrowser.FenEngine.Core
 
             foreach (var prop in properties)
             {
+                if (!prop.IsPrivate && prop.ComputedKeyExpression == null)
+                {
+                    string propName = GetPublicClassElementName(prop);
+                    if (propName == "constructor")
+                    {
+                        _errors.Add("SyntaxError: Class fields cannot be named 'constructor'");
+                    }
+
+                    if (prop.Static && (propName == "prototype" || propName == "constructor"))
+                    {
+                        _errors.Add($"SyntaxError: Static class fields cannot be named '{propName}'");
+                    }
+                }
+
                 bool initializerContainsSuperCall = AstContains(prop.Value, ast =>
                 {
                     if (ast is CallExpression call && call.Function is Identifier id)
@@ -5746,6 +5907,18 @@ namespace FenBrowser.FenEngine.Core
 
                 ValidatePrivateNameReferences(prop.Value, declaredPrivateNames);
             }
+        }
+
+        private static string GetPublicClassElementName(ClassProperty property)
+        {
+            var name = property?.Key?.Value ?? string.Empty;
+            if (name.Length >= 2 &&
+                ((name[0] == '"' && name[^1] == '"') || (name[0] == '\'' && name[^1] == '\'')))
+            {
+                return name.Substring(1, name.Length - 2);
+            }
+
+            return name;
         }
 
         private bool AstContains(object node, Func<AstNode, bool> predicate, bool skipNestedFunctions = false)
@@ -5997,35 +6170,11 @@ namespace FenBrowser.FenEngine.Core
 
             var varDeclaredNames = new HashSet<string>(StringComparer.Ordinal);
             var lexicalDeclaredNames = new HashSet<string>(StringComparer.Ordinal);
+            var exportedNames = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var statement in program.Statements)
             {
-                if (statement is LetStatement letStatement && letStatement.Name != null)
-                {
-                    if (letStatement.Kind == DeclarationKind.Var)
-                    {
-                        varDeclaredNames.Add(letStatement.Name.Value);
-                    }
-                    else
-                    {
-                        lexicalDeclaredNames.Add(letStatement.Name.Value);
-                    }
-
-                    continue;
-                }
-
-                if (statement is FunctionDeclarationStatement functionDeclaration &&
-                    functionDeclaration.Function != null &&
-                    !string.IsNullOrEmpty(functionDeclaration.Function.Name))
-                {
-                    lexicalDeclaredNames.Add(functionDeclaration.Function.Name);
-                    continue;
-                }
-
-                if (statement is ClassStatement classStatement && classStatement.Name != null)
-                {
-                    lexicalDeclaredNames.Add(classStatement.Name.Value);
-                }
+                CollectModuleTopLevelDeclaredNames(statement, lexicalDeclaredNames, varDeclaredNames);
             }
 
             foreach (var name in lexicalDeclaredNames)
@@ -6035,6 +6184,411 @@ namespace FenBrowser.FenEngine.Core
                     _errors.Add($"SyntaxError: Duplicate declaration '{name}' in module scope");
                 }
             }
+
+            var moduleDeclaredNames = new HashSet<string>(varDeclaredNames, StringComparer.Ordinal);
+            moduleDeclaredNames.UnionWith(lexicalDeclaredNames);
+
+            foreach (var statement in program.Statements)
+            {
+                ValidateModuleExportEarlyErrors(statement, moduleDeclaredNames, exportedNames);
+            }
+
+            ValidateModuleLabelAndControlFlowEarlyErrors(program);
+        }
+
+        private void CollectModuleTopLevelDeclaredNames(
+            Statement statement,
+            HashSet<string> lexicalDeclaredNames,
+            HashSet<string> varDeclaredNames)
+        {
+            if (statement == null)
+            {
+                return;
+            }
+
+            switch (statement)
+            {
+                case BlockStatement blockStatement:
+                    foreach (var child in blockStatement.Statements)
+                    {
+                        CollectModuleTopLevelDeclaredNames(child, lexicalDeclaredNames, varDeclaredNames);
+                    }
+                    return;
+
+                case ExportDeclaration exportDeclaration:
+                    if (exportDeclaration.Declaration != null)
+                    {
+                        CollectModuleTopLevelDeclaredNames(exportDeclaration.Declaration, lexicalDeclaredNames, varDeclaredNames);
+                    }
+                    else
+                    {
+                        AddNamedDefaultExportBindingIfPresent(exportDeclaration.DefaultExpression, lexicalDeclaredNames);
+                    }
+                    return;
+
+                case LetStatement letStatement:
+                    var targetSet = letStatement.Kind == DeclarationKind.Var ? varDeclaredNames : lexicalDeclaredNames;
+                    bool reportDuplicates = letStatement.Kind != DeclarationKind.Var;
+                    AddModuleDeclaredName(letStatement.Name?.Value, targetSet, reportDuplicates);
+                    if (letStatement.DestructuringPattern != null)
+                    {
+                        foreach (var name in ExtractBindingNames(letStatement.DestructuringPattern))
+                        {
+                            AddModuleDeclaredName(name, targetSet, reportDuplicates);
+                        }
+                    }
+                    return;
+
+                case FunctionDeclarationStatement functionDeclaration:
+                    AddModuleDeclaredName(functionDeclaration.Function?.Name, lexicalDeclaredNames, reportDuplicates: true);
+                    return;
+
+                case ClassStatement classStatement:
+                    AddModuleDeclaredName(classStatement.Name?.Value, lexicalDeclaredNames, reportDuplicates: true);
+                    return;
+            }
+        }
+
+        private void AddModuleDeclaredName(string name, HashSet<string> targetSet, bool reportDuplicates)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return;
+            }
+
+            if (!targetSet.Add(name) && reportDuplicates)
+            {
+                _errors.Add($"SyntaxError: Duplicate declaration '{name}' in module scope");
+            }
+        }
+
+        private void AddNamedDefaultExportBindingIfPresent(Expression expression, HashSet<string> lexicalDeclaredNames)
+        {
+            switch (expression)
+            {
+                case FunctionLiteral functionLiteral:
+                    AddModuleDeclaredName(functionLiteral.Name, lexicalDeclaredNames, reportDuplicates: true);
+                    return;
+
+                case AsyncFunctionExpression asyncFunctionExpression:
+                    AddModuleDeclaredName(asyncFunctionExpression.Name?.Value, lexicalDeclaredNames, reportDuplicates: true);
+                    return;
+
+                case ClassExpression classExpression:
+                    AddModuleDeclaredName(classExpression.Name?.Value, lexicalDeclaredNames, reportDuplicates: true);
+                    return;
+            }
+        }
+
+        private void ValidateModuleExportEarlyErrors(
+            Statement statement,
+            HashSet<string> moduleDeclaredNames,
+            HashSet<string> exportedNames)
+        {
+            if (statement is not ExportDeclaration exportDeclaration)
+            {
+                return;
+            }
+
+            if (exportDeclaration.DefaultExpression != null)
+            {
+                AddModuleExportedName("default", exportedNames);
+                return;
+            }
+
+            if (exportDeclaration.Declaration != null)
+            {
+                foreach (var declaredName in GetModuleDeclaredNames(exportDeclaration.Declaration))
+                {
+                    AddModuleExportedName(declaredName, exportedNames);
+                }
+                return;
+            }
+
+            foreach (var specifier in exportDeclaration.Specifiers)
+            {
+                if (specifier == null)
+                {
+                    continue;
+                }
+
+                var localBindingName = specifier.Local?.Value;
+                var exportedName = specifier.Exported?.Value ?? localBindingName;
+
+                if (!(localBindingName == "*" && specifier.Exported == null))
+                {
+                    AddModuleExportedName(exportedName, exportedNames);
+                }
+
+                if (exportDeclaration.Source == null &&
+                    !string.IsNullOrEmpty(localBindingName) &&
+                    localBindingName != "*" &&
+                    !moduleDeclaredNames.Contains(localBindingName))
+                {
+                    _errors.Add($"SyntaxError: Exported binding '{localBindingName}' is not declared in module scope");
+                }
+            }
+        }
+
+        private void AddModuleExportedName(string name, HashSet<string> exportedNames)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return;
+            }
+
+            if (!exportedNames.Add(name))
+            {
+                _errors.Add($"SyntaxError: Duplicate export '{name}' in module scope");
+            }
+        }
+
+        private IEnumerable<string> GetModuleDeclaredNames(Statement statement)
+        {
+            if (statement == null)
+            {
+                yield break;
+            }
+
+            switch (statement)
+            {
+                case BlockStatement blockStatement:
+                    foreach (var child in blockStatement.Statements)
+                    {
+                        foreach (var childName in GetModuleDeclaredNames(child))
+                        {
+                            yield return childName;
+                        }
+                    }
+                    yield break;
+
+                case LetStatement letStatement:
+                    if (!string.IsNullOrEmpty(letStatement.Name?.Value))
+                    {
+                        yield return letStatement.Name.Value;
+                    }
+
+                    if (letStatement.DestructuringPattern != null)
+                    {
+                        foreach (var name in ExtractBindingNames(letStatement.DestructuringPattern))
+                        {
+                            if (!string.IsNullOrEmpty(name))
+                            {
+                                yield return name;
+                            }
+                        }
+                    }
+                    yield break;
+
+                case FunctionDeclarationStatement functionDeclaration:
+                    if (!string.IsNullOrEmpty(functionDeclaration.Function?.Name))
+                    {
+                        yield return functionDeclaration.Function.Name;
+                    }
+                    yield break;
+
+                case ClassStatement classStatement:
+                    if (!string.IsNullOrEmpty(classStatement.Name?.Value))
+                    {
+                        yield return classStatement.Name.Value;
+                    }
+                    yield break;
+            }
+        }
+
+        private void ValidateModuleStringNameIfNeeded(Token token, string context)
+        {
+            if (!_isModule || token == null || token.Type != TokenType.String)
+            {
+                return;
+            }
+
+            if (!IsWellFormedUnicodeString(token.Literal))
+            {
+                _errors.Add($"SyntaxError: Ill-formed Unicode string in module {context} name");
+            }
+        }
+
+        private static bool IsWellFormedUnicodeString(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return true;
+            }
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char ch = value[i];
+                if (char.IsHighSurrogate(ch))
+                {
+                    if (i + 1 >= value.Length || !char.IsLowSurrogate(value[i + 1]))
+                    {
+                        return false;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                if (char.IsLowSurrogate(ch))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private bool IsModuleHtmlCommentTokenStart()
+        {
+            return (_curToken.Type == TokenType.Lt && _peekToken.Type == TokenType.Bang) ||
+                   (_curToken.Type == TokenType.Decrement && _peekToken.Type == TokenType.Gt);
+        }
+
+        private void ValidateModuleLabelAndControlFlowEarlyErrors(Program program)
+        {
+            var activeLabels = new HashSet<string>(StringComparer.Ordinal);
+            var activeIterationLabels = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var statement in program.Statements)
+            {
+                ValidateLabelAndControlFlowTargets(statement, activeLabels, activeIterationLabels);
+            }
+        }
+
+        private void ValidateLabelAndControlFlowTargets(
+            Statement statement,
+            HashSet<string> activeLabels,
+            HashSet<string> activeIterationLabels)
+        {
+            if (statement == null)
+            {
+                return;
+            }
+
+            switch (statement)
+            {
+                case LabeledStatement labeledStatement:
+                    var labelName = labeledStatement.Label?.Value;
+                    if (!string.IsNullOrEmpty(labelName) && activeLabels.Contains(labelName))
+                    {
+                        _errors.Add($"SyntaxError: Duplicate label '{labelName}' in module scope");
+                    }
+
+                    bool addedLabel = false;
+                    bool addedIterationLabel = false;
+                    if (!string.IsNullOrEmpty(labelName))
+                    {
+                        addedLabel = activeLabels.Add(labelName);
+                        if (LabelsIterationStatement(labeledStatement.Body))
+                        {
+                            addedIterationLabel = activeIterationLabels.Add(labelName);
+                        }
+                    }
+
+                    ValidateLabelAndControlFlowTargets(labeledStatement.Body, activeLabels, activeIterationLabels);
+
+                    if (addedIterationLabel)
+                    {
+                        activeIterationLabels.Remove(labelName);
+                    }
+
+                    if (addedLabel)
+                    {
+                        activeLabels.Remove(labelName);
+                    }
+                    return;
+
+                case BreakStatement breakStatement:
+                    if (breakStatement.Label != null &&
+                        !string.IsNullOrEmpty(breakStatement.Label.Value) &&
+                        !activeLabels.Contains(breakStatement.Label.Value))
+                    {
+                        _errors.Add($"SyntaxError: Undefined break target '{breakStatement.Label.Value}'");
+                    }
+                    return;
+
+                case ContinueStatement continueStatement:
+                    if (continueStatement.Label != null &&
+                        !string.IsNullOrEmpty(continueStatement.Label.Value) &&
+                        !activeIterationLabels.Contains(continueStatement.Label.Value))
+                    {
+                        _errors.Add($"SyntaxError: Undefined continue target '{continueStatement.Label.Value}'");
+                    }
+                    return;
+
+                case BlockStatement blockStatement:
+                    foreach (var child in blockStatement.Statements)
+                    {
+                        ValidateLabelAndControlFlowTargets(child, activeLabels, activeIterationLabels);
+                    }
+                    return;
+
+                case IfStatement ifStatement:
+                    ValidateLabelAndControlFlowTargets(ifStatement.Consequence, activeLabels, activeIterationLabels);
+                    ValidateLabelAndControlFlowTargets(ifStatement.Alternative, activeLabels, activeIterationLabels);
+                    return;
+
+                case WhileStatement whileStatement:
+                    ValidateLabelAndControlFlowTargets(whileStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case DoWhileStatement doWhileStatement:
+                    ValidateLabelAndControlFlowTargets(doWhileStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case ForStatement forStatement:
+                    ValidateLabelAndControlFlowTargets(forStatement.Init, activeLabels, activeIterationLabels);
+                    ValidateLabelAndControlFlowTargets(forStatement.Update, activeLabels, activeIterationLabels);
+                    ValidateLabelAndControlFlowTargets(forStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case ForInStatement forInStatement:
+                    ValidateLabelAndControlFlowTargets(forInStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case ForOfStatement forOfStatement:
+                    ValidateLabelAndControlFlowTargets(forOfStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case SwitchStatement switchStatement:
+                    foreach (var switchCase in switchStatement.Cases)
+                    {
+                        foreach (var consequent in switchCase.Consequent)
+                        {
+                            ValidateLabelAndControlFlowTargets(consequent, activeLabels, activeIterationLabels);
+                        }
+                    }
+                    return;
+
+                case TryStatement tryStatement:
+                    ValidateLabelAndControlFlowTargets(tryStatement.Block, activeLabels, activeIterationLabels);
+                    ValidateLabelAndControlFlowTargets(tryStatement.CatchBlock, activeLabels, activeIterationLabels);
+                    ValidateLabelAndControlFlowTargets(tryStatement.FinallyBlock, activeLabels, activeIterationLabels);
+                    return;
+
+                case WithStatement withStatement:
+                    ValidateLabelAndControlFlowTargets(withStatement.Body, activeLabels, activeIterationLabels);
+                    return;
+
+                case ExportDeclaration exportDeclaration when exportDeclaration.Declaration != null:
+                    ValidateLabelAndControlFlowTargets(exportDeclaration.Declaration, activeLabels, activeIterationLabels);
+                    return;
+            }
+        }
+
+        private static bool LabelsIterationStatement(Statement statement)
+        {
+            return statement switch
+            {
+                WhileStatement => true,
+                DoWhileStatement => true,
+                ForStatement => true,
+                ForInStatement => true,
+                ForOfStatement => true,
+                LabeledStatement labeledStatement => LabelsIterationStatement(labeledStatement.Body),
+                _ => false
+            };
         }
         
         private static readonly HashSet<TokenType> _contextualKeywords = new HashSet<TokenType>

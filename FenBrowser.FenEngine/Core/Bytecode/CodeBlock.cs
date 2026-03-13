@@ -19,6 +19,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         public Dictionary<int, int> SourceLineMap { get; }
         public bool IsStrict { get; set; } = false;
 
+        /// <summary>
+        /// Annex B §B.3.3.1: Names of block-scoped function declarations in eval code that must be
+        /// pre-initialized in the enclosing variable-scope environment before eval executes.
+        /// Only populated on CodeBlocks compiled with <c>isEval: true</c>.
+        /// </summary>
+        public List<string> AnnexBBlockFunctionNames { get; set; }
+
         public CodeBlock(byte[] instructions, List<FenValue> constants, List<string> localSlotNames = null)
         {
             Instructions = instructions ?? new byte[0];
