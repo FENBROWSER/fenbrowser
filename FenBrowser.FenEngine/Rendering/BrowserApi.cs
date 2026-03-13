@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Css;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -2201,7 +2201,7 @@ pre {{
                 var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
                 {
-                    el.SetAttribute("value", "");
+                    SetTextEntryValue(el, string.Empty);
                 }
             }
             return Task.CompletedTask;
@@ -2216,8 +2216,8 @@ pre {{
                 var tag = el.TagName?.ToLowerInvariant();
                 if (tag == "input" || tag == "textarea")
                 {
-                    var currentValue = el.GetAttribute("value") ?? "";
-                    el.SetAttribute("value", currentValue + text);
+                    var currentValue = GetTextEntryValue(el);
+                    SetTextEntryValue(el, currentValue + (text ?? string.Empty));
                 }
             }
             return Task.CompletedTask;
@@ -2943,7 +2943,7 @@ pre {{
                 if (directEditable)
                 {
                     bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
-                    var val = isContentEditable ? (target.TextContent ?? string.Empty) : (target.GetAttribute("value") ?? string.Empty);
+                    var val = isContentEditable ? (target.TextContent ?? string.Empty) : GetTextEntryValue(target);
                     _cursorIndex = val.Length;
                     _selectionAnchor = -1;
                 }
@@ -2964,7 +2964,7 @@ pre {{
             {
                 SetFocusedElementState(descendantEditable);
                 bool descendantIsContentEditable = string.Equals(descendantEditable.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
-                var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : (descendantEditable.GetAttribute("value") ?? string.Empty);
+                var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : GetTextEntryValue(descendantEditable);
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
             }
@@ -2980,7 +2980,7 @@ pre {{
              var tag = _focusedElement.NodeName?.ToLowerInvariant();
              if (tag != "input" && tag != "textarea") return;
              
-             var val = _focusedElement.GetAttribute("value") ?? "";
+             var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int len = end - start;
@@ -3004,7 +3004,7 @@ pre {{
                          val = val.Insert(start, data);
                          _cursorIndex = start + data.Length;
                          _selectionAnchor = -1; // Clear selection
-                         _focusedElement.SetAttribute("value", val);
+                         SetTextEntryValue(_focusedElement, val);
                          TryInvokeRepaintReady(_engine.GetActiveDom());
                      }
                      break;
@@ -3014,7 +3014,7 @@ pre {{
         public string GetSelectedText()
         {
              if (_focusedElement == null) return "";
-             var val = _focusedElement.GetAttribute("value") ?? "";
+             var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
              return end > start ? val.Substring(start, end - start) : "";
@@ -3023,7 +3023,7 @@ pre {{
         public void DeleteSelection()
         {
              if (_focusedElement == null) return;
-             var val = _focusedElement.GetAttribute("value") ?? "";
+             var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
              
@@ -3032,7 +3032,7 @@ pre {{
                  val = val.Remove(start, end - start);
                  _cursorIndex = start;
                  _selectionAnchor = -1;
-                 _focusedElement.SetAttribute("value", val);
+                 SetTextEntryValue(_focusedElement, val);
                  TryInvokeRepaintReady(_engine.GetActiveDom());
              }
         }
@@ -3156,7 +3156,7 @@ pre {{
                 SetFocusedElementState(element);
                 
                 // Set cursor to end on focus
-                var val = element.GetAttribute("value") ?? "";
+                var val = GetTextEntryValue(element);
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
                 
@@ -3450,6 +3450,44 @@ pre {{
             }
         }
 
+        private static string GetTextEntryValue(Element element)
+        {
+            if (element == null)
+            {
+                return string.Empty;
+            }
+
+            var tag = element.NodeName?.ToLowerInvariant();
+            if (tag == "textarea")
+            {
+                var currentValue = element.GetAttribute("value");
+                if (currentValue != null)
+                {
+                    return currentValue;
+                }
+
+                return element.TextContent ?? string.Empty;
+            }
+
+            return element.GetAttribute("value") ?? string.Empty;
+        }
+
+        private static void SetTextEntryValue(Element element, string value)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            var normalized = value ?? string.Empty;
+            element.SetAttribute("value", normalized);
+
+            if (string.Equals(element.NodeName, "TEXTAREA", StringComparison.OrdinalIgnoreCase))
+            {
+                element.TextContent = normalized;
+            }
+        }
+
         private static List<KeyValuePair<string, string>> CollectFormSubmissionEntries(Element form, Element submitter)
         {
             var entries = new List<KeyValuePair<string, string>>();
@@ -3722,7 +3760,7 @@ pre {{
 
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
-                    var val = _focusedElement.GetAttribute("value") ?? "";
+                    var val = GetTextEntryValue(_focusedElement);
                     
                     // Normalize selection indices
                     int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
@@ -3792,7 +3830,7 @@ pre {{
                         _cursorIndex++;
                     }
                     
-                    _focusedElement.SetAttribute("value", val);
+                    SetTextEntryValue(_focusedElement, val);
                     
                     // Trigger Repaint
                      TryInvokeRepaintReady(_engine.GetActiveDom());

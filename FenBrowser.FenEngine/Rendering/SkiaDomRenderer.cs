@@ -616,7 +616,7 @@ namespace FenBrowser.FenEngine.Rendering
                             Node = el,
                             Bounds = box.BorderBox, 
                             Type = el.GetAttribute("type") ?? "text",
-                            InitialText = el.GetAttribute("value") ?? "",
+                            InitialText = tag == "textarea" ? (el.GetAttribute("value") ?? el.TextContent ?? "") : (el.GetAttribute("value") ?? ""),
                             Placeholder = el.GetAttribute("placeholder") ?? "",
                             
                             FontFamily = style?.FontFamilyName ?? "Segoe UI",
