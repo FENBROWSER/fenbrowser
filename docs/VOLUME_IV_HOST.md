@@ -76,6 +76,7 @@ This section maps **every key file** in the Host application.
 ### 6.1 Integration Layer (`FenBrowser.Host`)
 
 #### `BrowserIntegration.cs` (Lines 1-1258)
+Startup and UI-driven navigation now canonicalize host-only internal URLs before dispatch so reload/history/UI paths that surface `fen://newtab/` or `fen://settings/` do not bypass the intended internal handlers.
 
 The vital bridge connecting the Engine's `BrowserHost` to the Silk.NET UI loop.
 

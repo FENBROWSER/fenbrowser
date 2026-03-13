@@ -454,6 +454,23 @@ namespace FenBrowser.Core
             return "cors";
         }
 
+        private static bool IsTopLevelDocumentRequest(string secFetchDest)
+        {
+            var normalized = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized == "document";
+        }
+
+        private static void ApplyNavigationRequestHeaders(HttpRequestMessage req, string secFetchDest)
+        {
+            if (req == null || !IsTopLevelDocumentRequest(secFetchDest))
+            {
+                return;
+            }
+
+            AddHeaderSafe(req, "Sec-Fetch-User", "?1");
+            AddHeaderSafe(req, "Upgrade-Insecure-Requests", "1");
+        }
+
         private static bool ShouldApplyCorb(string fetchMode, string secFetchDest)
         {
             if (!string.Equals(fetchMode, "no-cors", StringComparison.OrdinalIgnoreCase))
@@ -695,10 +712,8 @@ namespace FenBrowser.Core
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    
-                    // Get User-Agent from settings
-                    var destLower = (secFetchDest ?? "").ToLowerInvariant();
-                    var useMobile = (destLower == "document" || destLower == "iframe");
+                    // Preserve the user's configured desktop UA for top-level navigations.
+                    var useMobile = false;
                     var settings = BrowserSettings.Instance;
                     var selectedUserAgent = settings.SelectedUserAgent;
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
@@ -723,6 +738,7 @@ namespace FenBrowser.Core
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
                     AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
+                    ApplyNavigationRequestHeaders(req, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -945,9 +961,8 @@ namespace FenBrowser.Core
                     /* [PERF-REMOVED] */
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    
-                    var destLower = (secFetchDest ?? "").ToLowerInvariant();
-                    var useMobile = (destLower == "document" || destLower == "iframe");
+                    // Preserve the user's configured desktop UA for top-level navigations.
+                    var useMobile = false;
                     var selectedUserAgent = BrowserSettings.Instance.SelectedUserAgent;
                     /* [PERF-REMOVED] */
                     var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
@@ -972,6 +987,7 @@ namespace FenBrowser.Core
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
                     AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
+                    ApplyNavigationRequestHeaders(req, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -1243,6 +1259,7 @@ namespace FenBrowser.Core
                 var computedReferer = ComputeReferrerHeader(referer, url, ActiveReferrerPolicy);
                 ApplyRefererHeader(req, referer, url, ActiveReferrerPolicy);
                 AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, url));
+                ApplyNavigationRequestHeaders(req, secFetchDest);
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
@@ -1711,4 +1728,5 @@ namespace FenBrowser.Core
         }
     }
 }
+
 
