@@ -72,6 +72,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         ArrayAppendSpread = 0x66,
         ObjectSpread = 0x67,
 
+        // 0x68 - 0x69: Async Iteration (ECMA-262 §14.7.5.10 for await..of)
+        // MakeAsyncValuesIterator: pops the iterable, calls [Symbol.asyncIterator]() if present,
+        //   otherwise falls back to [Symbol.iterator](). Pushes an iterator-wrapper FenObject.
+        MakeAsyncValuesIterator = 0x68,
+        // IteratorAwaitMoveNext: calls iterator.next(), awaits the resulting promise,
+        //   pushes bool done onto stack (true = exhausted). The value is stored in the iterator object
+        //   for retrieval by IteratorCurrent.
+        IteratorAwaitMoveNext = 0x69,
+
         // 0x6A - 0x6F: Iteration
         MakeKeysIterator = 0x6A,
         IteratorMoveNext = 0x6B,
