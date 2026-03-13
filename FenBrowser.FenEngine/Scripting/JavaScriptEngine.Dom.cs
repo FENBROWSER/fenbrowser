@@ -603,14 +603,14 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     if (_node  == null) return null;
                     var tag = (_node.NodeName ?? "").ToLowerInvariant();
-                    if (tag == "textarea") return CollectText(_node);
+                    if (tag == "textarea") return (_node as Element)?.GetAttribute("value") ?? CollectText(_node);
                     return (_node as Element)?.GetAttribute("value");
                 }
                 set
                 {
                     if (_node  == null) return;
                     var tag = (_node.NodeName ?? "").ToLowerInvariant();
-                    if (tag == "textarea") { innerText = value ?? ""; return; }
+                    if (tag == "textarea") { var normalized = value ?? ""; (_node as Element)?.SetAttribute("value", normalized); innerText = normalized; return; }
                     (_node as Element)?.SetAttribute("value", value ?? "");
                     _e.RequestRepaint();
                 }
