@@ -45,10 +45,10 @@ Specialized runners built to execute standard web test suites against the engine
 - **Test262Runner**: Runs the official ECMA-262 (JavaScript) conformance suite.
 - **WPTTestRunner**: Runs the Web Platform Tests (WPT) for DOM/CSS.
 - **AcidTestRunner**: Specific runner for the Acid2 layout test, verifying standard rendering compliance.
-- **Harness-Generated Test262 NUnit Suite** (`FenBrowser.Test262`):
-  - Uses `Test262Harness` code generation to produce NUnit fixtures directly from the Test262 corpus.
-  - Uses FenRuntime adapter hooks (`BuildTestExecutor`, `ExecuteTest`, `ShouldThrow`) to run generated cases against FenEngine.
-  - Keeps regeneration workflow scripted via `FenBrowser.Test262/generate_test262.ps1`.
+- **FenBrowser.Test262 CLI** (`FenBrowser.Test262`):
+  - Provides direct suite discovery (`summary`, `get_chunk_count`), targeted execution (`run_single`, `run_category`), and chunk execution (`run_chunk`).
+  - Keeps operator guidance in `FenBrowser.Test262/README.md` so the local runbook sits next to the CLI entrypoint.
+  - Uses helper scripts for clean-state resets and parallel worker fan-out instead of mixing local debug files into the vendored suite.
 
 ### 3.3 The Verification Loop
 
@@ -117,6 +117,29 @@ Deterministic generation script for Test262 NUnit fixtures.
 - Restores local tool (`test262`).
 - Normalizes Windows path to Test262Harness-compatible `/mnt/<drive>/...` format.
 - Regenerates `FenBrowser.Test262/Generated` using `Test262Harness.settings.json`.
+
+#### `FenBrowser.Test262/README.md`
+
+Local operator runbook for FenBrowser's Test262 workflow.
+
+- Documents the separation between the vendored upstream suite (`/test262`), the CLI runner (`/FenBrowser.Test262`), and output artifacts (`/Results`).
+- Defines the clean-state command, canonical chunk commands, and the difference between logical chunks and full-suite watchdog workers.
+
+#### `scripts/clean_test262.ps1`
+
+Clean-state helper for Test262 work.
+
+- Kills stale `dotnet` / `FenBrowser.Test262` runner processes tied to this repo.
+- Clears `Results/`.
+- Removes local-only `tmp-debug-*`, `debug_*`, `custom-test*`, and `test/local-host/*` files from the vendored `test262/test` tree.
+
+#### `scripts/run_test262_chunk_parallel.ps1`
+
+Parallel helper for one logical chunk.
+
+- Splits a logical chunk (default `1000` tests) into evenly sized microchunks.
+- Launches one `run_chunk` process per worker and aggregates the JSON output into a timestamped `Results/` folder.
+- This is the supported path for "run the first 1000 tests on 20 workers"; the full-suite watchdog remains for chunk-range orchestration across the whole suite.
 
 #### `WPTTestRunner.cs`
 
@@ -1311,3 +1334,185 @@ _End of Volume VI_
 - Verification notes:
   - No extra runtime equality semantics were required; the temporary mixed object/function `FenValue` equality experiment was reverted and the exact Test262 singles still passed.
   - The remaining method-context bucket is closed for the four exact `staging/sm/class/*` repros carried by this tranche.
+
+## 6.37 Parser Verification: Strict Legacy Octal String Escapes (2026-03-09)
+
+- Focused parser regression coverage:
+  - `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+    - `Parse_StrictModeLegacyOctalStringEscape_ShouldFail()`
+    - `Parse_StrictModeTemplateExpressionLegacyOctalStringEscape_ShouldFail()`
+- Intended exact Test262 repros:
+  - `language/literals/string/legacy-octal-escape-sequence-strict.js`
+  - `annexB/language/expressions/template-literal/legacy-octal-escape-sequence-strict.js`
+- Verification notes:
+  - This tranche specifically closes the strict-mode parser gap where decoded string literals lost the fact that their source used legacy octal escapes, causing parse-negative tests to succeed incorrectly.
+## 6.38 Parser Verification: Class Field Early Errors (2026-03-09)
+
+- Focused parser regressions added for:
+  - same-line adjacent class fields without a separator
+  - public field name `constructor`
+  - static public field name `prototype`
+- Exact Test262 single-file verification target set:
+  - `language/expressions/class/elements/syntax/early-errors/grammar-fields-same-line-error.js`
+  - `language/expressions/class/elements/fields-literal-name-propname-constructor.js`
+  - `language/expressions/class/elements/fields-string-name-static-propname-prototype.js`
+
+## 6.39 Parser Verification: Contextual `using` Declarations (2026-03-09)
+
+- Focused parser regressions added for:
+  - `using` in `if (...) Statement` position
+  - `await using` without an initializer in loop-body statement position
+- Exact Test262 single-file verification target set:
+  - `language/statements/using/syntax/with-initializer-if-expression-statement.js`
+  - `language/statements/using/syntax/without-initializer-for-statement.js`
+
+## 6.40 Test262 Host Verification: `[[IsHTMLDDA]]`, Realms, And Host `evalScript` (2026-03-09)
+
+- Focused integration regression coverage:
+  - `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+    - `RunSingleTestAsync_IsHtmlDdaTypeofSemantics_Passes()`
+    - `RunSingleTestAsync_CreateRealmCtorRealmPrototypeSelection_Passes()`
+    - `RunSingleTestAsync_EvalScriptExceptionMapping_Passes()`
+- Exact Test262 single-file verification targets:
+  - `annexB/language/expressions/typeof/emulates-undefined.js`
+  - `built-ins/Boolean/proto-from-ctor-realm.js`
+  - plus a focused local-host regression that asserts `$262.evalScript("throw new TypeError('boom')")` surfaces a JS-visible `TypeError`
+- Verification intent:
+  - prove `[[IsHTMLDDA]]` flows through `ToBoolean`, `typeof`, and abstract equality in the live runner host
+  - prove `$262.createRealm().global` exposes a distinct constructor realm for `%Boolean.prototype%` selection
+  - prove `$262.evalScript(...)` throws spec-typed failures through the runner host bridge
+
+## 6.41 Test262 Host Verification: Global Script Declaration Instantiation (2026-03-09)
+
+- Focused integration regression coverage:
+  - `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+    - `RunSingleTestAsync_GlobalEvalScriptFunctionDeclaration_CreatesGlobalProperty()`
+    - `RunSingleTestAsync_GlobalEvalScriptLexicalCollision_ThrowsSyntaxErrorWithoutLeakingBindings()`
+- Exact Test262 single-file verification targets:
+  - `language/global-code/script-decl-func.js`
+  - `annexB/language/global-code/script-decl-lex-collision.js`
+- Verification intent:
+  - prove `$262.evalScript(...)` mirrors successful top-level `function` declarations onto the global object with browser-like property shape
+  - prove colliding top-level lexical declarations fail during global declaration instantiation before partially-created `var` bindings leak out
+- Follow-up verification artifacts:
+  - `Results/test262_host_globals_verify_20260309_193900/script-decl-func.log`
+    - `language/global-code/script-decl-func.js` -> `PASS`
+  - `Results/test262_host_globals_verify_20260309_193900/script-decl-lex-collision.log`
+    - `annexB/language/global-code/script-decl-lex-collision.js` -> `PASS`
+  - `Results/test262_host_globals_verify_20260309_193900/focused_tests.log`
+    - focused xUnit coverage -> `6/6` passed, including `Test262HostIntegrationTests` and `ExecuteSimple_BytecodeFirst_PlainObjectsInheritObjectPrototype()`
+- Verification notes:
+  - The remaining `script-decl-func.js` failure was traced to a runtime invariant, not just declaration wiring: plain object literals created through the bytecode path could miss `Object.prototype`, so `String({})` and Test262's `verifyProperty(...)` helper threw before the host declaration checks finished.
+  - After fixing plain-object prototype recovery against the active realm, both exact host globals rechecks passed without any special local harness patching.
+
+## 6.42 Engine Verification: Realm Array Prototype Capture Recovery (2026-03-09)
+
+- Focused engine regression coverage:
+  - `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+    - `String_Global_RemainsCallableFunction_AfterStaticMethodMerge()`
+    - `Array_PrototypeMap_ExposesFunctionPrototypeCall()`
+    - `Array_PrototypeMap_Call_WithStringConstructor_ReturnsMappedArray()`
+    - `Array_PrototypeMap_Call_WithStringConstructor_FormatsArrayLike()`
+    - existing `Array_FromAsync_*` focused regressions and `Reflect_Get_OnProxy_PreservesSymbolPropertyKeys()`
+- Verification command:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~String_Global_RemainsCallableFunction_AfterStaticMethodMerge|FullyQualifiedName~Array_PrototypeMap_ExposesFunctionPrototypeCall|FullyQualifiedName~Array_PrototypeMap_Call_WithStringConstructor_ReturnsMappedArray|FullyQualifiedName~Array_PrototypeMap_Call_WithStringConstructor_FormatsArrayLike|FullyQualifiedName~Array_FromAsync_|FullyQualifiedName~Reflect_Get_OnProxy_PreservesSymbolPropertyKeys"`
+- Verification result:
+  - `13/13` passed
+- Verified runtime invariant:
+  - the runtime-private `_realmArrayPrototype` now resolves to the active global `Array.prototype`, so realm activation no longer reintroduces null array prototype state during script execution.
+- Exact Test262 follow-up status:
+  - `built-ins/Array/fromAsync/asyncitems-arraylike-promise.js` still `FAIL`
+  - `built-ins/Array/fromAsync/asyncitems-asynciterator-sync.js` still `FAIL`
+  - `built-ins/Array/fromAsync/asyncitems-asynciterator-exists.js` still `FAIL`
+- Follow-up interpretation:
+  - the old missing-array-method surface (`[].push`, `.join`, `Array.prototype.map.call`) is closed in the engine regression suite
+  - the remaining exact Test262 failures are now in `Array.fromAsync` iterator and async-iterator semantics, not in realm array prototype capture
+
+## 6.43 Engine Verification: RegExp Literal Realm Linking For `Array.fromAsync` Helper Paths (2026-03-09)
+
+- Focused engine regression coverage:
+  - `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+    - `RegExp_Literal_Inherits_RegExpPrototype_Methods()`
+    - existing `Reflect_Get_OnProxy_PreservesSymbolPropertyKeys()`
+  - `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+    - `RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes()`
+- Verification commands:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~Reflect_Get_OnProxy_PreservesSymbolPropertyKeys|FullyQualifiedName~RegExp_Literal_Inherits_RegExpPrototype_Methods|FullyQualifiedName~RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes"`
+  - `dotnet run --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug --no-build -- run_single built-ins/Array/fromAsync/asyncitems-arraylike-promise.js`
+  - `dotnet run --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug --no-build -- run_single built-ins/Array/fromAsync/asyncitems-asynciterator-sync.js`
+  - `dotnet run --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug --no-build -- run_single built-ins/Array/fromAsync/asyncitems-asynciterator-exists.js`
+- Verification result:
+  - focused xUnit coverage: `3/3` passed
+  - exact Test262 singles:
+    - `built-ins/Array/fromAsync/asyncitems-arraylike-promise.js` -> `PASS`
+    - `built-ins/Array/fromAsync/asyncitems-asynciterator-sync.js` -> `PASS`
+    - `built-ins/Array/fromAsync/asyncitems-asynciterator-exists.js` -> `PASS`
+- Root-cause note:
+  - the failure was in Test262 helper execution, not in `Array.fromAsync` collection semantics directly: regexp literals emitted through bytecode constants were not reliably inheriting the active realm's `RegExp.prototype`, so `ASCII_IDENTIFIER.test(...)` in `temporalHelpers.js` faulted before the helper finished observing the array-like input.
+
+## 6.44 Engine Verification: Array Builtin Metadata Surface (2026-03-09)
+
+- Focused engine regression coverage:
+  - `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+    - `Array_StaticBuiltinMetadata_MatchesSpecSurface()`
+    - existing `RegExp_Literal_Inherits_RegExpPrototype_Methods()`
+    - existing `Reflect_Get_OnProxy_PreservesSymbolPropertyKeys()`
+  - `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+    - existing `RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes()`
+- Verification command:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug /nodeReuse:false /p:UseSharedCompilation=false --filter "FullyQualifiedName~Array_StaticBuiltinMetadata_MatchesSpecSurface|FullyQualifiedName~RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes|FullyQualifiedName~RegExp_Literal_Inherits_RegExpPrototype_Methods|FullyQualifiedName~Reflect_Get_OnProxy_PreservesSymbolPropertyKeys"`
+- Verification result:
+  - focused xUnit coverage: `4/4` passed
+- Exact Test262 single-file rechecks:
+  - `built-ins/Array/length.js` -> `PASS`
+  - `built-ins/Array/prop-desc.js` -> `PASS`
+  - `built-ins/Array/from/not-a-constructor.js` -> `PASS`
+  - `built-ins/Array/of/not-a-constructor.js` -> `PASS`
+  - `built-ins/Array/fromAsync/length.js` -> `PASS`
+  - `built-ins/Array/fromAsync/prop-desc.js` -> `PASS`
+  - `built-ins/Array/fromAsync/not-a-constructor.js` -> `PASS`
+- Verification note:
+  - a temporary in-proc xUnit wrapper that chained multiple exact Test262 files through one host test was removed because it picked up runner process state that does not affect the actual standalone CLI verification path.
+
+## 6.45 Test262 Verification: Discovery Cleanup And Targeted Host Rechecks (2026-03-09)
+
+- Focused regression coverage:
+  - `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+    - `RunSingleTestAsync_ArrayFrom_IsHtmlDdaIteratorMethod_ThrowsTypeError()`
+    - `RunSingleTestAsync_RegExpLegacyAccessor_InvalidReceiver_ThrowsTypeError()`
+    - `DiscoverTests_ExcludesLocalDebugFiles()`
+- Verification commands:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~Test262HostIntegrationTests"`
+  - `FenBrowser.Test262\bin\Debug\net8.0\FenBrowser.Test262.exe run_single "C:\Users\udayk\Videos\fenbrowser-test\test262\test\annexB\built-ins\Array\from\iterator-method-emulates-undefined.js" --root "C:\Users\udayk\Videos\fenbrowser-test\test262" --timeout 15000`
+  - `FenBrowser.Test262\bin\Debug\net8.0\FenBrowser.Test262.exe run_single "C:\Users\udayk\Videos\fenbrowser-test\test262\test\annexB\built-ins\RegExp\legacy-accessors\index\this-not-regexp-constructor.js" --root "C:\Users\udayk\Videos\fenbrowser-test\test262" --timeout 15000`
+  - `FenBrowser.Test262\bin\Debug\net8.0\FenBrowser.Test262.exe run_single "C:\Users\udayk\Videos\fenbrowser-test\test262\test\built-ins\Proxy\get\call-parameters.js" --root "C:\Users\udayk\Videos\fenbrowser-test\test262" --timeout 15000`
+- Verification result:
+  - focused xUnit coverage: `6/6` passed
+  - exact Test262 singles:
+    - `annexB/built-ins/Array/from/iterator-method-emulates-undefined.js` -> `PASS`
+    - `annexB/built-ins/RegExp/legacy-accessors/index/this-not-regexp-constructor.js` -> `PASS`
+    - `built-ins/Proxy/get/call-parameters.js` -> `FAIL`
+- Discovery hygiene check:
+  - current workspace raw JS files under `test262/test`: `53204`
+  - current filtered discoverable tests after local debug exclusion: `52909`
+  - current excluded local/non-upstream files: `295`
+- Interpretation:
+  - this verification tranche closed two reproduced host/runtime failures and removed known local debug noise from suite enumeration.
+  - the remaining reproduced Proxy failure is now isolated and stable rather than conflated with runner/discovery issues, which makes it suitable for a dedicated next fix pass.
+
+## 6.46 Test262 Runner Cleanup And Local Runbook (2026-03-11)
+
+- Operational cleanup:
+  - Removed local debug files from the vendored `test262/test` tree (`tmp-debug-*`, `debug_*`, `custom-test*`, and `test/local-host/*`) so suite contents are again upstream-shaped.
+- New local runbook:
+  - `FenBrowser.Test262/README.md`
+    - Documents the supported execution model for the CLI runner, including clean-state resets, single-file runs, logical chunk runs, and the exact "1000 tests on 20 workers" workflow.
+- New helper scripts:
+  - `scripts/clean_test262.ps1`
+    - Resets `Results/`, kills stale runner processes, and removes local debug pollution from the vendored suite.
+  - `scripts/run_test262_chunk_parallel.ps1`
+    - Runs one logical Test262 chunk as evenly sized microchunks in parallel and writes a summary artifact next to the worker logs.
+- Verification intent:
+  - eliminate ambiguity between the full-suite watchdog and the per-chunk parallel workflow
+  - keep the vendored suite clean so discovery remains deterministic
+  - make first-chunk reruns reproducible without ad hoc shell loops

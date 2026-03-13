@@ -31,6 +31,8 @@ bld/
 *.ps1
 !scripts/ci/verify-volume-doc-references.ps1
 !scripts/ci/run-parser-fuzz-regressions.ps1
+!scripts/clean_test262.ps1
+!scripts/run_test262_chunk_parallel.ps1
 *.py
 *.log
 *.png
