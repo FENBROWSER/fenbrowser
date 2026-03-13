@@ -13,6 +13,12 @@ namespace FenBrowser.Tests.Engine
             return new Parser(lexer);
         }
 
+        private Parser CreateModuleParser(string input)
+        {
+            var lexer = new Lexer(input);
+            return new Parser(lexer, isModule: true);
+        }
+
         private void AssertNoErrors(Parser parser)
         {
             if (parser.Errors.Any())
@@ -321,6 +327,234 @@ namespace FenBrowser.Tests.Engine
             parser.ParseProgram();
 
             AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_StrictModeLegacyOctalStringEscape_ShouldFail()
+        {
+            var parser = CreateParser("\"use strict\"; '\\1';");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Legacy octal literals are not allowed in strict mode", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_NonStrictLegacyOctalStringEscape_ZeroZero_UsesSingleNulCodeUnit()
+        {
+            var parser = CreateParser("'\\00';");
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            var statement = Assert.IsType<ExpressionStatement>(Assert.Single(program.Statements));
+            var literal = Assert.IsType<StringLiteral>(statement.Expression);
+            Assert.Equal("\0", literal.Value);
+        }
+
+        [Fact]
+        public void Parse_StrictModeNonOctalDecimalStringEscape_ShouldFail()
+        {
+            var parser = CreateParser("\"use strict\"; '\\8';");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Legacy octal literals are not allowed in strict mode", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_StringLiteral_InvalidUnicodeEscape_ShouldFail()
+        {
+            var parser = CreateParser("'\\u';");
+            parser.ParseProgram();
+
+            Assert.NotEmpty(parser.Errors);
+        }
+
+        [Fact]
+        public void Parse_StringLiteral_Allows_LineSeparatorLiteral()
+        {
+            var parser = CreateParser("\"\u2028\";");
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            var statement = Assert.IsType<ExpressionStatement>(Assert.Single(program.Statements));
+            var literal = Assert.IsType<StringLiteral>(statement.Expression);
+            Assert.Equal("\u2028", literal.Value);
+        }
+
+        [Fact]
+        public void Parse_StrictModeTemplateExpressionLegacyOctalStringEscape_ShouldFail()
+        {
+            var parser = CreateParser("\"use strict\"; `${'\\07'}`;");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Legacy octal literals are not allowed in strict mode", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ClassField_SameLineWithoutSeparator_ShouldFail()
+        {
+            var parser = CreateParser("class C { x y }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Class fields must be separated", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_ClassField_NameConstructor_ShouldFail()
+        {
+            var parser = CreateParser("class C { constructor; }");
+            parser.ParseProgram();
+
+            Assert.NotEmpty(parser.Errors);
+        }
+
+        [Fact]
+        public void Parse_StaticClassField_NamePrototype_ShouldFail()
+        {
+            var parser = CreateParser("class C { static 'prototype'; }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Static class fields cannot be named 'prototype'", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_LegacyOctalIntegerLiteral_NonStrict_UsesOctalValue()
+        {
+            var parser = CreateParser("070;");
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            var statement = Assert.IsType<ExpressionStatement>(Assert.Single(program.Statements));
+            var literal = Assert.IsType<IntegerLiteral>(statement.Expression);
+            Assert.Equal(56L, literal.Value);
+        }
+
+        [Fact]
+        public void Parse_NonOctalDecimalIntegerLiteral_NonStrict_RemainsDecimal()
+        {
+            var parser = CreateParser("078;");
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            var statement = Assert.IsType<ExpressionStatement>(Assert.Single(program.Statements));
+            var literal = Assert.IsType<IntegerLiteral>(statement.Expression);
+            Assert.Equal(78L, literal.Value);
+        }
+
+        [Fact]
+        public void Parse_UsingDeclaration_InIfSingleStatement_ShouldFail()
+        {
+            var parser = CreateParser("if (true) using x = null;");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("single-statement body", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_AwaitUsingDeclaration_WithoutInitializer_ShouldFail()
+        {
+            var parser = CreateParser("for (;false;) await using x;");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Missing initializer in const declaration", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_DuplicateExportedName_ShouldFail()
+        {
+            var parser = CreateModuleParser("var x; export { x }; export { x };");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Duplicate export", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_DuplicateTopLevelLexicalName_ShouldFail()
+        {
+            var parser = CreateModuleParser("function x() {} async function x() {}");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Duplicate declaration 'x' in module scope", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_ExportedBindingMustBeDeclared_ShouldFail()
+        {
+            var parser = CreateModuleParser("export { Number };");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("not declared in module scope", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_IllFormedStringExportName_ShouldFail()
+        {
+            var parser = CreateModuleParser("export {Moon as \"\\uD83C\"} from \"./mod.js\"; function Moon() {}");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Ill-formed Unicode string", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_HtmlOpenComment_ShouldFail()
+        {
+            var parser = CreateModuleParser("<!--");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("HTML-like comments", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_HtmlCloseComment_ShouldFail()
+        {
+            var parser = CreateModuleParser("-->");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("HTML-like comments", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_DuplicateLabel_ShouldFail()
+        {
+            var parser = CreateModuleParser("label: { label: 0; }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Duplicate label 'label'", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_UndefinedBreakTarget_ShouldFail()
+        {
+            var parser = CreateModuleParser("while (false) { break undef; }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Undefined break target 'undef'", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_UndefinedContinueTarget_ShouldFail()
+        {
+            var parser = CreateModuleParser("while (false) { continue undef; }");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Undefined continue target 'undef'", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_Module_ExportStarAsStringName_ShouldSucceed()
+        {
+            var parser = CreateModuleParser("export * as \"All\" from \"./mod.js\";");
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_Module_QuotedStarExport_UnpairedSurrogate_ShouldFail()
+        {
+            var parser = CreateModuleParser("export \"*\" as \"\\uD83D\" from \"./mod.js\";");
+            parser.ParseProgram();
+
+            Assert.Contains(parser.Errors, e => e.Contains("Ill-formed Unicode string", StringComparison.OrdinalIgnoreCase));
         }
     }
 }

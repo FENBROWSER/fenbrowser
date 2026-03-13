@@ -8,6 +8,7 @@ using FenBrowser.FenEngine.Core.Bytecode.VM;
 using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using Xunit.Sdk;
+using System.IO;
 
 namespace FenBrowser.Tests.Engine.Bytecode
 {
@@ -93,6 +94,28 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var lexer = new Lexer(js);
             var parser = new Parser(lexer, false);
             return parser.ParseProgram();
+        }
+
+        private static string GetRepositoryRoot()
+        {
+            string current = AppContext.BaseDirectory;
+            for (int i = 0; i < 10; i++)
+            {
+                if (File.Exists(Path.Combine(current, "FenBrowser.sln")))
+                {
+                    return current;
+                }
+
+                var parent = Directory.GetParent(current);
+                if (parent == null)
+                {
+                    break;
+                }
+
+                current = parent.FullName;
+            }
+
+            throw new InvalidOperationException("Could not locate repository root from test base directory.");
         }
 
         private static FenFunction CreateAstBackedFunction(
@@ -811,6 +834,23 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_AsyncThrowErrorObject_ShouldPreserveRejectedObject()
+        {
+            var result = Evaluate("async function boom() { throw new TypeError('boom'); } boom();");
+            Assert.True(result.IsObject);
+
+            var promise = result.AsObject() as JsPromise;
+            Assert.NotNull(promise);
+            Assert.True(promise.IsRejected);
+            Assert.True(promise.Result.IsObject);
+
+            var error = promise.Result.AsObject();
+            Assert.NotNull(error);
+            Assert.Equal("TypeError", error.Get("name").AsString());
+            Assert.Equal("boom", error.Get("message").AsString());
+        }
+
+        [Fact]
         public void Bytecode_LabeledBreak_OnBlock_ShouldWork()
         {
             var result = Evaluate("var x = 0; mark: { x = 1; break mark; x = 2; } x;");
@@ -1172,6 +1212,62 @@ namespace FenBrowser.Tests.Engine.Bytecode
 
             var result = EvaluateWithDiagnostics(code);
             Assert.Equal("via set", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_ObjectComputedSymbolIteratorMethod_ShouldCompileAndExecute()
+        {
+            var code = @"
+                var obj = {
+                    [Symbol.iterator]() {
+                        return {
+                            index: 0,
+                            next() {
+                                return { value: 1, done: true };
+                            },
+                            isDone: false,
+                            get val() {
+                                this.index++;
+                                if (this.index > 7) {
+                                    this.isDone = true;
+                                }
+                                return 1 << this.index;
+                            }
+                        };
+                    }
+                };
+            ";
+
+            var lexer = new Lexer(code);
+            var parser = new Parser(lexer, false);
+            var ast = parser.ParseProgram();
+
+            Assert.Empty(parser.Errors);
+
+            var codeBlock = _compiler.Compile(ast);
+            Assert.NotNull(codeBlock);
+        }
+
+        [Fact]
+        public void Bytecode_Test262ArrayFromSourceObjectIteratorHarness_ShouldCompile()
+        {
+            string repoRoot = GetRepositoryRoot();
+            string harnessRoot = Path.Combine(repoRoot, "test262", "harness");
+            string testRoot = Path.Combine(repoRoot, "test262", "test");
+
+            string assertJs = File.ReadAllText(Path.Combine(harnessRoot, "assert.js"));
+            string staJs = File.ReadAllText(Path.Combine(harnessRoot, "sta.js"));
+            string testJs = File.ReadAllText(Path.Combine(testRoot, "built-ins", "Array", "from", "source-object-iterator-1.js"));
+            string fullScript = assertJs + "\n;\n" + staJs + "\n;\n" + testJs;
+
+            var lexer = new Lexer(fullScript);
+            var parser = new Parser(lexer, false, allowReturnOutsideFunction: true);
+            var ast = parser.ParseProgram();
+
+            Assert.Empty(parser.Errors);
+
+            var codeBlock = _compiler.Compile(ast);
+            Assert.NotNull(codeBlock);
         }
 
     }
