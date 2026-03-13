@@ -19,6 +19,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Errors;
+using FenBrowser.FenEngine.Security;
 
 namespace FenBrowser.FenEngine.Testing
 {
@@ -79,7 +80,9 @@ namespace FenBrowser.FenEngine.Testing
                 return _results.AsReadOnly();
             }
             
-            var testFiles = Directory.GetFiles(categoryPath, "*.js", SearchOption.AllDirectories);
+            var testFiles = Directory.GetFiles(categoryPath, "*.js", SearchOption.AllDirectories)
+                .Where(IsDiscoverableTestFile)
+                .ToList();
             int count = 0;
             var resultsBag = new System.Collections.Concurrent.ConcurrentBag<TestResult>();
             
@@ -89,11 +92,6 @@ namespace FenBrowser.FenEngine.Testing
             await Parallel.ForEachAsync(testFiles, parallelOptions, async (testFile, token) =>
             {
                 if (Interlocked.Increment(ref count) > maxTests) return;
-                
-                // Skip helper/harness files
-                var fileName = Path.GetFileName(testFile);
-                if (fileName.StartsWith("_") || fileName.Contains("_FIXTURE"))
-                    return;
                 
                 var result = await RunSingleTestAsync(testFile);
                 resultsBag.Add(result);
@@ -120,7 +118,7 @@ namespace FenBrowser.FenEngine.Testing
             
             // Get all files and sort deterministically
             var allTestFiles = Directory.GetFiles(categoryPath, "*.js", SearchOption.AllDirectories)
-                                      .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).Contains("_FIXTURE"))
+                                      .Where(IsDiscoverableTestFile)
                                       .OrderBy(f => f) // Deterministic order is CRITICAL for slicing
                                       .Skip(skip)
                                       .Take(take)
@@ -271,7 +269,7 @@ namespace FenBrowser.FenEngine.Testing
                 }
                 if (runtime.Context != null) 
                 {
-                    runtime.Context.Permissions.Grant(FenBrowser.FenEngine.Security.JsPermissions.Eval);
+                    runtime.Context.Permissions.Grant(JsPermissions.Eval);
                 }
                 runtime.OnConsoleMessage = (msg) =>
                 {
@@ -297,39 +295,8 @@ namespace FenBrowser.FenEngine.Testing
                     strictModuleLoader.ThrowOnEvaluationError = true;
                 }
 
-                // Inject console object since it's missing in default runtime
-                var consoleObj = new FenBrowser.FenEngine.Core.FenObject();
-                consoleObj.Set("log", FenBrowser.FenEngine.Core.FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction("log", (args, thisVal) =>
-                {
-                    var msg = args.Length > 0 ? args[0].ToString() : "";
-                    runtime.OnConsoleMessage?.Invoke(msg);
-                    return FenBrowser.FenEngine.Core.FenValue.Undefined;
-                })));
-                runtime.GlobalEnv.Set("console", FenBrowser.FenEngine.Core.FenValue.FromObject(consoleObj));
-                runtime.GlobalEnv.Set("print", FenValue.FromFunction(new FenFunction("print", (args, thisVal) =>
-                {
-                    var msg = args.Length > 0 ? args[0].ToString() : "";
-                    runtime.OnConsoleMessage?.Invoke(msg);
-                    return FenValue.Undefined;
-                })));
-                var host262 = new FenObject();
-                host262.Set("detachArrayBuffer", FenValue.FromFunction(new FenFunction("detachArrayBuffer", (args, thisVal) =>
-                {
-                    if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not FenBrowser.FenEngine.Core.Types.JsArrayBuffer jsArrayBuffer)
-                    {
-                        throw new FenTypeError("TypeError: detachArrayBuffer expects an ArrayBuffer");
-                    }
-
-                    var transferFn = jsArrayBuffer.Get("transfer");
-                    if (!transferFn.IsFunction)
-                    {
-                        throw new InvalidOperationException("TypeError: detachArrayBuffer host hook unavailable");
-                    }
-
-                    transferFn.AsFunction().Invoke(Array.Empty<FenValue>(), runtime.Context, FenValue.FromObject(jsArrayBuffer));
-                    return FenValue.Undefined;
-                })));
-                runtime.GlobalEnv.Set("$262", FenValue.FromObject(host262));
+                InstallConsoleBindings(runtime);
+                runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime)));
                 
                 // 2. Load Harness Files
                 // Default harness files required by most tests
@@ -605,6 +572,323 @@ namespace FenBrowser.FenEngine.Testing
             return result;
         }
 
+        private void InstallConsoleBindings(FenRuntime runtime)
+        {
+            var consoleObj = new FenObject();
+            consoleObj.Set("log", FenValue.FromFunction(new FenFunction("log", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : string.Empty;
+                runtime.OnConsoleMessage?.Invoke(msg);
+                return FenValue.Undefined;
+            })));
+
+            runtime.SetGlobal("console", FenValue.FromObject(consoleObj));
+            runtime.SetGlobal("print", FenValue.FromFunction(new FenFunction("print", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : string.Empty;
+                runtime.OnConsoleMessage?.Invoke(msg);
+                return FenValue.Undefined;
+            })));
+        }
+
+        private FenObject CreateHost262(FenRuntime runtime)
+        {
+            var host262 = new FenObject();
+            host262.Set("IsHTMLDDA", FenValue.FromObject(new Test262HtmlDdaObject()));
+            host262.Set("detachArrayBuffer", FenValue.FromFunction(new FenFunction("detachArrayBuffer", (args, thisVal) =>
+            {
+                if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not FenBrowser.FenEngine.Core.Types.JsArrayBuffer jsArrayBuffer)
+                {
+                    throw new FenTypeError("TypeError: detachArrayBuffer expects an ArrayBuffer");
+                }
+
+                var transferFn = jsArrayBuffer.Get("transfer");
+                if (!transferFn.IsFunction)
+                {
+                    throw new InvalidOperationException("TypeError: detachArrayBuffer host hook unavailable");
+                }
+
+                transferFn.AsFunction().Invoke(Array.Empty<FenValue>(), runtime.Context, FenValue.FromObject(jsArrayBuffer));
+                return FenValue.Undefined;
+            })));
+            host262.Set("evalScript", FenValue.FromFunction(new FenFunction("evalScript", (args, thisVal) =>
+            {
+                return EvaluateScriptOrThrow(runtime, args, "test262-host-eval.js");
+            })));
+            host262.Set("createRealm", FenValue.FromFunction(new FenFunction("createRealm", (args, thisVal) =>
+            {
+                var childRuntime = new FenRuntime();
+                ConfigureChildRealm(childRuntime, runtime.OnConsoleMessage);
+
+                var realmObject = new FenObject();
+                realmObject.Set("global", FenValue.FromObject(new Test262GlobalProxyObject(childRuntime)));
+                realmObject.Set("evalScript", FenValue.FromFunction(new FenFunction("evalScript", (innerArgs, innerThis) =>
+                {
+                    return EvaluateScriptOrThrow(childRuntime, innerArgs, "test262-created-realm-eval.js");
+                })));
+
+                return FenValue.FromObject(realmObject);
+            })));
+
+            return host262;
+        }
+
+        private void ConfigureChildRealm(FenRuntime runtime, Action<string> consoleSink)
+        {
+            if (runtime.Context != null)
+            {
+                runtime.Context.Permissions.Grant(JsPermissions.Eval);
+            }
+
+            runtime.OnConsoleMessage = consoleSink;
+            InstallConsoleBindings(runtime);
+            runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime)));
+        }
+
+        private static FenValue GetRealmGlobal(FenRuntime runtime)
+        {
+            if (runtime.GetGlobal("globalThis") is FenValue globalThis && globalThis.IsObject)
+            {
+                return globalThis;
+            }
+
+            if (runtime.GetGlobal("window") is FenValue window && window.IsObject)
+            {
+                return window;
+            }
+
+            return FenValue.FromObject(new FenObject());
+        }
+
+        private static FenValue EvaluateScriptOrThrow(FenRuntime runtime, FenValue[] args, string sourceName)
+        {
+            string script = args.Length > 0 ? args[0].AsString() : string.Empty;
+            var result = runtime.ExecuteSimple(script, sourceName, allowReturn: false);
+            if (result is not FenValue fenResult)
+            {
+                return FenValue.Undefined;
+            }
+
+            if (fenResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error)
+            {
+                throw CreateEvaluationException(fenResult.AsError());
+            }
+
+            if (fenResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+            {
+                throw CreateEvaluationException(fenResult.GetThrownValue());
+            }
+
+            return fenResult;
+        }
+
+        private static Exception CreateEvaluationException(string error)
+        {
+            string message = NormalizeEvaluationError(error);
+
+            if (message.StartsWith("SyntaxError:", StringComparison.Ordinal))
+            {
+                return new FenSyntaxError(message);
+            }
+
+            if (message.StartsWith("TypeError:", StringComparison.Ordinal))
+            {
+                return new FenTypeError(message);
+            }
+
+            if (message.StartsWith("ReferenceError:", StringComparison.Ordinal))
+            {
+                return new FenReferenceError(message);
+            }
+
+            if (message.StartsWith("RangeError:", StringComparison.Ordinal))
+            {
+                return new FenRangeError(message);
+            }
+
+            if (message.Contains("SyntaxError", StringComparison.Ordinal))
+            {
+                return new FenSyntaxError(message);
+            }
+
+            if (message.Contains("TypeError", StringComparison.Ordinal))
+            {
+                return new FenTypeError(message);
+            }
+
+            if (message.Contains("ReferenceError", StringComparison.Ordinal))
+            {
+                return new FenReferenceError(message);
+            }
+
+            return new InvalidOperationException(message);
+        }
+
+        private static Exception CreateEvaluationException(FenValue thrownValue)
+        {
+            string message = DescribeThrownValue(thrownValue);
+            return CreateEvaluationException(message);
+        }
+
+        private static string DescribeThrownValue(FenValue thrownValue)
+        {
+            if (thrownValue.IsObject || thrownValue.IsFunction)
+            {
+                var thrownObject = thrownValue.AsObject();
+                var nameValue = thrownObject?.Get("name");
+                var messageValue = thrownObject?.Get("message");
+                string errorName = nameValue.HasValue && nameValue.Value.IsString
+                    ? nameValue.Value.AsString()
+                    : null;
+                string errorMessage = messageValue.HasValue && messageValue.Value.IsString
+                    ? messageValue.Value.AsString()
+                    : null;
+
+                if (!string.IsNullOrWhiteSpace(errorName) && !string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    return $"{errorName}: {errorMessage}";
+                }
+
+                if (!string.IsNullOrWhiteSpace(errorName))
+                {
+                    return errorName;
+                }
+            }
+
+            return thrownValue.ToString();
+        }
+
+        private static string NormalizeEvaluationError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                return "Error: Script evaluation failed";
+            }
+
+            const string debugPrefix = "[[DEBUG_TRACE]] ";
+            if (error.StartsWith(debugPrefix, StringComparison.Ordinal))
+            {
+                var tracePayload = error.Substring(debugPrefix.Length);
+                var firstLine = tracePayload.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(firstLine))
+                {
+                    if (firstLine.StartsWith("JsUncaughtException:", StringComparison.Ordinal))
+                    {
+                        return firstLine.Substring("JsUncaughtException:".Length).Trim();
+                    }
+
+                    return firstLine.Trim();
+                }
+            }
+
+            return error.Trim();
+        }
+
+        private sealed class Test262HtmlDdaObject : FenObject, FenBrowser.FenEngine.Core.Interfaces.IHtmlDdaObject
+        {
+            public Test262HtmlDdaObject()
+            {
+                InternalClass = "HTMLDDA";
+            }
+        }
+
+        private sealed class Test262GlobalProxyObject : FenObject
+        {
+            private readonly FenRuntime _runtime;
+
+            public Test262GlobalProxyObject(FenRuntime runtime)
+            {
+                _runtime = runtime;
+                InternalClass = "Window";
+            }
+
+            public override FenValue Get(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (_runtime.GetGlobal(key) is FenValue globalValue && !globalValue.IsUndefined)
+                {
+                    return globalValue;
+                }
+
+                return base.Get(key, context);
+            }
+
+            public override FenValue GetWithReceiver(string key, FenValue receiver, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (_runtime.GetGlobal(key) is FenValue globalValue && !globalValue.IsUndefined)
+                {
+                    return globalValue;
+                }
+
+                return base.GetWithReceiver(key, receiver, context);
+            }
+
+            public override void Set(string key, FenValue value, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                _runtime.SetGlobal(key, value);
+                base.Set(key, value, context);
+            }
+
+            public override void SetWithReceiver(string key, FenValue value, FenValue receiver, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                _runtime.SetGlobal(key, value);
+                base.SetWithReceiver(key, value, receiver, context);
+            }
+
+            public override bool Has(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                if (_runtime.GlobalEnv.HasBinding(key))
+                {
+                    return true;
+                }
+
+                return base.Has(key, context);
+            }
+
+            public override bool Delete(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                bool deleted = base.Delete(key, context);
+                if (_runtime.GlobalEnv.HasLocalBinding(key))
+                {
+                    _runtime.GlobalEnv.Set(key, FenValue.Undefined);
+                }
+
+                return deleted;
+            }
+
+            public override IEnumerable<string> Keys(FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
+            {
+                var keys = new HashSet<string>(base.Keys(context), StringComparer.Ordinal);
+                foreach (var kvp in _runtime.GlobalEnv.InspectVariables())
+                {
+                    keys.Add(kvp.Key);
+                }
+
+                return keys;
+            }
+
+            public override PropertyDescriptor? GetOwnPropertyDescriptor(string key)
+            {
+                var baseDescriptor = base.GetOwnPropertyDescriptor(key);
+                if (baseDescriptor.HasValue)
+                {
+                    return baseDescriptor;
+                }
+
+                if (_runtime.GetGlobal(key) is FenValue globalValue && !globalValue.IsUndefined)
+                {
+                    return new PropertyDescriptor
+                    {
+                        Value = globalValue,
+                        Writable = true,
+                        Enumerable = true,
+                        Configurable = true
+                    };
+                }
+
+                return null;
+            }
+        }
+
         /// <summary>
         /// Parse Test262 YAML frontmatter metadata.
         /// </summary>
@@ -809,9 +1093,31 @@ namespace FenBrowser.FenEngine.Testing
             }
 
             return Directory.GetFiles(path, "*.js", SearchOption.AllDirectories)
-                .Where(f => !Path.GetFileName(f).StartsWith("_") && !Path.GetFileName(f).Contains("_FIXTURE"))
+                .Where(IsDiscoverableTestFile)
                 .OrderBy(f => f)
                 .ToList();
+        }
+
+        private static bool IsDiscoverableTestFile(string testFile)
+        {
+            var fileName = Path.GetFileName(testFile);
+            if (fileName.StartsWith("_", StringComparison.Ordinal) ||
+                fileName.Contains("_FIXTURE", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (fileName.StartsWith("tmp-debug-", StringComparison.OrdinalIgnoreCase) ||
+                fileName.StartsWith("debug_", StringComparison.OrdinalIgnoreCase) ||
+                fileName.StartsWith("custom-test", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var normalizedPath = testFile.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            return !normalizedPath.Contains(
+                $"{Path.DirectorySeparatorChar}test{Path.DirectorySeparatorChar}local-host{Path.DirectorySeparatorChar}",
+                StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

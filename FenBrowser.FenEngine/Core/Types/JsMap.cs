@@ -40,6 +40,10 @@ namespace FenBrowser.FenEngine.Core.Types
             _context = context;
             Set("size", FenValue.FromNumber(0));
 
+            // ECMA-262 §24.1.3.14: Map.prototype[@@toStringTag] = "Map"
+            if (JsSymbol.ToStringTag != null)
+                Set(JsSymbol.ToStringTag.ToPropertyKey(), FenValue.FromString("Map"));
+
             Set("set", FenValue.FromFunction(new FenFunction("set", (args, thisVal) =>
             {
                 var key = args.Length > 0 ? args[0] : FenValue.Undefined;

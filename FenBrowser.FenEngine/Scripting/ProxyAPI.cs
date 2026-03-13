@@ -63,7 +63,8 @@ namespace FenBrowser.FenEngine.Scripting
              var proxyObj = new FenObject();
              
              proxyObj.Set("__isProxy__", FenValue.FromBoolean(true));
-             proxyObj.Set("__proxyTarget__", target); 
+             proxyObj.Set("__proxyTarget__", target);
+             proxyObj.Set("__handler__", handler);
              
              if (handlerObj.Has("get"))
              {

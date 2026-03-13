@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.FenEngine.Core;
 
 namespace FenBrowser.FenEngine.Errors
 {
@@ -8,6 +9,8 @@ namespace FenBrowser.FenEngine.Errors
     /// </summary>
     public abstract class FenError : Exception
     {
+        private FenValue? _thrownValue;
+
         protected FenError(string message) : base(message) { }
         protected FenError(string message, Exception innerException) : base(message, innerException) { }
 
@@ -20,6 +23,26 @@ namespace FenBrowser.FenEngine.Errors
         /// Safe error message (no internal implementation details exposed)
         /// </summary>
         public virtual string SafeMessage => Message;
+
+        /// <summary>
+        /// Materialized JS error object for VM/native throw propagation.
+        /// </summary>
+        public FenValue ThrownValue
+        {
+            get
+            {
+                if (_thrownValue.HasValue)
+                {
+                    return _thrownValue.Value;
+                }
+
+                var runtime = FenRuntime.GetActiveRuntime();
+                _thrownValue = runtime != null
+                    ? runtime.CreateThrownErrorValue(Type, Message)
+                    : FenValue.FromError(Message ?? "Error");
+                return _thrownValue.Value;
+            }
+        }
     }
 
     public enum ErrorType

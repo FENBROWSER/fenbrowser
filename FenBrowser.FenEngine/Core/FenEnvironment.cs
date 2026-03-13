@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -16,6 +17,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly IObject _withObject;
         private readonly bool _isWithEnvironment;
         private readonly bool _isLexicalScope;
+        private FenObject _liveModuleExports;
         private IDictionary<string, int> _fastSlotByName;
         public FenValue[] FastStore; // NEW: Exposed for JIT direct access
         public FenEnvironment Outer { get; set; }
@@ -53,6 +55,7 @@ namespace FenBrowser.FenEngine.Core
 
         public bool IsWithEnvironment => _isWithEnvironment;
         public bool IsLexicalScope => _isLexicalScope;
+        public bool IsGlobalEnvironment => Outer == null && !_isWithEnvironment && !_isLexicalScope;
 
         public FenValue Get(string name)
         {
@@ -63,7 +66,8 @@ namespace FenBrowser.FenEngine.Core
 
             if (_tdz.Contains(name))
             {
-                return FenValue.FromError($"ReferenceError: Cannot access '{name}' before initialization");
+                // ECMA-262 §9.1.1.1: Accessing a TDZ binding must throw ReferenceError
+                throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
             }
 
             if (_store.TryGetValue(name, out var value))
@@ -109,8 +113,8 @@ namespace FenBrowser.FenEngine.Core
 
             if (_tdz.Contains(name))
             {
-                value = FenValue.FromError($"ReferenceError: Cannot access '{name}' before initialization");
-                return true;
+                // ECMA-262 §9.1.1.1: Accessing a TDZ binding must throw ReferenceError
+                throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
             }
 
             return _store.TryGetValue(name, out value);
@@ -135,6 +139,7 @@ namespace FenBrowser.FenEngine.Core
             _store[name] = value;
             _tdz.Remove(name);
             SyncFastSlot(name, value);
+            SyncLiveModuleExport(name, value);
             return value;
         }
 
@@ -192,6 +197,7 @@ namespace FenBrowser.FenEngine.Core
             _constants.Add(name);
             _tdz.Remove(name);
             SyncFastSlot(name, value);
+            SyncLiveModuleExport(name, value);
             return value;
         }
 
@@ -214,13 +220,15 @@ namespace FenBrowser.FenEngine.Core
 
             if (_constants.Contains(name))
             {
-                return FenValue.FromError($"Assignment to constant variable '{name}'");
+                // ECMA-262 §14.3.1: Assignment to a const binding must throw TypeError
+                throw new FenTypeError($"TypeError: Assignment to constant variable '{name}'");
             }
 
             if (_store.ContainsKey(name))
             {
                 _store[name] = value;
                 SyncFastSlot(name, value);
+                SyncLiveModuleExport(name, value);
                 return value;
             }
 
@@ -228,14 +236,15 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (Outer.IsConstant(name))
                 {
-                    return FenValue.FromError($"Assignment to constant variable '{name}'");
+                    // ECMA-262 §14.3.1: Assignment to a const binding must throw TypeError
+                    throw new FenTypeError($"TypeError: Assignment to constant variable '{name}'");
                 }
                 return Outer.Update(name, value, isStrict);
             }
 
             if (isStrict || StrictMode)
             {
-                return FenValue.FromError($"ReferenceError: {name} is not defined");
+                throw new FenReferenceError($"ReferenceError: {name} is not defined");
             }
 
 
@@ -276,6 +285,11 @@ namespace FenBrowser.FenEngine.Core
         public IDictionary<string, FenValue> InspectVariables()
         {
             return new Dictionary<string, FenValue>(_store);
+        }
+
+        public void AttachLiveModuleExports(FenObject exportObject)
+        {
+            _liveModuleExports = exportObject;
         }
 
         public FenEnvironment GetDeclarationEnvironment()
@@ -427,12 +441,78 @@ namespace FenBrowser.FenEngine.Core
             globalRoot.Set(name, value);
             return true;
         }
+
+        public void SyncGlobalDeclarationBinding(string name, FenValue value)
+        {
+            if (!IsGlobalEnvironment || string.IsNullOrEmpty(name) || !TryGetGlobalObject(out var globalRoot))
+            {
+                return;
+            }
+
+            var descriptor = new PropertyDescriptor
+            {
+                Value = value,
+                Writable = true,
+                Enumerable = true,
+                Configurable = false
+            };
+
+            var existingDescriptor = globalRoot.GetOwnPropertyDescriptor(name);
+            if (!existingDescriptor.HasValue)
+            {
+                if (!globalRoot.IsExtensible)
+                {
+                    throw new FenTypeError($"TypeError: Cannot create global property '{name}' on a non-extensible global object");
+                }
+
+                if (!globalRoot.DefineOwnProperty(name, descriptor))
+                {
+                    throw new FenTypeError($"TypeError: Cannot define global property '{name}'");
+                }
+
+                return;
+            }
+
+            if (!globalRoot.DefineOwnProperty(name, descriptor))
+            {
+                throw new FenTypeError($"TypeError: Cannot redefine global property '{name}'");
+            }
+        }
+
+        private bool TryGetGlobalObject(out FenObject globalRoot)
+        {
+            globalRoot = null;
+            if (TryGetBindingFromChain("globalThis", out var globalThisVal) && globalThisVal.IsObject)
+            {
+                globalRoot = globalThisVal.AsObject() as FenObject;
+            }
+            else if (TryGetBindingFromChain("window", out var windowVal) && windowVal.IsObject)
+            {
+                globalRoot = windowVal.AsObject() as FenObject;
+            }
+            else if (TryGetBindingFromChain("self", out var selfVal) && selfVal.IsObject)
+            {
+                globalRoot = selfVal.AsObject() as FenObject;
+            }
+
+            return globalRoot != null;
+        }
         private void SyncFastSlot(string name, FenValue value)
         {
             if (_fastSlotByName != null && _fastSlotByName.TryGetValue(name, out int slotIndex))
             {
                 SetFast(slotIndex, value);
             }
+        }
+
+        private void SyncLiveModuleExport(string name, FenValue value)
+        {
+            if (_liveModuleExports == null || string.IsNullOrEmpty(name) || !name.StartsWith("__fen_export_", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _liveModuleExports.SetDirect(name.Substring("__fen_export_".Length), value);
         }
 
         private bool HasWithBinding(string name)
