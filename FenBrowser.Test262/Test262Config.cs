@@ -67,6 +67,16 @@ public sealed class Test262Config
     public bool IsolateProcess { get; set; } = false;
 
     /// <summary>
+    /// Default worker count for isolated multi-test execution.
+    /// </summary>
+    public int WorkerCount { get; set; } = 20;
+
+    /// <summary>
+    /// Automatically enable isolated multi-worker execution once a batch exceeds this size.
+    /// </summary>
+    public int AutoParallelThreshold { get; set; } = 20;
+
+    /// <summary>
     /// Auto-discover the test262 root path relative to the current executable.
     /// Walks up directory tree looking for the test262/ folder.
     /// </summary>
