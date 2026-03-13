@@ -400,6 +400,7 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - `BrowserApi.DispatchInputEvent(...)` now runs click activation through `HandleElementClick(...)` for all click targets (not only anchor default-action fallback), ensuring focus/default behavior is applied consistently for controls.
 - Focus synchronization now occurs on both `mousedown` and `click` paths, preventing host/input-sequencing differences from dropping focus.
 - Cursor initialization and typing now handle `contenteditable="true"` elements using `TextContent`, in addition to `<input>/<textarea>`, reducing "click but cannot type" regressions on modern DOM structures.
+- Textarea state now flows through shared BrowserHost helpers plus synchronized JavaScriptEngine.Dom / SkiaDomRenderer handling, so typing, clipboard edits, JS element.value, form submission, and overlay text all observe the same live <textarea> value on Google-style search boxes.
 - Pointer input dispatch now executes immediately (instead of being queued), and `mousemove` updates `ElementStateManager` hover chain with repaint trigger, restoring `:hover` visual feedback and interactive responsiveness.
 - `Rendering/Interaction/ScrollManager` now guards null element access in scroll-state APIs, preventing `ArgumentNullException (Parameter 'key')` during paint-tree build when scroll queries receive a transient null element.
 - `Rendering/BrowserApi.HandleElementClick(...)` now forces native control default activation (`input`, `textarea`, `button`, `select`, and `contenteditable`) even when wrapper-level script handlers call `preventDefault()`, restoring reliable focus/typing and form submit behavior on modern script-heavy pages.
@@ -950,6 +951,10 @@ So you want to add `border-radius`? Follow these steps:
 ### 6.17 Remaining Findings Tranche - Navigation/Module Hardening (2026-02-19)
 
 - `Rendering/NavigationManager.cs`
+  - Internal Fen host URLs are normalized before fetch dispatch so `fen://newtab/` and `fen://settings/` resolve through the same internal-page path as their canonical host-only forms instead of falling through to the network fetcher.
+- `CustomHtmlEngine` now applies a generic safe-mode heuristic for pages that advertise a `<noscript>` refresh fallback while shipping very large inline bootstrap scripts; those documents render their fallback DOM without entering the limited JS path that can stall first paint.
+- The same safe-mode now strips oversized script blocks before DOM parse on fallback-friendly documents, preventing parser stalls that otherwise block `dom_dump.txt`, first paint, and subsequent diagnostics.
+- The JS-disabled fallback sanitizer now promotes delayed recovery blocks that were hidden behind inline `display:none` gates and removes encoded `<noscript>` bootstrap blobs when a cleaner recovery block is available, so Google-style fallback pages no longer render as blank content after safe-mode strips scripts.
   - Added explicit navigation intent model:
     - `NavigationRequestKind.UserInput`
     - `NavigationRequestKind.Programmatic`
@@ -4323,3 +4328,349 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - This tranche closes the reproduced method-context parser/runtime failures behind `staging/sm/class/newTargetMethods.js`, `staging/sm/class/superPropBasicCalls.js`, and `staging/sm/class/superPropBasicChain.js`.
   - Exact function-source preservation for bytecode closures is improved and no longer falls back to the synthetic `[code]` placeholder for ordinary function declarations.
   - Follow-up verification closed the remaining `staging/sm/class/newTargetDefaults.js` repro once the focused runtime regression was aligned with Test262's eval-enabled execution policy; the exact recheck now passes with the minimal code still in tree.
+
+### 2.101 Parser Hardening (2026-03-09, strict-mode legacy octal string escapes)
+
+- `FenBrowser.FenEngine/Core/Lexer.cs`
+  - String tokens now carry a `HasLegacyOctalEscape` flag so strict-mode validation can distinguish ordinary decoded string content from source text that used legacy octal escapes like `'\1'` or `'\07'`.
+  - Added legacy octal escape decoding for `\1`-`\7` sequences instead of treating them as plain identity escapes during tokenization.
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Strict-mode body validation now treats string literals with `Token.HasLegacyOctalEscape` the same way it already treated legacy octal numeric literals.
+  - This closes the parser early-error gap where `"use strict"; '\1';` and `"use strict"; `${'\07'}`;` parsed successfully instead of reporting a syntax error.
+- `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+  - Added focused parser regressions for plain strict string legacy octal escapes and the template-expression variant used by the Test262 repro.
+- Outcome:
+  - The strict parser now rejects the exact rerun reproductions behind `language/literals/string/legacy-octal-escape-sequence-strict.js` and `annexB/language/expressions/template-literal/legacy-octal-escape-sequence-strict.js`.
+### 2.102 Parser Hardening (2026-03-09, class field early errors)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+- Added class-field separator enforcement so adjacent public fields on the same line now produce a syntax error unless separated by `;` or a line terminator.
+- Added early errors for public class fields named `constructor`, and for static public class fields named `prototype` or `constructor`.
+- This closes the live Test262 parser bucket around `grammar-fields-same-line-error.js` and the `fields-*-propname-(constructor|prototype).js` negatives.
+
+### 2.103 Parser Hardening (2026-03-09, contextual `using` declarations)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+- Added contextual statement-start parsing for `using` and `await using` declarations by routing them through the lexical declaration path.
+- This lets existing single-statement-body checks and missing-initializer checks fire for the explicit-resource-management syntax negatives without waiting for full disposal runtime semantics.
+
+## 2.118 Test262 Host/Realm Hardening: `[[IsHTMLDDA]]`, `$262.createRealm`, And `$262.evalScript` (2026-03-09)
+
+- `FenBrowser.FenEngine/Core/Interfaces/IHtmlDdaObject.cs`
+  - Added a marker interface for host objects that must participate in Annex B `[[IsHTMLDDA]]` semantics.
+- `FenBrowser.FenEngine/Core/FenValue.cs`
+  - Added `FenValue.IsHtmlDdaObject`.
+  - `ToBoolean` now returns `false` for `[[IsHTMLDDA]]` host objects.
+  - Abstract equality now treats `[[IsHTMLDDA]]` host objects as loosely equal only to `null` and `undefined`, leaving strict equality and SameValue unchanged.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `typeof` now returns `"undefined"` for `[[IsHTMLDDA]]` host objects instead of falling through the ordinary object/function path.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added ambient realm activation and per-runtime intrinsic snapshots so native built-ins execute against the correct realm's prototypes when cross-realm constructors/functions are invoked.
+  - `ExecuteSimple(...)` now re-activates the owning runtime before parse/compile/execute and restores the previous realm after nested switches.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Objects/functions now capture their owning runtime when created under an active runtime scope.
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Native functions now reactivate their owning runtime before running their implementation, closing cross-realm prototype drift caused by the engine's static intrinsic caches.
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Expanded `$262` with `IsHTMLDDA`, `createRealm()`, and `evalScript(...)` on top of `detachArrayBuffer(...)`.
+  - Child realms now receive the same Test262 host hooks, `console`/`print` plumbing, and `Eval` permission policy as the root realm.
+  - Host `evalScript(...)` now maps engine error payloads back into concrete JS-visible `SyntaxError` / `TypeError` / `ReferenceError` / `RangeError` exceptions so declaration-instantiation tests see spec-typed failures.
+- `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+  - Added focused runner regressions for Annex B `typeof` on `$262.IsHTMLDDA`, cross-realm constructor-realm prototype selection, and host `evalScript(...)` exception mapping.
+- Outcome:
+  - This tranche closes a large Test262 host-environment gap by fixing both missing host hooks and the underlying cross-realm native execution model instead of patching individual tests.
+
+## 2.119 Global Script Declaration Instantiation Hardening For Test262 Host Eval (2026-03-09)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added a global-script declaration preflight before bytecode compilation/execution so top-level lexical declarations reject collisions with existing global `var`/function bindings before any partial bindings are created.
+  - Added post-execution global binding synchronization for top-level `var`/function declarations so successful script evaluation creates the required writable/enumerable/non-configurable property on the global object.
+  - `Reflect.construct(...)` now performs actual construction semantics instead of a plain call, including `newTarget`-driven prototype fallback through the new target realm.
+  - Top-level uncaught JS exceptions are now preserved as thrown values instead of being flattened into opaque debug strings, allowing host bridges like `$262.evalScript(...)` to rethrow spec-typed JS exceptions.
+  - Added `ResolveObjectPrototypeForNewObject()` so plain object allocation can recover the active realm's `Object.prototype` even when the static default prototype slot has drifted.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Plain object construction now falls back to the active runtime's realm object prototype when `FenObject.DefaultPrototype` is temporarily null, instead of silently allocating null-prototype ordinary objects.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Native constructor calls now preserve returned function objects in addition to returned object instances, which fixes `new Function()` and cross-realm constructor cases that depend on constructor-returned callables.
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Host `evalScript(...)` now reconstructs JS-visible exception names/messages from thrown error objects, not just stringified engine diagnostics.
+- `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+  - Added exact Test262 regression coverage for global function declaration property creation and global lexical-collision rejection through `$262.evalScript(...)`.
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added `ExecuteSimple_BytecodeFirst_PlainObjectsInheritObjectPrototype()` to pin `Object.getPrototypeOf({})`, `({}).toString()`, and `String({})` against the active realm's `Object.prototype`.
+- Outcome:
+  - The original host-global failure was partly declaration-instantiation and partly a deeper plain-object invariant: bytecode-created object literals could lose `Object.prototype`, which broke `String({})` and Test262's `verifyProperty(...)` helper with `TypeError: Cannot convert object to primitive value`.
+  - With the realm-aware object-prototype fallback in place, the exact `script-decl-func.js` and `script-decl-lex-collision.js` host repros now pass together.
+
+## 2.120 Realm Intrinsic Capture Hardening: Array Prototype Recovery For Native/Built-in Array Creation (2026-03-09)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Hardened `CaptureRealmIntrinsics()` so per-runtime realm snapshots fall back to the active global constructors' `prototype` properties when the static default slots have drifted or are still null.
+  - Hardened `ActivateRealmIntrinsics()` with the same fallback recovery for `Object.prototype`, `Function.prototype`, and `Array.prototype` before reactivating a runtime on `ExecuteSimple(...)` and native built-in entry.
+  - This closes a state gap where `Array.prototype` existed on the runtime global object, but `_realmArrayPrototype` remained null, so `EnterRealmActivationScope()` reactivated a null default array prototype.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - Added constructor/runtime invariant coverage proving the runtime-private `_realmArrayPrototype` matches the active global `Array.prototype`.
+  - Added focused regressions proving literal arrays and `Array.prototype.map.call(...)` results expose `join`, and that `Array.prototype.map.call(arrayLike, String).join(', ')` works again.
+- Runtime impact:
+  - Arrays created through `FenObject.CreateArray()` and bytecode array literals now recover the active realm's `Array.prototype` during script execution instead of silently degrading into array-shaped ordinary objects without prototype methods.
+  - This specifically unblocks harness paths that rely on `[].push(...)`, `Array.prototype.map.call(...)`, and `.join(...)` inside Test262 helper code.
+- Remaining follow-up:
+  - Exact `Array.fromAsync` Test262 singles still fail after this tranche, but the failure has moved past missing array prototype methods into iterator/async-iterator semantics, which should be treated as the next independent fix wave rather than as an array-prototype regression.
+
+## 2.121 RegExp Literal Realm Linking Hardening For Test262 Helper Execution (2026-03-09)
+
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `OpCode.LoadConst` now detects regexp literal constants and eagerly re-links them to the active realm's `RegExp.prototype` before the value enters bytecode execution.
+  - `LoadProp` no longer limits regexp prototype recovery to null-prototype literals; any bytecode regexp object with `InternalClass == "RegExp"` is normalized against the active realm before member lookup.
+  - `EnsureRegExpPrototype(...)` now updates only when the current prototype differs from the active realm's `RegExp.prototype`, avoiding needless prototype churn while still repairing stale cross-realm literals.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `Reflect.get`, `Reflect.set`, `Reflect.has`, and `Reflect.deleteProperty` preserve symbol and non-string property keys through `FenValue` instead of stringifying the key path. This keeps proxy-based Test262 helpers observably correct when they trap `Symbol.asyncIterator`.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - Added `RegExp_Literal_Inherits_RegExpPrototype_Methods()` to pin `/.../.test(...)` against the active realm's `RegExp.prototype`.
+- `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+  - Added `RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes()` to lock the exact Test262 host path that had been failing inside `TemporalHelpers.propertyBagObserver(...)`.
+- Outcome:
+  - The exact root cause behind the lingering `Array.fromAsync` helper failure was not `Array.fromAsync` itself: regexp literals created through bytecode constants could inherit `Object.prototype` instead of `RegExp.prototype`, so `ASCII_IDENTIFIER.test(...)` inside `temporalHelpers.js` failed with `undefined is not a function`.
+  - With regexp literals re-linked at constant load time, the exact Test262 repro `built-ins/Array/fromAsync/asyncitems-arraylike-promise.js` now passes, and the sibling `asyncitems-asynciterator-sync.js` / `asyncitems-asynciterator-exists.js` rechecks also pass on the same engine build.
+
+## 2.122 Builtin Metadata Hardening: Array Constructor And Static Methods (2026-03-09)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added local builtin-definition helpers inside runtime initialization so native builtins can be created with explicit `length`, `[[Construct]]`, and property-descriptor metadata instead of inheriting the permissive defaults from raw `FenFunction` + `Set(...)`.
+  - The `Array` constructor now installs with `length === 1` and a non-enumerable global property descriptor on the global object.
+  - `Array.from`, `Array.of`, `Array.isArray`, and `Array.fromAsync` now install as non-enumerable builtin methods with spec-aligned `length` values and `IsConstructor = false`.
+  - Hardened the later Array static-method merge pass so it no longer reintroduces enumerable properties or constructor-capable function objects when enriching the existing `Array` constructor.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - Added `Array_StaticBuiltinMetadata_MatchesSpecSurface()` to pin the global `Array` descriptor plus `length` / `isConstructor` behavior for `Array.from`, `Array.of`, and `Array.fromAsync`.
+- Outcome:
+  - This closes the shared metadata defect behind recurring `length.js`, `prop-desc.js`, and `not-a-constructor.js` failures for the Array constructor and its static methods.
+  - The root cause was not individual algorithms; it was the runtime repeatedly attaching native functions as ordinary enumerable properties with default `length = 0` and constructor capability left enabled.
+
+## 2.123 Test262 Discovery Hygiene And Targeted Host-Semantics Repair (2026-03-09)
+
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Centralized suite discovery filtering so local debug/repro files are no longer counted as official Test262 inputs during `DiscoverTests(...)`, category runs, or slice runs.
+  - The runner now excludes `_FIXTURE`/underscore helpers plus local ad hoc files such as `tmp-debug-*`, `debug_*`, `custom-test*`, and the `test/local-host/` scratch area from aggregate suite totals.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Hardened `Array.from(...)` iterator selection so a present-but-non-callable `@@iterator` now throws `TypeError` instead of silently falling back to array-like handling.
+  - Hardened Annex B RegExp legacy static accessors so invalid receivers throw `TypeError` directly instead of returning error sentinel values that Test262 interprets as “no exception thrown”.
+  - Proxy trap wrappers now invoke handler traps with `this = handler` at the outer trap boundary for `get` / `set` / `has` / `deleteProperty` / `getOwnPropertyDescriptor` / `defineProperty` / `getPrototypeOf` / `setPrototypeOf` / `isExtensible` / `preventExtensions` / `ownKeys` / `apply` / `construct`.
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Added a direct bytecode-backed invocation path for plain synchronous user-defined functions called from native engine code, reducing dependence on the synthetic thunk path for host callback entry.
+  - Added local binding/arguments setup helpers for that direct invocation path so native-to-bytecode callback entry can prebind `this`, `arguments`, and parameter values without reparsing JS.
+- `FenBrowser.Tests/Engine/Test262HostIntegrationTests.cs`
+  - Added exact runner regressions for:
+    - `annexB/built-ins/Array/from/iterator-method-emulates-undefined.js`
+    - `annexB/built-ins/RegExp/legacy-accessors/index/this-not-regexp-constructor.js`
+    - discovery exclusion of local debug files
+- Outcome:
+  - This tranche removes known local-noise inflation from suite discovery and closes two high-signal host/runtime failures that were still reproducing in the March 9 reruns.
+  - The separate Proxy callback `this` binding failure remains open after this pass: argument/receiver propagation is correct, but the handler callback still observes `this === undefined` in `built-ins/Proxy/get/call-parameters.js`, so that bucket needs a deeper follow-up in the bytecode function-binding path.
+
+## 2.124 Throw Propagation, Proxy Receiver Repair, And Direct Symbol.match Coverage (2026-03-10)
+
+- `FenBrowser.FenEngine/Errors/FenError.cs`
+  - `FenError` now exposes a lazy `ThrownValue` that materializes a real JS error object through the active runtime instead of collapsing engine exceptions into string-only sentinel values.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added `CreateThrownErrorValue(...)` helpers so runtime/native code can construct realm-correct `TypeError` / `ReferenceError` / `SyntaxError` / `RangeError` objects for cross-frame propagation.
+  - `ExecuteSimple(...)` now preserves extracted JS thrown values in its outer runtime catch instead of converting every `FenError` back into `FenValue.FromError(...)`.
+  - `Iterator.from(...)` now returns an iterator object's existing `@@iterator` result directly, which restores prototype alignment with native array iterators.
+  - `Array.fromAsync(...)` now rejects with live JS error objects, preserves thrown iterator/mapping failures, and stops wrapping every caught failure into a generic string error.
+  - Added `RegExp.prototype[Symbol.match]` on both the symbol slot and the engine's legacy `"[Symbol.match]"` compatibility key so direct `re[Symbol.match](...)` calls work in the current property model.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `ThrowIfNativeError(...)` now rethrows `FenValue.Throw` results as uncaught JS exceptions instead of letting them leak through native call boundaries as ordinary return values.
+  - `OpCode.LoadProp` now reads through `FenObject.GetWithReceiver(...)`, preserving receivers for proxies and accessors during bytecode property access.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Proxy `get` trap dispatch now forwards the stored handler object as `this` when `FenObject.GetWithReceiver(...)` resolves `__proxyGet__`, fixing the deeper callback-binding path that the earlier proxy wrapper hardening did not cover.
+- `FenBrowser.FenEngine/Scripting/ProxyAPI.cs`
+  - The older test shim now stores the proxy handler object so local unit tests and the runtime path observe the same trap `this` behavior.
+- `FenBrowser.Tests/Engine/ProxyTests.cs`
+  - Added `Proxy_Get_Trap_Preserves_HandlerThis_AndReceiver()` to pin handler `this`, `target`, property key, and receiver.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - Added focused regressions for:
+    - `Array_Iterator_HasIteratorPrototype()`
+    - `Array_FromAsync_Rejects_WithRealTypeError_ForNonCallableAsyncIterator()`
+    - `Array_FromAsync_Preserves_ThrownRejectionReason()`
+    - `RegExp_SymbolMatch_IsInstalled_And_Returns_GroupsObject()`
+- Verification:
+  - `ProxyTests` now pass, including the exact handler-`this`/receiver regression.
+  - Focused `BuiltinCompletenessTests` for iterator prototype alignment, `Array.fromAsync` rejection typing, preserved thrown reasons, and `RegExp.prototype[Symbol.match]` now pass.
+  - Test262 singles now pass for:
+    - `built-ins/Proxy/get/call-parameters.js`
+    - `built-ins/Array/fromAsync/async-iterable-input-iteration-err.js`
+    - `built-ins/RegExp/prototype/Symbol.match/builtin-success-return-val-groups.js`
+  - One narrower Test262 repro remains open after this tranche:
+    - `built-ins/Array/fromAsync/asyncitems-asynciterator-not-callable.js`
+    - The remaining observable is no longer lost rejection typing or missing promise methods in the raw `Array.fromAsync` path; it now reproduces only through the official `assert.throwsAsync(...)` helper path, which points to a separate helper/closure-return interaction rather than the original `Array.fromAsync` rejection plumbing.
+
+## 2.125 Parser Hardening: Concise Arrow Bodies Must Stop Before Call-Argument Commas (2026-03-10)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Fixed concise arrow-body parsing to consume an `AssignmentExpression` instead of a comma expression across the grouped-parameter, empty-parameter, and async-arrow parse paths.
+  - This preserves outer call-argument delimiters for source shapes like `helper(() => v, "@@asyncIterator = boolean")` instead of incorrectly absorbing the trailing string literal into the arrow body.
+- Root cause:
+  - The remaining `Array.fromAsync` Test262 failure was not in async runtime execution or closure capture.
+  - The parser was building the wrong AST for `() => v` inside call arguments, effectively producing a one-argument helper call where the arrow body became `v, "@@asyncIterator = boolean"`.
+  - Bytecode then correctly compiled that malformed AST into `v; return "@@asyncIterator = boolean";`, which made the failure look like a runtime/closure bug.
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added focused async repro coverage around helper calls inside `async` functions and `for (const ...)` loops, including the exact shape that previously returned the helper message string instead of the captured loop binding.
+- Verification:
+  - Focused runtime repros now pass:
+    - `ExecuteSimple_AsyncForOfTwoArgHelperDirectReturn_PreservesCapturedLoopBinding()`
+    - `ExecuteSimple_AsyncForOfHelperCall_PreservesCapturedLoopBinding()`
+    - `ExecuteSimple_AsyncHelperLoopCapture_PreservesClosureAndMessage()`
+- The original Test262 single now passes:
+  - `built-ins/Array/fromAsync/asyncitems-asynciterator-not-callable.js`
+
+## 2.126 Parser Hardening: Legacy Octal Integer Literals Must Preserve Sloppy-Mode Semantics (2026-03-10)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Hardened `ParseNumberLiteral()` so legacy leading-zero integer literals now follow spec split behavior instead of always falling through to decimal parsing.
+  - In strict mode, leading-zero integer forms are now rejected through `IsLegacyStyleLeadingZeroIntegerLiteral(...)`, which keeps the early error aligned with legacy-octal syntax rather than broad `literal.StartsWith("0")` heuristics.
+  - In non-strict code, true legacy octal integers such as `070` now parse through `Convert.ToInt64(literal, 8)`, while non-octal decimal literals such as `078` and `079` continue to parse as decimal values.
+  - Added `IsLegacyStyleLeadingZeroIntegerLiteral(...)` and `IsLegacyOctalIntegerLiteral(...)` helpers so strict-mode rejection and sloppy-mode octal parsing share the same syntax gate.
+- Root cause:
+  - The numeric literal parser only recognized explicit `0x` / `0o` / `0b` prefixes and otherwise fell back to decimal integer parsing.
+  - That made sloppy-mode legacy octal literals like `070` evaluate to `70` instead of `56`, which directly reproduced the failing Test262 literal semantics case.
+- `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+  - Added `Parse_LegacyOctalIntegerLiteral_NonStrict_UsesOctalValue()` to pin sloppy-mode `070` to octal `56`.
+  - Added `Parse_NonOctalDecimalIntegerLiteral_NonStrict_RemainsDecimal()` to pin `078` as decimal and avoid overcorrecting all leading-zero numerics into octal.
+- Verification:
+  - Focused parser repros now pass:
+    - `Parse_LegacyOctalIntegerLiteral_NonStrict_UsesOctalValue()`
+    - `Parse_NonOctalDecimalIntegerLiteral_NonStrict_RemainsDecimal()`
+  - Test262 singles now pass:
+    - `language/literals/numeric/legacy-octal-integer.js`
+    - `language/literals/numeric/non-octal-decimal-integer.js`
+
+## 2.127 Lexer Hardening: String Literal Escape Validation, Legacy Octal Decoding, And JSON-Superset Separators (2026-03-10)
+
+- `FenBrowser.FenEngine/Core/Lexer.cs`
+  - Hardened `ReadString(...)` so malformed `\x..` and `\u..` escapes now invalidate the token instead of silently degrading into literal text.
+  - Added `TryReadHexEscape(...)` and `TryReadUnicodeEscape(...)` helpers to centralize exact-length hex parsing, `\u{...}` validation, and code point range checks.
+  - Fixed legacy octal decoding from the `\0` path so source like `'\00'` now parses as a single NUL code unit instead of `"\0" + "0"`.
+  - Marked strict-mode-invalid decimal escape forms such as `\8`, `\9`, and `\08` through the existing string-literal legacy-octal tracking path so strict code now rejects them during parser early-error checks.
+  - Allowed literal U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR inside string literals, matching the JSON-superset string grammar instead of tokenizing them as `Illegal`.
+- Root cause:
+  - The previous lexer mixed legacy-octal tracking with a too-permissive fallback path that treated malformed escape heads as ordinary literal characters.
+  - It also treated all line-separator code points as raw string terminators, which broke valid JSON-superset string literals.
+  - That combination inflated the `language/literals/string` bucket with a mix of parse-negative false passes and runtime mismatches.
+- `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+  - Added focused regressions for:
+    - `Parse_NonStrictLegacyOctalStringEscape_ZeroZero_UsesSingleNulCodeUnit()`
+    - `Parse_StrictModeNonOctalDecimalStringEscape_ShouldFail()`
+    - `Parse_StringLiteral_InvalidUnicodeEscape_ShouldFail()`
+    - `Parse_StringLiteral_Allows_LineSeparatorLiteral()`
+- Verification:
+  - Focused parser repros now pass for legacy octal string decoding, strict `\8` rejection, invalid `\u` rejection, and literal U+2028 string contents.
+  - Test262 singles now pass:
+    - `language/literals/string/legacy-octal-escape-sequence.js`
+    - `language/literals/string/legacy-non-octal-escape-sequence-8-strict.js`
+    - `language/literals/string/unicode-escape-no-hex-err-single.js`
+    - `language/literals/string/line-separator.js`
+  - The focused category slice improved from `53 / 73` passing to `69 / 73` passing for `language/literals/string`.
+
+## 2.128 Bytecode Array Property Reads Must Use Array-Specific Receiver Lookup (2026-03-10)
+
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Hardened `BytecodeArrayObject` so bytecode property reads now honor array-specialized `length` and numeric index lookup through `GetWithReceiver(...)`, not only through the direct `Get(...)` path.
+  - Added overrides for both `GetWithReceiver(string, ...)` and `GetWithReceiver(FenValue, ...)` so VM `LoadProp` sees dense bytecode arrays the same way other engine code already did.
+- Root cause:
+  - The remaining four `language/literals/string` failures were not string-literal decoding bugs.
+  - `BytecodeArrayObject` already overrode `Get(...)`, but bytecode property access dispatches through `FenObject.GetWithReceiver(...)`.
+  - That mismatch meant array literals created in bytecode lost both `.length` and indexed element reads in the VM path, which surfaced in Test262 as `NonEscapeSequence` strings becoming `undefined` inside arrays.
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added `ExecuteSimple_ArrayLiteral_Exposes_Length_And_Index_Access_In_Bytecode()` to pin array literal `.length`, `[0]`, and `[1]` access under bytecode execution.
+- Verification:
+  - The focused bytecode regression now passes.
+  - The exact remaining Test262 singles now pass:
+    - `language/literals/string/S7.8.4_A4.2_T1.js`
+    - `language/literals/string/S7.8.4_A4.2_T3.js`
+    - `language/literals/string/S7.8.4_A4.2_T5.js`
+    - `language/literals/string/S7.8.4_A4.2_T7.js`
+  - `language/literals/string` now passes `73 / 73` in the focused category run.
+
+## 2.129 Module Parser Early Errors: Duplicate Exports, Unbound Local Exports, HTML Comments, And Label Targets (2026-03-10)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Expanded `ValidateModuleTopLevelEarlyErrors(...)` so module parsing now records top-level lexical names, exported names, and local export bindings instead of only checking lexical-vs-var overlap.
+  - Added duplicate exported-name detection for `export { ... }`, `export default ...`, exported declarations, and `export * as ns from ...`.
+  - Added module-scope validation for local export bindings so `export { Number }` and `export { unresolvable }` now fail at parse time when the local binding does not exist in module declarations.
+  - Added module string-name validation for import/export specifiers so ill-formed surrogate-only string export names now raise `SyntaxError` during parsing.
+  - Added module-only control-flow validation for duplicate labels and undefined labeled `break` / `continue` targets.
+  - Added module-only HTML-comment token detection so `<!--` and `-->` are rejected under the module goal instead of being accepted through Annex B comment behavior.
+- `FenBrowser.FenEngine/Core/Lexer.cs`
+  - Added `TreatHtmlLikeCommentsAsComments` and wired the parser to disable Annex B HTML-comment lexing in module goal.
+  - This keeps script-goal legacy comment handling intact while allowing module parsing to surface the raw token sequence and reject it.
+- Root cause:
+  - The parser only validated one narrow module early-error rule and silently deduplicated module-scope names in `HashSet`s.
+  - That missed several high-volume parse-negative clusters: duplicate exported names, local exports of undeclared bindings, ill-formed string module names, duplicate labels, undefined label targets, and HTML-style comments in modules.
+  - The lexer also applied Annex B HTML-comment treatment unconditionally, which prevented module parsing from ever seeing `<!--` / `-->` as syntax errors.
+- `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+  - Added focused module parser regressions for:
+    - `Parse_Module_DuplicateExportedName_ShouldFail()`
+    - `Parse_Module_DuplicateTopLevelLexicalName_ShouldFail()`
+    - `Parse_Module_ExportedBindingMustBeDeclared_ShouldFail()`
+    - `Parse_Module_IllFormedStringExportName_ShouldFail()`
+    - `Parse_Module_HtmlOpenComment_ShouldFail()`
+    - `Parse_Module_HtmlCloseComment_ShouldFail()`
+    - `Parse_Module_DuplicateLabel_ShouldFail()`
+    - `Parse_Module_UndefinedBreakTarget_ShouldFail()`
+    - `Parse_Module_UndefinedContinueTarget_ShouldFail()`
+- Verification:
+  - Focused parser repros now pass for duplicate exports, duplicate module lexical declarations, undeclared local exports, ill-formed string export names, HTML-style comments, duplicate labels, and undefined labeled control-flow targets.
+  - Test262 singles now pass:
+    - `language/module-code/early-dup-export-id.js`
+    - `language/module-code/early-dup-export-id-as.js`
+    - `language/module-code/early-dup-export-decl.js`
+    - `language/module-code/early-dup-top-function-async.js`
+    - `language/module-code/early-export-global.js`
+    - `language/module-code/early-export-unresolvable.js`
+    - `language/module-code/early-export-ill-formed-string.js`
+    - `language/module-code/comment-single-line-html-open.js`
+    - `language/module-code/comment-single-line-html-close.js`
+    - `language/module-code/comment-multi-line-html-close.js`
+    - `language/module-code/early-dup-lables.js`
+    - `language/module-code/early-undef-break.js`
+    - `language/module-code/early-undef-continue.js`
+  - The focused `language/module-code` category improved from `44 / 120` passing to `73 / 120` passing across the two module parser tranches, leaving the remaining failures concentrated in runtime/module-instantiation semantics rather than parse-negative acceptance.
+
+## 2.130 Function Prototype Metadata Hardening: `name`, `Symbol.hasInstance`, And `String(Symbol)` (2026-03-11)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added the missing own `name` property on `Function.prototype` with built-in attributes (`""`, non-writable, non-enumerable, configurable).
+  - Added `Function.prototype[Symbol.hasInstance]` behavior on the active intrinsic initialization path, including bound-target delegation, non-object argument rejection, prototype-chain walking, and TypeError on non-object `prototype`.
+  - Registered the intrinsic through both the symbol descriptor path and the runtime's legacy well-known-symbol string key (`[Symbol.hasInstance]`) so bytecode property access, `Object.getOwnPropertyDescriptor`, and `hasOwnProperty`-style harness helpers observe the same function.
+  - Normalized the `hasInstance` intrinsic function back onto the active `Function.prototype` so `.call`, `.apply`, and `.bind` are available on the method itself.
+  - Hardened `String(...)` coercion for symbol primitives so `String(Symbol.hasInstance)` returns the descriptive symbol text instead of throwing.
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Added `BoundTargetFunction` so bound built-ins retain their original target for `OrdinaryHasInstance`-style checks.
+- Verification:
+  - Focused Test262 singles now pass for:
+    - `built-ins/Function/prototype/name.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/name.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/length.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/prop-desc.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/this-val-bound-target.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/this-val-not-callable.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/this-val-poisoned-prototype.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/this-val-prototype-non-obj.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/value-get-prototype-of-err.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/value-negative.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/value-non-obj.js`
+    - `built-ins/Function/prototype/Symbol.hasInstance/value-positive.js`
+
+## 2.131 Navigation Compatibility Hardening: Runtime Location Redirects (2026-03-12)
+- FenBrowser.FenEngine/Rendering/NavigationManager.cs
+  - Top-level address-bar/document navigations now call the detailed text fetch path with secFetchDest: "document", aligning engine-driven page loads with browser-style document semantics instead of subresource-style cors/empty fetch metadata.
+- FenBrowser.FenEngine/Core/FenRuntime.cs
+  - window.location is now initialized and resynchronized from the active document/base URI instead of remaining pinned to the runtime bootstrap placeholder URL.
+  - Added host-bridge-aware location methods: location.assign(...), location.replace(...), location.reload(), and location.toString().
+  - Added NavigationRequested callback plumbing so runtime-driven redirects can request a real host navigation.
+- FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+  - Wires FenRuntime.NavigationRequested into TryNavigate(...), letting runtime location redirects escape the JS sandbox and commit through the normal browser navigation path.
+- Regression coverage:
+  - FenBrowser.Tests/Engine/FenRuntimeLocationTests.cs
+  - FenBrowser.Tests/Core/NavigationManagerRequestHeadersTests.cs
+- Current limitation:
+  - These changes fix incorrect navigation semantics and stale window.location state, but Google Search still serves a heavy client-side challenge/bootstrap document that FenBrowser does not yet fully complete. Remaining work is broader JS/browser API compatibility, not request-header or location-state correctness.

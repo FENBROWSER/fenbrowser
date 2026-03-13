@@ -32,8 +32,8 @@ This documentation is organized into Volumes, mirroring the architectural layers
   - _Scope:_ `FenBrowser.DevTools`
   - _Content:_ The internal inspector, debugging overlays, and performance profiling tools.
 - **[Volume VI: Extensions & Verification](./VOLUME_VI_EXTENSIONS_VERIFICATION.md)**
-  - _Scope:_ `FenBrowser.WebDriver`, `FenBrowser.Tests`
-  - _Content:_ Test strategies, automation interfaces, and compliance specifications.
+  - _Scope:_ `FenBrowser.WebDriver`, `FenBrowser.Tests`, `FenBrowser.Test262`, verification scripts
+  - _Content:_ Test strategies, automation interfaces, compliance specifications, and runner operating guides.
 
 ## 3. High-Level Architecture
 
@@ -67,6 +67,7 @@ The logic center. It consumes the Core and produces pixels.
 - **Layout**: Calculates geometry (x, y, width, height) for render trees.
 - **Paint**: Issues draw commands to a Skia canvas.
 - **Scripting**: Executes JavaScript via FenEngine bytecode compiler + VM.
+  - Intrinsic repair note (2026-03-11): `Function.prototype` now carries spec-shaped `name` / `Symbol.hasInstance` metadata in the active runtime initialization path, and symbol stringification no longer breaks Test262 descriptor helpers.
 
 #### Layer 2: FenBrowser.Host
 
@@ -124,6 +125,8 @@ The executable wrapper.
   - NL-4 extension adds navigation-scoped render subresource accounting for completion gating (per-navigation pending counts and explicit stale-navigation cleanup).
   - NL-5 extension adds script/module fetch accounting into navigation-scoped render subresource tracking, completing top-level lifecycle settle coverage for render-time dependency classes.
   - Host reliability extension (NL-6 sustain) hardens loading-state invalidation/wake behavior so first-frame commit and loading indicators do not depend on incidental hover/input repaint triggers.
+  - 2026-03-12 compatibility hardening separates top-level document fetch semantics from subresource fetch semantics and restores runtime-backed window.location redirects into the host navigation path.
+  - 2026-03-12 Google search-box hardening keeps <textarea> current value synchronized across BrowserHost editing, JS element.value, and overlay rendering so form/typing state stays coherent on wrapper-heavy search UIs.
 
 - **HTML Parsing Baseline (HP-1)**:
   - Core parser now emits staged parse metrics with checkpoint counts (`HtmlParseBuildMetrics`).

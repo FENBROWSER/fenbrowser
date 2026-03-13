@@ -282,9 +282,222 @@ namespace FenBrowser.FenEngine.Rendering
                 "stillworking"
             };
 
-        // Heuristic removed: No site-specific optimizations.
-        private static bool IsJsHeavyAppShell(Uri baseUri)
+        // Some pages expose a usable fallback DOM but trap limited engines in long-running
+        // bootstrap script payloads. Prefer the fallback path when the raw document already
+        // advertises a noscript/meta-refresh recovery flow.
+        private static bool ShouldPreferFallbackDom(string html)
         {
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return false;
+            }
+
+            if (html.IndexOf("<noscript", StringComparison.OrdinalIgnoreCase) < 0 ||
+                html.IndexOf("http-equiv=\"refresh\"", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            var matches = System.Text.RegularExpressions.Regex.Matches(
+                html,
+                "<script\\b[^>]*>(.*?)</script>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            var totalScriptChars = 0;
+            foreach (System.Text.RegularExpressions.Match match in matches)
+            {
+                if (!match.Success)
+                {
+                    continue;
+                }
+
+                totalScriptChars += match.Groups[1].Length;
+                if (totalScriptChars >= 20000)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string StripScriptsForFallbackDom(string html)
+        {
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return html ?? string.Empty;
+            }
+
+            return System.Text.RegularExpressions.Regex.Replace(
+                html,
+                "<script\\b[^>]*>.*?</script>",
+                string.Empty,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+        }
+
+        private static string RemoveInlineDisplayNone(string inlineStyle)
+        {
+            if (string.IsNullOrWhiteSpace(inlineStyle))
+            {
+                return string.Empty;
+            }
+
+            var updated = System.Text.RegularExpressions.Regex.Replace(
+                inlineStyle,
+                @"(?:^|;)\s*display\s*:\s*none\s*;?",
+                ";",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            updated = System.Text.RegularExpressions.Regex.Replace(
+                updated,
+                @";{2,}",
+                ";",
+                System.Text.RegularExpressions.RegexOptions.None).Trim().Trim(';').Trim();
+
+            return updated;
+        }
+
+        private static bool LooksLikeVisibleFallbackCandidate(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!element.Descendants().OfType<Element>().Any(child =>
+                string.Equals(child.TagName, "a", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            var text = WebUtility.HtmlDecode(element.Text ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(text) || text.Length < 24)
+            {
+                return false;
+            }
+
+            return text.IndexOf("trouble accessing", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("not redirected within a few seconds", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                (text.IndexOf("click here", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 text.IndexOf("feedback", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static int PromoteHiddenFallbackContent(Node domRoot)
+        {
+            if (domRoot == null)
+            {
+                return 0;
+            }
+
+            var promoted = 0;
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                var inlineStyle = element.GetAttribute("style");
+                if (string.IsNullOrWhiteSpace(inlineStyle) ||
+                    inlineStyle.IndexOf("display", StringComparison.OrdinalIgnoreCase) < 0 ||
+                    inlineStyle.IndexOf("none", StringComparison.OrdinalIgnoreCase) < 0 ||
+                    !LooksLikeVisibleFallbackCandidate(element))
+                {
+                    continue;
+                }
+
+                var updatedStyle = RemoveInlineDisplayNone(inlineStyle);
+                if (string.IsNullOrWhiteSpace(updatedStyle))
+                {
+                    element.RemoveAttribute("style");
+                }
+                else
+                {
+                    element.SetAttribute("style", updatedStyle);
+                }
+
+                promoted++;
+            }
+
+            return promoted;
+        }
+
+        private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
+        {
+            if (noscriptElements == null)
+            {
+                return 0;
+            }
+
+            var removed = 0;
+            foreach (var noscript in noscriptElements)
+            {
+                var text = noscript?.Text ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                var looksEncodedBootstrap =
+                    text.IndexOf("<meta", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    text.IndexOf("http-equiv=\"refresh\"", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    text.IndexOf("<style>", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (!looksEncodedBootstrap)
+                {
+                    continue;
+                }
+
+                noscript.Remove();
+                removed++;
+            }
+
+            return removed;
+        }
+
+        // Some pages expose a usable fallback DOM but trap limited engines in long-running
+        // inline bootstrap scripts. Prefer the fallback path when the document advertises
+        // a noscript/meta-refresh recovery flow and ships a very large inline script payload.
+        private static bool IsJsHeavyAppShell(Node domRoot, Uri baseUri)
+        {
+            if (domRoot == null)
+            {
+                return false;
+            }
+
+            bool hasNoscriptRefresh = false;
+            int inlineScriptChars = 0;
+
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                if (string.Equals(element.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (element.Descendants().OfType<Element>().Any(child =>
+                        string.Equals(child.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(child.GetAttribute("http-equiv"), "refresh", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        hasNoscriptRefresh = true;
+                    }
+
+                    continue;
+                }
+
+                if (!string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase) ||
+                    element.HasAttribute("src"))
+                {
+                    continue;
+                }
+
+                var scriptText = element.Text;
+                if (string.IsNullOrWhiteSpace(scriptText))
+                {
+                    continue;
+                }
+
+                inlineScriptChars += scriptText.Length;
+                if (hasNoscriptRefresh && inlineScriptChars >= 20000)
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -1321,6 +1534,13 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 FenLogger.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
+
+                var preferFallbackDom = ShouldPreferFallbackDom(html);
+                if (preferFallbackDom)
+                {
+                    html = StripScriptsForFallbackDom(html);
+                    FenLogger.Warn($"[SAFE-MODE] Stripped script payloads before parse for fallback-friendly page {baseUri}", LogCategory.Rendering);
+                }
                 
                 const int MaxHtmlSize = 50 * 1024 * 1024; 
                 if (!string.IsNullOrEmpty(html) && html.Length > MaxHtmlSize)
@@ -1441,9 +1661,14 @@ namespace FenBrowser.FenEngine.Rendering
                 bool allowJs = EnableJavaScript;
                 if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
 
-                if (allowJs && IsJsHeavyAppShell(baseUri))
+                if (preferFallbackDom)
                 {
-                    FenLogger.Debug($"[SAFE-MODE] Skipping JS for heavy app-shell site {baseUri}", LogCategory.Rendering);
+                    allowJs = false;
+                }
+
+                if (allowJs && IsJsHeavyAppShell(dom, baseUri))
+                {
+                    FenLogger.Debug($"[SAFE-MODE] Skipping JS for heavy app-shell page {baseUri}", LogCategory.Rendering);
                     allowJs = false;
                 }
 
@@ -1474,6 +1699,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // Remove only harmful <style> tags from <noscript> when keeping noscript visible.
                     try
                     {
+                        var fallbackDomMutated = false;
                         var noscriptElements = dom.Descendants().OfType<Element>()
                             .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
                             .ToList();
@@ -1486,7 +1712,24 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 FenLogger.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
                                 style.Remove();
+                                fallbackDomMutated = true;
                             }
+                        }
+
+                        var promotedFallbacks = PromoteHiddenFallbackContent(dom);
+                        if (promotedFallbacks > 0)
+                        {
+                            var removedNoscriptBootstrap = RemoveEncodedNoscriptBootstrapFallbacks(noscriptElements);
+                            fallbackDomMutated = true;
+                            FenLogger.Debug(
+                                $"[CustomHtmlEngine] Promoted {promotedFallbacks} hidden fallback block(s); removed {removedNoscriptBootstrap} encoded <noscript> bootstrap block(s)",
+                                LogCategory.Rendering);
+                        }
+
+                        if (fallbackDomMutated)
+                        {
+                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
+                            FenLogger.Debug("[CustomHtmlEngine] Recomputed CSS after fallback DOM sanitization", LogCategory.Rendering);
                         }
                     }
                     catch (Exception ex)
