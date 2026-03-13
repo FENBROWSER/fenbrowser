@@ -22,10 +22,20 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (args.Length < 2) throw new Errors.FenInternalError("Reflect.get requires target and property");
                 var target = args[0];
-                var key = args[1].ToString();
-                
-                if (target.IsObject)
-                    return target.AsObject().Get(key);
+                var key = args[1];
+                var receiver = args.Length > 2 ? args[2] : target;
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject fenTarget)
+                {
+                    return key.IsSymbol
+                        ? fenTarget.GetWithReceiver(key, receiver)
+                        : fenTarget.GetWithReceiver(key.AsString(), receiver);
+                }
+
+                if (target.IsObject || target.IsFunction)
+                {
+                    return target.AsObject().Get(key.ToString());
+                }
                 
                 // If function?
                 // Functions don't support get(key) in FenEngine yet.
@@ -38,12 +48,19 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (args.Length < 3) throw new Errors.FenInternalError("Reflect.set requires target, property, value");
                 var target = args[0];
-                var key = args[1].ToString();
+                var key = args[1];
                 var value = args[2];
+                var receiver = args.Length > 3 ? args[3] : target;
 
-                if (target.IsObject)
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject fenTarget)
                 {
-                    target.AsObject().Set(key, value);
+                    fenTarget.SetWithReceiver(key, value, receiver);
+                    return FenValue.FromBoolean(true);
+                }
+
+                if (target.IsObject || target.IsFunction)
+                {
+                    target.AsObject().Set(key.ToString(), value);
                     return FenValue.FromBoolean(true);
                 }
                 return FenValue.FromBoolean(false);
@@ -54,10 +71,17 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 if (args.Length < 2) throw new Errors.FenInternalError("Reflect.has requires target and property");
                 var target = args[0];
-                var key = args[1].ToString();
+                var key = args[1];
 
-                if (target.IsObject)
-                    return FenValue.FromBoolean(target.AsObject().Has(key));
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject fenTarget)
+                {
+                    return FenValue.FromBoolean(fenTarget.Has(key));
+                }
+
+                if (target.IsObject || target.IsFunction)
+                {
+                    return FenValue.FromBoolean(target.AsObject().Has(key.ToString()));
+                }
                 
                 return FenValue.FromBoolean(false);
             })));
