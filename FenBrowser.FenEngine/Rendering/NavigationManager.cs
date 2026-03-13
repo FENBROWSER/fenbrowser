@@ -35,6 +35,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(url)) 
                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Empty URL" };
 
+            url = NormalizeInternalFenUrl(url);
+
             // Handle internal schemes
             if (url.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
             {
@@ -103,8 +105,33 @@ namespace FenBrowser.FenEngine.Rendering
                 return new FetchResult { Status = FetchStatus.Success, Content = syntheticHtml, FinalUri = uri, ContentType = "text/html" };
             }
 
-            // 2. Fetch content
-            return await _resourceManager.FetchTextDetailedAsync(uri);
+            // 2. Fetch content as a top-level document navigation so servers
+            // see navigation semantics instead of subresource-style headers.
+            return await _resourceManager.FetchTextDetailedAsync(
+                uri,
+                referer: null,
+                accept: null,
+                secFetchDest: "document");
+        }
+
+        private static string NormalizeInternalFenUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return url;
+            }
+
+            if (url.Equals("fen://newtab/", StringComparison.OrdinalIgnoreCase))
+            {
+                return "fen://newtab";
+            }
+
+            if (url.Equals("fen://settings/", StringComparison.OrdinalIgnoreCase))
+            {
+                return "fen://settings";
+            }
+
+            return url;
         }
 
         private static bool IsFileNavigationAllowed(NavigationRequestKind requestKind)

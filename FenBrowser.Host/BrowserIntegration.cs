@@ -450,6 +450,8 @@ public class BrowserIntegration
     {
         if (string.IsNullOrWhiteSpace(url)) return;
 
+        url = NormalizeInternalFenUrl(url);
+
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
@@ -546,6 +548,26 @@ public class BrowserIntegration
         {
             FenLogger.Error($"[BrowserIntegration] Navigation failed: {ex.Message}", LogCategory.General);
         }
+    }
+
+    private static string NormalizeInternalFenUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return url;
+        }
+
+        if (url.Equals("fen://newtab/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "fen://newtab";
+        }
+
+        if (url.Equals("fen://settings/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "fen://settings";
+        }
+
+        return url;
     }
     
     /// <summary>
