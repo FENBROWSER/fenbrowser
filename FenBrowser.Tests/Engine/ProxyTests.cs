@@ -124,5 +124,34 @@ namespace FenBrowser.Tests.Engine
              Assert.True(result.Type == ValueType.Error || result.ToNumber() == 11.0,
                  $"Unexpected proxy apply result in bytecode mode: {result}");
         }
+
+        [Fact]
+        public void Proxy_Get_Trap_Preserves_HandlerThis_AndReceiver()
+        {
+            string script = @"
+                var observed = {};
+                var target = { attr: 1 };
+                var handler = {
+                    get: function(targetArg, propArg, receiverArg) {
+                        observed.handlerThis = this;
+                        observed.target = targetArg;
+                        observed.prop = propArg;
+                        observed.receiver = receiverArg;
+                        return 99;
+                    }
+                };
+                var p = new Proxy(target, handler);
+                var value = p.attr;
+                value === 99 &&
+                observed.handlerThis === handler &&
+                observed.target === target &&
+                observed.prop === 'attr' &&
+                observed.receiver === p;
+            ";
+
+            var result = Evaluate(script);
+            Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
+            Assert.True(result.ToBoolean());
+        }
     }
 }

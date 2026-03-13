@@ -1,5 +1,6 @@
 ﻿using System;
 using FenBrowser.Core.Engine;
+using System.Reflection;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using Xunit;
@@ -192,6 +193,83 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(2.0, rt.GetGlobal("bVal").ToNumber());
         }
 
+        [Fact]
+        public void RegExp_LegacyAccessor_GetWithReceiver_UsesAccessorDescriptor()
+        {
+            var rt = CreateRuntime();
+            var regexpValue = (FenValue)rt.GetGlobal("RegExp");
+            var regexpObject = Assert.IsType<FenFunction>(regexpValue.AsObject());
+
+            var descriptor = regexpObject.GetOwnPropertyDescriptor("leftContext");
+            Assert.True(descriptor.HasValue);
+            Assert.NotNull(descriptor.Value.Getter);
+
+            var value = regexpObject.GetWithReceiver("leftContext", regexpValue);
+            var fenKeyValue = regexpObject.GetWithReceiver(FenValue.FromString("leftContext"), regexpValue, rt.Context);
+
+            Assert.True(value.IsString);
+            Assert.Equal(string.Empty, value.AsString());
+            Assert.True(fenKeyValue.IsString, $"fenKeyValue type={fenKeyValue.Type} value={fenKeyValue}");
+            Assert.Equal(string.Empty, fenKeyValue.AsString());
+        }
+
+        [Fact]
+        public void RegExp_LegacyAccessor_ReflectGet_OnSelf_ReturnsEmptyString()
+        {
+            var rt = CreateRuntime();
+            var regexpValue = (FenValue)rt.GetGlobal("RegExp");
+            var reflectValue = (FenValue)rt.GetGlobal("Reflect");
+            var reflectObject = Assert.IsType<FenObject>(reflectValue.AsObject());
+            var getFunction = Assert.IsType<FenFunction>(reflectObject.Get("get").AsObject());
+            var getImplementationOwner = getFunction.NativeImplementation.Method.DeclaringType?.FullName ?? string.Empty;
+            Assert.Contains("FenRuntime", getImplementationOwner);
+
+            var directInvokeValue = getFunction.Invoke(
+                new[] { regexpValue, FenValue.FromString("leftContext"), regexpValue },
+                rt.Context,
+                reflectValue);
+            Assert.True(directInvokeValue.IsString, $"directInvokeValue type={directInvokeValue.Type} value={directInvokeValue}");
+            Assert.Equal(string.Empty, directInvokeValue.AsString());
+
+            rt.ExecuteSimple(@"
+                var dg = Reflect.get;
+                var dgType = typeof dg;
+                var sameFn = dg === Reflect.get;
+                var viaDirect = dg(RegExp, 'leftContext', RegExp);
+                var viaMember = Reflect.get(RegExp, 'leftContext', RegExp);
+            ");
+
+            var dgType = (FenValue)rt.GetGlobal("dgType");
+            Assert.True(dgType.IsString);
+            Assert.Equal("function", dgType.AsString());
+
+            var sameFn = (FenValue)rt.GetGlobal("sameFn");
+            Assert.True(sameFn.ToBoolean());
+
+            var viaDirect = (FenValue)rt.GetGlobal("viaDirect");
+            Assert.True(viaDirect.IsString, $"viaDirect type={viaDirect.Type} value={viaDirect}");
+            Assert.Equal(string.Empty, viaDirect.AsString());
+
+            var viaMember = (FenValue)rt.GetGlobal("viaMember");
+            Assert.True(viaMember.IsString, $"viaMember type={viaMember.Type} value={viaMember}");
+            Assert.Equal(string.Empty, viaMember.AsString());
+        }
+
+        [Fact]
+        public void Debug_AnnexB_EvalCompiler_MarksBlockFunctionForHoist()
+        {
+            var lexer = new Lexer("{ function f() {} }");
+            var parser = new Parser(lexer);
+            var program = parser.ParseProgram();
+            Assert.Empty(parser.Errors);
+
+            var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval: true);
+            var block = compiler.Compile(program);
+
+            Assert.NotNull(block.AnnexBBlockFunctionNames);
+            Assert.Contains("f", block.AnnexBBlockFunctionNames);
+        }
+
         // ==================== NUMBER STATIC TESTS ====================
 
         [Fact]
@@ -279,6 +357,51 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Array_StaticBuiltinMetadata_MatchesSpecSurface()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function isCtor(fn) {
+                    try {
+                        Reflect.construct(function() {}, [], fn);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                var arrayDesc = Object.getOwnPropertyDescriptor(this, 'Array');
+                var fromDesc = Object.getOwnPropertyDescriptor(Array, 'from');
+                var ofDesc = Object.getOwnPropertyDescriptor(Array, 'of');
+                var fromAsyncDesc = Object.getOwnPropertyDescriptor(Array, 'fromAsync');
+
+                var arrayEnumerableOut = arrayDesc.enumerable;
+                var arrayLengthOut = Array.length;
+                var fromLengthOut = Array.from.length;
+                var ofLengthOut = Array.of.length;
+                var fromAsyncLengthOut = Array.fromAsync.length;
+                var fromEnumerableOut = fromDesc.enumerable;
+                var ofEnumerableOut = ofDesc.enumerable;
+                var fromAsyncEnumerableOut = fromAsyncDesc.enumerable;
+                var fromCtorOut = isCtor(Array.from);
+                var ofCtorOut = isCtor(Array.of);
+                var fromAsyncCtorOut = isCtor(Array.fromAsync);
+            ");
+
+            Assert.False(rt.GetGlobal("arrayEnumerableOut").ToBoolean());
+            Assert.Equal(1.0, rt.GetGlobal("arrayLengthOut").ToNumber());
+            Assert.Equal(1.0, rt.GetGlobal("fromLengthOut").ToNumber());
+            Assert.Equal(0.0, rt.GetGlobal("ofLengthOut").ToNumber());
+            Assert.Equal(1.0, rt.GetGlobal("fromAsyncLengthOut").ToNumber());
+            Assert.False(rt.GetGlobal("fromEnumerableOut").ToBoolean());
+            Assert.False(rt.GetGlobal("ofEnumerableOut").ToBoolean());
+            Assert.False(rt.GetGlobal("fromAsyncEnumerableOut").ToBoolean());
+            Assert.False(rt.GetGlobal("fromCtorOut").ToBoolean());
+            Assert.False(rt.GetGlobal("ofCtorOut").ToBoolean());
+            Assert.False(rt.GetGlobal("fromAsyncCtorOut").ToBoolean());
+        }
+
+        [Fact]
         public void Array_FromAsync_SyncIterable_Resolves()
         {
             var rt = CreateRuntime();
@@ -357,6 +480,404 @@ namespace FenBrowser.Tests.Engine
             ");
             Assert.True(rt.GetGlobal("rejected").ToBoolean());
         }
+
+        [Fact]
+        public void Array_FromAsync_ArrayLikePromiseValues_AwaitsElements()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var resolved = null;
+                Array.fromAsync({
+                    length: 2,
+                    0: Promise.resolve(2),
+                    1: Promise.resolve(1)
+                }).then(function(arr) { resolved = arr; });
+            ");
+
+            var resolved = rt.GetGlobal("resolved").AsObject();
+            Assert.NotNull(resolved);
+            Assert.Equal(2.0, resolved.Get("0").ToNumber());
+            Assert.Equal(1.0, resolved.Get("1").ToNumber());
+        }
+
+        [Fact]
+        public void Array_FromAsync_ArrayLikeLengthObserver_CoercesValueOf_AndKeepsArrayPrototype()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var log = [];
+                var lengthObserver = {
+                    get valueOf() {
+                        log.push('get length.valueOf');
+                        return function() {
+                            log.push('call length.valueOf');
+                            return 2;
+                        };
+                    }
+                };
+                var items = {};
+                Object.defineProperty(items, Symbol.asyncIterator, {
+                    get: function() {
+                        log.push('get Symbol.asyncIterator');
+                        return undefined;
+                    }
+                });
+                Object.defineProperty(items, Symbol.iterator, {
+                    get: function() {
+                        log.push('get Symbol.iterator');
+                        return undefined;
+                    }
+                });
+                Object.defineProperty(items, 'length', {
+                    get: function() {
+                        log.push('get length');
+                        return lengthObserver;
+                    }
+                });
+                Object.defineProperty(items, '0', {
+                    get: function() {
+                        log.push('get 0');
+                        return Promise.resolve(2);
+                    }
+                });
+                Object.defineProperty(items, '1', {
+                    get: function() {
+                        log.push('get 1');
+                        return Promise.resolve(1);
+                    }
+                });
+
+                var resolved = null;
+                var joinType = 'missing';
+                var usesArrayProto = false;
+                var logText = '';
+                Array.fromAsync(items).then(function(arr) {
+                    resolved = arr;
+                    joinType = typeof arr.join;
+                    usesArrayProto = Object.getPrototypeOf(arr) === Array.prototype;
+                    logText = log.join('|');
+                });
+            ");
+
+            var resolved = rt.GetGlobal("resolved").AsObject();
+            Assert.NotNull(resolved);
+            Assert.Equal(2.0, resolved.Get("length").ToNumber());
+            Assert.Equal(2.0, resolved.Get("0").ToNumber());
+            Assert.Equal(1.0, resolved.Get("1").ToNumber());
+            Assert.Equal("function", rt.GetGlobal("joinType").ToString());
+            Assert.True(rt.GetGlobal("usesArrayProto").ToBoolean());
+            Assert.Equal(
+                "get Symbol.asyncIterator|get Symbol.iterator|get length|get length.valueOf|call length.valueOf|get 0|get 1",
+                rt.GetGlobal("logText").ToString());
+        }
+
+        [Fact]
+        public void Promise_All_ResultUsesArrayPrototype()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var resolved = null;
+                var joinType = 'missing';
+                var joined = 'missing';
+                var usesArrayProto = false;
+                Promise.all([Promise.resolve(2), Promise.resolve(1)]).then(function(arr) {
+                    resolved = arr;
+                    joinType = typeof arr.join;
+                    joined = arr.join(', ');
+                    usesArrayProto = Object.getPrototypeOf(arr) === Array.prototype;
+                });
+            ");
+
+            var resolved = rt.GetGlobal("resolved").AsObject();
+            Assert.NotNull(resolved);
+            Assert.Equal(2.0, resolved.Get("length").ToNumber());
+            Assert.Equal("function", rt.GetGlobal("joinType").ToString());
+            Assert.Equal("2, 1", rt.GetGlobal("joined").ToString());
+            Assert.True(rt.GetGlobal("usesArrayProto").ToBoolean());
+        }
+
+        [Fact]
+        public void Array_FromAsync_ObservedAsyncIteratorReturningSyncGenerator_Resolves()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                function formatPropertyName(propertyKey, objectName) {
+                    if (typeof propertyKey === 'symbol') {
+                        if (propertyKey.description.startsWith('Symbol.')) {
+                            return objectName + '[' + propertyKey.description + ']';
+                        }
+                        return objectName + '[Symbol(' + propertyKey.description + ')]';
+                    }
+                    return objectName ? objectName + '.' + propertyKey : propertyKey;
+                }
+
+                function observeProperty(calls, object, propertyName, value, objectName) {
+                    Object.defineProperty(object, propertyName, {
+                        get() {
+                            calls.push('get ' + formatPropertyName(propertyName, objectName));
+                            return value;
+                        },
+                        set() {
+                            calls.push('set ' + formatPropertyName(propertyName, objectName));
+                        }
+                    });
+                }
+
+                function* syncGen() {
+                    for (let i = 0; i < 4; i++) {
+                        yield i * 2;
+                    }
+                }
+
+                var actual = [];
+                var items = {};
+                observeProperty(actual, items, Symbol.asyncIterator, syncGen, 'items');
+                observeProperty(actual, items, Symbol.iterator, undefined, 'items');
+                observeProperty(actual, items, 'length', 2, 'items');
+                observeProperty(actual, items, 0, 2, 'items');
+                observeProperty(actual, items, 1, 1, 'items');
+
+                var resolved = null;
+                var rejected = '';
+                var joinType = 'missing';
+                var logText = '';
+                Array.fromAsync(items).then(
+                    function(arr) {
+                        resolved = arr;
+                        joinType = typeof arr.join;
+                        logText = actual.join('|');
+                    },
+                    function(err) {
+                        rejected = String(err);
+                    }
+                );
+            ");
+
+            Assert.Equal(string.Empty, rt.GetGlobal("rejected").ToString());
+            var resolved = rt.GetGlobal("resolved").AsObject();
+            Assert.NotNull(resolved);
+            Assert.Equal(4.0, resolved.Get("length").ToNumber());
+            Assert.Equal(6.0, resolved.Get("3").ToNumber());
+            Assert.Equal("function", rt.GetGlobal("joinType").ToString());
+            Assert.Equal("get items[Symbol.asyncIterator]", rt.GetGlobal("logText").ToString());
+        }
+
+        [Fact]
+        public void GeneratorFunction_Invoke_ReturnsGeneratorObject()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function* syncGen() {
+                    yield 1;
+                    yield 2;
+                }
+            ");
+
+            var syncGen = rt.GetGlobal("syncGen").AsFunction();
+            Assert.NotNull(syncGen);
+
+            var invoked = syncGen.Invoke(Array.Empty<FenValue>(), rt.Context, FenValue.Undefined);
+            Assert.True(invoked.IsObject);
+
+            var iterator = invoked.AsObject();
+            Assert.NotNull(iterator);
+            Assert.True(iterator.Get("next").IsFunction);
+
+            var first = iterator.Get("next").AsFunction().Invoke(Array.Empty<FenValue>(), rt.Context, FenValue.FromObject(iterator));
+            Assert.True(first.IsObject);
+            Assert.Equal(1.0, first.AsObject().Get("value").ToNumber());
+            Assert.False(first.AsObject().Get("done").ToBoolean());
+        }
+
+        [Fact]
+        public void Array_FromAsync_PropertyBagObserver_ArrayLikePromiseValues_Resolves()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                function formatPropertyName(propertyKey, objectName) {
+                    if (typeof propertyKey === 'symbol') {
+                        if (propertyKey.description.startsWith('Symbol.')) {
+                            return objectName + '[' + propertyKey.description + ']';
+                        }
+                        return objectName + '[Symbol(' + propertyKey.description + ')]';
+                    }
+                    if (typeof propertyKey === 'string' && propertyKey !== String(Number(propertyKey))) {
+                        return objectName ? objectName + '.' + propertyKey : propertyKey;
+                    }
+                    return objectName + '[' + propertyKey + ']';
+                }
+
+                function toPrimitiveObserver(calls, primitiveValue, propertyName) {
+                    return {
+                        get valueOf() {
+                            calls.push('get ' + propertyName + '.valueOf');
+                            return function () {
+                                calls.push('call ' + propertyName + '.valueOf');
+                                return primitiveValue;
+                            };
+                        }
+                    };
+                }
+
+                function propertyBagObserver(calls, propertyBag, objectName) {
+                    return new Proxy(propertyBag, {
+                        get(target, key, receiver) {
+                            calls.push('get ' + formatPropertyName(key, objectName));
+                            const result = Reflect.get(target, key, receiver);
+                            if (result === undefined) {
+                                return undefined;
+                            }
+                            if ((result !== null && typeof result === 'object') || typeof result === 'function') {
+                                return result;
+                            }
+                            return toPrimitiveObserver(calls, result, formatPropertyName(key, objectName));
+                        }
+                    });
+                }
+
+                var actual = [];
+                var items = propertyBagObserver(actual, {
+                    length: 2,
+                    0: Promise.resolve(2),
+                    1: Promise.resolve(1)
+                }, 'items');
+
+                var resolved = null;
+                var rejected = '';
+                var logText = '';
+                Array.fromAsync(items).then(
+                    function(arr) {
+                        resolved = arr;
+                        logText = actual.join('|');
+                    },
+                    function(err) {
+                        rejected = String(err);
+                    }
+                );
+            ");
+
+            Assert.Equal(string.Empty, rt.GetGlobal("rejected").ToString());
+            var resolved = rt.GetGlobal("resolved").AsObject();
+            Assert.NotNull(resolved);
+            Assert.Equal(2.0, resolved.Get("0").ToNumber());
+            Assert.Equal(1.0, resolved.Get("1").ToNumber());
+            Assert.Equal(
+                "get items[Symbol.asyncIterator]|get items[Symbol.iterator]|get items.length|get items.length.valueOf|call items.length.valueOf|get items[0]|get items[1]",
+                rt.GetGlobal("logText").ToString());
+        }
+
+        [Fact]
+        public void Reflect_Get_OnProxy_PreservesSymbolPropertyKeys()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var sawSymbol = false;
+                var target = {};
+                Object.defineProperty(target, Symbol.asyncIterator, {
+                    value: 42,
+                    configurable: true
+                });
+                var proxy = new Proxy(target, {
+                    get(target, key, receiver) {
+                        sawSymbol = key === Symbol.asyncIterator;
+                        return Reflect.get(target, key, receiver);
+                    }
+                });
+                var proxyValue = Reflect.get(proxy, Symbol.asyncIterator);
+                var proxySymbolGetOut = sawSymbol && proxyValue === 42;
+            ");
+
+            Assert.True(rt.GetGlobal("proxySymbolGetOut").ToBoolean());
+        }
+
+        [Fact]
+        public void RegExp_Literal_Inherits_RegExpPrototype_Methods()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var regexTestType = typeof /^[$_a-zA-Z][$_a-zA-Z0-9]*$/u.test;
+                var regexTestOut = /^[$_a-zA-Z][$_a-zA-Z0-9]*$/u.test('length');
+            ");
+
+            Assert.Equal("function", rt.GetGlobal("regexTestType").ToString());
+            Assert.True(rt.GetGlobal("regexTestOut").ToBoolean());
+        }
+
+        [Fact]
+        public void String_Global_RemainsCallableFunction_AfterStaticMethodMerge()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var stringType = typeof String;
+                var stringCallType = typeof String.call;
+                var stringInvokeOut = String(42);
+            ");
+
+            Assert.Equal("function", rt.GetGlobal("stringType").ToString());
+            Assert.Equal("function", rt.GetGlobal("stringCallType").ToString());
+            Assert.Equal("42", rt.GetGlobal("stringInvokeOut").ToString());
+        }
+
+        [Fact]
+        public void Array_PrototypeMap_ExposesFunctionPrototypeCall()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var mapType = typeof Array.prototype.map;
+                var mapCallType = typeof Array.prototype.map.call;
+            ");
+
+            Assert.Equal("function", rt.GetGlobal("mapType").ToString());
+            Assert.Equal("function", rt.GetGlobal("mapCallType").ToString());
+        }
+
+        [Fact]
+        public void Array_PrototypeMap_Call_WithStringConstructor_ReturnsMappedArray()
+        {
+            var rt = CreateRuntime();
+            var arrayCtor = rt.GetGlobal("Array").AsFunction();
+            var arrayPrototype = arrayCtor?.Get("prototype").AsObject();
+            var realmArrayPrototype = typeof(FenRuntime)
+                .GetField("_realmArrayPrototype", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(rt);
+
+            Assert.NotNull(arrayCtor);
+            Assert.NotNull(arrayPrototype);
+            Assert.True(arrayPrototype.Get("map").IsFunction);
+            Assert.True(arrayPrototype.Get("join").IsFunction);
+            Assert.Same(arrayPrototype, realmArrayPrototype);
+
+            var result = (FenValue)rt.ExecuteSimple(@"
+                var literalJoinType = typeof [1, 2].join;
+                var mapResult = Array.prototype.map.call({ length: 2, 0: 2, 1: 1 }, String);
+                var mapResultType = typeof mapResult;
+                var mapResult0 = mapResult[0];
+                var mapResult1 = mapResult[1];
+                var mapResultProtoJoinType = typeof Object.getPrototypeOf(mapResult).join;
+                var mapResultUsesArrayProto = Object.getPrototypeOf(mapResult) === Array.prototype;
+                var joinType = typeof mapResult.join;
+            ");
+
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw, result.Type);
+            Assert.Equal("function", rt.GetGlobal("literalJoinType").ToString());
+            Assert.Equal("object", rt.GetGlobal("mapResultType").ToString());
+            Assert.Equal("2", rt.GetGlobal("mapResult0").ToString());
+            Assert.Equal("1", rt.GetGlobal("mapResult1").ToString());
+            Assert.Equal("function", rt.GetGlobal("mapResultProtoJoinType").ToString());
+            Assert.True(rt.GetGlobal("mapResultUsesArrayProto").ToBoolean());
+            Assert.Equal("function", rt.GetGlobal("joinType").ToString());
+        }
+
+        [Fact]
+        public void Array_PrototypeMap_Call_WithStringConstructor_FormatsArrayLike()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var formatted = Array.prototype.map.call({ length: 2, 0: 2, 1: 1 }, String).join(', ');
+            ");
+
+            Assert.Equal("2, 1", rt.GetGlobal("formatted").ToString());
+        }
         // ==================== JS-2b: Iterator.prototype TESTS ====================
 
         [Fact]
@@ -404,6 +925,68 @@ namespace FenBrowser.Tests.Engine
                 var sameProto = Object.getPrototypeOf(arrIter) === Object.getPrototypeOf(iterFromIter);
             ");
             Assert.True(rt.GetGlobal("sameProto").ToBoolean());
+        }
+
+        [Fact]
+        public void Array_FromAsync_Rejects_WithRealTypeError_ForNonCallableAsyncIterator()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var rejectedName = '';
+                Array.fromAsync({ [Symbol.asyncIterator]: 1 }).then(
+                    function() {},
+                    function(err) { rejectedName = err && err.name; }
+                );
+            ");
+
+            Assert.Equal("TypeError", rt.GetGlobal("rejectedName").ToString());
+        }
+
+        [Fact]
+        public void Array_FromAsync_Preserves_ThrownRejectionReason()
+        {
+            var rt = CreateRuntime();
+            RunWithMicrotasks(rt, @"
+                var reasonName = '';
+                var reasonMessage = '';
+                var expected = new Error('boom');
+                var items = {
+                    [Symbol.asyncIterator]: function() {
+                        return {
+                            next: function() {
+                                throw expected;
+                            }
+                        };
+                    }
+                };
+                Array.fromAsync(items).then(
+                    function() {},
+                    function(err) {
+                        reasonName = err && err.name;
+                        reasonMessage = err && err.message;
+                    }
+                );
+            ");
+
+            Assert.Equal("Error", rt.GetGlobal("reasonName").ToString());
+            Assert.Equal("boom", rt.GetGlobal("reasonMessage").ToString());
+        }
+
+        [Fact]
+        public void RegExp_SymbolMatch_IsInstalled_And_Returns_GroupsObject()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var re = /(?<group>a)(b)/;
+                var result = re[Symbol.match]('ab');
+                var hasMethod = typeof RegExp.prototype[Symbol.match] === 'function';
+                var capture0 = result[0];
+                var groupValue = result.groups.group;
+            ");
+
+            Assert.True(rt.GetGlobal("hasMethod").ToBoolean());
+            Assert.Equal("ab", rt.GetGlobal("capture0").ToString());
+            Assert.Equal("a", rt.GetGlobal("groupValue").ToString());
         }
 
         [Fact]
