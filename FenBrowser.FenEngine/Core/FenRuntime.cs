@@ -39,6 +39,13 @@ namespace FenBrowser.FenEngine.Core
         private IObject _realmFunctionPrototype;
         private IObject _realmArrayPrototype;
         private FenObject _realmIteratorPrototype;
+        private FenObject _domNodePrototype;
+        private FenObject _domDocumentPrototype;
+        private FenObject _domElementPrototype;
+        private FenObject _domHtmlElementPrototype;
+        private FenObject _domTextPrototype;
+        private FenObject _domCommentPrototype;
+        private FenObject _domAttrPrototype;
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
@@ -3465,6 +3472,21 @@ namespace FenBrowser.FenEngine.Core
                 try
                 {
                     return FenValue.FromNumber(GetDate(thisVal).Minute);
+                }
+                catch
+                {
+                    return FenValue.FromNumber(double.NaN);
+                }
+            })));
+
+            // Date.prototype.getTimezoneOffset()
+            dateProto.SetBuiltin("getTimezoneOffset", FenValue.FromFunction(new FenFunction("getTimezoneOffset", (args, thisVal) =>
+            {
+                try
+                {
+                    var dt = GetDate(thisVal);
+                    var offset = TimeZoneInfo.Local.GetUtcOffset(dt);
+                    return FenValue.FromNumber(-offset.TotalMinutes);
                 }
                 catch
                 {
@@ -7559,12 +7581,55 @@ namespace FenBrowser.FenEngine.Core
                 });
             }
 
+            FenFunction CreatePrototypeForwarder(string displayName, string targetMethod)
+            {
+                return new FenFunction(displayName, (forwardArgs, forwardThis) =>
+                {
+                    var targetObject = forwardThis.AsObject();
+                    if (targetObject == null)
+                    {
+                        throw new FenTypeError($"TypeError: Illegal invocation of {displayName}");
+                    }
+
+                    var targetMember = targetObject.Get(targetMethod, _context);
+                    if (!targetMember.IsFunction)
+                    {
+                        throw new FenTypeError($"TypeError: {displayName} called on incompatible object");
+                    }
+
+                    return targetMember.AsFunction().Invoke(forwardArgs ?? Array.Empty<FenValue>(), _context, forwardThis);
+                });
+            }
+
+            FenValue CreateInterfaceConstructor(string name, FenObject prototype, Func<FenValue[], FenValue, FenValue> implementation = null)
+            {
+                var ctorFn = new FenFunction(name, implementation ?? ((args, thisVal) => FenValue.FromObject(new FenObject())));
+                ctorFn.Prototype = prototype;
+                ctorFn.Set("prototype", FenValue.FromObject(prototype));
+                var ctorValue = FenValue.FromFunction(ctorFn);
+                prototype.SetBuiltin("constructor", ctorValue);
+                return ctorValue;
+            }
+
+            FenValue CreatePlaceholderInterface(string name, FenObject parentPrototype = null)
+            {
+                var prototype = new FenObject();
+                prototype.InternalClass = name + "Prototype";
+                if (parentPrototype != null)
+                {
+                    prototype.SetPrototype(parentPrototype);
+                }
+
+                return CreateInterfaceConstructor(name, prototype);
+            }
+
             // Provide minimal constructor interfaces required by baseline DOM WPT files.
             var nodePrototype = new FenObject();
             var nodeCtorFn = new FenFunction("Node", (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject()));
             nodeCtorFn.Prototype = nodePrototype;
             nodeCtorFn.Set("prototype", FenValue.FromObject(nodePrototype));
             var nodeCtorVal = FenValue.FromFunction(nodeCtorFn);
+            _domNodePrototype = nodePrototype;
             SetGlobal("Node", nodeCtorVal);
             DefineWindowInterface(window, "Node", nodeCtorVal);
 
@@ -7580,6 +7645,7 @@ namespace FenBrowser.FenEngine.Core
             attrCtorFn.Prototype = attrPrototype;
             attrCtorFn.Set("prototype", FenValue.FromObject(attrPrototype));
             var attrCtorVal = FenValue.FromFunction(attrCtorFn);
+            _domAttrPrototype = attrPrototype;
             SetGlobal("Attr", attrCtorVal);
             DefineWindowInterface(window, "Attr", attrCtorVal);
 
@@ -7598,6 +7664,7 @@ namespace FenBrowser.FenEngine.Core
             textCtorFn.Prototype = textPrototype;
             textCtorFn.Set("prototype", FenValue.FromObject(textPrototype));
             var textCtorVal = FenValue.FromFunction(textCtorFn);
+            _domTextPrototype = textPrototype;
             SetGlobal("Text", textCtorVal);
             DefineWindowInterface(window, "Text", textCtorVal);
 
@@ -7616,8 +7683,67 @@ namespace FenBrowser.FenEngine.Core
             commentCtorFn.Prototype = commentPrototype;
             commentCtorFn.Set("prototype", FenValue.FromObject(commentPrototype));
             var commentCtorVal = FenValue.FromFunction(commentCtorFn);
+            _domCommentPrototype = commentPrototype;
             SetGlobal("Comment", commentCtorVal);
             DefineWindowInterface(window, "Comment", commentCtorVal);
+
+            var elementPrototype = new FenObject();
+            elementPrototype.InternalClass = "ElementPrototype";
+            elementPrototype.SetPrototype(nodePrototype);
+            var matchesForwarder = FenValue.FromFunction(CreatePrototypeForwarder("matches", "matches"));
+            elementPrototype.Set("matches", matchesForwarder);
+            elementPrototype.Set("matchesSelector", matchesForwarder);
+            elementPrototype.Set("webkitMatchesSelector", matchesForwarder);
+            elementPrototype.Set("mozMatchesSelector", matchesForwarder);
+            elementPrototype.Set("msMatchesSelector", matchesForwarder);
+            elementPrototype.Set("oMatchesSelector", matchesForwarder);
+            elementPrototype.Set("closest", FenValue.FromFunction(CreatePrototypeForwarder("closest", "closest")));
+            elementPrototype.Set("querySelector", FenValue.FromFunction(CreatePrototypeForwarder("querySelector", "querySelector")));
+            elementPrototype.Set("querySelectorAll", FenValue.FromFunction(CreatePrototypeForwarder("querySelectorAll", "querySelectorAll")));
+            elementPrototype.Set("getElementsByTagName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagName", "getElementsByTagName")));
+            elementPrototype.Set("getElementsByTagNameNS", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagNameNS", "getElementsByTagNameNS")));
+            elementPrototype.Set("getElementsByClassName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByClassName", "getElementsByClassName")));
+            var elementCtorVal = CreateInterfaceConstructor("Element", elementPrototype);
+            _domElementPrototype = elementPrototype;
+            SetGlobal("Element", elementCtorVal);
+            DefineWindowInterface(window, "Element", elementCtorVal);
+
+            var htmlElementPrototype = new FenObject();
+            htmlElementPrototype.InternalClass = "HTMLElementPrototype";
+            htmlElementPrototype.SetPrototype(elementPrototype);
+            var htmlElementCtorVal = CreateInterfaceConstructor("HTMLElement", htmlElementPrototype);
+            _domHtmlElementPrototype = htmlElementPrototype;
+            SetGlobal("HTMLElement", htmlElementCtorVal);
+            DefineWindowInterface(window, "HTMLElement", htmlElementCtorVal);
+
+            var documentPrototype = new FenObject();
+            documentPrototype.InternalClass = "DocumentPrototype";
+            documentPrototype.SetPrototype(nodePrototype);
+            documentPrototype.Set("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty",
+                (args, thisVal) =>
+                {
+                    if (args.Length == 0)
+                    {
+                        return FenValue.FromBoolean(false);
+                    }
+
+                    return FenValue.FromBoolean(!string.IsNullOrEmpty(args[0].ToString()));
+                })));
+            documentPrototype.Set("querySelector", FenValue.FromFunction(CreatePrototypeForwarder("querySelector", "querySelector")));
+            documentPrototype.Set("querySelectorAll", FenValue.FromFunction(CreatePrototypeForwarder("querySelectorAll", "querySelectorAll")));
+            documentPrototype.Set("getElementById", FenValue.FromFunction(CreatePrototypeForwarder("getElementById", "getElementById")));
+            documentPrototype.Set("createElement", FenValue.FromFunction(CreatePrototypeForwarder("createElement", "createElement")));
+            documentPrototype.Set("createElementNS", FenValue.FromFunction(CreatePrototypeForwarder("createElementNS", "createElementNS")));
+            documentPrototype.Set("createEvent", FenValue.FromFunction(CreatePrototypeForwarder("createEvent", "createEvent")));
+            documentPrototype.Set("createRange", FenValue.FromFunction(CreatePrototypeForwarder("createRange", "createRange")));
+            documentPrototype.Set("getElementsByClassName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByClassName", "getElementsByClassName")));
+            documentPrototype.Set("getElementsByTagName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagName", "getElementsByTagName")));
+            documentPrototype.Set("getElementsByTagNameNS", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagNameNS", "getElementsByTagNameNS")));
+            var documentCtorVal = CreateInterfaceConstructor("Document", documentPrototype);
+            _domDocumentPrototype = documentPrototype;
+            SetGlobal("Document", documentCtorVal);
+            DefineWindowInterface(window, "Document", documentCtorVal);
+
             var requiredInterfaces = new[]
             {
                 "AbortController", "AbortSignal", "Document", "DOMImplementation", "DocumentFragment",
@@ -7635,8 +7761,18 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-                    ifaceValue = FenValue.FromFunction(new FenFunction(ifaceName,
-                        (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject())));
+                    FenObject parentPrototype = null;
+                    switch (ifaceName)
+                    {
+                        case "CharacterData":
+                        case "DocumentFragment":
+                        case "DocumentType":
+                        case "ProcessingInstruction":
+                            parentPrototype = nodePrototype;
+                            break;
+                    }
+
+                    ifaceValue = CreatePlaceholderInterface(ifaceName, parentPrototype);
                     SetGlobal(ifaceName, ifaceValue);
                 }
 
@@ -14812,6 +14948,11 @@ namespace FenBrowser.FenEngine.Core
             this.BaseUri = baseUri;
 
             var documentWrapper = new DocumentWrapper(root, _context, baseUri);
+            if (_domDocumentPrototype != null)
+            {
+                documentWrapper.SetPrototype(_domDocumentPrototype);
+            }
+
             var docValue = FenValue.FromObject(documentWrapper);
             SetGlobal("document", docValue);
 
@@ -14866,29 +15007,6 @@ namespace FenBrowser.FenEngine.Core
                 windowObject.Set("Highlight", highlightBindings.HighlightConstructor);
                 windowObject.Set("HighlightRegistry", highlightBindings.HighlightRegistryConstructor);
             }
-
-            // Create Document constructor/prototype for scripts that check Document.prototype
-            var documentPrototype = new FenObject();
-            documentPrototype.Set("hasOwnProperty", FenValue.FromFunction(new FenFunction("hasOwnProperty",
-                (args, thisVal) =>
-                {
-                    if (args.Length > 0)
-                    {
-                        var propName = args[0].ToString();
-                        if (string.Equals(propName, "fonts", StringComparison.Ordinal))
-                        {
-                            return FenValue.FromBoolean(true);
-                        }
-
-                        return FenValue.FromBoolean(propName != "fonts");
-                    }
-
-                    return FenValue.FromBoolean(false);
-                })));
-
-            var documentConstructor = new FenObject();
-            documentConstructor.Set("prototype", FenValue.FromObject(documentPrototype));
-            SetGlobal("Document", FenValue.FromObject(documentConstructor));
         }
 
         public void DispatchEvent(string type, IObject eventData = null)

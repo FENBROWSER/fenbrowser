@@ -1492,6 +1492,17 @@ namespace FenBrowser.FenEngine.Core
                     if (CurTokenIs(TokenType.RBrace))
                     {
                         NextToken(); // consume inner block's '}'
+
+                        // If bubbling out of nested blocks lands directly on a
+                        // call/object terminator, this block is done as well.
+                        if (CurTokenIs(TokenType.RParen) ||
+                            CurTokenIs(TokenType.Semicolon) ||
+                            CurTokenIs(TokenType.Comma) ||
+                            CurTokenIs(TokenType.Eof))
+                        {
+                            break;
+                        }
+
                         continue;
                     }
 
@@ -2061,7 +2072,13 @@ namespace FenBrowser.FenEngine.Core
                 // Console.WriteLine($"[DEBUG] ParseCallArguments: After Arg Parse. Cur={_curToken.Type}, Peek={_peekToken.Type}");
             }
 
-            
+            // Nested parses can legitimately leave us positioned on the
+            // closing ')' for this call. Accept that terminal state directly.
+            if (CurTokenIs(TokenType.RParen) && !PeekTokenIs(TokenType.RParen))
+            {
+                return args;
+            }
+
             // Console.WriteLine($"[DEBUG] ParseCallArguments Loop End. Cur={_curToken.Type}, Peek={_peekToken.Type}");
             if (!ExpectPeek(TokenType.RParen))
             {
@@ -2447,10 +2464,33 @@ namespace FenBrowser.FenEngine.Core
                     return null;
                 }
 
+                // Nested property values can legitimately leave the parser already
+                // sitting on this object's closing brace (for example after complex
+                // function bodies). Only treat actual outer delimiters as terminal
+                // here; a following comma can still introduce another property.
+                if (CurTokenIs(TokenType.RBrace) &&
+                    !PeekTokenIs(TokenType.RBrace) &&
+                    (PeekTokenIs(TokenType.Semicolon) ||
+                     PeekTokenIs(TokenType.Eof) ||
+                     PeekTokenIs(TokenType.RParen) ||
+                     PeekTokenIs(TokenType.RBracket)))
+                {
+                    break;
+                }
+
                 if (!PeekTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.Comma))
                 {
                     return null;
                 }
+            }
+
+            if (CurTokenIs(TokenType.RBrace) &&
+                (PeekTokenIs(TokenType.Semicolon) ||
+                 PeekTokenIs(TokenType.Eof) ||
+                 PeekTokenIs(TokenType.RParen) ||
+                 PeekTokenIs(TokenType.RBracket)))
+            {
+                return obj;
             }
 
             if (!ExpectPeek(TokenType.RBrace))

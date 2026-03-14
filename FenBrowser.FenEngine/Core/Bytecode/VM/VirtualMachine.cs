@@ -2618,11 +2618,12 @@ run_loop_restart:
                             {
                                 var prop = _stack[--_sp];
                                 var obj = _stack[--_sp];
-                                RequireObjectCoercible(obj, "LoadProp");
+                                var propertyKey = PropertyKey(prop);
+                                RequireObjectCoercible(obj, $"LoadProp '{propertyKey}'");
                                 var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
-                                    var key = PropertyKey(prop);
+                                    var key = propertyKey;
                                     if (objectRef is FenObject fenObj)
                                     {
                                         // Keep regex literals linked to the active realm's RegExp.prototype.
