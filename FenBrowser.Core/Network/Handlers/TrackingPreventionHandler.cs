@@ -72,6 +72,11 @@ namespace FenBrowser.Core.Network.Handlers
             "/1x1", "/blank.gif", "/spacer.gif", "/pixel.gif", "/t.gif", "/p.gif"
         };
 
+        private static readonly HashSet<string> _commonCountryCodeSecondLevelDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ac", "co", "com", "edu", "gov", "net", "org"
+        };
+
         /// <summary>Whether Enhanced Tracking Prevention is enabled.</summary>
         public static bool IsEnabled { get; set; } = true;
 
@@ -86,8 +91,11 @@ namespace FenBrowser.Core.Network.Handlers
         {
             if (uri == null || !IsEnabled) return false;
 
-            // Never block same-origin requests
-            if (pageOrigin != null && IsSameOrigin(uri, pageOrigin)) return false;
+            // Never block first-party requests for the active page, including same-site CDNs.
+            if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || IsSameSite(uri.Host, pageOrigin.Host)))
+            {
+                return false;
+            }
 
             var host = uri.Host?.ToLowerInvariant();
             if (!string.IsNullOrEmpty(host))
@@ -104,7 +112,7 @@ namespace FenBrowser.Core.Network.Handlers
             var path = uri.AbsolutePath?.ToLowerInvariant() ?? "";
             foreach (var pattern in _trackingPixelPatterns)
             {
-                if (path.Contains(pattern)) return true;
+                if (MatchesTrackingPixelPattern(path, pattern)) return true;
             }
 
             return false;
@@ -118,6 +126,102 @@ namespace FenBrowser.Core.Network.Handlers
                    a.Port == b.Port;
         }
 
+        private static bool IsSameSite(string hostA, string hostB)
+        {
+            if (string.IsNullOrWhiteSpace(hostA) || string.IsNullOrWhiteSpace(hostB))
+            {
+                return false;
+            }
+
+            var normalizedA = NormalizeHost(hostA);
+            var normalizedB = NormalizeHost(hostB);
+            if (string.IsNullOrEmpty(normalizedA) || string.IsNullOrEmpty(normalizedB))
+            {
+                return false;
+            }
+
+            if (string.Equals(normalizedA, normalizedB, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var siteKeyA = GetSiteKey(normalizedA);
+            var siteKeyB = GetSiteKey(normalizedB);
+            return string.Equals(siteKeyA, siteKeyB, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesTrackingPixelPattern(string path, string pattern)
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(pattern))
+            {
+                return false;
+            }
+
+            var searchIndex = 0;
+            while (searchIndex < path.Length)
+            {
+                var matchIndex = path.IndexOf(pattern, searchIndex, StringComparison.OrdinalIgnoreCase);
+                if (matchIndex < 0)
+                {
+                    return false;
+                }
+
+                var endIndex = matchIndex + pattern.Length;
+                if (endIndex >= path.Length)
+                {
+                    return true;
+                }
+
+                var nextChar = path[endIndex];
+                if (!char.IsLetterOrDigit(nextChar))
+                {
+                    return true;
+                }
+
+                searchIndex = matchIndex + 1;
+            }
+
+            return false;
+        }
+
+        private static string NormalizeHost(string host)
+        {
+            return host?.Trim().TrimEnd('.').ToLowerInvariant();
+        }
+
+        private static string GetSiteKey(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return string.Empty;
+            }
+
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                Uri.CheckHostName(host) == UriHostNameType.IPv4 ||
+                Uri.CheckHostName(host) == UriHostNameType.IPv6)
+            {
+                return host;
+            }
+
+            var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (labels.Length <= 2)
+            {
+                return host;
+            }
+
+            var registrableLabelCount = 2;
+            var topLevelLabel = labels[^1];
+            var secondLevelLabel = labels[^2];
+            if (topLevelLabel.Length == 2 &&
+                labels.Length >= 3 &&
+                _commonCountryCodeSecondLevelDomains.Contains(secondLevelLabel))
+            {
+                registrableLabelCount = 3;
+            }
+
+            return string.Join(".", labels, labels.Length - registrableLabelCount, registrableLabelCount);
+        }
+
         // INetworkHandler implementation
         public Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
@@ -126,11 +230,12 @@ namespace FenBrowser.Core.Network.Handlers
                 return next();
             }
 
-            if (IsTracker(context.Request.RequestUri))
+            var pageOrigin = context.Request.Headers.Referrer;
+            if (IsTracker(context.Request.RequestUri, pageOrigin))
             {
                 // Block the request
                 BlockedCount++;
-                Console.WriteLine($"[ETP] Blocked: {context.Request.RequestUri.Host}");
+                Console.WriteLine($"[ETP] Blocked: {context.Request.RequestUri.Host} ({context.Request.RequestUri.AbsolutePath})");
                 
                 context.IsBlocked = true;
                 context.BlockReason = "Blocked by Enhanced Tracking Prevention";
