@@ -152,7 +152,7 @@ namespace FenBrowser.FenEngine.Rendering
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
         public bool EnableJavaScript { get; set; } = true;
         public bool EnableIncrementalParseRepaint { get; set; } = true;
-        public bool EnableStreamingParsePrepass { get; set; } = true;
+        public bool EnableStreamingParsePrepass { get; set; } = false;
         public bool EnableInterleavedPrimaryParse { get; set; } = true;
 
 
@@ -254,6 +254,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CustomHtmlEngine()
         {
             _uiDispatcher = UiThreadHelper.TryGetDispatcher();
+            EventLoopCoordinator.Instance.SetRenderCallback(ProcessQueuedRenderUpdate);
         }
 
         private static double GetPrimaryWindowWidth()
@@ -505,6 +506,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             try
             {
+                EventLoopCoordinator.Instance.SetRenderCallback(null);
                 _repaintGate.Dispose();
                 // _activeJs does not implement IDisposable, just clear ref
                 _activeJs = null;
@@ -516,6 +518,21 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 FenLogger.Warn($"[CustomHtmlEngine] Dispose error: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
+        private void ProcessQueuedRenderUpdate()
+        {
+            try
+            {
+                RefreshAsync(includeDiagnosticsBanner: false).GetAwaiter().GetResult();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
             }
         }
 
@@ -846,14 +863,15 @@ namespace FenBrowser.FenEngine.Rendering
             // Only update _activeJs if a new engine is provided; preserve existing during repaints
             if (js != null) _activeJs = js;
             
-            // Keep JS engine's DOM in sync with _activeDom so JS style changes appear on render
+            // Keep the JS bridge synchronized with the live DOM without executing page scripts.
+            // Full script execution still happens later in RunScriptsAsync with a timeout budget.
             if (_activeJs != null && dom != null)
             {
                 try 
                 { 
-                    FenLogger.Debug("[CaptureActiveContext] Calling SetDomAsync...", LogCategory.Rendering);
-                    await _activeJs.SetDomAsync(dom, baseUri).ConfigureAwait(false);
-                    FenLogger.Debug("[CaptureActiveContext] SetDomAsync returned.", LogCategory.Rendering);
+                    FenLogger.Debug("[CaptureActiveContext] Calling SyncDomContext...", LogCategory.Rendering);
+                    _activeJs.SyncDomContext(dom, baseUri);
+                    FenLogger.Debug("[CaptureActiveContext] SyncDomContext returned.", LogCategory.Rendering);
                     FenLogger.Debug($"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}", LogCategory.Rendering);
                 }
                 catch (Exception ex)
@@ -1081,8 +1099,9 @@ namespace FenBrowser.FenEngine.Rendering
             // STRICT CONTROL FLOW:
             // JavaScript CANNOT push frames. It can only mark state as dirty.
             
-            // 1. ASSERT: JS cannot trigger rendering logic directly.
-            EnginePhaseManager.AssertNotInPhase(EnginePhase.JSExecution, EnginePhase.Microtasks);
+            // 1. JS is allowed to request a future repaint, but it must never
+            // trigger layout/paint re-entrantly from within the hot path.
+            EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
             FenLogger.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs (Dirty Flag Set)", LogCategory.Rendering);
 
@@ -1212,11 +1231,27 @@ namespace FenBrowser.FenEngine.Rendering
                      LastComputedStyles = await cssTask;
                      FenLogger.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
-                     
+
+                     // Assign computed styles to DOM nodes so the renderer can access them via
+                     // Node.ComputedStyle even when the styles dict is not passed directly.
+                     if (LastComputedStyles != null)
+                     {
+                         foreach (var kvp in LastComputedStyles)
+                             if (kvp.Key != null) kvp.Key.ComputedStyle = kvp.Value;
+                     }
+
+                     // Sync _activeDom to the real parsed DOM (dom parameter) so that when
+                     // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
+                     // are the keys in LastComputedStyles.  Without this fix _activeDom would
+                     // still point to a stale incremental-parse clone, causing every style
+                     // lookup to miss and producing a blank frame.
+                     if (dom != null) _activeDom = dom;
+                     Console.WriteLine($"[DBG-CSS] CSS done. Styles={LastComputedStyles?.Count ?? 0}, _activeDom={_activeDom?.GetType().Name ?? "NULL"}:{(_activeDom as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?"}");
+
                      // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
                      // This ensures flexbox centering, visibility, and other CSS properties are applied
                      FenLogger.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
-                     OnRepaintReady(null);
+                     OnRepaintReady(dom);
                  }
              }
              catch (Exception cssEx) 
@@ -1773,6 +1808,8 @@ namespace FenBrowser.FenEngine.Rendering
                         postScriptVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
                         lastStageMarkMs = elapsed;
                         FenLogger.Debug($"[PERF] Visual Tree 2: {elapsed}ms", LogCategory.Rendering);
+                        // Fire repaint so the engine loop re-renders with post-script DOM state.
+                        OnRepaintReady(_activeDom);
                     }
                     catch (Exception vtEx)
                     {
