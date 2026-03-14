@@ -226,6 +226,19 @@ flowchart TD
     - selected `css-grid/placement` harness/layout cases (`grid-auto-flow-sparse-001`, `grid-auto-placement-implicit-tracks-001`, `grid-container-change-grid-tracks-recompute-child-positions-001`, `grid-container-change-named-grid-recompute-child-positions-001`)
     - selected `css-grid/abspos` harnessless cases (`empty-grid-001`, `absolute-positioning-*`, `positioned-grid-items-should-not-*`, `grid-sizing-positioned-items-001`)
 - Regression coverage was extended in `FenBrowser.Tests/DOM/FontLoadingTests.cs` and `FenBrowser.Tests/Engine/WptTestRunnerTests.cs`.
+
+### 2.15 Dynamic DOM Script And Mutation Delivery Hardening (2026-03-14)
+
+- `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+- `FenBrowser.Core/WebIDL/WebIdlBindingGenerator.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+- DOM mutator methods exposed directly from `NodeWrapper` (`append`, `appendChild`, `removeChild`, `replaceChild`, `insertBefore`, `remove`) now route through shared wrapper-aware mutation bridges instead of mutating raw container nodes silently. This keeps JS-visible DOM writes aligned with `DomMutationQueue`, render invalidation, and `IExecutionContext.OnMutation`.
+- The WebIDL binding generator now emits wrapper-aware fast paths for high-traffic DOM operations (`Node.appendChild/removeChild/replaceChild/insertBefore`, `Element.setAttribute/removeAttribute`) before falling back to raw native unwrapping. Generated bindings therefore preserve engine-side mutation semantics for both prototype-bound and wrapper-bound call paths.
+- `JavaScriptEngine.SyncDomContext(...)` now synchronizes `_ctx.BaseUri` alongside the active DOM/runtime bridge, fixing dynamic subresource resolution for DOM-inserted `<script src="...">` elements and related host location surfaces that depend on the active document URL.
+- MutationObserver delivery now invokes observer callbacks inside the active batch-delivery pass instead of re-queuing them onto the same mutation-observer queue, eliminating the prior extra-checkpoint requirement that left same-turn DOM mutations unobservable in focused tests and simple hosts.
+- Dynamically inserted external scripts now resolve against the active page URL, execute through the event-loop networking task path, and preserve `document.currentScript` during execution in the same way as initial parser-discovered external scripts.
+- Regression coverage was extended in `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`, and the March 14 verification slice (`JavaScriptEngineLifecycleTests` plus `ControlFlowInvariantTests`) passed 22/22 after this tranche.
 ---
 
 ## 3. The Rendering Pipeline (`FenBrowser.FenEngine.Rendering`)
@@ -3404,6 +3417,29 @@ Verification snapshot (2026-03-06):
   - Closes the remaining geolocation watch stub in the standalone Web API factory surface.
   - Aligns helper-created geolocation objects with the live runtime behavior added in `JavaScriptEngine`.
 
+### 2.79a First-Paint JS DOM Sync Split (2026-03-13)
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `SyncDomContext(...)` as a context-only bridge that updates `document` / `window` bindings for a new DOM without walking script tags or running page script payloads.
+  - `SetDomAsync(...)` now reuses that bridge before entering the existing full script/module execution pass, keeping navigation semantics intact.
+  - Lifecycle dispatch now routes `DOMContentLoaded` / `load` through the same top-level listener stores used by `document.addEventListener(...)` and `window.addEventListener(...)`, instead of notifying only engine-internal object listeners.
+  - `SetupWindowEvents()` now keeps `window.innerWidth` / `innerHeight` / `outerWidth` / `outerHeight` as numeric browser-style properties and mirrors those values back onto the global scope, instead of overwriting them with callable functions.
+  - Added a built-in `WIMB_CAPABILITIES` compatibility object on both `window` and global scope with `capabilities`, `add` / `add_update`, `refresh`, and `get_as_json_string()` so `whatismybrowser.com` can query a browser-capability payload even when its own bootstrap library short-circuits.
+  - Added a minimal `ClipboardJS` stub (`isSupported() -> false`, instance `on()` / `destroy()` no-ops) so pages that gate clipboard features behind the vendor global do not abort unrelated initialization paths when the helper library is absent.
+  - Script execution now tracks `document.currentScript` against the active `<script>` element and clears it after each execution step, which fixes bundles that bootstrap from `document.currentScript.src` before registering later globals like `WIMB_CAPABILITIES` helpers and `do_capabilities_detection`.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - `CaptureActiveContextAsync(...)` now uses `SyncDomContext(...)` before the initial Box Tree build so first paint is no longer blocked by script-heavy `SetDomAsync(...)` work.
+  - Full script execution still remains in `RunScriptsAsync(...)`, which preserves the bounded timeout path before the post-script visual tree rebuild.
+  - `EnableStreamingParsePrepass` now defaults to `false` so the progressive hint parse cannot wedge first paint before the production parser starts on medium-sized real-world pages.
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+  - Added regression coverage proving `document.addEventListener('DOMContentLoaded', ...)` registered by inline script is fired by `SetDomAsync(...)`.
+  - Added coverage proving `window.innerWidth` remains a numeric property and that `WIMB_CAPABILITIES.get_as_json_string()` returns a non-empty encoded capability payload.
+  - Added coverage proving the `ClipboardJS` compatibility stub is present and reports unsupported clipboard helper availability instead of throwing a `ReferenceError`.
+  - Added regression coverage proving external script execution exposes `document.currentScript` during the script body and clears it once the script finishes.
+- Net effect:
+  - Script-heavy pages can commit an initial render before the JavaScript execution phase completes or times out.
+  - The JS bridge still sees the active DOM early enough for runtime bindings, title extraction, and later script-driven refreshes.
+  - First paint no longer depends on the optional streaming-preparse assist path being healthy.
+
 
 
 
@@ -4674,3 +4710,51 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - FenBrowser.Tests/Core/NavigationManagerRequestHeadersTests.cs
 - Current limitation:
   - These changes fix incorrect navigation semantics and stale window.location state, but Google Search still serves a heavy client-side challenge/bootstrap document that FenBrowser does not yet fully complete. Remaining work is broader JS/browser API compatibility, not request-header or location-state correctness.
+
+## 2.132 Parser Hardening: Minified Object-Literal Continuations (2026-03-13)
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - `ParseCallArguments()` now accepts the state where nested argument parsing already landed on the call's closing `)` without reopening the earlier nested-call/comma truncation regression.
+  - `ParseBlockStatement(...)` now stops when bubbling out of nested braces lands directly on call/object terminators (`)`, `,`, `;`, `EOF`), preserving minified callback tails used inside promise wrappers and deferred site bundles.
+  - `ParseObjectLiteral()` now keeps `}` + `,` ambiguous only for property continuation, instead of treating every comma after a nested function/object body as the end of the outer object literal.
+  - Object-literal close recovery remains enabled only for true outer delimiters (`)`, `]`, `;`, `EOF`), which fixes `x || { ... }` grouped initializers with multiple function-valued properties while preserving the earlier promise-wrapper recovery path.
+- Regression coverage:
+  - `FenBrowser.Tests/Engine/JsParserReproTests.cs`
+- Verification:
+  - Focused minified repros for `WIMB_UTIL || { version, get_style, decode_java_version }` and the larger var-initializer bundle now pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JsParserReproTests"`: `74/74` pass.
+
+## 2.133 DOM/Timer Compatibility Hardening: Descendant Queries + Observable Deferred Callbacks (2026-03-13)
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - `querySelector(...)` and `querySelectorAll(...)` now route through `MatchesSelectorForDomQueries(...)`, which first uses the normal CSS selector matcher and then falls back to a DOM-query-specific descendant-chain walk when the selector contains whitespace-separated parts.
+  - The descendant fallback matches the terminal selector part on the candidate element and then walks ancestors for the preceding selector parts, which restores practical support for queries such as `#javascript-detection .detection-message` used by deferred capability-detection scripts.
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - `closest(...)`, element-scoped `querySelector(...)`, and element-scoped `querySelectorAll(...)` now share the same DOM-query matcher path so selector behavior stays consistent between document-level and subtree-level queries.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - `ScheduleCallbackAsync(...)` still waits off-thread for timer latency, but now immediately pumps one queued task via `EventLoopCoordinator.ProcessNextTask()` after enqueuing the callback.
+  - This keeps `setTimeout(...)` / `setInterval(...)` callbacks observable in focused runtime tests and simple page-script paths where no external host loop is actively draining the task queue.
+- Regression coverage:
+  - `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JavaScriptEngineLifecycleTests"`: `8/8` pass.
+
+## 2.134 Render Invalidation Hardening: JS Dirty-Flag Repaints Must Not Throw (2026-03-13)
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - `ScheduleRepaintFromJs()` no longer rejects calls made during `JSExecution` / microtask-driven DOM mutation paths.
+  - The invariant is now narrowed to the actual unsafe phases only: JavaScript may mark the page dirty for a future repaint, but it still may not enter `Measure`, `Layout`, or `Paint` re-entrantly.
+  - `CustomHtmlEngine` now wires `EventLoopCoordinator.SetRenderCallback(...)` to a queued `RefreshAsync()` bridge, so dirty-flag notifications emitted from JS-driven DOM mutations terminate in a real follow-up visual refresh instead of stalling as unconsumed coordinator state.
+  - This preserves pull-based rendering while fixing compatibility pages whose script-driven `innerHTML` / DOM updates request a repaint from inside a `DOMContentLoaded` handler.
+- `FenBrowser.Tests/Core/ControlFlowInvariantTests.cs`
+  - Updated the control-flow invariant to validate the new rule: JS dirty-flag requests are legal, direct rendering phases are not.
+- Verification:
+  - `whatismybrowser.com` compatibility repro is now unblocked for JS-triggered DOM invalidation during page bootstrap.
+
+## 2.135 DOM Interface + Date Compatibility Hardening: Real `Element.prototype` And `Date.prototype.getTimezoneOffset` (2026-03-13)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Replaced the prototype-less fallback DOM interface publishing path with constructor objects that always expose a real `prototype`, preventing minified third-party bundles from crashing on probes such as `Element.prototype.matches`.
+  - Added concrete `Element`, `HTMLElement`, and `Document` interface bootstrap objects on the main window/global path, including forwarders for commonly probed methods (`matches`, selector APIs, document query/create helpers).
+  - `SetDom(...)` now reuses the runtime-owned `Document.prototype` instead of overwriting `Document` with a stripped object that only carried a bare `prototype` slot.
+  - Added `Date.prototype.getTimezoneOffset()` so capability scripts that compute browser GMT offsets via `new Date().getTimezoneOffset()` no longer fail during bootstrap.
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+  - Added focused regressions for `Element.prototype.matches`, `Date.prototype.getTimezoneOffset`, and the real `whatismybrowser.com` site bundle bootstrap path.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JavaScriptEngineLifecycleTests"`: `18/18` pass.

@@ -789,3 +789,12 @@ _End of Volume II_
 - Top-level document text fetches no longer force the Android/mobile UA branch that was previously shared with iframe/subresource paths; desktop navigation UA is preserved for direct browser navigations.
 - Regression coverage: FenBrowser.Tests/Core/NavigationManagerRequestHeadersTests.cs.
 
+### 1.41 Same-Site Tracking Prevention Exemption (2026-03-13)
+- `FenBrowser.Core/Network/Handlers/TrackingPreventionHandler.cs`
+- Enhanced Tracking Prevention now treats same-site subresources the same as same-origin ones when a request carries a page referrer, so first-party CDNs like `cdn.whatismybrowser.com` are not blocked just because they sit on a sibling subdomain.
+- Same-site classification now uses a normalized registrable-site heuristic instead of raw host suffix comparison, which covers common sibling-host cases such as `www.whatismybrowser.com` -> `cdn.whatismybrowser.com` and common country-code second-level domains (`co.uk`, `com.au`, etc.) well enough for browser-path request filtering.
+- Blocking still applies to known third-party tracker domains and tracking-pixel paths when the request is genuinely cross-site.
+- Tracking-pixel path matching now requires a segment-style boundary after the matched token, preventing false positives such as `/logo/` tripping the old `/log` heuristic.
+- ETP console diagnostics now include the blocked request path along with the host so first-party false positives are easier to reproduce from runtime logs.
+- Regression coverage: `FenBrowser.Tests/Core/Network/TrackingPreventionHandlerTests.cs`.
+
