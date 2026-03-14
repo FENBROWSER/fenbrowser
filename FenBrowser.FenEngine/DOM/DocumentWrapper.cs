@@ -118,6 +118,13 @@ namespace FenBrowser.FenEngine.DOM
                 case "readystate":
                     return FenValue.FromString(_readyState);
 
+                case "currentscript":
+                    if (_expando.TryGetValue("currentScript", out var currentScript))
+                    {
+                        return currentScript;
+                    }
+                    return FenValue.Null;
+
                 // DOM Level 3 Events
                 case "addeventlistener":
                     return FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerMethod));
@@ -296,7 +303,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -521,7 +528,7 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (node is Element el)
             {
-                if (CssLoader.MatchesSelector(el, selector)) return el;
+                if (MatchesSelectorForDomQueries(el, selector)) return el;
             }
             if (node.ChildNodes != null) {
                 foreach(var c in node.ChildNodes.OfType<Element>()) {
@@ -534,8 +541,55 @@ namespace FenBrowser.FenEngine.DOM
 
         private void RecursiveQuerySelector(Node node, string selector, List<Element> results)
         {
-            if (node is Element el && CssLoader.MatchesSelector(el, selector)) results.Add(el);
+            if (node is Element el && MatchesSelectorForDomQueries(el, selector)) results.Add(el);
             if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveQuerySelector(c, selector, results); // Recurse on all nodes
+        }
+
+        internal static bool MatchesSelectorForDomQueries(Element element, string selector)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(selector))
+            {
+                return false;
+            }
+
+            if (CssLoader.MatchesSelector(element, selector))
+            {
+                return true;
+            }
+
+            var selectorParts = selector
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Trim())
+                .Where(part => part.Length > 0)
+                .ToArray();
+
+            if (selectorParts.Length < 2)
+            {
+                return false;
+            }
+
+            if (!CssLoader.MatchesSelector(element, selectorParts[selectorParts.Length - 1]))
+            {
+                return false;
+            }
+
+            var currentAncestor = element.ParentElement;
+            for (int i = selectorParts.Length - 2; i >= 0; i--)
+            {
+                while (currentAncestor != null && !CssLoader.MatchesSelector(currentAncestor, selectorParts[i]))
+                {
+                    currentAncestor = currentAncestor.ParentElement;
+                }
+
+                if (currentAncestor == null)
+                {
+                    return false;
+                }
+
+                currentAncestor = currentAncestor.ParentElement;
+            }
+
+            return true;
         }
 
         private void RecursiveClassName(Node node, string[] classes, List<Element> results)

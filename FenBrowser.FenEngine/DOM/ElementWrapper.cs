@@ -1230,22 +1230,7 @@ namespace FenBrowser.FenEngine.DOM
 
             var name = args[0].ToString();
             var value = args[1].ToString();
-            var oldValue = _element.GetAttribute(name);
-
-            // Apply immediately for DOM API sync semantics expected by WPT.
-            _element.SetAttribute(name, value);
-
-            // Keep mutation signal for pipeline invalidation / diagnostics.
-            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
-                MutationType.AttributeChange,
-                InvalidationKind.Style | InvalidationKind.Layout,
-                _element,
-                name,
-                oldValue,
-                value
-            ));
-
-            _context.RequestRender?.Invoke();
+            SetAttributeFromBinding(name, value);
             return FenValue.Undefined;
         }
 
@@ -1261,7 +1246,8 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenSecurityError("DOM write permission required");
 
             if (args.Length == 0) return FenValue.Undefined;
-            _element.RemoveAttribute(args[0].ToString());
+            var name = args[0].ToString();
+            RemoveAttributeFromBinding(name);
             return FenValue.Undefined;
         }
 
@@ -1740,6 +1726,8 @@ namespace FenBrowser.FenEngine.DOM
                     childNode
                 ));
 
+                NotifyChildListMutation(childNode, removedNode: null);
+                _context.RequestRender?.Invoke();
                 return args[0];
             }
 
@@ -1775,10 +1763,196 @@ namespace FenBrowser.FenEngine.DOM
                     null
                 ));
 
+                NotifyChildListMutation(addedNode: null, removedNode: childNode);
+                _context.RequestRender?.Invoke();
                 return args[0];
             }
 
             return FenValue.Null;
+        }
+
+        internal void SetAttributeFromBinding(string name, string value)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttribute"))
+                throw new FenSecurityError("DOM write permission required");
+
+            var oldValue = _element.GetAttribute(name);
+
+            _element.SetAttribute(name, value);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                name,
+                oldValue,
+                value
+            ));
+
+            NotifyAttributeMutation(name, oldValue);
+            _context.RequestRender?.Invoke();
+        }
+
+        internal void RemoveAttributeFromBinding(string name)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttribute"))
+                throw new FenSecurityError("DOM write permission required");
+
+            var oldValue = _element.GetAttribute(name);
+            _element.RemoveAttribute(name);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                name,
+                oldValue,
+                null
+            ));
+
+            NotifyAttributeMutation(name, oldValue);
+            _context.RequestRender?.Invoke();
+        }
+
+        internal override Node AppendChildFromBinding(Node child)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "appendChild"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (child == null)
+            {
+                return null;
+            }
+
+            _element.AppendChild(child);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.NodeInsert,
+                InvalidationKind.Layout | InvalidationKind.Paint,
+                _element,
+                null,
+                null,
+                child
+            ));
+
+            NotifyChildListMutation(child, removedNode: null);
+            _context.RequestRender?.Invoke();
+            return child;
+        }
+
+        internal override Node RemoveChildFromBinding(Node child)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeChild"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (child == null)
+            {
+                return null;
+            }
+
+            _element.RemoveChild(child);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.NodeRemove,
+                InvalidationKind.Layout | InvalidationKind.Paint,
+                _element,
+                null,
+                child,
+                null
+            ));
+
+            NotifyChildListMutation(addedNode: null, removedNode: child);
+            _context.RequestRender?.Invoke();
+            return child;
+        }
+
+        internal override Node ReplaceChildFromBinding(Node newNode, Node oldNode)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "replaceChild"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (newNode == null || oldNode == null)
+            {
+                return null;
+            }
+
+            _element.ReplaceChild(newNode, oldNode);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.NodeRemove,
+                InvalidationKind.Layout | InvalidationKind.Paint,
+                _element,
+                null,
+                oldNode,
+                null
+            ));
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.NodeInsert,
+                InvalidationKind.Layout | InvalidationKind.Paint,
+                _element,
+                null,
+                null,
+                newNode
+            ));
+
+            NotifyChildListMutation(newNode, oldNode);
+            _context.RequestRender?.Invoke();
+            return oldNode;
+        }
+
+        internal override Node InsertBeforeFromBinding(Node newNode, Node referenceNode)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "insertBefore"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (newNode == null)
+            {
+                return null;
+            }
+
+            var inserted = _element.InsertBefore(newNode, referenceNode);
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.NodeInsert,
+                InvalidationKind.Layout | InvalidationKind.Paint,
+                _element,
+                null,
+                null,
+                inserted
+            ));
+
+            NotifyChildListMutation(inserted, removedNode: null);
+            _context.RequestRender?.Invoke();
+            return inserted;
+        }
+
+        private void NotifyAttributeMutation(string attributeName, string oldValue)
+        {
+            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.V2.MutationRecord
+            {
+                Type = FenBrowser.Core.Dom.V2.MutationRecordType.Attributes,
+                Target = _element,
+                AttributeName = attributeName,
+                OldValue = oldValue
+            });
+        }
+
+        private void NotifyChildListMutation(Node addedNode, Node removedNode)
+        {
+            var added = addedNode != null
+                ? new System.Collections.Generic.List<Node> { addedNode }
+                : new System.Collections.Generic.List<Node>();
+            var removed = removedNode != null
+                ? new System.Collections.Generic.List<Node> { removedNode }
+                : new System.Collections.Generic.List<Node>();
+
+            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.V2.MutationRecord
+            {
+                Type = FenBrowser.Core.Dom.V2.MutationRecordType.ChildList,
+                Target = _element,
+                AddedNodes = added,
+                RemovedNodes = removed
+            });
         }
 
         /// <summary>
@@ -1814,7 +1988,7 @@ namespace FenBrowser.FenEngine.DOM
                 
                 while (current != null)
                 {
-                    if (Rendering.CssLoader.MatchesSelector(current, selector))
+                    if (DocumentWrapper.MatchesSelectorForDomQueries(current, selector))
                     {
                         return DomWrapperFactory.Wrap(current, _context);
                     }
@@ -1855,7 +2029,7 @@ namespace FenBrowser.FenEngine.DOM
              
              foreach (var child in parent.ChildNodes.OfType<Element>())
              {
-                 if (Rendering.CssLoader.MatchesSelector(child, selector)) return child;
+                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) return child;
                  var f = FindFirstDescendant(child, selector);
                  if (f != null) return f;
              }
@@ -1868,7 +2042,7 @@ namespace FenBrowser.FenEngine.DOM
              
              foreach (var child in parent.ChildNodes.OfType<Element>())
              {
-                 if (Rendering.CssLoader.MatchesSelector(child, selector)) results.Add(DomWrapperFactory.Wrap(child, _context));
+                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) results.Add(DomWrapperFactory.Wrap(child, _context));
                  FindAllDescendants(child, selector, results);
              }
         }
