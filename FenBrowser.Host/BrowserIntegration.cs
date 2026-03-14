@@ -121,21 +121,18 @@ public class BrowserIntegration
         {
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true) return;
 
-            // CRITICAL FIX: Sync DOM immediately when RenderAsync fires RepaintReady
+            // Sync DOM root early so EngineLoop has it on next tick.
+            // Do NOT sync _styles here: ComputedStyles may be null mid-cascade (e.g. after
+            // incremental parse checkpoints set LastComputedStyles = null). EngineLoop
+            // re-fetches styles from _browser before every RecordFrame call.
             _root = _browser.GetDomRoot();
-            _styles = _browser.ComputedStyles;
-            
-            FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={(_styles?.Count.ToString() ?? "NULL")}", LogCategory.Rendering);
-            
-            // THREAD SAFETY FIX: Do NOT call RecordFrame directly from this event handler.
-            // RepaintReady can fire from any thread (including thread pool continuations),
-            // but SKPictureRecorder is NOT thread-safe. Always signal the engine thread
-            // to perform the actual rendering work on its dedicated thread.
+
+            FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
+
+            // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
+            // after a valid frame is committed — never before _currentFrame is ready.
             _needsRepaint = true;
             _wakeEvent.Set();
-            
-            // Signal UI that a repaint is pending (optional immediate feedback)
-            NeedsRepaint?.Invoke();
         };
         
         _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
@@ -372,9 +369,10 @@ public class BrowserIntegration
                     // Sync latest state from browser host
                     _root = _browser.GetDomRoot();
                     _styles = _browser.ComputedStyles;
-                    
+
                     // Debug: Log synced state
                     FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
+                    Console.WriteLine($"[DBG-EL] Root={(_root != null ? _root.TagName : "NULL")}, Styles={((_styles != null) ? _styles.Count.ToString() : "NULL")}, VP={_lastViewportSize}");
                     
                     // PERF: Skip RecordFrame while CSS cascade hasn't produced any styles yet.
                     // Running layout on an unstyled DOM wastes CPU and delays the first styled paint.
@@ -404,10 +402,12 @@ public class BrowserIntegration
                         _hasFirstStyledRender = true;
                     }
 
+                    Console.WriteLine($"[DBG-EL] Calling RecordFrame. VP={_lastViewportSize}, Root={(_root?.TagName ?? "NULL")}, Styles={(_styles?.Count.ToString() ?? "NULL")}");
                     lock (_rendererLock)
                     {
                         RecordFrame(_lastViewportSize);
                     }
+                    Console.WriteLine($"[DBG-EL] RecordFrame done. HasFrame={HasCommittedFrame()}");
                 }
             }
             catch (Exception ex)
@@ -415,6 +415,11 @@ public class BrowserIntegration
                 FenLogger.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
             }
             
+            // 3b. Debug: If we have needsRepaint but viewport is 0, log it
+            if (_needsRepaint && _lastViewportSize.Width <= 0)
+            {
+                Console.WriteLine("[DBG-EL] WARNING: _needsRepaint=true but _lastViewportSize.Width=0!");
+            }
             // 4. Adaptive Wait (CPU Optimization)
             // If needs repaint (animations/scroll), poll fast (16ms).
             // If idle, wait indefinitely until an event wakes us.
@@ -455,6 +460,11 @@ public class BrowserIntegration
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
+
+        // Post-navigation repaint pulse: ensure the engine keeps waking up during the
+        // critical window after navigation so content is displayed as soon as it is ready.
+        // Without CSS animations there is no other periodic wake trigger.
+        StartPostNavigationRepaintPulse();
 
         // Add protocol if missing
         if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
@@ -666,14 +676,21 @@ public class BrowserIntegration
             return; 
         }
 
-        // Preserve the last committed frame while parse checkpoints / recascade paths
-        // temporarily clear computed styles. Replacing a good frame with a structural
-        // snapshot causes visible disappear/reappear flicker on complex pages.
-        if ((_styles == null || _styles.Count == 0) && HasCommittedFrame())
+        // Always defer when CSS styles are not yet ready. This prevents committing a blank
+        // structural frame (which would become the persistent _currentFrame base). After the
+        // 60-second CSS timeout we fall through so the page is at least partially visible.
+        if (_styles == null || _styles.Count == 0)
         {
-            _needsRepaint = false;
-            FenLogger.Debug("[BrowserIntegration] RecordFrame deferred: keeping committed frame until styles are ready.", LogCategory.Rendering);
-            return;
+            var cssElapsed = (DateTime.Now - _lastNavigationTime).TotalMilliseconds;
+            if (cssElapsed < 60000)
+            {
+                _needsRepaint = false;
+                FenLogger.Debug($"[BrowserIntegration] RecordFrame deferred: waiting for CSS styles ({cssElapsed:F0}ms).", LogCategory.Rendering);
+                return;
+            }
+            // Timeout exceeded — render structurally unstyled so the page isn't blank forever.
+            _styles = new Dictionary<Node, CssComputed>();
+            FenLogger.Warn("[BrowserIntegration] RecordFrame: CSS timeout — rendering unstyled.", LogCategory.Rendering);
         }
         
         // Guard: Ensure we have a valid HTML element
@@ -753,11 +770,17 @@ public class BrowserIntegration
                 _currentFrame = newFrame;
             }
             
-            FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering); // Log success
-            
-            _needsRepaint = false; // Set to false HERE        
-            // Signal UI to redraw with new frame
+            FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering);
+
+            _needsRepaint = false;
+            // Primary signal: tell Compositor a new frame is ready.
             NeedsRepaint?.Invoke();
+            // Backup signals: QueueInvalidateOnUiThread coalesces rapid NeedsRepaint calls
+            // into a single main-thread action. If the primary was coalesced with a stale
+            // pending action (fired before _currentFrame was ready), the backup fires after
+            // that stale action has been processed so the new frame is always displayed.
+            _ = Task.Delay(80).ContinueWith(_ => { try { NeedsRepaint?.Invoke(); } catch { } });
+            _ = Task.Delay(250).ContinueWith(_ => { try { NeedsRepaint?.Invoke(); } catch { } });
         }
         catch (Exception ex)
         {
@@ -771,6 +794,31 @@ public class BrowserIntegration
         {
             return _currentFrame != null;
         }
+    }
+
+    /// <summary>
+    /// Fires periodic wake signals for ~10 seconds after navigation so the engine thread
+    /// keeps re-recording frames while CSS, JS, and layout settle. Without active CSS
+    /// animations there is no other recurring wake source in this window.
+    /// </summary>
+    private void StartPostNavigationRepaintPulse()
+    {
+        var pulseStart = DateTime.Now;
+        var token = _lastNavigationTime; // capture; if another navigation starts, stops the old pulse
+        _ = Task.Run(async () =>
+        {
+            // Fire every 300 ms for up to 10 seconds
+            while (_running && (DateTime.Now - pulseStart).TotalSeconds < 10)
+            {
+                await Task.Delay(300).ConfigureAwait(false);
+                // Bail if a newer navigation has started
+                if (_lastNavigationTime != token) break;
+                if (!_running) break;
+                _needsRepaint = true;
+                _wakeEvent.Set();
+                NeedsRepaint?.Invoke();
+            }
+        });
     }
     
     /// <summary>

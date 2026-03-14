@@ -311,6 +311,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     
                     FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
+                    Console.WriteLine($"[DBG-RENDER] Layout boxes: {boxCount}, Root={root?.GetType().Name}/{(root as Element)?.TagName}");
                     
                     // Clear Layout Dirty Flags
                     RecursivelyClearDirty(root, InvalidationKind.Layout);
@@ -372,6 +373,7 @@ namespace FenBrowser.FenEngine.Rendering
                         baseUrl);
                     _lastPaintTree = paintTree;
                     rebuiltPaintTree = true;
+                    Console.WriteLine($"[DBG-RENDER] PaintTree nodes: {paintTree?.NodeCount ?? 0}");
 
                     // PC-3: Tree-diff damage.
                     var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
@@ -481,7 +483,8 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
 
-                } 
+                    Console.WriteLine($"[DBG-RENDER] BG-lookup: {log.Replace('\n', '|')}");
+                }
                 catch (Exception ex) { FenLogger.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering); }
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
