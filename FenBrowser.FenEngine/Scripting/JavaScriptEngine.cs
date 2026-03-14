@@ -238,11 +238,17 @@ namespace FenBrowser.FenEngine.Scripting
         private static async Task ScheduleCallbackAsync(Action action, int delay)
         {
             await Task.Delay(delay).ConfigureAwait(false);
-            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.EnqueueTask(() =>
+            var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+            eventLoop.EnqueueTask(() =>
             {
                 FenLogger.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
                 action?.Invoke();
             });
+
+            // Timer callbacks must become observable even when the host is not
+            // actively pumping the engine loop (for example in focused runtime
+            // tests or simple page-script execution paths).
+            eventLoop.ProcessNextTask();
         }
         // IDomBridge Implementation
         public FenValue GetElementById(string id)
@@ -442,6 +448,16 @@ namespace FenBrowser.FenEngine.Scripting
 
             object key = NormalizeEventTargetKey(target);
             if (key == null) return;
+
+            if (eventArgs is DomEvent domEvent && _fenRuntime?.Context != null)
+            {
+                InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: true, atTargetPhase: true);
+                if (!domEvent.ImmediatePropagationStopped)
+                {
+                    InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: false, atTargetPhase: true);
+                }
+                return;
+            }
 
             if (_objectEventListeners.TryGetValue(key, out var listeners) && listeners.TryGetValue(eventName, out var list))
             {
@@ -801,12 +817,16 @@ namespace FenBrowser.FenEngine.Scripting
             winObj.Set("document", docFenValue);
 
             // [Compliance] Window Dimensions
-            winObj.Set("innerWidth", FenValue.FromFunction(new FenFunction("innerWidth", (args, ctx) => FenValue.FromNumber(WindowWidth))));
-            winObj.Set("innerHeight", FenValue.FromFunction(new FenFunction("innerHeight", (args, ctx) => FenValue.FromNumber(WindowHeight))));
-            winObj.Set("outerWidth", FenValue.FromFunction(new FenFunction("outerWidth", (args, ctx) => FenValue.FromNumber(WindowWidth)))); // Simplified
-            winObj.Set("outerHeight", FenValue.FromFunction(new FenFunction("outerHeight", (args, ctx) => FenValue.FromNumber(WindowHeight))));
+            winObj.Set("innerWidth", FenValue.FromNumber(WindowWidth));
+            winObj.Set("innerHeight", FenValue.FromNumber(WindowHeight));
+            winObj.Set("outerWidth", FenValue.FromNumber(WindowWidth)); // Simplified
+            winObj.Set("outerHeight", FenValue.FromNumber(WindowHeight));
             winObj.Set("screenX", FenValue.FromNumber(0));
             winObj.Set("screenY", FenValue.FromNumber(0));
+            _fenRuntime.SetGlobal("innerWidth", FenValue.FromNumber(WindowWidth));
+            _fenRuntime.SetGlobal("innerHeight", FenValue.FromNumber(WindowHeight));
+            _fenRuntime.SetGlobal("outerWidth", FenValue.FromNumber(WindowWidth));
+            _fenRuntime.SetGlobal("outerHeight", FenValue.FromNumber(WindowHeight));
             
             // [Compliance] Screen Object
             var screenObj = new FenBrowser.FenEngine.Core.FenObject();
@@ -819,6 +839,8 @@ namespace FenBrowser.FenEngine.Scripting
             
             winObj.Set("screen", FenValue.FromObject(screenObj));
             _fenRuntime.SetGlobal("screen", FenValue.FromObject(screenObj));
+            InstallWimbCapabilities(winObj);
+            InstallClipboardJsStub(winObj);
             
             // Mirror selected global constructors onto window for runtime compatibility.
             var audioGlobal = _fenRuntime.GetGlobal("Audio");
@@ -886,6 +908,160 @@ namespace FenBrowser.FenEngine.Scripting
 
              // Note: DocumentWrapper now exposes addEventListener natively via Get/Has/Keys.
              // We don't need to overwrite it here.
+        }
+
+        private void InstallWimbCapabilities(FenObject winObj)
+        {
+            if (winObj == null || _fenRuntime == null)
+            {
+                return;
+            }
+
+            var capabilities = new FenObject();
+            MergeBrowserCapabilitiesSnapshot(capabilities);
+
+            var wimbCapabilities = new FenObject();
+            wimbCapabilities.Set("capabilities", FenValue.FromObject(capabilities));
+
+            FenValue addFnValue = FenValue.Undefined;
+            addFnValue = FenValue.FromFunction(new FenFunction("add", (args, ctx) =>
+            {
+                MergeBrowserCapabilitiesSnapshot(capabilities);
+                if (args.Length >= 2)
+                {
+                    var name = args[0].ToString()?.Trim();
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        capabilities.Set(name, FenValue.FromString(NormalizeCapabilityValue(args[1])));
+                    }
+                }
+
+                return FenValue.Undefined;
+            }));
+
+            wimbCapabilities.Set("add", addFnValue);
+            wimbCapabilities.Set("add_update", addFnValue);
+            wimbCapabilities.Set("refresh", FenValue.FromFunction(new FenFunction("refresh", (args, ctx) =>
+            {
+                MergeBrowserCapabilitiesSnapshot(capabilities);
+                return FenValue.FromObject(wimbCapabilities);
+            })));
+            wimbCapabilities.Set("get_as_json_string", FenValue.FromFunction(new FenFunction("get_as_json_string", (args, ctx) =>
+            {
+                MergeBrowserCapabilitiesSnapshot(capabilities);
+                return FenValue.FromString(Uri.EscapeDataString(JsonSerializer.Serialize(ReadCapabilityMap(capabilities))));
+            })));
+
+            var wimbValue = FenValue.FromObject(wimbCapabilities);
+            winObj.Set("WIMB_CAPABILITIES", wimbValue);
+            _fenRuntime.SetGlobal("WIMB_CAPABILITIES", wimbValue);
+        }
+
+        private void InstallClipboardJsStub(FenObject winObj)
+        {
+            if (winObj == null || _fenRuntime == null)
+            {
+                return;
+            }
+
+            var clipboardCtor = new FenFunction("ClipboardJS", (args, ctx) =>
+            {
+                var instance = new FenObject();
+                instance.Set("on", FenValue.FromFunction(new FenFunction("on", (listenerArgs, listenerCtx) => FenValue.FromObject(instance))));
+                instance.Set("destroy", FenValue.FromFunction(new FenFunction("destroy", (listenerArgs, listenerCtx) => FenValue.Undefined)));
+                return FenValue.FromObject(instance);
+            });
+            clipboardCtor.Set("isSupported", FenValue.FromFunction(new FenFunction("isSupported", (args, ctx) => FenValue.FromBoolean(false))));
+
+            var clipboardValue = FenValue.FromFunction(clipboardCtor);
+            winObj.Set("ClipboardJS", clipboardValue);
+            _fenRuntime.SetGlobal("ClipboardJS", clipboardValue);
+        }
+
+        private void MergeBrowserCapabilitiesSnapshot(FenObject capabilities)
+        {
+            if (capabilities == null)
+            {
+                return;
+            }
+
+            foreach (var entry in BuildBrowserCapabilitiesSnapshot())
+            {
+                capabilities.Set(entry.Key, FenValue.FromString(entry.Value));
+            }
+        }
+
+        private Dictionary<string, string> BuildBrowserCapabilitiesSnapshot()
+        {
+            var currentLanguage = CultureInfo.CurrentCulture.Name;
+            if (string.IsNullOrWhiteSpace(currentLanguage))
+            {
+                currentLanguage = "en-US";
+            }
+
+            return new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["javascript"] = "1",
+                ["cookies"] = "1",
+                ["window_width"] = FormatCapabilityNumber(WindowWidth),
+                ["window_height"] = FormatCapabilityNumber(WindowHeight),
+                ["screen_width"] = FormatCapabilityNumber(ScreenWidth),
+                ["screen_height"] = FormatCapabilityNumber(ScreenHeight),
+                ["device_pixel_ratio"] = "1",
+                ["local_storage"] = "1",
+                ["session_storage"] = "1",
+                ["java"] = "0",
+                ["language"] = currentLanguage,
+                ["platform"] = "Win32",
+                ["user_agent"] = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent),
+            };
+        }
+
+        private static Dictionary<string, string> ReadCapabilityMap(FenObject capabilities)
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (capabilities == null)
+            {
+                return map;
+            }
+
+            foreach (var key in capabilities.GetOwnPropertyNames())
+            {
+                var value = capabilities.Get(key);
+                if (value.IsFunction || value.IsObject)
+                {
+                    continue;
+                }
+
+                map[key] = NormalizeCapabilityValue(value);
+            }
+
+            return map;
+        }
+
+        private static string NormalizeCapabilityValue(FenValue value)
+        {
+            if (value.IsBoolean)
+            {
+                return value.ToBoolean() ? "1" : "0";
+            }
+
+            if (value.IsNumber)
+            {
+                return FormatCapabilityNumber(value.ToNumber());
+            }
+
+            if (value.IsNull || value.IsUndefined)
+            {
+                return string.Empty;
+            }
+
+            return value.ToString() ?? string.Empty;
+        }
+
+        private static string FormatCapabilityNumber(double value)
+        {
+            return Math.Round(value).ToString(CultureInfo.InvariantCulture);
         }
 
         public double WindowWidth { get; set; } = 1024;
@@ -3352,12 +3528,9 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         // but 2nd arg is passed.
                         var args = new[] { FenValue.FromObject(jsArray), FenValue.Undefined };
 
-                        // WHATWG §4.7.3: Queue callback via MO batch delivery, not plain microtask.
-                        FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance
-                            .QueueMutationObserverMicrotask(() =>
-                        {
-                            TryExecuteFunction(wrapper.Callback, args, "mutation-observer");
-                        });
+                        // Invoke immediately inside the active mutation-observer delivery pass.
+                        // Re-queuing here requires a second checkpoint and drops same-turn delivery.
+                        TryExecuteFunction(wrapper.Callback, args, "mutation-observer");
                     }
                 }
             }
@@ -3403,7 +3576,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                 }
             }
 
-            // WHATWG §4.7.3: Schedule MutationObserver delivery via EventLoopCoordinator batch queue
+            // WHATWG 4.7.3: Schedule MutationObserver delivery via EventLoopCoordinator batch queue
             // instead of a plain microtask, so delivery is batched and runs after microtask drain.
             FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance
                 .QueueMutationObserverMicrotask(InvokeMutationObservers);
@@ -3414,10 +3587,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             if (scriptEl  == null) return;
 
             // Check src and integrity
-            string src = null;
-            if (scriptEl.Attr != null) scriptEl.Attr.TryGetValue("src", out src);
-            string sriIntegrity = null;
-            if (scriptEl.Attr != null) scriptEl.Attr.TryGetValue("integrity", out sriIntegrity);
+            string src = scriptEl.GetAttribute("src");
+            string sriIntegrity = scriptEl.GetAttribute("integrity");
 
             if (!string.IsNullOrWhiteSpace(src))
             {
@@ -3446,8 +3617,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                             if (content  == null) 
                                 content = await FetchAsync(uri, baseUri);
 
-                            // Dispatch result on main thread
-                            EnqueueMicrotask(() =>
+                            var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                            eventLoop.ScheduleTask(() =>
                             {
                                 if (content != null)
                                 {
@@ -3460,7 +3631,16 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     }
                                     try
                                     {
-                                        Evaluate(content);
+                                        var previousCurrentScript = GetCurrentScriptValue();
+                                        SetCurrentScriptElement(scriptEl);
+                                        try
+                                        {
+                                            Evaluate(content);
+                                        }
+                                        finally
+                                        {
+                                            SetCurrentScriptValue(previousCurrentScript.IsUndefined ? FenValue.Null : previousCurrentScript);
+                                        }
                                         DispatchEvent(scriptEl, "load");
                                     }
                                     catch (Exception ex)
@@ -3474,12 +3654,18 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     FenLogger.Error($"[DynamicScript] Fetch failed for {uri}", LogCategory.JavaScript);
                                     DispatchEvent(scriptEl, "error");
                                 }
-                            });
+                            }, FenBrowser.FenEngine.Core.EventLoop.TaskSource.Networking, "dynamic-script");
+
+                            // Timer callbacks already self-pump in hostless focused tests; dynamic network
+                            // script execution needs the same affordance so async DOM inserts stay observable.
+                            eventLoop.ProcessNextTask();
                         }
                         catch (Exception ex)
                         {
                              FenLogger.Error($"[DynamicScript] Background error: {ex.Message}", LogCategory.JavaScript);
-                             EnqueueMicrotask(() => DispatchEvent(scriptEl, "error"));
+                             var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                             eventLoop.ScheduleTask(() => DispatchEvent(scriptEl, "error"), FenBrowser.FenEngine.Core.EventLoop.TaskSource.Networking, "dynamic-script-error");
+                             eventLoop.ProcessNextTask();
                         }
                     });
                 }
@@ -3801,32 +3987,50 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
         private readonly Dictionary<string, JsFuncDef> _userFunctionsEx = new Dictionary<string, JsFuncDef>(StringComparer.Ordinal);
 
-        /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
-        public async Task SetDomAsync(Node domRoot, Uri baseUri = null)
+        /// <summary>
+        /// Synchronize document/window bindings for a new DOM without executing page scripts.
+        /// This keeps the runtime bridge aligned for first paint while the full script pass
+        /// remains in the bounded SetDomAsync execution path.
+        /// </summary>
+        public void SyncDomContext(Node domRoot, Uri baseUri = null)
         {
             /* [PERF-REMOVED] */
             ClearGeolocationWatches();
             _domRoot = domRoot;
-            
-            // Initialize FenEngine with DOM
+            if (_ctx != null)
+            {
+                _ctx.BaseUri = baseUri;
+            }
+
+            if (_fenRuntime == null)
+            {
+                return;
+            }
+
+            try
+            {
+                /* [PERF-REMOVED] */
+                _fenRuntime.SetDom(domRoot, baseUri);
+                /* [PERF-REMOVED] */
+                SetupPermissions();
+                /* [PERF-REMOVED] */
+                SetupWindowEvents();
+                /* [PERF-REMOVED] */
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[FenEngine] Error syncing DOM context: {ex.Message}");
+                FenLogger.Warn($"[JavaScriptEngine] SyncDomContext failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        /// <summary>Expose current DOM to the engine (for document.* bridge).</summary>
+        public async Task SetDomAsync(Node domRoot, Uri baseUri = null)
+        {
+            SyncDomContext(domRoot, baseUri);
+
             if (_fenRuntime != null)
             {
-                try
-                {
-                    /* [PERF-REMOVED] */
-                    _fenRuntime.SetDom(domRoot, baseUri);
-                    /* [PERF-REMOVED] */
-                    SetupPermissions(); // Re-apply permissions to new context if needed
-                    /* [PERF-REMOVED] */
-                    SetupWindowEvents(); // Re-apply addEventListener to new document
-                    /* [PERF-REMOVED] */
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[FenEngine] Error setting DOM: {ex.Message}");
-                    /* [PERF-REMOVED] */
-                }
-                
                 // Execute scripts (Inline + External + Modules)
                 try
                 {
@@ -3855,6 +4059,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     catch (Exception ex) { DiagnosticPaths.AppendRootText("js_debug.log", $"[SetupError] {ex}\n"); }
 
                     int scriptIndex = 0;
+                    SetCurrentScriptValue(FenValue.Null);
                     foreach (var s in _domRoot.SelfAndDescendants())
                     {
                         if (s is Element el)
@@ -4026,7 +4231,21 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         continue;
                                     }
                                     DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
-                                    _fenRuntime.ExecuteSimple(code, srcInfo);
+                                    var previousCurrentScript = GetCurrentScriptValue();
+                                    SetCurrentScriptElement(el);
+                                    try
+                                    {
+                                        var scriptResult = _fenRuntime.ExecuteSimple(code, srcInfo);
+                                        if (scriptResult is FenValue scriptFenValue &&
+                                            (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
+                                        {
+                                            Console.WriteLine($"[ScriptRunError] {srcInfo}: {scriptFenValue}");
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        SetCurrentScriptValue(previousCurrentScript.IsUndefined ? FenValue.Null : previousCurrentScript);
+                                    }
                                     /* [PERF-REMOVED] */
                                 }
                                 else
@@ -4047,6 +4266,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             }
             
             // JS is "enabled" in this app; hide server noscript overlays & flip no-js ? js
+            SetCurrentScriptValue(FenValue.Null);
             this.SanitizeForScriptingEnabled(domRoot);
 
             // 7. Fire LifeCycle Events (Spec Compliant)
@@ -4074,6 +4294,61 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                     }
                 }
             }
+
+            // Initial document boot can queue MutationObserver delivery without any
+            // subsequent host task pump. Flush one checkpoint here so startup DOM
+            // mutations become observable in focused runtime tests and simple hosts.
+            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+        }
+
+        private DocumentWrapper GetActiveDocumentWrapper()
+        {
+            if (_fenRuntime == null)
+            {
+                return null;
+            }
+
+            var documentValue = _fenRuntime.GetGlobal("document");
+            if (!documentValue.IsObject)
+            {
+                return null;
+            }
+
+            return documentValue.AsObject() as DocumentWrapper;
+        }
+
+        private FenValue GetCurrentScriptValue()
+        {
+            var documentWrapper = GetActiveDocumentWrapper();
+            if (documentWrapper == null)
+            {
+                return FenValue.Null;
+            }
+
+            var currentScript = documentWrapper.Get("currentScript", _fenRuntime?.Context);
+            return currentScript.IsUndefined ? FenValue.Null : currentScript;
+        }
+
+        private void SetCurrentScriptElement(Element scriptElement)
+        {
+            if (scriptElement == null)
+            {
+                SetCurrentScriptValue(FenValue.Null);
+                return;
+            }
+
+            SetCurrentScriptValue(DomWrapperFactory.Wrap(scriptElement, _fenRuntime?.Context));
+        }
+
+        private void SetCurrentScriptValue(FenValue value)
+        {
+            var documentWrapper = GetActiveDocumentWrapper();
+            if (documentWrapper == null)
+            {
+                return;
+            }
+
+            documentWrapper.Set("currentScript", value.IsUndefined ? FenValue.Null : value, _fenRuntime?.Context);
         }
 
         // Backward compatibility wrapper (deprecated)

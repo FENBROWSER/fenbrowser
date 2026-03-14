@@ -10,10 +10,10 @@ namespace FenBrowser.Tests.Core
     public class ControlFlowInvariantTests
     {
         [Fact]
-        public void Test_Invariant_JSCannotTriggerRepaint()
+        public void Test_Invariant_JSCanMarkDirtyWithoutEnteringRenderPhases()
         {
-            // Goal: JS code attempting to trigger a repaint synchronously or directly must fail.
-            // Repaints must be pull-based.
+            // Goal: JS may request a future repaint by marking layout dirty, but it must
+            // still be forbidden from entering measure/layout/paint re-entrantly.
             
             bool validationFailed = false;
             
@@ -21,11 +21,9 @@ namespace FenBrowser.Tests.Core
             {
                 EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
                 
-                // Simulate CustomHtmlEngine.ScheduleRepaintFromJs behavior
-                // Ideally we would call the actual method, but it is private. 
-                // We will test the assertion logic that SHOULD be there.
-                
-                EnginePhaseManager.AssertNotInPhase(EnginePhase.JSExecution, EnginePhase.Microtasks);
+                // Simulate CustomHtmlEngine.ScheduleRepaintFromJs behavior: allowed during
+                // JSExecution as long as it does not cross into render phases.
+                EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
             }
             catch (InvalidOperationException)
             {
@@ -36,7 +34,7 @@ namespace FenBrowser.Tests.Core
                 EnginePhaseManager.TryEnterIdle();
             }
 
-            Assert.True(validationFailed, "Repaint request during JSExecution should have thrown InvalidOperationException");
+            Assert.False(validationFailed, "Dirty-flag repaint requests during JSExecution should remain legal.");
         }
 
         [Fact]

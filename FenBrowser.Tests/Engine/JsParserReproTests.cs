@@ -87,6 +87,236 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Parse_GroupedArrowIife_BundleHeaderShape_NoErrors()
+        {
+            var input = "((t,e)=>{\"object\"==typeof exports&&\"object\"==typeof module?module.exports=e():\"function\"==typeof define&&define.amd?define([],e):\"object\"==typeof exports?exports.ClipboardJS=e():t.ClipboardJS=e()})(this,function(){})";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ConditionalCommaExpression_WithAsyncArrowIife_NoErrors()
+        {
+            var input = "var x={available:function(){if(void 0===window.WIMB.data.client_hints_frontend_available)return void 0!==navigator.userAgentData?(window.WIMB.data.client_hints_uadata=navigator.userAgentData,window.WIMB.data.client_hints_frontend_available=!0,(async()=>{var e=await navigator.userAgentData.getHighEntropyValues([\"architecture\"]);window.WIMB.data.client_hints_frontend_architecture=e.architecture})(),window.WIMB.data.client_hints_frontend_brands=window.WIMB.data.client_hints_uadata.brands,!0):window.WIMB.data.client_hints_frontend_available=!1}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModePromiseBranch_MinifiedSnippet_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){return new Promise(function(e){function t(){e(!0)}function n(){e(!1)}var o,i;function r(){var e=navigator.userAgent.match(/Version\\/[0-9\\._]+.*Safari/);if(e){if(parseInt(e[1],10)<11){try{localStorage.length||(localStorage.setItem(\"inPrivate\",\"0\"),localStorage.removeItem(\"inPrivate\")),n()}catch(e){(navigator.cookieEnabled?t:n)()}return!0;return}try{window.openDatabase(null,null,null,null),n()}catch(e){t()}}return e}if(((o=/(?=.*(opera|chrome)).*/i.test(navigator.userAgent)&&navigator.storage&&navigator.storage.estimate)&&navigator.storage.estimate().then(function(e){return(e.quota<12e7?t:n)()}),!o)&&((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()})}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModePromiseCallbackBody_NoErrors()
+        {
+            var input = "var x=function(){return new Promise(function(e){function t(){e(!0)}function n(){e(!1)}var o,i;function r(){var e=navigator.userAgent.match(/Version\\/[0-9\\._]+.*Safari/);if(e){if(parseInt(e[1],10)<11){try{localStorage.length||(localStorage.setItem(\"inPrivate\",\"0\"),localStorage.removeItem(\"inPrivate\")),n()}catch(e){(navigator.cookieEnabled?t:n)()}return!0;return}try{window.openDatabase(null,null,null,null),n()}catch(e){t()}}return e}if(((o=/(?=.*(opera|chrome)).*/i.test(navigator.userAgent)&&navigator.storage&&navigator.storage.estimate)&&navigator.storage.estimate().then(function(e){return(e.quota<12e7?t:n)()}),!o)&&((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()})};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_VarInitializerObjectFollowedByVar_MinifiedSnippet_NoErrors()
+        {
+            var input = "var WIMB_UTIL=(window.WIMB.init(),window.WIMB.meta.js_src_url=document.currentScript.src,WIMB_UTIL||{version:\"1.0\",get_style:function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv},decode_java_version:function(e){if(!e)return!1;var t=e.split(\".\"),n=[],o=\"\";for(v=\"1\"==t[0]&&t[1]<=\"4\"?0:1;v<t.length;v++)!1!==t[v].search(/^[0-9]+[_]+[0-9]*$/)?(fragment_fragments=t[v].split(\"_\"),n.push(parseInt(fragment_fragments[0])),void 0!==fragment_fragments[1]&&(o=parseInt(fragment_fragments[1]))):(n.push(t[v]),v++);return{version:n,update:o}}});var WIMB_CAPABILITIES=WIMB_CAPABILITIES||{capabilities:{},add:function(e,t,o){o?(WIMB_CAPABILITIES.capabilities[o]||(WIMB_CAPABILITIES.capabilities[o]={}),WIMB_CAPABILITIES.capabilities[o][e]=t):WIMB_CAPABILITIES.capabilities[e]=t}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ParenthesizedConditionalResult_Call_NoErrors()
+        {
+            var input = "var x = function(e){ return (e.quota < 12e7 ? t : n)(); };";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_TernaryParenthesizedCommaBranch_WithLogicalAndAssignment_NoErrors()
+        {
+            var input = "var x = flag ? (fragment_fragments=t[v].split(\"_\"),n.push(parseInt(fragment_fragments[0])),void 0!==fragment_fragments[1]&&(o=parseInt(fragment_fragments[1]))) : (n.push(t[v]),v++);";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_NestedSingleArgumentCall_FollowedByCommaInGroup_NoErrors()
+        {
+            var input = "var x = (n.push(parseInt(fragment_fragments[0])), void 0);";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModeTailGroupedCondition_NoErrors()
+        {
+            var input = "var x=function(){if(((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_NewPromiseCallback_MinifiedReturnTail_NoErrors()
+        {
+            var input = "var x=function(){return new Promise(function(e){function t(){e(!0)}function n(){e(!1)}if(((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()})};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModeHeadCondition_NoErrors()
+        {
+            var input = "var x=function(){if(((o=/(?=.*(opera|chrome)).*/i.test(navigator.userAgent)&&navigator.storage&&navigator.storage.estimate)&&navigator.storage.estimate().then(function(e){return(e.quota<12e7?t:n)()}),!o))return n()};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModeSafariHelper_NoErrors()
+        {
+            var input = "var x=function(){function r(){var e=navigator.userAgent.match(/Version\\/[0-9\\._]+.*Safari/);if(e){if(parseInt(e[1],10)<11){try{localStorage.length||(localStorage.setItem(\"inPrivate\",\"0\"),localStorage.removeItem(\"inPrivate\")),n()}catch(e){(navigator.cookieEnabled?t:n)()}return!0;return}try{window.openDatabase(null,null,null,null),n()}catch(e){t()}}return e}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModeCombinedCallbackBody_NoErrors()
+        {
+            var input = "var x=function(){function t(){e(!0)}function n(){e(!1)}var o,i;function r(){var e=navigator.userAgent.match(/Version\\/[0-9\\._]+.*Safari/);if(e){if(parseInt(e[1],10)<11){try{localStorage.length||(localStorage.setItem(\"inPrivate\",\"0\"),localStorage.removeItem(\"inPrivate\")),n()}catch(e){(navigator.cookieEnabled?t:n)()}return!0;return}try{window.openDatabase(null,null,null,null),n()}catch(e){t()}}return e}if(((o=/(?=.*(opera|chrome)).*/i.test(navigator.userAgent)&&navigator.storage&&navigator.storage.estimate)&&navigator.storage.estimate().then(function(e){return(e.quota<12e7?t:n)()}),!o)&&((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_PrivateModeWrappedObjectLiteral_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){function t(){e(!0)}function n(){e(!1)}var o,i;function r(){var e=navigator.userAgent.match(/Version\\/[0-9\\._]+.*Safari/);if(e){if(parseInt(e[1],10)<11){try{localStorage.length||(localStorage.setItem(\"inPrivate\",\"0\"),localStorage.removeItem(\"inPrivate\")),n()}catch(e){(navigator.cookieEnabled?t:n)()}return!0;return}try{window.openDatabase(null,null,null,null),n()}catch(e){t()}}return e}if(((o=/(?=.*(opera|chrome)).*/i.test(navigator.userAgent)&&navigator.storage&&navigator.storage.estimate)&&navigator.storage.estimate().then(function(e){return(e.quota<12e7?t:n)()}),!o)&&((o=\"MozAppearance\"in document.documentElement.style)&&(null==indexedDB?t():((i=indexedDB.open(\"inPrivate\")).onsuccess=n,i.onerror=t)),!o&&!r()&&((i=!window.indexedDB&&(window.PointerEvent||window.MSPointerEvent))&&t(),!i)))return n()}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralFunctionEndingWithIfReturn_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){if(cond)return n()}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralFunctionDeclarationsThenIfReturn_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){function t(){e(!0)}function n(){e(!1)}if(cond)return n()}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralFunctionReturningPromiseIfReturn_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){return new Promise(function(e){if(cond)return n()})}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralFunctionReturningPromiseWithDeclarations_NoErrors()
+        {
+            var input = "var x={private_mode:{enabled:function(){return new Promise(function(e){function t(){e(!0)}function n(){e(!1)}if(cond)return n()})}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralFunction_ReturnsCommaTernaryComma_NoErrors()
+        {
+            var input = "var x={get_style:function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv},decode_java_version:function(e){return e}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_Function_ReturnsCommaTernaryComma_NoErrors()
+        {
+            var input = "var x=function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteral_GetStyleAndDecodeVersion_Minified_NoErrors()
+        {
+            var input = "var x={version:\"1.0\",get_style:function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv},decode_java_version:function(e){if(!e)return!1;var t=e.split(\".\"),n=[],o=\"\";for(v=\"1\"==t[0]&&t[1]<=\"4\"?0:1;v<t.length;v++)!1!==t[v].search(/^[0-9]+[_]+[0-9]*$/)?(fragment_fragments=t[v].split(\"_\"),n.push(parseInt(fragment_fragments[0])),void 0!==fragment_fragments[1]&&(o=parseInt(fragment_fragments[1]))):(n.push(t[v]),v++);return{version:n,update:o}}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_GroupedInitializer_WithLogicalOrObjectLiteral_NoErrors()
+        {
+            var input = "var WIMB_UTIL=(window.WIMB.init(),window.WIMB.meta.js_src_url=document.currentScript.src,WIMB_UTIL||{version:\"1.0\",get_style:function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv},decode_java_version:function(e){return e}});";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_GroupedInitializer_WithLogicalOrObjectLiteral_SingleFunctionProperty_NoErrors()
+        {
+            var input = "var WIMB_UTIL=(window.WIMB.init(),window.WIMB.meta.js_src_url=document.currentScript.src,WIMB_UTIL||{get_style:function(e,t){return rv=\"\",e.currentStyle?rv=e.currentStyle[t]:window.getComputedStyle&&(rv=document.defaultView.getComputedStyle(e,null).getPropertyValue(t)),rv}});";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
         public void Parse_ComplexRegex_InConditional()
         {
             // The failing regex pattern from log
