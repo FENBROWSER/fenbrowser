@@ -118,27 +118,112 @@ namespace FenBrowser.FenEngine.DOM
 
         protected FenValue WrapNode(Node n) => DomWrapperFactory.Wrap(n, _context);
 
+        protected static Node UnwrapNode(IObject wrapper)
+        {
+            if (wrapper is AttrWrapper)
+            {
+                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
+            }
+
+            return (wrapper as NodeWrapper)?._node ?? (wrapper as ElementWrapper)?.Element;
+        }
+
+        internal virtual Node AppendChildFromBinding(Node child)
+        {
+            if (child == null)
+            {
+                return null;
+            }
+
+            if (_node is ContainerNode container)
+            {
+                container.AppendChild(child);
+                return child;
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        internal virtual Node RemoveChildFromBinding(Node child)
+        {
+            if (child == null)
+            {
+                return null;
+            }
+
+            if (_node is ContainerNode container)
+            {
+                return container.RemoveChild(child);
+            }
+
+            if (child.ParentNode == _node)
+            {
+                throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+            }
+
+            throw new DomException("NotFoundError", "The node to be removed is not a child of this node.");
+        }
+
+        internal virtual Node ReplaceChildFromBinding(Node newNode, Node oldNode)
+        {
+            if (newNode == null || oldNode == null)
+            {
+                return null;
+            }
+
+            if (_node is ContainerNode container)
+            {
+                container.ReplaceChild(newNode, oldNode);
+                return oldNode;
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        internal virtual Node InsertBeforeFromBinding(Node newNode, Node referenceNode)
+        {
+            if (newNode == null)
+            {
+                return null;
+            }
+
+            if (_node is ContainerNode container)
+            {
+                return container.InsertBefore(newNode, referenceNode);
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
         private FenValue Append(FenValue[] args, FenValue thisVal)
         {
-            if (!(_node is ContainerNode container))
+            if (!(_node is ContainerNode))
             {
                 return FenValue.Undefined;
             }
 
             foreach (var arg in args)
             {
-                if (arg.IsObject)
+                try
                 {
-                    var wrapper = arg.AsObject();
-                    var child = (wrapper as NodeWrapper)?._node ?? (wrapper as ElementWrapper)?.Element;
+                    Node child;
+                    if (arg.IsObject)
+                    {
+                        child = UnwrapNode(arg.AsObject());
+                    }
+                    else
+                    {
+                        child = new Text(arg.ToString());
+                    }
+
                     if (child != null)
                     {
-                        container.AppendChild(child);
+                        AppendChildFromBinding(child);
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    container.AppendChild(new Text(arg.ToString()));
+                    FenBrowser.Core.FenLogger.Error($"Append failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                 }
             }
 
@@ -148,14 +233,13 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue AppendChild(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var wrapper = args[0].AsObject();
-            Node child = (wrapper as NodeWrapper)?._node ?? (wrapper as ElementWrapper)?.Element;
+            var child = UnwrapNode(args[0].AsObject());
 
-            if (child != null && _node is ContainerNode container)
+            if (child != null)
             {
                 try
                 {
-                    container.AppendChild(child);
+                    AppendChildFromBinding(child);
                     return args[0];
                 }
                 catch (Exception ex)
@@ -169,25 +253,14 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue RemoveChild(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var wrapper = args[0].AsObject();
-            Node child = (wrapper as NodeWrapper)?._node ?? (wrapper as ElementWrapper)?.Element;
+            var child = UnwrapNode(args[0].AsObject());
 
             if (child != null)
             {
                 try
                 {
-                    if (_node is ContainerNode container)
-                    {
-                        var removed = container.RemoveChild(child);
-                        return DomWrapperFactory.Wrap(removed, _context);
-                    }
-
-                    if (child.ParentNode == _node)
-                    {
-                        throw new DomException("HierarchyRequestError", "This node type cannot have children.");
-                    }
-
-                    throw new DomException("NotFoundError", "The node to be removed is not a child of this node.");
+                    var removed = RemoveChildFromBinding(child);
+                    return DomWrapperFactory.Wrap(removed, _context);
                 }
                 catch
                 {
@@ -201,9 +274,10 @@ namespace FenBrowser.FenEngine.DOM
         {
             try
             {
-                if (_node?.ParentNode is ContainerNode parent)
+                if (_node?.ParentNode != null)
                 {
-                    parent.RemoveChild(_node);
+                    var parentWrapper = DomWrapperFactory.Wrap(_node.ParentNode, _context).AsObject() as NodeWrapper;
+                    parentWrapper?.RemoveChildFromBinding(_node);
                 }
             }
             catch
@@ -217,21 +291,14 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length < 2) return FenValue.Null;
 
-            var newW = args[0].AsObject();
-            if (newW is AttrWrapper)
-            {
-                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
-            }
-            Node newNode = (newW as NodeWrapper)?._node ?? (newW as ElementWrapper)?.Element;
+            var newNode = UnwrapNode(args[0].AsObject());
+            var oldNode = UnwrapNode(args[1].AsObject());
 
-            var oldW = args[1].AsObject();
-            Node oldNode = (oldW as NodeWrapper)?._node ?? (oldW as ElementWrapper)?.Element;
-
-            if (newNode != null && oldNode != null && _node is ContainerNode container)
+            if (newNode != null && oldNode != null)
             {
                 try
                 {
-                    container.ReplaceChild(newNode, oldNode);
+                    ReplaceChildFromBinding(newNode, oldNode);
                     return args[1];
                 }
                 catch
@@ -246,25 +313,19 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length < 2) return FenValue.Null;
 
-            var newW = args[0].AsObject();
-            if (newW is AttrWrapper)
-            {
-                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
-            }
-            Node newNode = (newW as NodeWrapper)?._node ?? (newW as ElementWrapper)?.Element;
+            var newNode = UnwrapNode(args[0].AsObject());
 
             Node refNode = null;
             if (!args[1].IsUndefined && !args[1].IsNull)
             {
-                var refW = args[1].AsObject();
-                refNode = (refW as NodeWrapper)?._node ?? (refW as ElementWrapper)?.Element;
+                refNode = UnwrapNode(args[1].AsObject());
             }
 
-            if (newNode != null && _node is ContainerNode container)
+            if (newNode != null)
             {
                 try
                 {
-                    container.InsertBefore(newNode, refNode);
+                    InsertBeforeFromBinding(newNode, refNode);
                     return args[0];
                 }
                 catch

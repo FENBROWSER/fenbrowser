@@ -72,9 +72,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Text': Illegal invocation.");
                 if (args.Length >= 1)
                 {
+                    var arg_offset = FromJsValue_unsigned_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
-                    var arg_offset = FromJsValue_unsigned_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     return ToJsValue(native.SplitText(arg_offset));
                 }
                 throw new FenTypeError("Wrong number of arguments for Text.splitText");
