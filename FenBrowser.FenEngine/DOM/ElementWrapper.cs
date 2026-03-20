@@ -2171,7 +2171,7 @@ namespace FenBrowser.FenEngine.DOM
             bool capture = false;
             bool once = false;
             bool passive = false;
-            IObject signalObj = null;
+            FenValue signal = FenValue.Undefined;
             if (args.Length >= 3)
             {
                 if (!args[2].IsObject || args[2].IsNull)
@@ -2217,7 +2217,7 @@ namespace FenBrowser.FenEngine.DOM
                         passive = passiveVal.ToBoolean();
 
                         var sVal = opts.Get("signal", _context);
-                        if (sVal.IsObject) signalObj = sVal.AsObject();
+                        if (sVal.IsObject) signal = sVal;
                     }
                 }
             }
@@ -2229,34 +2229,7 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
 
             // If signal is already aborted, do not add the listener (per spec)
-            if (signalObj != null && signalObj.Get("aborted", _context).ToBoolean())
-                return FenValue.Undefined;
-
-            EventTarget.Registry.Add(_element, type, callback, capture, once, passive);
-
-            // Wire AbortSignal: when signal fires "abort", auto-remove this listener
-            if (signalObj != null)
-            {
-                var capturedElement = _element;
-                var capturedType = type;
-                var capturedCallback = callback;
-                var capturedCapture = capture;
-                var addAbortListener = signalObj.Get("addEventListener", _context);
-                if (addAbortListener.IsFunction)
-                {
-                    addAbortListener.AsFunction()?.Invoke(new FenValue[]
-                    {
-                        FenValue.FromString("abort"),
-                        FenValue.FromFunction(new FenBrowser.FenEngine.Core.FenFunction("_signalAbortRemove",
-                            (abortArgs, abortThis) =>
-                            {
-                                EventTarget.Registry.Remove(capturedElement, capturedType,
-                                    capturedCallback, capturedCapture);
-                                return FenValue.Undefined;
-                            }))
-                    }, _context);
-                }
-            }
+            EventTarget.Registry.Add(_element, type, callback, capture, once, passive, signal);
 
             return FenValue.Undefined;
         }

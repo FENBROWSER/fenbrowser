@@ -36,14 +36,21 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// AbortSignal to remove listener (not implemented yet)
         /// </summary>
-        public object Signal { get; set; }
+        public FenValue Signal { get; set; }
 
-        public EventListener(FenValue callback, bool capture = false, bool once = false, bool passive = false)
+        /// <summary>
+        /// Internal abort listener registered on the AbortSignal for cleanup.
+        /// </summary>
+        public FenValue AbortCallback { get; set; }
+
+        public EventListener(FenValue callback, bool capture = false, bool once = false, bool passive = false, FenValue signal = default)
         {
             Callback = callback;
             Capture = capture;
             Once = once;
             Passive = passive;
+            Signal = signal;
+            AbortCallback = FenValue.Undefined;
         }
 
         /// <summary>
@@ -72,10 +79,13 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Add an event listener to an element
         /// </summary>
-        public void Add(Node node, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false)
+        public bool Add(Node node, string type, FenValue callback, bool capture = false, bool once = false, bool passive = false, FenValue signal = default)
         {
             if (node == null || type == null || callback.IsUndefined || callback.IsNull)
-                return;
+                return false;
+
+            if (signal.IsObject && signal.AsObject()?.Get("aborted").ToBoolean() == true)
+                return false;
 
             lock (_lock)
             {
@@ -94,12 +104,15 @@ namespace FenBrowser.FenEngine.DOM
                     if (existing.Matches(callback, capture))
                     {
                         FenLogger.Debug($"[EventListenerRegistry] Duplicate listener ignored for '{type}'", LogCategory.Events);
-                        return; // Already registered
+                        return false; // Already registered
                     }
                 }
 
-                list.Add(new EventListener(callback, capture, once, passive));
+                var listener = new EventListener(callback, capture, once, passive, signal);
+                list.Add(listener);
+                AttachAbortHandler(node, type, listener);
                 FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on {DescribeNode(node)} (capture={capture}, once={once})", LogCategory.Events);
+                return true;
             }
         }
 
@@ -125,6 +138,7 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     if (list[i].Matches(callback, capture))
                     {
+                        DetachAbortHandler(list[i]);
                         list.RemoveAt(i);
                         FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
                         break;
@@ -215,8 +229,61 @@ namespace FenBrowser.FenEngine.DOM
                     return;
 
                 byType[type].Remove(listener);
+                DetachAbortHandler(listener);
                 FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
             }
+        }
+
+        private void AttachAbortHandler(Node node, string type, EventListener listener)
+        {
+            if (!listener.Signal.IsObject)
+            {
+                return;
+            }
+
+            var signal = listener.Signal.AsObject();
+            var addEventListener = signal?.Get("addEventListener") ?? FenValue.Undefined;
+            if (!addEventListener.IsFunction)
+            {
+                return;
+            }
+
+            var capturedNode = node;
+            var capturedType = type;
+            var capturedCallback = listener.Callback;
+            var capturedCapture = listener.Capture;
+            var abortCallback = FenValue.FromFunction(new FenFunction("_signalAbortRemove", (args, thisVal) =>
+            {
+                Remove(capturedNode, capturedType, capturedCallback, capturedCapture);
+                return FenValue.Undefined;
+            }));
+
+            listener.AbortCallback = abortCallback;
+            addEventListener.AsFunction()?.Invoke(new[]
+            {
+                FenValue.FromString("abort"),
+                abortCallback
+            }, null, listener.Signal);
+        }
+
+        private static void DetachAbortHandler(EventListener listener)
+        {
+            if (listener == null || !listener.Signal.IsObject || !listener.AbortCallback.IsFunction)
+            {
+                return;
+            }
+
+            var removeEventListener = listener.Signal.AsObject()?.Get("removeEventListener") ?? FenValue.Undefined;
+            if (removeEventListener.IsFunction)
+            {
+                removeEventListener.AsFunction()?.Invoke(new[]
+                {
+                    FenValue.FromString("abort"),
+                    listener.AbortCallback
+                }, null, listener.Signal);
+            }
+
+            listener.AbortCallback = FenValue.Undefined;
         }
 
         /// <summary>
