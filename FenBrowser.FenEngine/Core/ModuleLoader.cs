@@ -386,7 +386,7 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                CopyModuleExports(moduleEnv, exportObj);
+                FinalizeModuleExports(program, moduleEnv, exportObj);
                 exportObj.Freeze();
 
                 return exportObj;
@@ -435,7 +435,7 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                CopyModuleExports(moduleEnv, exportObj);
+                FinalizeModuleExports(program, moduleEnv, exportObj);
                 exportObj.Freeze();
 
                 return exportObj;
@@ -495,7 +495,7 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private static void CopyModuleExports(FenEnvironment moduleEnv, FenObject exportObj)
+        private static void FinalizeModuleExports(Program program, FenEnvironment moduleEnv, FenObject exportObj)
         {
             if (moduleEnv == null || exportObj == null)
             {
@@ -503,6 +503,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             const string exportPrefix = "__fen_export_";
+            var explicitExportNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kvp in moduleEnv.InspectVariables())
             {
                 if (!kvp.Key.StartsWith(exportPrefix, StringComparison.Ordinal))
@@ -511,8 +512,84 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 var exportName = kvp.Key.Substring(exportPrefix.Length);
+                explicitExportNames.Add(exportName);
                 exportObj.Set(exportName, kvp.Value);
             }
+
+            ApplyExportStarAggregations(program, moduleEnv, exportObj, explicitExportNames);
+        }
+
+        private static void ApplyExportStarAggregations(
+            Program program,
+            FenEnvironment moduleEnv,
+            FenObject exportObj,
+            ISet<string> explicitExportNames)
+        {
+            if (program?.Statements == null || moduleEnv == null || exportObj == null)
+            {
+                return;
+            }
+
+            var ambiguousNames = new HashSet<string>(StringComparer.Ordinal);
+            var starExportOwners = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var statement in program.Statements)
+            {
+                if (statement is not ExportDeclaration exportDeclaration ||
+                    string.IsNullOrEmpty(exportDeclaration.Source) ||
+                    exportDeclaration.Specifiers == null)
+                {
+                    continue;
+                }
+
+                foreach (var specifier in exportDeclaration.Specifiers)
+                {
+                    if (!IsExportStarAggregation(specifier))
+                    {
+                        continue;
+                    }
+
+                    var moduleBindingName = GetModuleBindingName(exportDeclaration.Source);
+                    var namespaceValue = moduleEnv.Get(moduleBindingName);
+                    if (!namespaceValue.IsObject)
+                    {
+                        continue;
+                    }
+
+                    var namespaceObject = namespaceValue.AsObject();
+                    foreach (var exportedName in namespaceObject.Keys())
+                    {
+                        if (string.IsNullOrEmpty(exportedName) ||
+                            string.Equals(exportedName, "default", StringComparison.Ordinal) ||
+                            explicitExportNames.Contains(exportedName) ||
+                            ambiguousNames.Contains(exportedName))
+                        {
+                            continue;
+                        }
+
+                        if (starExportOwners.TryGetValue(exportedName, out var existingOwner))
+                        {
+                            if (!string.Equals(existingOwner, exportDeclaration.Source, StringComparison.Ordinal))
+                            {
+                                exportObj.Delete(exportedName);
+                                ambiguousNames.Add(exportedName);
+                            }
+
+                            continue;
+                        }
+
+                        exportObj.Set(exportedName, namespaceObject.Get(exportedName));
+                        starExportOwners[exportedName] = exportDeclaration.Source;
+                    }
+                }
+            }
+        }
+
+        private static bool IsExportStarAggregation(ExportSpecifier specifier)
+        {
+            return specifier?.Local != null &&
+                   string.Equals(specifier.Local.Value, "*", StringComparison.Ordinal) &&
+                   specifier.Exported == null;
         }
 
         private static string GetModuleBindingName(string source)

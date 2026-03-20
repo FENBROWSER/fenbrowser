@@ -3631,6 +3631,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     }
                                     try
                                     {
+                                        ResetExecutionBudgetForHostBookkeeping();
                                         var previousCurrentScript = GetCurrentScriptValue();
                                         SetCurrentScriptElement(scriptEl);
                                         try
@@ -4231,6 +4232,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         continue;
                                     }
                                     DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
+                                    ResetExecutionBudgetForHostBookkeeping();
                                     var previousCurrentScript = GetCurrentScriptValue();
                                     SetCurrentScriptElement(el);
                                     try
@@ -4240,6 +4242,13 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                             (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
                                         {
                                             Console.WriteLine($"[ScriptRunError] {srcInfo}: {scriptFenValue}");
+                                        }
+
+                                        if (!string.IsNullOrEmpty(srcInfo) &&
+                                            (srcInfo.IndexOf("/vendor.", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                             srcInfo.IndexOf("/main.", StringComparison.OrdinalIgnoreCase) >= 0))
+                                        {
+                                            LogXBootstrapState($"after-script:{srcInfo}", baseUri);
                                         }
                                     }
                                     finally
@@ -4299,6 +4308,7 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
             // subsequent host task pump. Flush one checkpoint here so startup DOM
             // mutations become observable in focused runtime tests and simple hosts.
             FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+            LogXBootstrapState("after-load-checkpoint", baseUri);
         }
 
         private DocumentWrapper GetActiveDocumentWrapper()
@@ -4327,6 +4337,68 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
             var currentScript = documentWrapper.Get("currentScript", _fenRuntime?.Context);
             return currentScript.IsUndefined ? FenValue.Null : currentScript;
+        }
+
+        private void ResetExecutionBudgetForHostBookkeeping()
+        {
+            if (_fenRuntime?.Context is FenBrowser.FenEngine.Core.ExecutionContext executionContext)
+            {
+                executionContext.Reset();
+            }
+        }
+
+        private void LogXBootstrapState(string phase, Uri baseUri)
+        {
+            try
+            {
+                var host = baseUri?.Host ?? _ctx?.BaseUri?.Host ?? string.Empty;
+                if (!host.EndsWith("x.com", StringComparison.OrdinalIgnoreCase) &&
+                    !host.EndsWith("twitter.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                if (_fenRuntime == null)
+                {
+                    return;
+                }
+
+                var diagResult = _fenRuntime.ExecuteSimple(@"
+(() => {
+    try {
+        var loaded = window.__SCRIPTS_LOADED__ || {};
+        var placeholder = document.getElementById('placeholder');
+        var failure = document.getElementById('ScriptLoadFailure');
+        var main = document.querySelector('[role=""main""]') || document.querySelector('main');
+        return [
+            'runtime=' + (!!loaded.runtime),
+            'vendor=' + (!!loaded.vendor),
+            'i18n=' + (!!loaded.i18n),
+            'main=' + (!!loaded.main),
+            'placeholder=' + (placeholder ? ((placeholder.style && placeholder.style.display) || '(visible)') : 'missing'),
+            'failure=' + (failure ? ((failure.style && failure.style.display) || '(visible)') : 'missing'),
+            'bodyChildren=' + (document.body && document.body.children ? document.body.children.length : -1),
+            'mainNode=' + (main ? main.tagName : 'missing')
+        ].join(';');
+    } catch (e) {
+        return 'diag-error:' + e;
+    }
+})()
+", $"{host}::{phase}");
+
+                var diagText = diagResult is FenValue diagFen
+                    ? diagFen.ToString()
+                    : diagResult?.ToString() ?? "null";
+
+                var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                FenLogger.Warn(
+                    $"[XDiag] {phase}: {diagText};tasksPending={(eventLoop.HasPendingTasks ? 1 : 0)};microtasksPending={(eventLoop.HasPendingMicrotasks ? 1 : 0)}",
+                    LogCategory.JavaScript);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[XDiag] {phase} failed: {ex.Message}", LogCategory.JavaScript);
+            }
         }
 
         private void SetCurrentScriptElement(Element scriptElement)

@@ -94,6 +94,87 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(5.0, rt.GetGlobal("len").ToNumber());
         }
 
+        [Fact]
+        public void IntrinsicFunctions_ExposeBind_OnEarlyBuiltinsAndWebpackStyleBootstrap()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var builtinBindTypes = [
+                    typeof [].push.bind,
+                    typeof Object.defineProperty.bind,
+                    typeof setTimeout.bind,
+                    typeof fetch.bind,
+                    typeof console.log.bind
+                ].join(',');
+
+                var queue = [];
+                var applyChunk = (chunkId, payload) => payload;
+                queue.forEach(applyChunk.bind(null, 0));
+                queue.push = applyChunk.bind(null, queue.push.bind(queue));
+                var bootstrapPushType = typeof queue.push;
+            ");
+
+            Assert.Equal("function,function,function,function,function", rt.GetGlobal("builtinBindTypes").ToString());
+            Assert.Equal("function", rt.GetGlobal("bootstrapPushType").ToString());
+        }
+
+        [Fact]
+        public void ExecuteSimple_PreservesBootstrapFlagsAcrossSeparateScripts()
+        {
+            var rt = CreateRuntime();
+
+            rt.ExecuteSimple(@"
+                var __globalState__ = {};
+                __globalState__.__scriptsLoaded__ = {};
+                __globalState__.__scriptsLoaded__.runtime = !0;
+            ");
+
+            rt.ExecuteSimple(@"
+                __globalState__.__scriptsLoaded__.runtime &&
+                    ((__globalState__.__testQueue__ = __globalState__.__testQueue__ || []).push(1),
+                     __globalState__.__scriptsLoaded__.vendor = !0);
+            ");
+
+            var thirdResult = (FenValue)rt.ExecuteSimple(@"
+                __globalState__.__scriptsLoaded__.vendor &&
+                    ((__globalState__.__testQueue__ = __globalState__.__testQueue__ || []).push(2),
+                     __globalState__.__scriptsLoaded__.main = !0);
+                var __bootstrapState__ = [
+                    !!__globalState__.__scriptsLoaded__.runtime,
+                    !!__globalState__.__scriptsLoaded__.vendor,
+                    !!__globalState__.__scriptsLoaded__.main,
+                    __globalState__.__testQueue__.length,
+                    __globalState__.__testQueue__[0],
+                    __globalState__.__testQueue__[1]
+                ].join(',');
+            ");
+
+            Assert.False(thirdResult.IsError, thirdResult.ToString());
+            Assert.Equal("true,true,true,2,1,2", rt.GetGlobal("__bootstrapState__").ToString());
+        }
+
+        [Fact]
+        public void WebpackStyleBoundPush_InvokesOriginalArrayPush()
+        {
+            var rt = CreateRuntime();
+
+            rt.ExecuteSimple(@"
+                var queue = [];
+                var applyChunk = function(push, payload) {
+                    var lengthAfterPush = push(payload);
+                    return [lengthAfterPush, payload].join(':');
+                };
+
+                queue.push = applyChunk.bind(null, queue.push.bind(queue));
+
+                var firstResult = queue.push('alpha');
+                var secondResult = queue.push('beta');
+                var queueState = [queue.length, queue[0], queue[1], firstResult, secondResult].join(',');
+            ");
+
+            Assert.Equal("2,alpha,beta,1:alpha,2:beta", rt.GetGlobal("queueState").ToString());
+        }
+
         // ==================== STRING TESTS ====================
 
         [Fact]

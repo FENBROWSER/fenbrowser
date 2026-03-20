@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Core.Types;
 using Xunit;
 using FenExecutionContext = FenBrowser.FenEngine.Core.ExecutionContext;
 using FenBrowser.FenEngine.Errors;
@@ -353,6 +355,160 @@ namespace FenBrowser.Tests.Engine
                 $"type={caughtType}, name={caughtName}, message={caughtMessage}, string={caughtString}");
             Assert.Equal("TypeError", window.Get("assignMissingName").AsString());
             Assert.Equal("TypeError", window.Get("deleteExistingName").AsString());
+        }
+
+        [Fact]
+        public void LoadModule_ExportStar_Reexports_Named_Exports_But_Not_Default()
+        {
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/dep.js"] = "export const named = 1; export default 9;",
+                ["https://example.test/root.js"] = "export * from './dep.js';"
+            };
+
+            var loader = new ModuleLoader(
+                new FenEnvironment(),
+                new FenExecutionContext(),
+                uri => sources[uri.AbsoluteUri]);
+
+            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+
+            Assert.Equal(1, exports.Get("named").AsNumber());
+            Assert.False(exports.GetOwnPropertyDescriptor("default").HasValue);
+        }
+
+        [Fact]
+        public void LoadModule_ExportStar_DoesNotOverride_Explicit_Local_Export()
+        {
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/dep.js"] = "export const value = 'dependency';",
+                ["https://example.test/root.js"] = "export const value = 'local'; export * from './dep.js';"
+            };
+
+            var loader = new ModuleLoader(
+                new FenEnvironment(),
+                new FenExecutionContext(),
+                uri => sources[uri.AbsoluteUri]);
+
+            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+
+            Assert.Equal("local", exports.Get("value").AsString());
+        }
+
+        [Fact]
+        public void LoadModule_ExportStar_Conflicting_Reexports_Are_Not_Exposed()
+        {
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/a.js"] = "export const shared = 'a';",
+                ["https://example.test/b.js"] = "export const shared = 'b';",
+                ["https://example.test/root.js"] = "export * from './a.js'; export * from './b.js';"
+            };
+
+            var loader = new ModuleLoader(
+                new FenEnvironment(),
+                new FenExecutionContext(),
+                uri => sources[uri.AbsoluteUri]);
+
+            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+
+            Assert.False(exports.GetOwnPropertyDescriptor("shared").HasValue);
+            Assert.True(exports.Get("shared").IsUndefined);
+        }
+
+        [Fact]
+        public void DynamicImport_Returns_RealPromise_Resolved_With_ModuleNamespace()
+        {
+            EventLoopCoordinator.ResetInstance();
+
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/dep.js"] = "export const answer = 42;",
+                ["https://example.test/main.js"] = "globalThis.dynamicImportPromise = import('./dep.js');"
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/main.js");
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            var promise = Assert.IsType<JsPromise>(window.Get("dynamicImportPromise").AsObject());
+            Assert.True(promise.IsFulfilled);
+            Assert.Equal(42, promise.Result.AsObject().Get("answer").AsNumber());
+        }
+
+        [Fact]
+        public void DynamicImport_ThenCallback_Resolves_RelativeTo_CurrentModulePath()
+        {
+            EventLoopCoordinator.ResetInstance();
+
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/modules/dep.js"] = "export const value = 'loaded';",
+                ["https://example.test/modules/main.js"] = @"
+                    globalThis.dynamicImportOrder = [];
+                    import('./dep').then(function(ns) {
+                        globalThis.dynamicImportValue = ns.value;
+                        globalThis.dynamicImportOrder.push('then');
+                    });
+                    globalThis.dynamicImportOrder.push('sync');
+                "
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/modules/main.js");
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            Assert.Equal("loaded", window.Get("dynamicImportValue").AsString());
+
+            var order = window.Get("dynamicImportOrder").AsObject();
+            Assert.Equal("sync", order.Get("0").AsString());
+            Assert.Equal("then", order.Get("1").AsString());
+        }
+
+        [Fact]
+        public void DynamicImport_MissingModule_Returns_RejectedPromise_And_Catch_Observes_Failure()
+        {
+            EventLoopCoordinator.ResetInstance();
+
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/main.js"] = @"
+                    globalThis.dynamicImportPromise = import('./missing.js');
+                    globalThis.dynamicImportCaught = 'pending';
+                    globalThis.dynamicImportPromise.catch(function(err) {
+                        globalThis.dynamicImportCaught = String(err);
+                    });
+                "
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/main.js");
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            var promise = Assert.IsType<JsPromise>(window.Get("dynamicImportPromise").AsObject());
+            Assert.True(promise.IsRejected);
+            Assert.Contains("Failed to load module", window.Get("dynamicImportCaught").AsString());
         }
     }
 }
