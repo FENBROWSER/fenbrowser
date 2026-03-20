@@ -501,7 +501,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 context.Layout(oof, intrinsicState);
 
                 // Solve abs/fixed geometry from intrinsic size and insets.
-                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry);
+                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry, state);
 
                 // Pass 2: layout contents using resolved box size.
                 var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
@@ -516,7 +516,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 context.Layout(oof, resolvedState);
 
                 // Re-apply final absolute position after child layout potentially touched geometry.
-                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry);
+                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry, state);
             }
         }
 

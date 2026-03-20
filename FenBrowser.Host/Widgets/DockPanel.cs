@@ -75,6 +75,7 @@ public class DockPanel : Widget
     {
         SKRect remaining = finalRect;
         int count = Children.Count;
+        int lastDockedVisibleIndex = GetLastDockedVisibleIndex();
         
         for (int i = 0; i < count; i++)
         {
@@ -86,9 +87,9 @@ public class DockPanel : Widget
             
             var desired = child.DesiredSize;
             
-            if (LastChildFill && i == count - 1)
+            if (LastChildFill && i == lastDockedVisibleIndex)
             {
-                child.Arrange(remaining);
+                child.Arrange(ClampRect(remaining));
                 break;
             }
             
@@ -96,20 +97,24 @@ public class DockPanel : Widget
             switch (dock)
             {
                 case Dock.Top:
-                    childRect = new SKRect(remaining.Left, remaining.Top, remaining.Right, remaining.Top + desired.Height);
-                    remaining = new SKRect(remaining.Left, remaining.Top + desired.Height, remaining.Right, remaining.Bottom);
+                    var topHeight = MathF.Min(MathF.Max(0, desired.Height), MathF.Max(0, remaining.Height));
+                    childRect = new SKRect(remaining.Left, remaining.Top, remaining.Right, remaining.Top + topHeight);
+                    remaining = new SKRect(remaining.Left, remaining.Top + topHeight, remaining.Right, remaining.Bottom);
                     break;
                 case Dock.Bottom:
-                    childRect = new SKRect(remaining.Left, remaining.Bottom - desired.Height, remaining.Right, remaining.Bottom);
-                    remaining = new SKRect(remaining.Left, remaining.Top, remaining.Right, remaining.Bottom - desired.Height);
+                    var bottomHeight = MathF.Min(MathF.Max(0, desired.Height), MathF.Max(0, remaining.Height));
+                    childRect = new SKRect(remaining.Left, remaining.Bottom - bottomHeight, remaining.Right, remaining.Bottom);
+                    remaining = new SKRect(remaining.Left, remaining.Top, remaining.Right, remaining.Bottom - bottomHeight);
                     break;
                 case Dock.Left:
-                    childRect = new SKRect(remaining.Left, remaining.Top, remaining.Left + desired.Width, remaining.Bottom);
-                    remaining = new SKRect(remaining.Left + desired.Width, remaining.Top, remaining.Right, remaining.Bottom);
+                    var leftWidth = MathF.Min(MathF.Max(0, desired.Width), MathF.Max(0, remaining.Width));
+                    childRect = new SKRect(remaining.Left, remaining.Top, remaining.Left + leftWidth, remaining.Bottom);
+                    remaining = new SKRect(remaining.Left + leftWidth, remaining.Top, remaining.Right, remaining.Bottom);
                     break;
                 case Dock.Right:
-                    childRect = new SKRect(remaining.Right - desired.Width, remaining.Top, remaining.Right, remaining.Bottom);
-                    remaining = new SKRect(remaining.Left, remaining.Top, remaining.Right - desired.Width, remaining.Bottom);
+                    var rightWidth = MathF.Min(MathF.Max(0, desired.Width), MathF.Max(0, remaining.Width));
+                    childRect = new SKRect(remaining.Right - rightWidth, remaining.Top, remaining.Right, remaining.Bottom);
+                    remaining = new SKRect(remaining.Left, remaining.Top, remaining.Right - rightWidth, remaining.Bottom);
                     break;
                 case Dock.Fill:
                     childRect = remaining;
@@ -119,8 +124,38 @@ public class DockPanel : Widget
                     break;
             }
             
-            child.Arrange(childRect);
+            child.Arrange(ClampRect(childRect));
+            remaining = ClampRect(remaining);
         }
+    }
+
+    private int GetLastDockedVisibleIndex()
+    {
+        for (int i = Children.Count - 1; i >= 0; i--)
+        {
+            var child = Children[i];
+            if (!child.IsVisible)
+            {
+                continue;
+            }
+
+            var dock = _dockMap.GetValueOrDefault(child, Dock.Left);
+            if (dock != Dock.None)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static SKRect ClampRect(SKRect rect)
+    {
+        float left = MathF.Min(rect.Left, rect.Right);
+        float right = MathF.Max(rect.Left, rect.Right);
+        float top = MathF.Min(rect.Top, rect.Bottom);
+        float bottom = MathF.Max(rect.Top, rect.Bottom);
+        return new SKRect(left, top, right, bottom);
     }
     
     public override void Paint(SKCanvas canvas)

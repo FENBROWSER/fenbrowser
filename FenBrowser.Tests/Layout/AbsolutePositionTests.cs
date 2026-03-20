@@ -1,5 +1,7 @@
 using Xunit;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Layout.Contexts;
+using FenBrowser.FenEngine.Layout.Tree;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
@@ -99,6 +101,36 @@ namespace FenBrowser.Tests.Layout
             
             Assert.Equal(100f, result.Height);
             Assert.Equal(50f, result.Y);
+        }
+
+        [Fact]
+        public void ResolvePositionedBox_FixedInsetUsesViewportContainingBlock()
+        {
+            var parentStyle = new CssComputed { Display = "block" };
+            var parent = new BlockBox(new Element("div"), parentStyle);
+            parent.Geometry.ContentBox = new SKRect(10, 20, 60, 70);
+            parent.Geometry.PaddingBox = parent.Geometry.ContentBox;
+            parent.Geometry.BorderBox = parent.Geometry.ContentBox;
+            parent.Geometry.MarginBox = parent.Geometry.ContentBox;
+
+            var childStyle = new CssComputed
+            {
+                Position = "fixed",
+                Left = 0,
+                Top = 0,
+                Right = 0,
+                Bottom = 0
+            };
+
+            var child = new BlockBox(new Element("div"), childStyle);
+            var state = new LayoutState(new SKSize(50, 50), 50, 50, 800, 600);
+
+            LayoutPositioningLogic.ResolvePositionedBox(child, parent, parent.Geometry, state);
+
+            Assert.Equal(0f, child.Geometry.ContentBox.Left);
+            Assert.Equal(0f, child.Geometry.ContentBox.Top);
+            Assert.Equal(800f, child.Geometry.ContentBox.Width);
+            Assert.Equal(600f, child.Geometry.ContentBox.Height);
         }
     }
 }

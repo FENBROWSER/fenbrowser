@@ -432,6 +432,41 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                 }
             }
+            else if (!isRow && containerMainSize > 0)
+            {
+                foreach (var item in items)
+                {
+                    var flexGrow = ResolveFlexGrow(item.ComputedStyle);
+                    if (!flexGrow.HasValue || flexGrow.Value <= 0 || item.Geometry.ContentBox.Height > 0)
+                    {
+                        continue;
+                    }
+
+                    float currentItemSize = GetColumnMainSize(item);
+                    float newHeight = Math.Max(0, containerMainSize - (totalMainSize - currentItemSize));
+                    if (newHeight <= 0)
+                    {
+                        continue;
+                    }
+
+                    float targetWidth = item.Geometry.ContentBox.Width > 0
+                        ? item.Geometry.ContentBox.Width
+                        : container.Geometry.ContentBox.Width;
+
+                    LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, newHeight);
+
+                    var reState = state.Clone();
+                    reState.AvailableSize = new SKSize(targetWidth, newHeight);
+                    reState.ContainingBlockWidth = targetWidth;
+                    reState.ContainingBlockHeight = newHeight;
+                    LayoutWithForcedHeight(item, reState, newHeight);
+
+                    if (item.Geometry.ContentBox.Height <= 0)
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, newHeight);
+                    }
+                }
+            }
 
             // Final safety: if any row flex item collapsed to near-zero width, recover using
             // descendant content bounds but never exceed the container's main size.
@@ -463,6 +498,46 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     reState.ContainingBlockWidth = targetWidth;
                     reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
                     LayoutWithForcedWidth(item, reState, targetWidth);
+                }
+            }
+            else if (!isRow && containerMainSize > 0)
+            {
+                foreach (var item in items)
+                {
+                    if (item.Geometry.ContentBox.Height > 1f) continue;
+
+                    ApplyCollapsedFlexItemFallback(item);
+                    if (item.Geometry.ContentBox.Height > 1f) continue;
+
+                    float descendantHeight = 0f;
+                    if (TryGetDescendantExtent(item, out _, out var requiredHeight))
+                    {
+                        descendantHeight = Math.Max(0f, requiredHeight);
+                    }
+
+                    float currentItemSize = GetColumnMainSize(item);
+                    float targetHeight = descendantHeight > 1f
+                        ? Math.Min(containerMainSize, descendantHeight)
+                        : Math.Max(0, containerMainSize - (totalMainSize - currentItemSize));
+
+                    if (targetHeight <= 1f) continue;
+
+                    float targetWidth = item.Geometry.ContentBox.Width > 0
+                        ? item.Geometry.ContentBox.Width
+                        : container.Geometry.ContentBox.Width;
+
+                    LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
+
+                    var reState = state.Clone();
+                    reState.AvailableSize = new SKSize(targetWidth, targetHeight);
+                    reState.ContainingBlockWidth = targetWidth;
+                    reState.ContainingBlockHeight = targetHeight;
+                    LayoutWithForcedHeight(item, reState, targetHeight);
+
+                    if (item.Geometry.ContentBox.Height <= 1f)
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
+                    }
                 }
             }
              
@@ -898,7 +973,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 intrinsicState.ContainingBlockHeight = container.Geometry.ContentBox.Height;
                 context.Layout(oof, intrinsicState);
 
-                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry);
+                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
 
                 float resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
                 float resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
@@ -908,7 +983,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 childState.ContainingBlockHeight = resolvedHeight;
                 context.Layout(oof, childState);
 
-                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry);
+                LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
             }
         }
 

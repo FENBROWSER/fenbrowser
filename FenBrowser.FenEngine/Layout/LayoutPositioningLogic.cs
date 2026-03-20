@@ -2,6 +2,7 @@ using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 
@@ -9,17 +10,31 @@ namespace FenBrowser.FenEngine.Layout
 {
     public static class LayoutPositioningLogic
     {
-        public static void ResolvePositionedBox(LayoutBox box, LayoutBox containingBlock, BoxModel containerGeometry)
+        public static void ResolvePositionedBox(LayoutBox box, LayoutBox containingBlock, BoxModel containerGeometry, LayoutState? state = null)
         {
             if (box?.ComputedStyle == null || box.Geometry == null || containerGeometry == null) return;
 
             var style = box.ComputedStyle;
 
             // For abs/fixed positioning, CSS uses the containing block's padding box.
-            var cbRect = containerGeometry.PaddingBox;
-            if (cbRect.Width <= 0 || cbRect.Height <= 0)
+            SKRect cbRect;
+            bool useViewportContainingBlock =
+                string.Equals(style.Position, "fixed", StringComparison.OrdinalIgnoreCase) &&
+                state.HasValue &&
+                state.Value.ViewportWidth > 0 &&
+                state.Value.ViewportHeight > 0;
+
+            if (useViewportContainingBlock)
             {
-                cbRect = containerGeometry.ContentBox;
+                cbRect = new SKRect(0, 0, state.Value.ViewportWidth, state.Value.ViewportHeight);
+            }
+            else
+            {
+                cbRect = containerGeometry.PaddingBox;
+                if (cbRect.Width <= 0 || cbRect.Height <= 0)
+                {
+                    cbRect = containerGeometry.ContentBox;
+                }
             }
 
             float intrinsicWidth = box.Geometry.ContentBox.Width;
