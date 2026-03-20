@@ -109,5 +109,60 @@ namespace FenBrowser.Tests.Core
             // Should be at least 12000, not clamped to 6000 (10x 600)
             Assert.True(totalHeightResult >= 12000);
         }
+
+        [Fact]
+        public void NestedFlexGrowAndFixedInsetFillViewport()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var html = new Element("html");
+            var body = new Element("body");
+            var reactRoot = new Element("div");
+            var appShell = new Element("div");
+            var innerShell = new Element("div");
+            var overlay = new Element("div");
+
+            html.AppendChild(body);
+            body.AppendChild(reactRoot);
+            reactRoot.AppendChild(appShell);
+            appShell.AppendChild(innerShell);
+            innerShell.AppendChild(overlay);
+
+            styles[html] = new CssComputed { Display = "block", HeightPercent = 100 };
+            styles[body] = new CssComputed { Display = "block", HeightPercent = 100 };
+            styles[reactRoot] = new CssComputed { Display = "flex", FlexDirection = "column", HeightPercent = 100 };
+            styles[appShell] = new CssComputed { Display = "flex", FlexDirection = "column", FlexGrow = 1, FlexShrink = 1, FlexBasis = 0 };
+            styles[innerShell] = new CssComputed { Display = "flex", FlexDirection = "column", FlexGrow = 1, FlexShrink = 1, FlexBasis = 0 };
+            styles[overlay] = new CssComputed
+            {
+                Display = "flex",
+                Position = "fixed",
+                Left = 0,
+                Top = 0,
+                Right = 0,
+                Bottom = 0
+            };
+
+            float viewportHeight = 600;
+            float viewportWidth = 800;
+
+            renderer.Render(
+                html,
+                new SKCanvas(new SKBitmap((int)viewportWidth, (int)viewportHeight)),
+                styles,
+                new SKRect(0, 0, viewportWidth, viewportHeight),
+                "http://example.com",
+                (size, overlaysOut) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(appShell, out var appShellRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(innerShell, out var innerShellRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(overlay, out var overlayRect));
+
+            Assert.Equal(viewportHeight, appShellRect.Height);
+            Assert.Equal(viewportHeight, innerShellRect.Height);
+            Assert.Equal(viewportWidth, overlayRect.Width);
+            Assert.Equal(viewportHeight, overlayRect.Height);
+        }
     }
 }

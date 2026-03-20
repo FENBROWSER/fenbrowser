@@ -1275,12 +1275,53 @@ pre {{
                 var sb = new System.Text.StringBuilder();
                 foreach (var n in root.SelfAndDescendants())
                 {
-                    if (n.NodeType == NodeType.Text && !string.IsNullOrWhiteSpace(n.TextContent))
+                    if (n.NodeType == NodeType.Text &&
+                        !string.IsNullOrWhiteSpace(n.TextContent) &&
+                        !ShouldSkipRenderedTextNode(n))
+                    {
                         sb.AppendLine(n.TextContent.Trim());
+                    }
                 }
                 return sb.ToString();
             }
             catch { return string.Empty; }
+        }
+
+        private static bool ShouldSkipRenderedTextNode(Node node)
+        {
+            for (var current = node?.ParentNode; current != null; current = current.ParentNode)
+            {
+                if (current is not Element element)
+                {
+                    continue;
+                }
+
+                if (element.HasAttribute("hidden"))
+                {
+                    return true;
+                }
+
+                if (string.Equals(element.ComputedStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var tag = element.TagName?.ToUpperInvariant();
+                if (tag == "HEAD" ||
+                    tag == "SCRIPT" ||
+                    tag == "STYLE" ||
+                    tag == "META" ||
+                    tag == "LINK" ||
+                    tag == "TITLE" ||
+                    tag == "NOSCRIPT" ||
+                    tag == "TEMPLATE" ||
+                    tag == "IFRAME")
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public async Task<string> GetTitleAsync()
