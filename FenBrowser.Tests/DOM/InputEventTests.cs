@@ -261,6 +261,96 @@ namespace FenBrowser.Tests.DOM
             Assert.False(string.IsNullOrEmpty(runtime.GetGlobal("__ctorName").ToString()));
         }
 
+        [Fact]
+        public void DispatchEvent_WindowOnError_Receives_ActualThrownErrorObject()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            var button = document.CreateElement("button");
+            document.Body!.AppendChild(button);
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var elem = document.getElementsByTagName('button').item(0);
+                window.onerror = function(message, source, lineno, colno, error) {
+                    window.__onerrorSeen = true;
+                    window.__onerrorType = typeof error;
+                    window.__onerrorName = error && error.name;
+                    window.__onerrorMessage = error && error.message;
+                    window.__onerrorMessageArg = message;
+                };
+
+                elem.addEventListener('click', function() {
+                    throw new TypeError('boom');
+                });
+
+                elem.dispatchEvent(new Event('click'));
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.True(window.Get("__onerrorSeen").ToBoolean());
+            Assert.Equal("object", window.Get("__onerrorType").ToString());
+            Assert.Equal("TypeError", window.Get("__onerrorName").ToString());
+            Assert.Equal("boom", window.Get("__onerrorMessage").ToString());
+            Assert.Equal("boom", window.Get("__onerrorMessageArg").ToString());
+        }
+
+        [Fact]
+        public void AddEventListener_WindowSignal_RemovesListenerAfterAbort()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var controller = new AbortController();
+                var calls = 0;
+                function handler() { calls++; }
+
+                window.addEventListener('probe', handler, { signal: controller.signal });
+                window.dispatchEvent(new Event('probe'));
+                controller.abort('done');
+                window.dispatchEvent(new Event('probe'));
+
+                window.__signalCalls = calls;
+                window.__signalAborted = controller.signal.aborted;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.Equal(1, (int)window.Get("__signalCalls").ToNumber());
+            Assert.True(window.Get("__signalAborted").ToBoolean());
+        }
+
+        [Fact]
+        public void AddEventListener_DuplicateSignalRegistration_DoesNotRemoveOriginalListener()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            var button = document.CreateElement("button");
+            document.Body!.AppendChild(button);
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var controller = new AbortController();
+                var elem = document.getElementsByTagName('button').item(0);
+                var calls = 0;
+                function handler() { calls++; }
+
+                elem.addEventListener('click', handler);
+                elem.addEventListener('click', handler, { signal: controller.signal });
+                controller.abort('done');
+                elem.dispatchEvent(new Event('click'));
+
+                window.__duplicateSignalCalls = calls;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.Equal(1, (int)window.Get("__duplicateSignalCalls").ToNumber());
+        }
+
         private sealed class TinyResourceLimits : IResourceLimits
         {
             public int MaxCallStackDepth => 100;

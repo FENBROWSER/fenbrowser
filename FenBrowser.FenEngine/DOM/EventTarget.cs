@@ -3,6 +3,7 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Security; // Added
 using System;
 using System.Collections.Generic;
@@ -308,7 +309,7 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     FenLogger.Error($"[EventTarget] Error in listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                     // Per spec, report the error to window.onerror
-                    TryReportErrorToWindow(context, ex);
+                    TryReportErrorToWindow(element, context, ex);
                 }
             }
 
@@ -326,32 +327,194 @@ namespace FenBrowser.FenEngine.DOM
         /// <summary>
         /// Report an uncaught listener exception to window.onerror per the DOM spec.
         /// </summary>
-        private static void TryReportErrorToWindow(IExecutionContext context, Exception ex)
+        private static void TryReportErrorToWindow(Element sourceElement, IExecutionContext context, Exception ex)
         {
             try
             {
-                var env = context?.Environment;
-                if (env == null) return;
-
-                var winVal = env.Get("window");
-                if (!winVal.IsObject) return;
+                var winVal = ResolveWindowValue(sourceElement, context);
+                if (!winVal.IsObject)
+                {
+                    return;
+                }
 
                 var onerrorVal = winVal.AsObject().Get("onerror", context);
-                var func = (onerrorVal.IsFunction || onerrorVal.IsObject) ? onerrorVal.AsObject() as FenFunction : null;
-                if (func == null) return;
+                if (!TryResolveCallable(onerrorVal, winVal, context, out var callback, out var callbackThis))
+                {
+                    return;
+                }
 
-                var message = ex.Message ?? "Script error.";
+                var errorValue = CreateReportedErrorValue(ex);
+                var message = GetReportedErrorMessage(ex, errorValue);
                 var args = new FenValue[]
                 {
                     FenValue.FromString(message),
                     FenValue.FromString(string.Empty),
                     FenValue.FromNumber(0),
                     FenValue.FromNumber(0),
-                    FenValue.FromObject(new FenObject()) // error object placeholder
+                    errorValue
                 };
-                func.Invoke(args, context, winVal);
+                InvokeCallback(callback, args, context, callbackThis);
             }
-            catch { /* never let error reporting itself break dispatch */ }
+            catch (Exception reportingException)
+            {
+                FenLogger.Warn($"[EventTarget] window.onerror reporting failed: {reportingException.Message}", LogCategory.Events);
+            }
+        }
+
+        private static FenValue ResolveWindowValue(Element sourceElement, IExecutionContext context)
+        {
+            if (sourceElement != null && ResolveWindowTarget != null)
+            {
+                var resolvedWindow = ResolveWindowTarget(sourceElement);
+                if (resolvedWindow is IObject objectWindow)
+                {
+                    return FenValue.FromObject(objectWindow);
+                }
+
+                if (resolvedWindow is FenValue valueWindow && valueWindow.IsObject)
+                {
+                    return valueWindow;
+                }
+            }
+
+            var env = context?.Environment;
+            if (env == null)
+            {
+                return FenValue.Undefined;
+            }
+
+            var globalThis = env.Get("globalThis");
+            if (globalThis.IsObject)
+            {
+                return globalThis;
+            }
+
+            var window = env.Get("window");
+            if (window.IsObject)
+            {
+                return window;
+            }
+
+            var self = env.Get("self");
+            return self.IsObject ? self : FenValue.Undefined;
+        }
+
+        private static bool TryResolveCallable(FenValue candidate, FenValue defaultThis, IExecutionContext context, out FenValue callback, out FenValue callbackThis)
+        {
+            callback = FenValue.Undefined;
+            callbackThis = FenValue.Undefined;
+
+            if (candidate.IsFunction)
+            {
+                callback = candidate;
+                callbackThis = defaultThis;
+                return true;
+            }
+
+            if (!candidate.IsObject)
+            {
+                return false;
+            }
+
+            var handleEvent = candidate.AsObject()?.Get("handleEvent", context) ?? FenValue.Undefined;
+            if (!handleEvent.IsFunction)
+            {
+                return false;
+            }
+
+            callback = handleEvent;
+            callbackThis = candidate;
+            return true;
+        }
+
+        private static void InvokeCallback(FenValue callback, FenValue[] args, IExecutionContext context, FenValue callbackThis)
+        {
+            if (!callback.IsFunction)
+            {
+                return;
+            }
+
+            if (context?.ExecuteFunction != null)
+            {
+                context.ThisBinding = callbackThis;
+                context.ExecuteFunction(callback, args);
+                return;
+            }
+
+            context?.CheckCallStackLimit();
+            context?.CheckExecutionTimeLimit();
+            callback.AsFunction()?.Invoke(args, context, callbackThis);
+        }
+
+        private static FenValue CreateReportedErrorValue(Exception exception)
+        {
+            if (TryExtractThrownValue(exception, out var thrownValue))
+            {
+                return thrownValue;
+            }
+
+            if (exception is FenError fenError)
+            {
+                return fenError.ThrownValue;
+            }
+
+            return FenValue.FromError(exception?.Message ?? "Script error.");
+        }
+
+        private static string GetReportedErrorMessage(Exception exception, FenValue errorValue)
+        {
+            if ((errorValue.IsObject || errorValue.IsFunction) && errorValue.AsObject() != null)
+            {
+                var errorObject = errorValue.AsObject();
+                var nameValue = errorObject.Get("name");
+                var messageValue = errorObject.Get("message");
+
+                if (!messageValue.IsUndefined && !messageValue.IsNull)
+                {
+                    return messageValue.AsString();
+                }
+
+                if (!nameValue.IsUndefined && !nameValue.IsNull)
+                {
+                    return nameValue.AsString();
+                }
+            }
+
+            if (errorValue.IsError)
+            {
+                return errorValue.AsError() ?? "Script error.";
+            }
+
+            return exception?.Message ?? "Script error.";
+        }
+
+        private static bool TryExtractThrownValue(Exception exception, out FenValue thrownValue)
+        {
+            thrownValue = FenValue.Undefined;
+            if (exception == null)
+            {
+                return false;
+            }
+
+            if (exception is JsThrownValueException jsThrownValueException)
+            {
+                thrownValue = jsThrownValueException.ThrownValue;
+                return true;
+            }
+
+            var thrownValueProperty = exception.GetType().GetProperty("ThrownValue");
+            if (thrownValueProperty?.PropertyType != typeof(FenValue))
+            {
+                return false;
+            }
+
+            if (thrownValueProperty.GetValue(exception) is FenValue extracted)
+            {
+                thrownValue = extracted;
+                return true;
+            }
+
+            return false;
         }
 
         private static void InvokeFenRuntimeTopLevelListeners(IExecutionContext context, DomEvent evt, bool capturePhase)

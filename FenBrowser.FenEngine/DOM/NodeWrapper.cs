@@ -363,6 +363,7 @@ namespace FenBrowser.FenEngine.DOM
             var capture = false;
             var once = false;
             var passive = false;
+            var signal = FenValue.Undefined;
             if (args.Length >= 3)
             {
                 if (args[2].IsBoolean)
@@ -378,10 +379,15 @@ namespace FenBrowser.FenEngine.DOM
                     once = one.IsBoolean && one.ToBoolean();
                     var pas = opts.Get("passive", _context);
                     passive = pas.IsBoolean && pas.ToBoolean();
+                    var sig = opts.Get("signal", _context);
+                    if (sig.IsObject)
+                    {
+                        signal = sig;
+                    }
                 }
             }
 
-            EventTarget.Registry.Add(_node, type, callback, capture, once, passive);
+            EventTarget.Registry.Add(_node, type, callback, capture, once, passive, signal);
             return FenValue.Undefined;
         }
 
