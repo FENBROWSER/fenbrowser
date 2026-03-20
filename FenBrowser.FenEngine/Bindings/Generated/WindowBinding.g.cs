@@ -3040,11 +3040,11 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
+                    dynamic native = Unwrap(thisVal);
+                    if (native == null) throw new FenTypeError("Illegal invocation");
                     var arg_url = FromJsValue_USVString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     var arg_target = FromJsValue_DOMString(args.Length > 1 ? args[1] : FenValue.Undefined);
                     var arg_features = FromJsValue_DOMString(args.Length > 2 ? args[2] : FenValue.Undefined);
-                    dynamic native = Unwrap(thisVal);
-                    if (native == null) throw new FenTypeError("Illegal invocation");
                     return ToJsValue(native.Open(arg_url, arg_target, arg_features));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.open");
@@ -3059,9 +3059,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.Alert(arg_message);
                     return FenValue.Undefined;
                 }
@@ -3077,9 +3077,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     return ToJsValue(native.Confirm(arg_message));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.confirm");
@@ -3094,10 +3094,10 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
-                    var arg_defaultValue = FromJsValue_DOMString(args.Length > 1 ? args[1] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_message = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
+                    var arg_defaultValue = FromJsValue_DOMString(args.Length > 1 ? args[1] : FenValue.Undefined);
                     return ToJsValue(native.Prompt(arg_message, arg_defaultValue));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.prompt");
@@ -3129,11 +3129,11 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 2)
                 {
+                    dynamic native = Unwrap(thisVal);
+                    if (native == null) throw new FenTypeError("Illegal invocation");
                     var arg_message = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
                     var arg_targetOrigin = FromJsValue_USVString(args.Length > 1 ? args[1] : FenValue.Undefined);
                     var arg_transfer = FromJsValue_any(args.Length > 2 ? args[2] : FenValue.Undefined);
-                    dynamic native = Unwrap(thisVal);
-                    if (native == null) throw new FenTypeError("Illegal invocation");
                     native.PostMessage(arg_message, arg_targetOrigin, arg_transfer);
                     return FenValue.Undefined;
                 }
@@ -3149,10 +3149,10 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_handler = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
-                    var arg_timeout = FromJsValue_long(args.Length > 1 ? args[1] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_handler = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
+                    var arg_timeout = FromJsValue_long(args.Length > 1 ? args[1] : FenValue.Undefined);
                     return ToJsValue(native.SetTimeout(arg_handler, arg_timeout));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.setTimeout");
@@ -3167,9 +3167,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_id = FromJsValue_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_id = FromJsValue_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.ClearTimeout(arg_id);
                     return FenValue.Undefined;
                 }
@@ -3185,10 +3185,10 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_handler = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
-                    var arg_timeout = FromJsValue_long(args.Length > 1 ? args[1] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_handler = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
+                    var arg_timeout = FromJsValue_long(args.Length > 1 ? args[1] : FenValue.Undefined);
                     return ToJsValue(native.SetInterval(arg_handler, arg_timeout));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.setInterval");
@@ -3203,9 +3203,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_id = FromJsValue_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_id = FromJsValue_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.ClearInterval(arg_id);
                     return FenValue.Undefined;
                 }
@@ -3221,9 +3221,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_callback = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_callback = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
                     return ToJsValue(native.RequestAnimationFrame(arg_callback));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.requestAnimationFrame");
@@ -3238,9 +3238,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_handle = FromJsValue_unsigned_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_handle = FromJsValue_unsigned_long(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.CancelAnimationFrame(arg_handle);
                     return FenValue.Undefined;
                 }
@@ -3256,9 +3256,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_callback = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_callback = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.QueueMicrotask(arg_callback);
                     return FenValue.Undefined;
                 }
@@ -3274,10 +3274,10 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_value = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
-                    var arg_options = FromJsValue_StructuredSerializeOptions(args.Length > 1 ? args[1] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_value = FromJsValue_any(args.Length > 0 ? args[0] : FenValue.Undefined);
+                    var arg_options = FromJsValue_StructuredSerializeOptions(args.Length > 1 ? args[1] : FenValue.Undefined);
                     return ToJsValue(native.StructuredClone(arg_value, arg_options));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.structuredClone");
@@ -3292,9 +3292,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_data = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_data = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     return ToJsValue(native.Btoa(arg_data));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.btoa");
@@ -3309,9 +3309,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 1)
                 {
-                    var arg_data = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_data = FromJsValue_DOMString(args.Length > 0 ? args[0] : FenValue.Undefined);
                     return ToJsValue(native.Atob(arg_data));
                 }
                 throw new FenTypeError("Wrong number of arguments for Window.atob");
@@ -3360,9 +3360,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.Scroll(arg_options);
                     return FenValue.Undefined;
                 }
@@ -3378,9 +3378,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.ScrollTo(arg_options);
                     return FenValue.Undefined;
                 }
@@ -3396,9 +3396,9 @@ namespace FenBrowser.FenEngine.Bindings.Generated
                 if (!HasBrand(thisVal)) throw new FenTypeError($"Failed to execute 'operation' on 'Window': Illegal invocation.");
                 if (args.Length >= 0)
                 {
-                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     dynamic native = Unwrap(thisVal);
                     if (native == null) throw new FenTypeError("Illegal invocation");
+                    var arg_options = FromJsValue_ScrollToOptions(args.Length > 0 ? args[0] : FenValue.Undefined);
                     native.ScrollBy(arg_options);
                     return FenValue.Undefined;
                 }

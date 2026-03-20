@@ -98,6 +98,14 @@ namespace FenBrowser.FenEngine.Core
             return _store.ContainsKey(name) || _tdz.Contains(name);
         }
 
+        public IEnumerable<string> GetOwnBindingNames()
+        {
+            foreach (var name in _store.Keys)
+            {
+                yield return name;
+            }
+        }
+
         public bool TryGetLocal(string name, out FenValue value)
         {
             if (_isWithEnvironment)

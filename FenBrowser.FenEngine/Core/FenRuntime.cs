@@ -4734,99 +4734,45 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("Iterator", FenValue.FromFunction(iteratorCtor));
 
-            // Dynamic import() function - returns a Promise
+            // Dynamic import() function - resolves through the active module loader and returns a real Promise.
             SetGlobal("import", FenValue.FromFunction(new FenFunction("import", (FenValue[] args, FenValue thisVal) =>
             {
-                if (args.Length == 0) return CreateRejectedPromise("import() requires a module specifier");
-                var modulePath = args[0].ToString();
-
-                // Create a promise that will resolve with the module exports
-                var promise = new FenObject();
-                promise.Set("__isPromise__", FenValue.FromBoolean(true));
-                promise.Set("__state__", FenValue.FromString("pending"));
-
-                // For now, return a resolved promise with an empty module namespace
-                // In a real implementation, this would async load and parse the module
-                var moduleNamespace = new FenObject();
-                moduleNamespace.Set("default", FenValue.Undefined);
-
-                // Check if module loader has this module cached
-                if (_context.ModuleLoader != null)
+                if (args.Length == 0)
                 {
-                    try
-                    {
-                        var exports = _context.ModuleLoader.LoadModule(modulePath);
-                        if (exports != null)
-                        {
-                            promise.Set("__state__", FenValue.FromString("fulfilled"));
-                            promise.Set("__value__", (FenValue)(object)exports);
-                        }
-                        else
-                        {
-                            promise.Set("__state__", FenValue.FromString("fulfilled"));
-                            promise.Set("__value__", FenValue.FromObject(moduleNamespace));
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        promise.Set("__state__", FenValue.FromString("rejected"));
-                        promise.Set("__reason__", FenValue.FromString(ex.Message));
-                    }
-                }
-                else
-                {
-                    promise.Set("__state__", FenValue.FromString("fulfilled"));
-                    promise.Set("__value__", FenValue.FromObject(moduleNamespace));
+                    return FenValue.FromObject(JsPromise.Reject(
+                        FenValue.FromString("TypeError: import() requires a module specifier"),
+                        _context));
                 }
 
-                // Add then/catch methods
-                promise.Set("then", FenValue.FromFunction(new FenFunction("then", (thenArgs, thenThis) =>
+                if (_context.ModuleLoader == null)
                 {
-                    var stateVal = promise.Get("__state__");
-                    var state = stateVal.IsUndefined ? null : stateVal.ToString();
-                    if (state == "fulfilled")
-                    {
-                        if (thenArgs.Length > 0 && thenArgs[0].IsFunction)
-                        {
-                            var onFulfilled = thenArgs[0].AsFunction() as FenFunction;
-                            var value = promise.Get("__value__");
-                            return (FenValue)(onFulfilled?.Invoke(new FenValue[] { value }, null) ??
-                                              FenValue.Undefined);
-                        }
+                    return FenValue.FromObject(JsPromise.Reject(
+                        FenValue.FromString("TypeError: import() requires an active module loader"),
+                        _context));
+                }
 
-                        return promise.Get("__value__");
-                    }
-                    else if (state == "rejected")
-                    {
-                        if (thenArgs.Length > 1 && thenArgs[1].IsFunction)
-                        {
-                            var onRejected = thenArgs[1].AsFunction() as FenFunction;
-                            var reason = promise.Get("__reason__");
-                            return (FenValue)(onRejected?.Invoke(new FenValue[] { reason }, null) ??
-                                              FenValue.Undefined);
-                        }
+                var specifier = args[0].ToString();
+                var referrer = _context.CurrentModulePath
+                    ?? BaseUri?.AbsoluteUri
+                    ?? string.Empty;
 
-                        return FenValue.Undefined;
-                    }
-
-                    return FenValue.FromObject(promise);
-                })));
-
-                promise.Set("catch", FenValue.FromFunction(new FenFunction("catch", (catchArgs, catchThis) =>
+                try
                 {
-                    var stateVal = promise.Get("__state__");
-                    var state = stateVal.IsUndefined ? null : stateVal.ToString();
-                    if (state == "rejected" && catchArgs.Length > 0 && catchArgs[0].IsFunction)
+                    var resolvedPath = _context.ModuleLoader.Resolve(specifier, referrer);
+                    var exports = _context.ModuleLoader.LoadModule(resolvedPath);
+                    if (exports == null)
                     {
-                        var onRejected = catchArgs[0].AsFunction() as FenFunction;
-                        var reason = promise.Get("__reason__");
-                        return (FenValue)(onRejected?.Invoke(new FenValue[] { reason }, null) ?? FenValue.Undefined);
+                        return FenValue.FromObject(JsPromise.Reject(
+                            FenValue.FromString($"TypeError: import() failed to load module '{specifier}'"),
+                            _context));
                     }
 
-                    return FenValue.FromObject(promise);
-                })));
-
-                return FenValue.FromObject(promise);
+                    return FenValue.FromObject(JsPromise.Resolve(FenValue.FromObject(exports), _context));
+                }
+                catch (Exception ex)
+                {
+                    return FenValue.FromObject(JsPromise.Reject(FenValue.FromString(ex.Message), _context));
+                }
             })));
 
             // undefined and null
@@ -6233,6 +6179,103 @@ namespace FenBrowser.FenEngine.Core
             var eventTargetPrototype = new FenObject();
             eventTargetPrototype.SetPrototype(objectProto);
 
+            void DetachAbortSignalListener(FenObject entryObj)
+            {
+                if (entryObj == null)
+                {
+                    return;
+                }
+
+                var signal = entryObj.Get("__signal");
+                var abortCallback = entryObj.Get("__abortCallback");
+                if (!signal.IsObject || !abortCallback.IsFunction)
+                {
+                    return;
+                }
+
+                var removeAbortListener = signal.AsObject()?.Get("removeEventListener") ?? FenValue.Undefined;
+                if (removeAbortListener.IsFunction)
+                {
+                    removeAbortListener.AsFunction()?.Invoke(new[]
+                    {
+                        FenValue.FromString("abort"),
+                        abortCallback
+                    }, _context, signal);
+                }
+
+                entryObj.Delete("__abortCallback");
+            }
+
+            void AttachAbortSignalListener(IObject targetObj, string eventType, FenValue callback, bool capture, FenValue signal, FenObject entryObj)
+            {
+                if (targetObj == null || string.IsNullOrWhiteSpace(eventType) || !signal.IsObject || entryObj == null)
+                {
+                    return;
+                }
+
+                var addAbortListener = signal.AsObject()?.Get("addEventListener") ?? FenValue.Undefined;
+                if (!addAbortListener.IsFunction)
+                {
+                    return;
+                }
+
+                FenFunction abortHandler = new FenFunction("_abortEventTargetListener", (abortArgs, abortThis) =>
+                {
+                    var listenersVal = targetObj.Get("__fen_listeners__");
+                    if (!listenersVal.IsObject)
+                    {
+                        return FenValue.Undefined;
+                    }
+
+                    var listenersObj = listenersVal.AsObject() as FenObject;
+                    var arrVal = listenersObj?.Get(eventType) ?? FenValue.Undefined;
+                    var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                    if (arr == null)
+                    {
+                        return FenValue.Undefined;
+                    }
+
+                    int len = (int)arr.Get("length").ToNumber();
+                    var kept = FenObject.CreateArray();
+                    int k = 0;
+                    for (int i = 0; i < len; i++)
+                    {
+                        var item = arr.Get(i.ToString());
+                        var remove = false;
+                        if (item.IsObject)
+                        {
+                            var itemObj = item.AsObject() as FenObject;
+                            var itemCallback = itemObj?.Get("callback") ?? FenValue.Undefined;
+                            var itemCapture = itemObj?.Get("capture").ToBoolean() ?? false;
+                            if (itemCallback.Equals(callback) && itemCapture == capture)
+                            {
+                                DetachAbortSignalListener(itemObj);
+                                remove = true;
+                            }
+                        }
+
+                        if (!remove)
+                        {
+                            kept.Set(k.ToString(), item);
+                            k++;
+                        }
+                    }
+
+                    kept.Set("length", FenValue.FromNumber(k));
+                    listenersObj?.Set(eventType, FenValue.FromObject(kept));
+                    return FenValue.Undefined;
+                });
+
+                var abortCallback = FenValue.FromFunction(abortHandler);
+                entryObj.Set("__signal", signal);
+                entryObj.Set("__abortCallback", abortCallback);
+                addAbortListener.AsFunction()?.Invoke(new[]
+                {
+                    FenValue.FromString("abort"),
+                    abortCallback
+                }, _context, signal);
+            }
+
             var addEventListenerFunc = FenValue.FromFunction(new FenFunction("addEventListener",
                 (FenValue[] args, FenValue thisVal) =>
                 {
@@ -6252,6 +6295,7 @@ namespace FenBrowser.FenEngine.Core
                     bool capture = false;
                     bool once = false;
                     bool passive = false;
+                    FenValue signal = FenValue.Undefined;
                     if (args.Length >= 3)
                     {
                         if (args[2].IsBoolean)
@@ -6267,13 +6311,23 @@ namespace FenBrowser.FenEngine.Core
                             once = one.IsBoolean && one.ToBoolean();
                             var pas = opts.Get("passive");
                             passive = pas.IsBoolean && pas.ToBoolean();
+                            var sig = opts.Get("signal");
+                            if (sig.IsObject)
+                            {
+                                signal = sig;
+                            }
                         }
+                    }
+
+                    if (signal.IsObject && signal.AsObject()?.Get("aborted").ToBoolean() == true)
+                    {
+                        return FenValue.Undefined;
                     }
 
 
                     if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
                     {
-                        FenBrowser.FenEngine.DOM.EventTarget.Registry.Add(elementTarget.Element, eventType, callback, capture, once, passive);
+                        FenBrowser.FenEngine.DOM.EventTarget.Registry.Add(elementTarget.Element, eventType, callback, capture, once, passive, signal);
                         return FenValue.Undefined;
                     }
 
@@ -6320,6 +6374,10 @@ namespace FenBrowser.FenEngine.Core
                             entry.Set("capture", FenValue.FromBoolean(capture));
                             entry.Set("once", FenValue.FromBoolean(once));
                             entry.Set("passive", FenValue.FromBoolean(passive));
+                            if (signal.IsObject)
+                            {
+                                AttachAbortSignalListener(targetObj, eventType, callback, capture, signal, entry);
+                            }
                             arr.Set(len.ToString(), FenValue.FromObject(entry));
                             arr.Set("length", FenValue.FromNumber(len + 1));
                         }
@@ -6383,10 +6441,14 @@ namespace FenBrowser.FenEngine.Core
                                     bool remove = false;
                                     if (item.IsObject)
                                     {
-                                        var itemObj = item.AsObject();
-                                        var itemCallback = itemObj.Get("callback");
-                                        var itemCapture = itemObj.Get("capture").ToBoolean();
+                                        var itemObj = item.AsObject() as FenObject;
+                                        var itemCallback = itemObj?.Get("callback") ?? FenValue.Undefined;
+                                        var itemCapture = itemObj?.Get("capture").ToBoolean() ?? false;
                                         remove = itemCallback.Equals(callback) && itemCapture == capture;
+                                        if (remove)
+                                        {
+                                            DetachAbortSignalListener(itemObj);
+                                        }
                                     }
 
                                     if (!remove)
@@ -6522,6 +6584,11 @@ namespace FenBrowser.FenEngine.Core
 
                                     if (onceListener)
                                     {
+                                        if (listenerEntry.IsObject)
+                                        {
+                                            DetachAbortSignalListener(listenerEntry.AsObject() as FenObject);
+                                        }
+
                                         var kept = FenObject.CreateArray();
                                         int k = 0;
                                         for (int j = 0; j < len; j++)
@@ -6707,6 +6774,7 @@ namespace FenBrowser.FenEngine.Core
 
                             if (entryObj.Get("once").ToBoolean())
                             {
+                                DetachAbortSignalListener(entryObj as FenObject);
                                 for (int j = i + 1; j < len; j++)
                                 {
                                     arr.Set((j - 1).ToString(), arr.Get(j.ToString()));
@@ -8308,16 +8376,99 @@ namespace FenBrowser.FenEngine.Core
                 var signal = new FenObject();
                 signal.Set("aborted", FenValue.FromBoolean(false));
                 signal.Set("reason", FenValue.Undefined);
-                var signalListeners = new List<FenValue>();
+                signal.Set("onabort", FenValue.Undefined);
+                var signalListeners = new List<FenObject>();
                 signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener",
                     (sigArgs, sigThis) =>
                     {
-                        if (sigArgs.Length >= 2) signalListeners.Add(sigArgs[1]);
+                        if (sigArgs.Length < 2)
+                        {
+                            return FenValue.Undefined;
+                        }
+
+                        var type = sigArgs[0].ToString();
+                        var callback = sigArgs[1];
+                        var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+                        if (!string.Equals(type, "abort", StringComparison.OrdinalIgnoreCase) ||
+                            !callbackIsValid || callback.IsUndefined || callback.IsNull)
+                        {
+                            return FenValue.Undefined;
+                        }
+
+                        var capture = false;
+                        var once = false;
+                        if (sigArgs.Length >= 3)
+                        {
+                            if (sigArgs[2].IsBoolean)
+                            {
+                                capture = sigArgs[2].ToBoolean();
+                            }
+                            else if (sigArgs[2].IsObject)
+                            {
+                                var opts = sigArgs[2].AsObject();
+                                capture = opts.Get("capture").ToBoolean();
+                                once = opts.Get("once").ToBoolean();
+                            }
+                        }
+
+                        foreach (var existing in signalListeners)
+                        {
+                            if (existing.Get("callback").Equals(callback) &&
+                                existing.Get("capture").ToBoolean() == capture)
+                            {
+                                return FenValue.Undefined;
+                            }
+                        }
+
+                        var entry = new FenObject();
+                        entry.Set("callback", callback);
+                        entry.Set("capture", FenValue.FromBoolean(capture));
+                        entry.Set("once", FenValue.FromBoolean(once));
+                        signalListeners.Add(entry);
                         return FenValue.Undefined;
                     })));
                 signal.Set("removeEventListener",
                     FenValue.FromFunction(new FenFunction("removeEventListener",
-                        (sigArgs, sigThis) => { return FenValue.Undefined; })));
+                        (sigArgs, sigThis) =>
+                        {
+                            if (sigArgs.Length < 2)
+                            {
+                                return FenValue.Undefined;
+                            }
+
+                            var type = sigArgs[0].ToString();
+                            var callback = sigArgs[1];
+                            var capture = false;
+                            if (sigArgs.Length >= 3)
+                            {
+                                if (sigArgs[2].IsBoolean)
+                                {
+                                    capture = sigArgs[2].ToBoolean();
+                                }
+                                else if (sigArgs[2].IsObject)
+                                {
+                                    capture = sigArgs[2].AsObject().Get("capture").ToBoolean();
+                                }
+                            }
+
+                            if (!string.Equals(type, "abort", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return FenValue.Undefined;
+                            }
+
+                            for (int i = signalListeners.Count - 1; i >= 0; i--)
+                            {
+                                var existing = signalListeners[i];
+                                if (existing.Get("callback").Equals(callback) &&
+                                    existing.Get("capture").ToBoolean() == capture)
+                                {
+                                    signalListeners.RemoveAt(i);
+                                    break;
+                                }
+                            }
+
+                            return FenValue.Undefined;
+                        })));
                 signal.Set("throwIfAborted", FenValue.FromFunction(new FenFunction("throwIfAborted",
                     (sigArgs, sigThis) =>
                     {
@@ -8329,13 +8480,48 @@ namespace FenBrowser.FenEngine.Core
                 controller.Set("signal", FenValue.FromObject(signal));
                 controller.Set("abort", FenValue.FromFunction(new FenFunction("abort", (abortArgs, abortThis) =>
                 {
+                    if (signal.Get("aborted").ToBoolean())
+                    {
+                        return FenValue.Undefined;
+                    }
+
                     signal.Set("aborted", FenValue.FromBoolean(true));
                     var reason = abortArgs.Length > 0 ? abortArgs[0] : FenValue.FromString("AbortError");
                     signal.Set("reason", reason);
-                    foreach (var listener in signalListeners)
+                    var abortEvent = new DomEvent("abort", false, false, false, _context);
+                    abortEvent.Set("target", FenValue.FromObject(signal), _context);
+
+                    var onAbort = signal.Get("onabort");
+                    if (onAbort.IsFunction)
                     {
-                        if (listener.IsFunction)
-                            listener.AsFunction()?.Invoke(new FenValue[] { reason }, _context);
+                        onAbort.AsFunction()?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, FenValue.FromObject(signal));
+                    }
+
+                    foreach (var listener in signalListeners.ToList())
+                    {
+                        var callback = listener.Get("callback");
+                        FenFunction callbackFn = null;
+                        var callbackThis = FenValue.FromObject(signal);
+                        if (callback.IsFunction)
+                        {
+                            callbackFn = callback.AsFunction() as FenFunction;
+                        }
+                        else if (callback.IsObject)
+                        {
+                            var handleEvent = callback.AsObject().Get("handleEvent");
+                            if (handleEvent.IsFunction)
+                            {
+                                callbackFn = handleEvent.AsFunction() as FenFunction;
+                                callbackThis = callback;
+                            }
+                        }
+
+                        callbackFn?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, callbackThis);
+
+                        if (listener.Get("once").ToBoolean())
+                        {
+                            signalListeners.Remove(listener);
+                        }
                     }
 
                     return FenValue.Undefined;
@@ -14463,6 +14649,11 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
+            // Intrinsic globals and prototype methods created before Function.prototype exists
+            // must be normalized here so `.bind/.call/.apply` work on builtins used by
+            // production bundle bootstraps such as Array.prototype.push and Object.defineProperty.
+            NormalizeGlobalIntrinsicFunctionPrototypes(functionPrototype);
+
             void EnsureConstructorPrototypeToStringTag(string ctorName, string tag)
             {
                 var ctorVal = GetGlobal(ctorName);
@@ -15266,6 +15457,81 @@ namespace FenBrowser.FenEngine.Core
             }
 
             _globalEnv.Set(name, value);
+        }
+
+        private void NormalizeGlobalIntrinsicFunctionPrototypes(FenObject functionPrototype)
+        {
+            if (functionPrototype == null)
+            {
+                return;
+            }
+
+            var visited = new HashSet<FenObject>();
+            foreach (var bindingName in _globalEnv.GetOwnBindingNames())
+            {
+                var bindingValue = _globalEnv.Get(bindingName);
+                if (bindingValue.IsFunction && bindingValue.AsFunction() is FenFunction function)
+                {
+                    NormalizeCallableIntrinsic(function, functionPrototype, visited, walkPrototypeObject: true);
+                    continue;
+                }
+
+                if (bindingValue.IsObject && bindingValue.AsObject() is FenObject targetObject)
+                {
+                    NormalizeIntrinsicObjectFunctions(targetObject, functionPrototype, visited, walkPrototypeObject: false);
+                }
+            }
+        }
+
+        private static void NormalizeCallableIntrinsic(
+            FenFunction function,
+            FenObject functionPrototype,
+            HashSet<FenObject> visited,
+            bool walkPrototypeObject)
+        {
+            if (function == null)
+            {
+                return;
+            }
+
+            function.SetPrototype(functionPrototype);
+            NormalizeIntrinsicObjectFunctions(function, functionPrototype, visited, walkPrototypeObject);
+        }
+
+        private static void NormalizeIntrinsicObjectFunctions(
+            FenObject target,
+            FenObject functionPrototype,
+            HashSet<FenObject> visited,
+            bool walkPrototypeObject)
+        {
+            if (target == null || functionPrototype == null || !visited.Add(target))
+            {
+                return;
+            }
+
+            foreach (var propertyName in target.GetOwnPropertyNames())
+            {
+                if (!target.TryGetDirect(propertyName, out var propertyValue))
+                {
+                    continue;
+                }
+
+                if (propertyValue.IsFunction && propertyValue.AsFunction() is FenFunction method)
+                {
+                    NormalizeCallableIntrinsic(method, functionPrototype, visited, walkPrototypeObject: true);
+                    continue;
+                }
+
+                if (!walkPrototypeObject || !string.Equals(propertyName, "prototype", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (propertyValue.IsObject && propertyValue.AsObject() is FenObject prototypeObject)
+                {
+                    NormalizeIntrinsicObjectFunctions(prototypeObject, functionPrototype, visited, walkPrototypeObject: false);
+                }
+            }
         }
 
         public IValue GetGlobal(string name)

@@ -12,14 +12,19 @@
 
   <Target Name="GenerateWebIdlBindings" BeforeTargets="BeforeBuild">
     <Message Text="[webidlgen] Generating WebIDL bindings..." Importance="high" />
+    <PropertyGroup>
+      <WebIdlGenDll>$(MSBuildThisFileDirectory)..\FenBrowser.WebIdlGen\bin\$(Configuration)\net8.0\webidlgen.dll</WebIdlGenDll>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(WebIdlGenDll)')" Text="WebIDL generator is missing at $(WebIdlGenDll). Build FenBrowser.WebIdlGen first." />
     <Exec
-      Command="dotnet run --project &quot;$(MSBuildThisFileDirectory)..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj&quot; -- --idl &quot;$(MSBuildThisFileDirectory)..\FenBrowser.Core\WebIDL\Idl&quot; --out &quot;$(MSBuildThisFileDirectory)Bindings\Generated&quot;"
+      Command="dotnet &quot;$(WebIdlGenDll)&quot; --idl &quot;$(MSBuildThisFileDirectory)..\FenBrowser.Core\WebIDL\Idl&quot; --out &quot;$(MSBuildThisFileDirectory)Bindings\Generated&quot;"
       IgnoreExitCode="false"
       WorkingDirectory="$(MSBuildThisFileDirectory)" />
   </Target>
 
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
+    <ProjectReference Include="..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
