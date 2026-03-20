@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.IO;
+using System.Runtime.CompilerServices;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -115,8 +116,9 @@ namespace FenBrowser.FenEngine.Core
             { TokenType.LBracket, Precedence.Index },
             { TokenType.Question, Precedence.Ternary },
             { TokenType.Arrow, Precedence.Assignment },
-            { TokenType.Increment, Precedence.Prefix },
-            { TokenType.Decrement, Precedence.Prefix },
+            // Postfix update binds tighter than unary prefix so `!!o++` parses as `!!(o++)`.
+            { TokenType.Increment, Precedence.Call },
+            { TokenType.Decrement, Precedence.Call },
         };
 
         public Parser(
@@ -372,6 +374,14 @@ namespace FenBrowser.FenEngine.Core
             {
                 _errors.Add("SyntaxError: HTML-like comments are not allowed in module code");
             }
+
+            // Recovery: if the parser has already advanced to a new switch-clause
+            // boundary, let the enclosing switch parser consume it instead of
+            // mis-parsing `default:` as an expression statement.
+            if (CurTokenIs(TokenType.Default) && PeekTokenIs(TokenType.Colon))
+            {
+                return null;
+            }
             
             switch (_curToken.Type)
             {
@@ -415,7 +425,7 @@ namespace FenBrowser.FenEngine.Core
                     return ParseDoWhileStatement();
                 case TokenType.Function:
                     {
-                        var funcExp = ParseFunctionLiteral() as FunctionLiteral;
+                        var funcExp = ParseFunctionLiteral(forceAsync: false, allowBodyExpressionContinuation: false) as FunctionLiteral;
                         // Return FunctionDeclarationStatement to allow Annex B-compatible function-declaration handling.
                         return new FunctionDeclarationStatement 
                         { 
@@ -532,7 +542,6 @@ namespace FenBrowser.FenEngine.Core
 
         private LabeledStatement ParseLabeledStatement()
         {
-            if (Lexer.DebugMode) Console.WriteLine($"[DEBUG-STMT] ParseLabeledStatement: {_curToken.Type}");
             if (IsReservedIdentifierReference(_curToken))
             {
                 _errors.Add($"SyntaxError: Unexpected reserved word '{_curToken.Literal}'");
@@ -998,7 +1007,14 @@ namespace FenBrowser.FenEngine.Core
                 // But in template context, this brace is actually the start of Middle or Tail.
                 // We must coordinate with Lexer to reinterpret/consume it correctly.
                 
-                if (PeekTokenIs(TokenType.RBrace))
+                if (CurTokenIs(TokenType.RBrace))
+                {
+                    // Some nested parsers can legitimately leave us already sitting on the
+                    // template expression closer. In that case, ignore the stale peek token
+                    // and rescan the continuation directly from the lexer state.
+                    _peekToken = _lexer.ReadTemplateContinuation();
+                }
+                else if (PeekTokenIs(TokenType.RBrace))
                 {
                     // PeekToken is '}'. Lexer has already acted on it as RBrace.
                     // We consume this token BUT ask lexer to scan the *continuation* (string part).
@@ -1153,8 +1169,8 @@ namespace FenBrowser.FenEngine.Core
                         }
                         else
                         {
-                            // Concise arrow bodies are AssignmentExpression, not comma expressions.
-                            arrow.Body = ParseExpression(Precedence.Assignment);
+                            // AssignmentExpression grammar allows assignment but excludes the comma operator.
+                            arrow.Body = ParseExpression(Precedence.Comma);
                         }
                     }
                     finally
@@ -1400,7 +1416,9 @@ namespace FenBrowser.FenEngine.Core
                     return null;
                 }
 
-                funcLit.Body = ParseBlockStatement(consumeTerminator: false);
+                funcLit.Body = ParseBlockStatement(
+                    consumeTerminator: false,
+                    allowExpressionContinuationAfterClosingBrace: true);
                 return funcLit;
             }
             finally
@@ -1453,7 +1471,109 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
-        private BlockStatement ParseBlockStatement(bool consumeTerminator = true, bool enableDirectiveStrictMode = false)
+        private bool ExpressionMayLeaveTrailingInnerBrace(Expression expression)
+        {
+            if (expression == null)
+            {
+                return false;
+            }
+
+            return expression switch
+            {
+                ObjectLiteral => true,
+                FunctionLiteral => true,
+                AsyncFunctionExpression => true,
+                ClassExpression => true,
+                ArrowFunctionExpression arrow => arrow.Body is BlockStatement ||
+                                                 arrow.Body is Expression arrowExpression &&
+                                                 ExpressionMayLeaveTrailingInnerBrace(arrowExpression),
+                AssignmentExpression assignment => ExpressionMayLeaveTrailingInnerBrace(assignment.Right),
+                LogicalAssignmentExpression assignment => ExpressionMayLeaveTrailingInnerBrace(assignment.Right),
+                InfixExpression infix => ExpressionMayLeaveTrailingInnerBrace(infix.Right),
+                ConditionalExpression conditional => ExpressionMayLeaveTrailingInnerBrace(conditional.Consequent) ||
+                                                     ExpressionMayLeaveTrailingInnerBrace(conditional.Alternate),
+                AwaitExpression awaitExpression => ExpressionMayLeaveTrailingInnerBrace(awaitExpression.Argument),
+                YieldExpression yieldExpression => ExpressionMayLeaveTrailingInnerBrace(yieldExpression.Value),
+                PrefixExpression prefix => ExpressionMayLeaveTrailingInnerBrace(prefix.Right),
+                ThrowExpression throwExpression => ExpressionMayLeaveTrailingInnerBrace(throwExpression.Value),
+                _ => false
+            };
+        }
+
+        private bool StatementMayLeaveTrailingInnerBrace(Statement statement)
+        {
+            if (statement == null)
+            {
+                return false;
+            }
+
+            return statement switch
+            {
+                LabeledStatement labeled => StatementMayLeaveTrailingInnerBrace(labeled.Body),
+                BlockStatement => true,
+                IfStatement => true,
+                TryStatement => true,
+                WhileStatement => true,
+                DoWhileStatement => true,
+                ForStatement => true,
+                ForInStatement => true,
+                ForOfStatement => true,
+                SwitchStatement => true,
+                WithStatement => true,
+                FunctionDeclarationStatement => true,
+                ClassStatement => true,
+                ReturnStatement returnStatement => ExpressionMayLeaveTrailingInnerBrace(returnStatement.ReturnValue),
+                ThrowStatement throwStatement => ExpressionMayLeaveTrailingInnerBrace(throwStatement.Value),
+                ExpressionStatement expressionStatement => ExpressionMayLeaveTrailingInnerBrace(expressionStatement.Expression),
+                LetStatement letStatement => ExpressionMayLeaveTrailingInnerBrace(letStatement.Value),
+                _ => false
+            };
+        }
+
+        private bool IsCurrentTokenClosingCurrentBlock(Token blockToken)
+        {
+            if (blockToken == null ||
+                !CurTokenIs(TokenType.RBrace) ||
+                _lexer?.Source == null ||
+                blockToken.Position < 0 ||
+                _curToken.Position < blockToken.Position)
+            {
+                return CurTokenIs(TokenType.RBrace);
+            }
+
+            int length = (_curToken.Position - blockToken.Position) + Math.Max(_curToken.Literal?.Length ?? 0, 1);
+            if (length <= 0 || blockToken.Position + length > _lexer.Source.Length)
+            {
+                return CurTokenIs(TokenType.RBrace);
+            }
+
+            var probe = new Lexer(_lexer.Source.Substring(blockToken.Position, length))
+            {
+                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
+            };
+
+            int depth = 0;
+            for (var token = probe.NextToken(); token.Type != TokenType.Eof; token = probe.NextToken())
+            {
+                if (token.Type == TokenType.LBrace ||
+                    token.Type == TokenType.TemplateHead ||
+                    token.Type == TokenType.TemplateMiddle)
+                {
+                    depth++;
+                }
+                else if (token.Type == TokenType.RBrace)
+                {
+                    depth--;
+                }
+            }
+
+            return depth == 0;
+        }
+
+        private BlockStatement ParseBlockStatement(
+            bool consumeTerminator = true,
+            bool enableDirectiveStrictMode = false,
+            bool allowExpressionContinuationAfterClosingBrace = false)
         {
             var block = new BlockStatement { Token = _curToken };
             _moduleDeclarationNestingDepth++;
@@ -1491,17 +1611,15 @@ namespace FenBrowser.FenEngine.Core
                     // mistake it for THIS block's closing '}'.
                     if (CurTokenIs(TokenType.RBrace))
                     {
-                        NextToken(); // consume inner block's '}'
-
-                        // If bubbling out of nested blocks lands directly on a
-                        // call/object terminator, this block is done as well.
-                        if (CurTokenIs(TokenType.RParen) ||
-                            CurTokenIs(TokenType.Semicolon) ||
-                            CurTokenIs(TokenType.Comma) ||
-                            CurTokenIs(TokenType.Eof))
+                        if (IsCurrentTokenClosingCurrentBlock(block.Token))
                         {
                             break;
                         }
+
+                        // Nested statement/expression parses can leave us on an
+                        // inner '}'. If brace depth says this is not the current
+                        // block's own terminator, consume it and keep scanning.
+                        NextToken(); // consume inner block's '}'
 
                         continue;
                     }
@@ -1531,10 +1649,10 @@ namespace FenBrowser.FenEngine.Core
 
         private Expression ParseFunctionLiteral()
         {
-            return ParseFunctionLiteral(forceAsync: false);
+            return ParseFunctionLiteral(forceAsync: false, allowBodyExpressionContinuation: true);
         }
 
-        private Expression ParseFunctionLiteral(bool forceAsync)
+        private Expression ParseFunctionLiteral(bool forceAsync, bool allowBodyExpressionContinuation = true)
         {
             var lit = new FunctionLiteral { Token = _curToken };
             lit.IsAsync = forceAsync;
@@ -1585,7 +1703,10 @@ namespace FenBrowser.FenEngine.Core
                         _isStrictMode = true;
                     }
 
-                    lit.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
+                    lit.Body = ParseBlockStatement(
+                        consumeTerminator: false,
+                        enableDirectiveStrictMode: true,
+                        allowExpressionContinuationAfterClosingBrace: allowBodyExpressionContinuation);
 
                     if (lit.IsAsync)
                     {
@@ -2457,10 +2578,12 @@ namespace FenBrowser.FenEngine.Core
                 }
                 else
                 {
-
-
-
-                    _errors.Add($"[Debug] ParseObjectLiteral failed for key: {key}, Next token: {_peekToken.Type}");
+                    var debugMessage = $"[Debug] ParseObjectLiteral failed for key: {key}, Next token: {_peekToken.Type}";
+                    if (_lexer != null)
+                    {
+                        debugMessage += $"\nContext:\n{_lexer.GetCodeContext(_peekToken.Line, _peekToken.Column)}";
+                    }
+                    _errors.Add(debugMessage);
                     return null;
                 }
 
@@ -2478,6 +2601,13 @@ namespace FenBrowser.FenEngine.Core
                     break;
                 }
 
+                if (CurTokenIs(TokenType.RBrace) &&
+                    PeekTokenIs(TokenType.Comma) &&
+                    !ShouldContinueObjectLiteralAfterComma())
+                {
+                    break;
+                }
+
                 if (!PeekTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.Comma))
                 {
                     return null;
@@ -2488,7 +2618,8 @@ namespace FenBrowser.FenEngine.Core
                 (PeekTokenIs(TokenType.Semicolon) ||
                  PeekTokenIs(TokenType.Eof) ||
                  PeekTokenIs(TokenType.RParen) ||
-                 PeekTokenIs(TokenType.RBracket)))
+                 PeekTokenIs(TokenType.RBracket) ||
+                 (PeekTokenIs(TokenType.Comma) && !ShouldContinueObjectLiteralAfterComma())))
             {
                 return obj;
             }
@@ -2535,7 +2666,12 @@ namespace FenBrowser.FenEngine.Core
             }
             else
             {
-                _errors.Add($"expected property name, got {_curToken.Type} instead");
+                var msg = $"expected property name, got {_curToken.Type} instead";
+                if (_lexer != null)
+                {
+                    msg += $"\nContext:\n{_lexer.GetCodeContext(_curToken.Line, _curToken.Column)}";
+                }
+                _errors.Add(msg);
                 return null;
             }
 
@@ -2690,7 +2826,7 @@ namespace FenBrowser.FenEngine.Core
             return _peekToken.Type == type;
         }
 
-        private bool ExpectPeek(TokenType type)
+        private bool ExpectPeek(TokenType type, [CallerMemberName] string caller = null)
         {
             if (PeekTokenIs(type))
             {
@@ -2714,13 +2850,14 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            PeekError(type);
+            PeekError(type, caller);
             return false;
         }
 
-        private void PeekError(TokenType type)
+        private void PeekError(TokenType type, string caller = null)
         {
-            var msg = $"expected next token to be {type}, got {_peekToken.Type} instead";
+            var callerPrefix = string.IsNullOrEmpty(caller) ? string.Empty : $"[{caller}] ";
+            var msg = $"{callerPrefix}expected next token to be {type}, got {_peekToken.Type} instead (cur={_curToken.Type}, curLiteral='{_curToken.Literal}')";
             // Console.WriteLine($"[DEBUG] PeekError: {msg} at line {_peekToken.Line} col {_peekToken.Column}. CurToken={_curToken.Type}");
             if (_lexer != null)
             {
@@ -2756,6 +2893,61 @@ namespace FenBrowser.FenEngine.Core
         }
         return Precedence.Lowest;
     }
+
+        private bool ShouldContinueObjectLiteralAfterComma()
+        {
+            if (!PeekTokenIs(TokenType.Comma) || _lexer?.Source == null)
+            {
+                return true;
+            }
+
+            int nextTokenStart = _peekToken.Position + Math.Max(_peekToken.Literal?.Length ?? 0, 1);
+            if (nextTokenStart < 0 || nextTokenStart >= _lexer.Source.Length)
+            {
+                return false;
+            }
+
+            var probe = new Lexer(_lexer.Source.Substring(nextTokenStart))
+            {
+                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
+            };
+
+            var next = probe.NextToken();
+            var afterNext = probe.NextToken();
+
+            if (next.Type == TokenType.Eof)
+            {
+                return false;
+            }
+
+            if (next.Type == TokenType.Asterisk ||
+                next.Type == TokenType.Ellipsis ||
+                next.Type == TokenType.LBracket)
+            {
+                return true;
+            }
+
+            if (next.Type == TokenType.Identifier ||
+                next.Type == TokenType.String ||
+                next.Type == TokenType.Number ||
+                IsKeywordToken(next.Type))
+            {
+                if (next.Literal == "get" ||
+                    next.Literal == "set" ||
+                    next.Literal == "async")
+                {
+                    return true;
+                }
+
+                return afterNext.Type == TokenType.Colon ||
+                       afterNext.Type == TokenType.Comma ||
+                       afterNext.Type == TokenType.RBrace ||
+                       afterNext.Type == TokenType.Assign ||
+                       afterNext.Type == TokenType.LParen;
+            }
+
+            return false;
+        }
 
         private Statement ParseTryStatement()
         {
@@ -3030,6 +3222,83 @@ namespace FenBrowser.FenEngine.Core
 
             if (hasForDeclaration)
             {
+                if (declarationToken.Type == TokenType.Var)
+                {
+                    var varDeclarators = ParseForDeclarationList(declarationToken, DeclarationKind.Var);
+                    if (varDeclarators.Count == 1 && (PeekTokenIs(TokenType.In) || PeekTokenIs(TokenType.Of)))
+                    {
+                        var singleDeclarator = varDeclarators[0];
+                        bool isOf = PeekTokenIs(TokenType.Of);
+
+                        if (singleDeclarator.Value != null)
+                        {
+                            _errors.Add("SyntaxError: for-in/of declaration may not have an initializer");
+                        }
+
+                        NextToken(); // 'in' or 'of'
+                        NextToken(); // rhs expression
+
+                        var rhsExpr = ParseExpression(isOf ? Precedence.Assignment : Precedence.Lowest);
+                        if (rhsExpr == null || rhsExpr is EmptyExpression)
+                        {
+                            _errors.Add($"SyntaxError: Missing right-hand side in for-{(isOf ? "of" : "in")} statement");
+                        }
+                        else if (isOf && IsInvalidForOfRightHandSide(rhsExpr))
+                        {
+                            _errors.Add("SyntaxError: Invalid right-hand side in for-of statement");
+                        }
+
+                        if (!ExpectPeek(TokenType.RParen)) return null;
+
+                        if (isOf)
+                        {
+                            bool forOfBodyHasBraces = PeekTokenIs(TokenType.LBrace);
+                            var body = ParseBodyAsBlock();
+                            if (!forOfBodyHasBraces && body?.Statements.Count > 0)
+                            {
+                                ReportInvalidSingleStatementBody(body.Statements[0], "for-of statement");
+                            }
+
+                            return new ForOfStatement
+                            {
+                                Token = forToken,
+                                Variable = singleDeclarator.Name,
+                                DestructuringPattern = singleDeclarator.DestructuringPattern,
+                                BindingKind = DeclarationKind.Var,
+                                Iterable = rhsExpr,
+                                Body = body,
+                                IsAwait = isAwait
+                            };
+                        }
+
+                        bool forInBodyHasBraces = PeekTokenIs(TokenType.LBrace);
+                        var forInBody = ParseBodyAsBlock();
+                        if (!forInBodyHasBraces && forInBody?.Statements.Count > 0)
+                        {
+                            ReportInvalidSingleStatementBody(forInBody.Statements[0], "for-in statement");
+                        }
+
+                        return new ForInStatement
+                        {
+                            Token = forToken,
+                            Variable = singleDeclarator.Name,
+                            DestructuringPattern = singleDeclarator.DestructuringPattern,
+                            BindingKind = DeclarationKind.Var,
+                            Object = rhsExpr,
+                            Body = forInBody
+                        };
+                    }
+
+                    stmt.Init = varDeclarators.Count == 1
+                        ? varDeclarators[0]
+                        : new BlockStatement
+                        {
+                            Token = declarationToken,
+                            Statements = new List<Statement>(varDeclarators)
+                        };
+                }
+                else
+                {
                 Identifier bindingIdentifier = null;
                 Expression bindingPattern = null;
                 Expression initializer = null;
@@ -3175,6 +3444,7 @@ namespace FenBrowser.FenEngine.Core
                     DestructuringPattern = bindingPattern,
                     Value = initializer
                 };
+                }
             }
             else if (!CurTokenIs(TokenType.Semicolon))
             {
@@ -3341,6 +3611,104 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return stmt;
+        }
+
+        private List<LetStatement> ParseForDeclarationList(Token declarationToken, DeclarationKind kind)
+        {
+            var declarations = new List<LetStatement>();
+
+            while (true)
+            {
+                var declarator = ParseForDeclarationDeclarator(declarationToken, kind);
+                declarations.Add(declarator);
+
+                if (!PeekTokenIs(TokenType.Comma))
+                {
+                    break;
+                }
+
+                NextToken(); // ','
+                NextToken(); // next declarator
+            }
+
+            return declarations;
+        }
+
+        private LetStatement ParseForDeclarationDeclarator(Token declarationToken, DeclarationKind kind)
+        {
+            var declarator = new LetStatement
+            {
+                Token = declarationToken,
+                Kind = kind
+            };
+
+            if (CurTokenIs(TokenType.LBrace) || CurTokenIs(TokenType.LBracket))
+            {
+                var patternOrInitializer = ParseExpression(Precedence.Comma);
+                declarator.Name = new Identifier(declarationToken, "_destructured");
+
+                if (TryNormalizeDestructuringAssignment(patternOrInitializer, out var bindingPattern, out var initializer))
+                {
+                    declarator.DestructuringPattern = bindingPattern;
+                    declarator.Value = initializer;
+                }
+                else
+                {
+                    declarator.DestructuringPattern = patternOrInitializer;
+
+                    if (PeekTokenIs(TokenType.Assign))
+                    {
+                        NextToken(); // '='
+                        NextToken(); // initializer start
+                        declarator.Value = ParseExpression(Precedence.Comma);
+                    }
+                    else if (kind == DeclarationKind.Const)
+                    {
+                        _errors.Add("SyntaxError: Missing initializer in const declaration");
+                    }
+                }
+
+                ValidateBindingPattern(declarator.DestructuringPattern);
+                return declarator;
+            }
+
+            if (!IsIdentifierNameToken(_curToken.Type))
+            {
+                if (IsKeywordToken(_curToken.Type) && !_contextualKeywords.Contains(_curToken.Type))
+                {
+                    _errors.Add($"SyntaxError: Unexpected reserved word '{_curToken.Literal}'");
+                }
+                else if (!IsKeywordToken(_curToken.Type))
+                {
+                    _errors.Add($"SyntaxError: Expected identifier in {kind.ToString().ToLowerInvariant()} declaration");
+                }
+
+                return declarator;
+            }
+
+            if (!ValidateBindingIdentifier(_curToken))
+            {
+                return declarator;
+            }
+
+            declarator.Name = new Identifier(_curToken, _curToken.Literal);
+            if (_functionDepth == 0 && kind != DeclarationKind.Var && declarator.Name.Value == "undefined")
+            {
+                _errors.Add("SyntaxError: Lexical declaration cannot redeclare restricted global property 'undefined'");
+            }
+
+            if (PeekTokenIs(TokenType.Assign))
+            {
+                NextToken(); // '='
+                NextToken(); // initializer start
+                declarator.Value = ParseExpression(Precedence.Comma);
+            }
+            else if (kind == DeclarationKind.Const)
+            {
+                _errors.Add("SyntaxError: Missing initializer in const declaration");
+            }
+
+            return declarator;
         }
 
         // Parse for-of: for (x of iterable) { ... } or for await (x of asyncIterable) { ... }
@@ -4103,7 +4471,7 @@ namespace FenBrowser.FenEngine.Core
                 NextToken(); // Move past 'default'
                 if (CurTokenIs(TokenType.Function))
                 {
-                    stmt.DefaultExpression = ParseFunctionLiteral();
+                    stmt.DefaultExpression = ParseFunctionLiteral(forceAsync: false, allowBodyExpressionContinuation: false);
                 }
                 else if (CurTokenIs(TokenType.Class))
                 {
@@ -4339,7 +4707,7 @@ namespace FenBrowser.FenEngine.Core
             var token = _curToken;
             NextToken(); // Move past 'async' (cur is now 'function')
 
-            var funcLit = ParseFunctionLiteral(forceAsync: true) as FunctionLiteral;
+            var funcLit = ParseFunctionLiteral(forceAsync: true, allowBodyExpressionContinuation: false) as FunctionLiteral;
             if (funcLit != null && funcLit.Name != null)
             {
                 // Async function declarations are hoisted like ordinary function
@@ -4447,12 +4815,14 @@ namespace FenBrowser.FenEngine.Core
                         _arrowFunctionDepth++;
                         if (CurTokenIs(TokenType.LBrace))
                         {
-                            arrow.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
+                            arrow.Body = ParseBlockStatement(
+                                consumeTerminator: false,
+                                enableDirectiveStrictMode: true);
                         }
                         else
                         {
-                            // Concise arrow bodies are AssignmentExpression, so argument-list commas stay with the outer call.
-                            arrow.Body = ParseExpression(Precedence.Assignment);
+                            // AssignmentExpression grammar allows assignment but excludes the comma operator.
+                            arrow.Body = ParseExpression(Precedence.Comma);
                         }
 
                         ValidateArrowFunctionEarlyErrors(
@@ -4560,11 +4930,17 @@ namespace FenBrowser.FenEngine.Core
             stmt.Discriminant = ParseExpression(Precedence.Lowest);
             if (!ExpectPeek(TokenType.RParen)) return null;
             if (!ExpectPeek(TokenType.LBrace)) return null;
+            NextToken(); // Move to first token inside the switch body.
 
             // Parse cases
-            while (!PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+            while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
             {
-                NextToken();
+                if (!CurTokenIs(TokenType.Case) && !CurTokenIs(TokenType.Default))
+                {
+                    NextToken();
+                    continue;
+                }
+
                 var switchCase = new SwitchCase { Token = _curToken };
 
                 if (CurTokenIs(TokenType.Case))
@@ -4582,20 +4958,36 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 if (!ExpectPeek(TokenType.Colon))
-        {
-            // Recovery: skip to next case/default/rbrace
-            while (!CurTokenIs(TokenType.Colon) && !CurTokenIs(TokenType.Case) && 
-                   !CurTokenIs(TokenType.Default) && !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
-            {
-                NextToken();
-            }
-        }
+                {
+                    // Recovery: skip to next case/default/rbrace
+                    while (!CurTokenIs(TokenType.Colon) &&
+                           !CurTokenIs(TokenType.Case) &&
+                           !CurTokenIs(TokenType.Default) &&
+                           !CurTokenIs(TokenType.RBrace) &&
+                           !CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                    }
+
+                    if (CurTokenIs(TokenType.Case) || CurTokenIs(TokenType.Default))
+                    {
+                        continue;
+                    }
+
+                    if (CurTokenIs(TokenType.RBrace) || CurTokenIs(TokenType.Eof))
+                    {
+                        break;
+                    }
+                }
+
+                NextToken(); // Move to first consequent statement token.
 
                 // Parse statements until next case/default/}
-                while (!PeekTokenIs(TokenType.Case) && !PeekTokenIs(TokenType.Default) && 
-                       !PeekTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.Eof))
+                while (!CurTokenIs(TokenType.Case) &&
+                       !CurTokenIs(TokenType.Default) &&
+                       !CurTokenIs(TokenType.RBrace) &&
+                       !CurTokenIs(TokenType.Eof))
                 {
-                    NextToken();
                     Statement s;
                     _moduleDeclarationNestingDepth++;
                     try
@@ -4607,6 +4999,34 @@ namespace FenBrowser.FenEngine.Core
                         _moduleDeclarationNestingDepth--;
                     }
                     if (s != null) switchCase.Consequent.Add(s);
+
+                    if (CurTokenIs(TokenType.RBrace))
+                    {
+                        // Nested statements inside a case (for example
+                        // `if (...) { ... }`) can leave us on their closing
+                        // brace. Consume that inner brace and continue
+                        // parsing the same case unless we actually surfaced
+                        // back to the switch boundary or the next clause.
+                        NextToken();
+                        if (CurTokenIs(TokenType.Case) ||
+                            CurTokenIs(TokenType.Default) ||
+                            CurTokenIs(TokenType.RBrace) ||
+                            CurTokenIs(TokenType.Eof))
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    if (CurTokenIs(TokenType.Case) ||
+                        CurTokenIs(TokenType.Default) ||
+                        CurTokenIs(TokenType.Eof))
+                    {
+                        break;
+                    }
+
+                    NextToken();
                 }
 
                 stmt.Cases.Add(switchCase);
@@ -4614,7 +5034,7 @@ namespace FenBrowser.FenEngine.Core
 
             ValidateSwitchCaseBlockEarlyErrors(stmt);
 
-            if (!ExpectPeek(TokenType.RBrace)) return null;
+            if (!CurTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.RBrace)) return null;
             return stmt;
         }
 
@@ -5038,12 +5458,14 @@ namespace FenBrowser.FenEngine.Core
                 _arrowFunctionDepth++;
                 if (CurTokenIs(TokenType.LBrace))
                 {
-                    arrow.Body = ParseBlockStatement(consumeTerminator: false, enableDirectiveStrictMode: true);
+                    arrow.Body = ParseBlockStatement(
+                        consumeTerminator: false,
+                        enableDirectiveStrictMode: true);
                 }
                 else
                 {
-                    // Concise arrow bodies are AssignmentExpression, not comma expressions.
-                    arrow.Body = ParseExpression(Precedence.Assignment);
+                    // AssignmentExpression grammar allows assignment but excludes the comma operator.
+                    arrow.Body = ParseExpression(Precedence.Comma);
                 }
 
                 ValidateArrowFunctionEarlyErrors(
@@ -5217,13 +5639,20 @@ namespace FenBrowser.FenEngine.Core
 
             if (!IsValidAssignmentTarget(left, allowDestructuring: false))
             {
-                _errors.Add($"Invalid left-hand side in compound assignment: {left?.GetType().Name}");
+                var msg = $"Invalid left-hand side in compound assignment: {left?.GetType().Name}";
+                if (_lexer != null)
+                {
+                    msg += $"\nContext:\n{_lexer.GetCodeContext(_curToken.Line, _curToken.Column)}";
+                }
+                _errors.Add(msg);
                 return null;
             }
 
             var precedence = CurPrecedence();
             NextToken();
-            var right = ParseExpression(precedence);
+            // Compound assignment follows AssignmentExpression grammar on the RHS,
+            // so nested forms like `a |= b &= c` must parse right-associatively.
+            var right = ParseExpression(Precedence.Comma);
 
             // Convert x += 1 to x = x + 1 internally
             // Create the binary operation
@@ -5276,7 +5705,12 @@ namespace FenBrowser.FenEngine.Core
         {
             if (!IsValidUpdateTarget(left))
             {
-                _errors.Add($"Invalid left-hand side in postfix operation: {left?.GetType().Name}");
+                var msg = $"Invalid left-hand side in postfix operation: {left?.GetType().Name}";
+                if (_lexer != null)
+                {
+                    msg += $"\nContext:\n{_lexer.GetCodeContext(_curToken.Line, _curToken.Column)}";
+                }
+                _errors.Add(msg);
             }
             return new InfixExpression { Token = _curToken, Left = left, Operator = "++", Right = null };
         }
@@ -5286,7 +5720,12 @@ namespace FenBrowser.FenEngine.Core
         {
             if (!IsValidUpdateTarget(left))
             {
-                _errors.Add($"Invalid left-hand side in postfix operation: {left?.GetType().Name}");
+                var msg = $"Invalid left-hand side in postfix operation: {left?.GetType().Name}";
+                if (_lexer != null)
+                {
+                    msg += $"\nContext:\n{_lexer.GetCodeContext(_curToken.Line, _curToken.Column)}";
+                }
+                _errors.Add(msg);
             }
             return new InfixExpression { Token = _curToken, Left = left, Operator = "--", Right = null };
         }
@@ -6477,6 +6916,27 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return true;
+        }
+
+        private bool PeekStartsEmptyCall()
+        {
+            if (!PeekTokenIs(TokenType.LParen) || _lexer?.Source == null)
+            {
+                return false;
+            }
+
+            int nextTokenStart = _peekToken.Position + Math.Max(_peekToken.Literal?.Length ?? 0, 1);
+            if (nextTokenStart < 0 || nextTokenStart >= _lexer.Source.Length)
+            {
+                return false;
+            }
+
+            var probe = new Lexer(_lexer.Source.Substring(nextTokenStart))
+            {
+                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
+            };
+
+            return probe.NextToken().Type == TokenType.RParen;
         }
 
         private bool IsModuleHtmlCommentTokenStart()

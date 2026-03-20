@@ -465,11 +465,6 @@ namespace FenBrowser.FenEngine.Core
                         }
                         return NextTokenInternal(resetLineTerminator: false);
                     }
-                    else if (PeekChar() == '=')
-                    {
-                        ReadChar();
-                        token = new Token(TokenType.DivAssign, "/=", _line, startColumn);
-                    }
                     else
                     {
                         // Check for regex literal
@@ -479,8 +474,14 @@ namespace FenBrowser.FenEngine.Core
                             string regex = ReadRegexLiteral(out regexValid);
                             token = new Token(regexValid ? TokenType.Regex : TokenType.Illegal, regex, _line, startColumn);
                             token.HadLineTerminatorBefore = hadLineTerminator;
+                            token.Position = startPos;
                             _prevToken = token;
                             return token;
+                        }
+                        else if (PeekChar() == '=')
+                        {
+                            ReadChar();
+                            token = new Token(TokenType.DivAssign, "/=", _line, startColumn);
                         }
                         else
                         {
@@ -1655,21 +1656,27 @@ namespace FenBrowser.FenEngine.Core
                 if (_ch == '`')
                 {
                     ReadChar();
-                    return new Token(TokenType.TemplateTail, sb.ToString(), startLine, startColumn);
+                    var token = new Token(TokenType.TemplateTail, sb.ToString(), startLine, startColumn);
+                    _prevToken = token;
+                    return token;
                 }
 
                 if (_ch == '$' && PeekChar() == '{')
                 {
                     ReadChar(); // consume $
                     ReadChar(); // consume {
-                    return new Token(TokenType.TemplateMiddle, sb.ToString(), startLine, startColumn);
+                    var token = new Token(TokenType.TemplateMiddle, sb.ToString(), startLine, startColumn);
+                    _prevToken = token;
+                    return token;
                 }
 
                 if (_ch == '\\')
                 {
                     if (!TryReadTemplateEscape(sb, out var escapeError))
                     {
-                        return new Token(TokenType.Illegal, escapeError, startLine, startColumn);
+                        var token = new Token(TokenType.Illegal, escapeError, startLine, startColumn);
+                        _prevToken = token;
+                        return token;
                     }
                     continue;
                 }
@@ -1678,7 +1685,9 @@ namespace FenBrowser.FenEngine.Core
                 ReadChar();
             }
 
-            return new Token(TokenType.Illegal, "Unterminated template continuation", startLine, startColumn);
+            var unterminatedToken = new Token(TokenType.Illegal, "Unterminated template continuation", startLine, startColumn);
+            _prevToken = unterminatedToken;
+            return unterminatedToken;
         }
 
         private bool TryReadTemplateEscape(StringBuilder sb, out string error)
@@ -1821,43 +1830,33 @@ namespace FenBrowser.FenEngine.Core
         }
         private bool IsRegexStart(Token prev)
         {
-            if (prev  == null) return true; // Start of file
-            
+            if (prev == null) return true; // Start of file
+
             switch (prev.Type)
             {
-                case TokenType.Assign:
-                case TokenType.PlusAssign:
-                case TokenType.MinusAssign:
-                case TokenType.MulAssign:
-                case TokenType.DivAssign:
-                case TokenType.LParen:
-                case TokenType.LBrace:
-                case TokenType.LBracket:
-                case TokenType.Comma:
-                case TokenType.Colon:
-                case TokenType.Question:
-                case TokenType.Return:
-                case TokenType.Throw:
-                case TokenType.Case:
-                case TokenType.New:
-                case TokenType.Delete:
-                case TokenType.Void:
-                case TokenType.Typeof:
-                case TokenType.Bang:
-                case TokenType.NotEq:
-                case TokenType.StrictNotEq:
-                case TokenType.And:
-                case TokenType.Or:
-                case TokenType.Arrow:
-                case TokenType.Semicolon:
-                case TokenType.Else:
-                case TokenType.Do:
-                case TokenType.While:
-                case TokenType.If:
-                case TokenType.Await:
-                    return true;
-                default:
+                // Tokens that definitely terminate an expression keep `/` as division.
+                case TokenType.Identifier:
+                case TokenType.PrivateIdentifier:
+                case TokenType.Number:
+                case TokenType.BigInt:
+                case TokenType.String:
+                case TokenType.Regex:
+                case TokenType.True:
+                case TokenType.False:
+                case TokenType.Null:
+                case TokenType.Undefined:
+                case TokenType.This:
+                case TokenType.Super:
+                case TokenType.RParen:
+                case TokenType.RBracket:
+                case TokenType.RBrace:
+                case TokenType.Increment:
+                case TokenType.Decrement:
+                case TokenType.TemplateNoSubst:
+                case TokenType.TemplateTail:
                     return false;
+                default:
+                    return true;
             }
         }
 

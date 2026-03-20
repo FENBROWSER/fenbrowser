@@ -9,6 +9,7 @@ using FenBrowser.FenEngine.Errors;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using Xunit.Sdk;
 using System.IO;
+using System.Linq;
 
 namespace FenBrowser.Tests.Engine.Bytecode
 {
@@ -151,6 +152,44 @@ namespace FenBrowser.Tests.Engine.Bytecode
             
             // 2 * 3 = 6 + 1 = 7.
             Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Compiler_ShouldHandleLongCommaExpressionChains()
+        {
+            var sequence = string.Join(",", Enumerable.Range(0, 2048));
+            var result = Evaluate($"var value = ({sequence}); value;");
+            Assert.Equal(2047, (int)result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Compiler_ShouldHandleLongLeftAssociativeBinaryChains()
+        {
+            var expr = string.Join("+", Enumerable.Repeat("1", 2048));
+            var result = Evaluate($"({expr});");
+            Assert.Equal(2048, (int)result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Compiler_ShouldHandleDeeplyNestedFunctionLiterals()
+        {
+            var js = "var root = ";
+            for (var i = 0; i < 24; i++)
+            {
+                js += $"function f{i}(){{ return ";
+            }
+
+            js += "42";
+
+            for (var i = 0; i < 24; i++)
+            {
+                js += "; }";
+            }
+
+            js += "; typeof root;";
+
+            var result = Evaluate(js);
+            Assert.Equal("function", result.AsString());
         }
 
         [Fact]
@@ -1269,6 +1308,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var codeBlock = _compiler.Compile(ast);
             Assert.NotNull(codeBlock);
         }
+
 
     }
 }

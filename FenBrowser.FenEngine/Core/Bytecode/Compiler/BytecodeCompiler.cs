@@ -31,10 +31,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly bool _forceStrictRoot;
         private bool _currentCompileIsStrict;
         private int _visitDepth;
-        private const int MaxVisitDepth = 128;
+        // Production bundles routinely exceed small synthetic depth caps through
+        // nested expression trees and generated wrapper functions.
+        private const int MaxVisitDepth = 4096;
         [ThreadStatic]
         private static int _compileDepth;
-        private const int MaxCompileDepth = 8;
+        private const int MaxCompileDepth = 256;
         private int _syntheticNameCounter;
         private int _scopeDepth;
         private bool _insideBlock;
@@ -490,7 +492,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is InfixExpression binExpr)
             {
-                if ((binExpr.Operator == "++" || binExpr.Operator == "--") && binExpr.Right == null)
+                if (TryEmitLinearInfixExpression(binExpr))
+                {
+                }
+                else if ((binExpr.Operator == "++" || binExpr.Operator == "--") && binExpr.Right == null)
                 {
                     EmitPostfixUpdate(binExpr.Left, binExpr.Operator);
                 }
@@ -524,37 +529,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     // Push Left, Push Right, Execute Op
                     Visit(binExpr.Left);
                     Visit(binExpr.Right);
-                    
-                    switch (binExpr.Operator)
-                {
-                    case "+": Emit(OpCode.Add); break;
-                    case "-": Emit(OpCode.Subtract); break;
-                    case "*": Emit(OpCode.Multiply); break;
-                    case "/": Emit(OpCode.Divide); break;
-                    case "%": Emit(OpCode.Modulo); break;
-                    case "**": Emit(OpCode.Exponent); break;
-                    case "==": Emit(OpCode.Equal); break;
-                    case "===": Emit(OpCode.StrictEqual); break;
-                    case "!=": Emit(OpCode.NotEqual); break;
-                    case "!==": Emit(OpCode.StrictNotEqual); break;
-                    case "<": Emit(OpCode.LessThan); break;
-                    case ">": Emit(OpCode.GreaterThan); break;
-                    case "<=": Emit(OpCode.LessThanOrEqual); break;
-                    case ">=": Emit(OpCode.GreaterThanOrEqual); break;
-                    case "in": Emit(OpCode.InOperator); break;
-                    case "instanceof": Emit(OpCode.InstanceOf); break;
-                    case "&": Emit(OpCode.BitwiseAnd); break;
-                    case "|": Emit(OpCode.BitwiseOr); break;
-                    case "^": Emit(OpCode.BitwiseXor); break;
-                    case "<<": Emit(OpCode.LeftShift); break;
-                    case ">>": Emit(OpCode.RightShift); break;
-                    case ">>>": Emit(OpCode.UnsignedRightShift); break;
-                    default:
+
+                    if (!TryEmitBinaryOperator(binExpr.Operator))
+                    {
                         int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Operator '{binExpr.Operator}' not supported."));
                         Emit(OpCode.LoadConst);
                         EmitInt32(msgIdx);
                         Emit(OpCode.Throw);
-                        break;
                     }
                 }
             }
@@ -952,7 +933,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     foreach (var s in blockStmt.Statements)
                     {
-                        if (s is LetStatement || s is ClassStatement || s is FunctionDeclarationStatement)
+                        if ((s is LetStatement blockLetStmt && blockLetStmt.Kind != DeclarationKind.Var) ||
+                            s is ClassStatement ||
+                            s is FunctionDeclarationStatement)
                         {
                             needsScope = true;
                             break;
@@ -1334,6 +1317,217 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             finally
             {
                 _visitDepth--;
+            }
+        }
+
+        private bool TryEmitLinearInfixExpression(InfixExpression root)
+        {
+            if (root == null || string.IsNullOrEmpty(root.Operator) || root.Right == null)
+            {
+                return false;
+            }
+
+            if (root.Operator == "++" || root.Operator == "--" || root.Operator == "**")
+            {
+                return false;
+            }
+
+            var operands = CollectLinearInfixOperands(root, root.Operator);
+            if (operands.Count <= 2)
+            {
+                return false;
+            }
+
+            switch (root.Operator)
+            {
+                case ",":
+                    EmitFlattenedCommaChain(operands);
+                    return true;
+                case "&&":
+                    EmitFlattenedLogicalChain(operands, OpCode.JumpIfFalse);
+                    return true;
+                case "||":
+                    EmitFlattenedLogicalChain(operands, OpCode.JumpIfTrue);
+                    return true;
+                default:
+                    return TryEmitFlattenedBinaryChain(operands, root.Operator);
+            }
+        }
+
+        private static List<AstNode> CollectLinearInfixOperands(InfixExpression root, string operatorToken)
+        {
+            var rightOperands = new Stack<AstNode>();
+            AstNode current = root;
+
+            while (current is InfixExpression infix &&
+                   infix.Right != null &&
+                   string.Equals(infix.Operator, operatorToken, StringComparison.Ordinal) &&
+                   infix.Operator != "++" &&
+                   infix.Operator != "--")
+            {
+                rightOperands.Push(infix.Right);
+                current = infix.Left;
+            }
+
+            var operands = new List<AstNode>(rightOperands.Count + 1)
+            {
+                current
+            };
+
+            while (rightOperands.Count > 0)
+            {
+                operands.Add(rightOperands.Pop());
+            }
+
+            return operands;
+        }
+
+        private void EmitFlattenedCommaChain(List<AstNode> operands)
+        {
+            for (int i = 0; i < operands.Count; i++)
+            {
+                Visit(operands[i]);
+                if (i < operands.Count - 1)
+                {
+                    Emit(OpCode.Pop);
+                }
+            }
+        }
+
+        private void EmitFlattenedLogicalChain(List<AstNode> operands, OpCode shortCircuitJump)
+        {
+            Visit(operands[0]);
+
+            for (int i = 1; i < operands.Count; i++)
+            {
+                Emit(OpCode.Dup);
+                int jumpEnd = EmitJump(shortCircuitJump);
+                Emit(OpCode.Pop);
+                Visit(operands[i]);
+                PatchJump(jumpEnd);
+            }
+        }
+
+        private bool TryEmitFlattenedBinaryChain(List<AstNode> operands, string operatorToken)
+        {
+            if (!IsFlattenableBinaryOperator(operatorToken))
+            {
+                return false;
+            }
+
+            Visit(operands[0]);
+            for (int i = 1; i < operands.Count; i++)
+            {
+                Visit(operands[i]);
+                TryEmitBinaryOperator(operatorToken);
+            }
+
+            return true;
+        }
+
+        private static bool IsFlattenableBinaryOperator(string operatorToken)
+        {
+            switch (operatorToken)
+            {
+                case "+":
+                case "-":
+                case "*":
+                case "/":
+                case "%":
+                case "==":
+                case "===":
+                case "!=":
+                case "!==":
+                case "<":
+                case ">":
+                case "<=":
+                case ">=":
+                case "in":
+                case "instanceof":
+                case "&":
+                case "|":
+                case "^":
+                case "<<":
+                case ">>":
+                case ">>>":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private bool TryEmitBinaryOperator(string operatorToken)
+        {
+            switch (operatorToken)
+            {
+                case "+":
+                    Emit(OpCode.Add);
+                    return true;
+                case "-":
+                    Emit(OpCode.Subtract);
+                    return true;
+                case "*":
+                    Emit(OpCode.Multiply);
+                    return true;
+                case "/":
+                    Emit(OpCode.Divide);
+                    return true;
+                case "%":
+                    Emit(OpCode.Modulo);
+                    return true;
+                case "**":
+                    Emit(OpCode.Exponent);
+                    return true;
+                case "==":
+                    Emit(OpCode.Equal);
+                    return true;
+                case "===":
+                    Emit(OpCode.StrictEqual);
+                    return true;
+                case "!=":
+                    Emit(OpCode.NotEqual);
+                    return true;
+                case "!==":
+                    Emit(OpCode.StrictNotEqual);
+                    return true;
+                case "<":
+                    Emit(OpCode.LessThan);
+                    return true;
+                case ">":
+                    Emit(OpCode.GreaterThan);
+                    return true;
+                case "<=":
+                    Emit(OpCode.LessThanOrEqual);
+                    return true;
+                case ">=":
+                    Emit(OpCode.GreaterThanOrEqual);
+                    return true;
+                case "in":
+                    Emit(OpCode.InOperator);
+                    return true;
+                case "instanceof":
+                    Emit(OpCode.InstanceOf);
+                    return true;
+                case "&":
+                    Emit(OpCode.BitwiseAnd);
+                    return true;
+                case "|":
+                    Emit(OpCode.BitwiseOr);
+                    return true;
+                case "^":
+                    Emit(OpCode.BitwiseXor);
+                    return true;
+                case "<<":
+                    Emit(OpCode.LeftShift);
+                    return true;
+                case ">>":
+                    Emit(OpCode.RightShift);
+                    return true;
+                case ">>>":
+                    Emit(OpCode.UnsignedRightShift);
+                    return true;
+                default:
+                    return false;
             }
         }
 

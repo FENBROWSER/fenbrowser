@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using FenBrowser.FenEngine.Core;
 using Xunit;
@@ -100,6 +101,26 @@ namespace FenBrowser.Tests.Engine
         public void Parse_ConditionalCommaExpression_WithAsyncArrowIife_NoErrors()
         {
             var input = "var x={available:function(){if(void 0===window.WIMB.data.client_hints_frontend_available)return void 0!==navigator.userAgentData?(window.WIMB.data.client_hints_uadata=navigator.userAgentData,window.WIMB.data.client_hints_frontend_available=!0,(async()=>{var e=await navigator.userAgentData.getHighEntropyValues([\"architecture\"]);window.WIMB.data.client_hints_frontend_architecture=e.architecture})(),window.WIMB.data.client_hints_frontend_brands=window.WIMB.data.client_hints_uadata.brands,!0):window.WIMB.data.client_hints_frontend_available=!1}};";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_WebpackArrowBody_WithChainedAssignment_NoErrors()
+        {
+            var input = "var t=new Promise(((r,t)=>n=e[a]=[r,t]));";
+            var parser = CreateParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ForLoop_CommaSequenceBody_NoErrors()
+        {
+            var input = "for(var e,t,n,i=\"\",r=this.array(),o=0;o<15;)e=r[o++],t=r[o++],n=r[o++],i+=BASE64_ENCODE_CHAR[e>>2]+BASE64_ENCODE_CHAR[(3&e)<<4|t>>4]+BASE64_ENCODE_CHAR[(15&t)<<2|n>>6]+BASE64_ENCODE_CHAR[63&n];";
             var parser = CreateParser(input);
             var program = parser.ParseProgram();
 
@@ -333,6 +354,36 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Parse_SwitchCase_DefaultReturn_AfterObjectSpreadReturn_NoErrors()
+        {
+            var input = "function f(e,o,t){switch(e){case\"tile\":return{...o,content:M(t)};default:return}}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_NestedSwitch_DefaultReturnDelete_ThenOuterDefault_NoErrors()
+        {
+            var input = "function f(e,s,m){switch(e){case 0:switch(s){case 1:return delete l[m];default:i(17,s)}default:i(17,s)}}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteral_WithArrowValuedProperties_NoErrors()
+        {
+            var input = "n.d(t,{v:()=>k,Z:()=>({value:1})});";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
         public void Parse_Throw_After_Conditional()
         {
            // Context around failure
@@ -396,6 +447,104 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Parse_TemplateLiteral_AfterIifeReturningObjectLiteral_NoErrors()
+        {
+            var parser = CreateParser("var out = `${(() => ({ value: /x/.test(input) ? ok : fallback }))()}`;");
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_TemplateLiteral_WithRegexSourceInTemplateMiddle_NoErrors()
+        {
+            var parser = CreateParser("var out = new RegExp(`${o.source}${/\\/([\\s\\S]+)/.source}`);");
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_FunctionDeclaration_ReturningArray_ThenVar_NoErrors()
+        {
+            var input = "function collect(){return [a[Z][l(Gn)],a[Z][d(Sn)],a[Z][d(du)],a[Z][l(Ba)]]}var x,C,T,I;";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_FunctionExpression_WithNestedFunction_ReturnArray_ThenVar_NoErrors()
+        {
+            var input = "O=function(){function e(){this.T=new Ui}return [a[Z][l(Gn)],a[Z][d(Sn)],a[Z][d(du)],a[Z][l(Ba)]]};var x,C,T,I;";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ModuleObject_NumericFunctionProperty_UseStrict_NoErrors()
+        {
+            var input = "var mods={8258:function(e,t,r){\"use strict\";return void 0===l?\"\":l}};var x=1;";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_FunctionK_CommaIifeCondition_NoErrors()
+        {
+            var input = "function k(e,t,r,n,i,o){var a=[];if(function(e,t,r,n){e[s(cR)](t,r,n)}(e,t,r,n),a[Z]=(a[se]=l(Xi),a[de]=l(Xi),function(e,t,r,n,i){if(e)try{return e[s(ER)](t,r,n,i)[s(y_)]}catch(e){return}}(e,i,o,a[se],a[de])),a[Z])return[a[Z][l(Gn)],a[Z][d(Sn)],a[Z][d(du)],a[Z][l(Ba)]]}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_FunctionK_FollowedByVarDeclaration_NoErrors()
+        {
+            var input = "function k(e,t,r,n,i,o){var a=[];if(function(e,t,r,n){e[s(cR)](t,r,n)}(e,t,r,n),a[Z]=(a[se]=l(Xi),a[de]=l(Xi),function(e,t,r,n,i){if(e)try{return e[s(ER)](t,r,n,i)[s(y_)]}catch(e){return}}(e,i,o,a[se],a[de])),a[Z])return[a[Z][l(Gn)],a[Z][d(Sn)],a[Z][d(du)],a[Z][l(Ba)]]}var x,C,T,I,O=function(){function e(){this.T=new Uint16Array(16),this.q=new Uint16Array(288)}};";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_RegexLiteralStartingWithEquals_InCallChain_NoErrors()
+        {
+            var input = "var out=r[se][u(Bo)](/\\+/g,Iw)[s(Ow)](/\\//g,wy)[Pw](/=+$/,ce);";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_ReactHelper_TryFinally_WithNestedIfElseAndDoWhile_NoErrors()
+        {
+            var input = "function U(e,t){if(!e||j)return\"\";j=!0;var r=Error.prepareStackTrace;Error.prepareStackTrace=void 0;try{if(t)if(t=function(){throw Error()},Object.defineProperty(t.prototype,\"props\",{set:function(){throw Error()}}),\"object\"==typeof Reflect&&Reflect.construct){try{Reflect.construct(t,[])}catch(e){var n=e}Reflect.construct(e,[],t)}else{try{t.call()}catch(e){n=e}e.call(t.prototype)}else{try{throw Error()}catch(e){n=e}e()}}catch(t){if(t&&n&&\"string\"==typeof t.stack){for(var i=t.stack.split(\"\\n\"),o=n.stack.split(\"\\n\"),a=i.length-1,u=o.length-1;1<=a&&0<=u&&i[a]!==o[u];)u--;for(;1<=a&&0<=u;a--,u--)if(i[a]!==o[u]){if(1!==a||1!==u)do{if(a--,0>--u||i[a]!==o[u]){var s=\"\\n\"+i[a].replace(\" at new \",\" at \");return e.displayName&&s.includes(\"<anonymous>\")&&(s=s.replace(\"<anonymous>\",e.displayName)),s}}while(1<=a&&0<=u);break}}}finally{j=!1,Error.prepareStackTrace=r}return(e=e?e.displayName||e.name:\"\")?z(e):\"\"}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_GlobalizeFormatter_SwitchThenStringExpression_NoErrors()
+        {
+            var input = "var _=[\"sun\",\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\"],S=function(e,t,r){var n=[],i=r.timeSeparator;return r.pattern.replace(y,(function(o){var u,s,l,c=o.charAt(0),d=o.length;switch(\"j\"===c&&(c=r.preferredTime),\"Z\"===c&&(d<4?(c=\"x\",d=4):d<5?(c=\"O\",d=4):(c=\"X\",d=5)),\"z\"===c&&(e.isDST&&(l=e.isDST()?r.daylightTzName:r.standardTzName),l||(c=\"O\",d<4&&(d=1))),c){case\"G\":l=r.eras[e.getFullYear()<0?0:1];break;case\"y\":l=e.getFullYear(),2===d&&(l=+(l=String(l)).substr(l.length-2));break;case\"Y\":(l=new Date(e.getTime())).setDate(l.getDate()+7-p(e,r.firstDay)-r.firstDay-r.minDays),l=l.getFullYear(),2===d&&(l=+(l=String(l)).substr(l.length-2));break;case\"Q\":case\"q\":l=Math.ceil((e.getMonth()+1)/3),d>2&&(l=r.quarters[c][d][l]);break;case\"M\":case\"L\":l=e.getMonth()+1,d>2&&(l=r.months[c][d][l]);break;case\"w\":l=p(v(e,\"year\"),r.firstDay),l=Math.ceil((g(e)+l)/7)-(7-l>=r.minDays?0:1);break;case\"W\":l=p(v(e,\"month\"),r.firstDay),l=Math.ceil((e.getDate()+l)/7)-(7-l>=r.minDays?0:1);break;case\"d\":l=e.getDate();break;case\"D\":l=g(e)+1;break;case\"F\":l=Math.floor(e.getDate()/7)+1;break;case\"e\":case\"c\":if(d<=2){l=p(e,r.firstDay)+1;break}case\"E\":l=_[e.getDay()],l=r.days[c][d][l];break;case\"a\":l=r.dayPeriods[e.getHours()<12?\"am\":\"pm\"];break;case\"h\":l=e.getHours()%12||12;break;case\"H\":l=e.getHours();break;case\"K\":l=e.getHours()%12;break;case\"k\":l=e.getHours()||24;break;case\"m\":l=e.getMinutes();break;case\"s\":l=e.getSeconds();break;case\"S\":l=Math.round(e.getMilliseconds()*Math.pow(10,d-3));break;case\"A\":l=Math.round(function(e){return e-v(e,\"day\")}(e)*Math.pow(10,d-3));break;case\"z\":break;case\"v\":if(r.genericTzName){l=r.genericTzName;break}case\"V\":if(r.timeZoneName){l=r.timeZoneName;break}\"v\"===o&&(d=1);case\"O\":0===e.getTimezoneOffset()?l=r.gmtZeroFormat:(d<4?(u=e.getTimezoneOffset(),u=r.hourFormat[u%60-u%1==0?0:1]):u=r.hourFormat,l=b(e,u,i,t),l=r.gmtFormat.replace(/\\{0\\}/,l));break;case\"X\":if(0===e.getTimezoneOffset()){l=\"Z\";break}case\"x\":u=e.getTimezoneOffset(),1===d&&u%60-u%1!=0&&(d+=1),4!==d&&5!==d||u%1!=0||(d-=2),l=b(e,l=[\"+HH;-HH\",\"+HHmm;-HHmm\",\"+HH:mm;-HH:mm\",\"+HHmmss;-HHmmss\",\"+HH:mm:ss;-HH:mm:ss\"][d-1],\":\");break;case\":\":l=i;break;case\"'\":l=a(o);break;default:l=o}\"number\"==typeof l&&(l=t[d](l)),\"literal\"===(s=m[c]||\"literal\")&&n.length&&\"literal\"===n[n.length-1].type?n[n.length-1].value+=l:n.push({type:s,value:l})})),n};";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
         public void Parse_AnonymousClass_WithAdjacentMethods_AndComputedIterator_NoErrors()
         {
             var input = @"
@@ -426,6 +575,76 @@ namespace FenBrowser.Tests.Engine
             var input = "var x = 1; x += 2;";
             var parser = CreateParser(input);
             var program = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_NestedCompoundAssignments_NoErrors()
+        {
+            var input = "var r=0,n=0,e={pendingLanes:1,t:{lanes:0}}; r|=n&=e.pendingLanes,t.lanes=r;";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_DoubleBangPostfixUpdate_NoErrors()
+        {
+            var input = "var o=0; function next(){return{done:!!o++}}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_RegexComputedMemberCall_AfterStrictEquals_NoErrors()
+        {
+            var input = "var b=Symbol.replace,C=!!/./[b]&&\"\"===/./[b](\"a\",\"$0\");";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XMain_ParenthesizedArrowCallback_WithParenStartedExpressionAfterIfBlock_NoErrors()
+        {
+            var input = "var out=s.map((e=>{if(e){return a}((x,y)=>y)(i,e)}));";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_FunctionExpression_Iife_WithTryCatchInBody_NoErrors()
+        {
+            var input = "(function(){try{return x}catch(e){return}}(a))";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_FunctionIife_WithIfTryCatchInCommaCondition_NoErrors()
+        {
+            var input = "function k(e,t,r,n,i,o){var a=[];if(function(e,t,r,n){e[s(cR)](t,r,n)}(e,t,r,n),a[Z]=(a[se]=l(Xi),a[de]=l(Xi),function(e,t,r,n,i){if(e)try{return e[s(ER)](t,r,n,i)[s(y_)]}catch(e){return}}(e,i,o,a[se],a[de])),a[Z])return[a[Z][l(Gn)],a[Z][d(Sn)],a[Z][d(du)],a[Z][l(Ba)]]}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_FunctionIife_WithTailForAndIfBlocks_BeforeCommaContinuation_NoErrors()
+        {
+            var input = "function q(){x&&(a=function(){if(n){for(var c=0;c<1;c++){var d=l(i[c],o[c],a);if(null!=d)return d;if(!0===r.isPropagationStopped())return}if(s)for(var f=0;f<1;f++){var h=l(i[f],o[f],u);if(null!=h)return h;if(!0===r.isPropagationStopped())return}else{var p=i[0],v=o[0];if(t.target===v)return l(p,v,u)}}}(),b)}";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
             AssertNoErrors(parser);
         }
 
@@ -785,6 +1004,81 @@ namespace FenBrowser.Tests.Engine
             parser.ParseProgram();
 
             Assert.Contains(parser.Errors, e => e.Contains("Ill-formed Unicode string", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_XVendor_GlobalizeWrapper_WithDirectiveAndGroupedFactory_NoErrors()
+        {
+            var input = """
+                !function(t,n){"use strict";"function"==typeof define&&define.amd?define(["../globalize-runtime","./number"],n):e.exports=n(r(34047),r(993146))}(0,(function(e){var t=e._formatMessage,r=e._runtimeKey,n=e._validateParameterPresence,i=e._validateParameterTypeNumber,o=function(e,r,n){var i,o,a=n.displayNames||{},u=n.unitPatterns;return i=a["displayName-count-"+r]||a["displayName-count-other"]||a.displayName||n.currency,o=u["unitPattern-count-"+r]||u["unitPattern-count-other"],t(o,[e,i])};return e._currencyFormatterFn=function(e,t,r){return t&&r?function(a){return n(a,"value"),i(a,"value"),o(e(a),t(a),r)}:function(t){return e(t)}},e._currencyNameFormat=o,e.currencyFormatter=e.prototype.currencyFormatter=function(t,n){return n=n||{},e[r("currencyFormatter",this._locale,[t,n])]},e.formatCurrency=e.prototype.formatCurrency=function(e,t,r){return n(e,"value"),i(e,"value"),this.currencyFormatter(t,r)(e)},e}))
+                """;
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_UrlPrototype_ParseHost_Helper_NoErrors()
+        {
+            var input = """
+                var x={parse:function(e,t,r){var i,o,a,u,s,l=this,c=t||ge,d=0,f="",p=!1,m=!1,y=!1;for(e=b(e),t||(l.scheme="",l.username="",l.password="",l.host=null,l.port=null,l.path=[],l.query=null,l.fragment=null,l.cannotBeABaseURL=!1,e=j(e,ne,""),e=j(e,ie,"$1")),e=j(e,oe,""),i=v(e);d<=i.length;){switch(o=i[d],c){case ge:if(!o||!D(G,o)){if(t)return W;c=ye;continue}f+=H(o),c=me;break;case me:if(o&&(D($,o)||"+"===o||"-"===o||"."===o))f+=H(o);else{if(":"!==o){if(t)return W;f="",c=ye,d=0;continue}if(t&&(l.isSpecial()!==h(fe,f)||"file"===f&&(l.includesCredentials()||null!==l.port)||"file"===l.scheme&&!l.host))return;if(l.scheme=f,t)return void(l.isSpecial()&&fe[l.scheme]===l.port&&(l.port=null));f="","file"===l.scheme?c=Ie:l.isSpecial()&&r&&r.scheme===l.scheme?c=be:l.isSpecial()?c=Ee:"/"===i[d+1]?(c=_e,d++):(l.cannotBeABaseURL=!0,z(l.path,""),c=De)}break;case Fe:o!==n&&(l.fragment+=de(o,se))}d++}},parseHost:function(e){var t,r,n;if("["===N(e,0)){if("]"!==N(e,e.length-1))return q;if(t=function(e){var t,r,n,i,o,a,u,s=[0,0,0,0,0,0,0,0],l=0,c=null,d=0,f=function(){return N(e,d)};if(":"===f()){if(":"!==N(e,1))return;d+=2,c=++l}for(;f();){if(8===l)return;if(":"!==f()){for(t=r=0;r<4&&D(ee,f());)t=16*t+O(f(),16),d++,r++;if("."===f()){if(0===r)return;if(d-=r,l>6)return;for(n=0;f();){if(i=null,n>0){if(!("."===f()&&n<4))return;d++}if(!D(Y,f()))return;for(;D(Y,f());){if(o=O(f(),10),null===i)i=o;else{if(0===i)return;i=10*i+o}if(i>255)return;d++}s[l]=256*s[l]+i,2!=++n&&4!==n||l++}if(4!==n)return;break}if(":"===f()){if(d++,!f())return}else if(f())return;s[l++]=t}else{if(null!==c)return;d++,c=++l}}if(null!==c)for(a=l-c,l=7;0!==l&&a>0;)u=s[l],s[l--]=s[c+a-1],s[c+--a]=u;else if(8!==l)return;return s}(B(e,1,-1)),!t)return q;this.host=t}};
+                """;
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_ParenthesizedModuleMapProperty_WithNestedFunctionBodies_NoErrors()
+        {
+            var input = """
+                ({1:(e,t,r)=>{const B=function(e,t,r,{pure:n,areStatesEqual:i=V,areOwnPropsEqual:o=F,areStatePropsEqual:a=F,areMergedPropsEqual:u=F,forwardRef:l=!1,context:c=f}={}){const d=c,h=function(e){return e?"function"==typeof e?I(e):O(e,"mapStateToProps"):C((()=>({})))}(e),p=function(e){return e&&"object"==typeof e?C((t=>function(e,t){const r={};for(const n in e){const i=e[n];"function"==typeof i&&(r[n]=(...e)=>t(i(...e)))}return r}(e,t))):e?"function"==typeof e?I(e):O(e,"mapDispatchToProps"):C((e=>({dispatch:e})))}(t),v=function(e){return e?"function"==typeof e?function(e){return function(t,{displayName:r,areMergedPropsEqual:n}){let i,o=!1;return function(t,r,a){const u=e(t,r,a);return o?n(u,i)||(i=u):(o=!0,i=u),i}}}(e):O(e,"mergeProps"):()=>P}(r),g=Boolean(e);return e=>{const t=e.displayName||e.name||"Component",r=`Connect(${t})`,n={shouldHandleStateChanges:g,displayName:r,wrappedComponentName:t,WrappedComponent:e,initMapStateToProps:h,initMapDispatchToProps:p,initMergeProps:v,areStatesEqual:i,areStatePropsEqual:a,areOwnPropsEqual:o,areMergedPropsEqual:u};function c(t){const[r,i,o]=s.useMemo((()=>{const{reactReduxForwardedRef:e}=t,r=(0,S.Z)(t,L);return[t.context,e,r]}),[t]),a=s.useMemo((()=>r&&r.Consumer&&(0,R.isContextConsumer)(s.createElement(r.Consumer,null))?r:d),[r,d]),u=s.useContext(a),l=Boolean(t.store)&&Boolean(t.store.getState)&&Boolean(t.store.dispatch),c=Boolean(u)&&Boolean(u.store);const f=l?t.store:u.store,h=c?u.getServerState:f.getState,p=s.useMemo((()=>function(e,t){let{initMapStateToProps:r,initMapDispatchToProps:n,initMergeProps:i}=t,o=(0,S.Z)(t,k);return x(r(e,o),n(e,o),i(e,o),e,o)}(f.dispatch,n)),[f]),[v,m]=s.useMemo((()=>{if(!g)return j;const e=N(f,l?void 0:u.subscription),t=e.notifyNestedSubs.bind(e);return[e,t]}),[f,l,u]),y=s.useMemo((()=>l?u:(0,_.Z)({},u,{subscription:v})),[l,u,v]),b=s.useRef(),w=s.useRef(o),E=s.useRef(),C=s.useRef(!1),T=(s.useRef(!1),s.useRef(!1)),I=s.useRef();D((()=>(T.current=!0,()=>{T.current=!1})),[]);const O=s.useMemo((()=>()=>E.current&&o===w.current?E.current:p(f.getState(),o)),[f,o]),P=s.useMemo((()=>e=>v?function(e,t,r,n,i,o,a,u,s,l,c){if(!e)return()=>{};let d=!1,f=null;const h=()=>{if(d||!u.current)return;const e=t.getState();let r,h;try{r=n(e,i.current)}catch(e){h=e,f=e}h||(f=null),r===o.current?a.current||l():(o.current=r,s.current=r,a.current=!0,c())};return r.onStateChange=h,r.trySubscribe(),h(),()=>{if(d=!0,r.tryUnsubscribe(),r.onStateChange=null,f)throw f}}(g,f,v,p,w,b,C,T,E,m,e):()=>{}),[v]);var A,M,F;let V;A=U,M=[w,b,C,o,E,m],D((()=>A(...M)),F);try{V=z(P,O,h?()=>p(h(),o):O)}catch(e){throw I.current&&(e.message+=`\nThe error may be correlated with this previous error:\n${I.current.stack}\n\n`),e}D((()=>{I.current=void 0,E.current=void 0,b.current=V}));const B=s.useMemo((()=>s.createElement(e,(0,_.Z)({},V,{ref:i}))),[i,e,V]);return s.useMemo((()=>g?s.createElement(a.Provider,{value:y},B):B),[a,B,y])}const f=s.memo(c);if(f.WrappedComponent=e,f.displayName=c.displayName=r,l){const t=s.forwardRef((function(e,t){return s.createElement(f,(0,_.Z)({},e,{reactReduxForwardedRef:t}))}));return t.displayName=r,t.WrappedComponent=e,E()(t,e)}return E()(f,e)}};const H=function({store:e,context:t,children:r,serverState:n,stabilityCheck:i="once",noopCheck:o="once"}){const a=s.useMemo((()=>{const t=N(e);return{store:e,subscription:t,getServerState:n?()=>n:void 0,stabilityCheck:i,noopCheck:o}}),[e,n,i,o]),u=s.useMemo((()=>e.getState()),[e]);D((()=>{const{subscription:t}=a;return t.onStateChange=t.notifyNestedSubs,t.trySubscribe(),u!==e.getState()&&t.notifyNestedSubs(),()=>{t.tryUnsubscribe(),t.onStateChange=void 0}}),[a,u]);const l=t||f;return s.createElement(l.Provider,{value:a},r)}})
+                """;
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_TemplateInterpolationFollowedByBlockStatement_InReturnedArrowBody_NoErrors()
+        {
+            var input = """
+                ({1:(e,t,r)=>{return e=>{const r=`Connect(${t})`;if(l){return y}return z}}});
+                """;
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_LatestVendorFile_NoErrors()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "vendor.f1dc7e4a.latest.js");
+            var input = File.ReadAllText(path);
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_XVendor_AssignmentToIifeIndexedResult_NoErrors()
+        {
+            var input = """
+                function o(e){return A[0|e]}
+                function i(e){return e}
+                function r(e,t){return 0}
+                function u(e){var t=[];return t[se]=WK[ue][e],void 0!==t[se]?t[se]:WK[ue][e]=function(e){var t=[];t[se]=ce,t[de]=e;for(var n=se;n<t[de].length;n+=ge)e=((e=((e=((e=r(t[de].substr(n,ge),fe))^ve)&he)>>>pe|e<<fe-pe)&he)>>>Z|e<<fe-Z)&he,t[se]+=i(e);return t[se]}(e)}
+                function s(e){var t=[];return t[se]=WK[le][e],void 0!==t[se]?t[se]:WK[le][e]=function(e){return e}(e)}
+                """;
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
         }
     }
 }
