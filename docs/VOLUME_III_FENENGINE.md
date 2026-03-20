@@ -1,7 +1,7 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-03-04
-**Codex Version:** 1.1
+**State as of:** 2026-03-20
+**Codex Version:** 1.2
 
 ## 1. Overview
 
@@ -239,6 +239,37 @@ flowchart TD
 - MutationObserver delivery now invokes observer callbacks inside the active batch-delivery pass instead of re-queuing them onto the same mutation-observer queue, eliminating the prior extra-checkpoint requirement that left same-turn DOM mutations unobservable in focused tests and simple hosts.
 - Dynamically inserted external scripts now resolve against the active page URL, execute through the event-loop networking task path, and preserve `document.currentScript` during execution in the same way as initial parser-discovered external scripts.
 - Regression coverage was extended in `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`, and the March 14 verification slice (`JavaScriptEngineLifecycleTests` plus `ControlFlowInvariantTests`) passed 22/22 after this tranche.
+
+### 2.16 ES Module Export-Star Hardening (2026-03-20)
+
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs`
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- The active core module loader no longer drops `export * from "<module>"` namespace aggregation on the floor during export finalization.
+- `ModuleLoader.FinalizeModuleExports(...)` now applies explicit `__fen_export_*` bindings first and then merges star re-exports from linked module namespace objects.
+- The hardening slice enforces three production-critical semantics for star re-exports:
+  - `default` is not forwarded by `export *`.
+  - explicit local/module exports retain precedence over star re-exports.
+  - conflicting names re-exported from multiple star sources are removed from the final namespace instead of exposing an arbitrary winner.
+- Regression coverage was added in `FenBrowser.Tests/Engine/ModuleLoaderTests.cs` for:
+  - named-export forwarding without `default`
+  - explicit-export precedence over star re-exports
+  - ambiguity suppression for conflicting star graphs
+- Verification on 2026-03-20: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `22/22`.
+- Scope note: this tranche closes one concrete ES-module correctness hole in the active runtime path; full module-record/linking/live-binding semantics remain open and are tracked in `JS_ENGINE_FINAL.md` finding `1`.
+
+### 2.17 Dynamic Import Promise And Resolution Hardening (2026-03-20)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- The runtime `import()` global no longer returns a fake `__state__`/`__value__` object. It now resolves through the active module loader and returns a real `JsPromise`.
+- Dynamic import now uses the active referrer (`CurrentModulePath` first, document/base URI fallback second) before calling `IModuleLoader.Resolve(...)`, so relative imports inside modules resolve against the importing module instead of the process working directory or a raw unresolved specifier.
+- Missing module loads now reject the promise instead of resolving an empty namespace object, which makes failures catchable by application code and keeps behavior aligned with real module loading semantics.
+- Regression coverage was added in `FenBrowser.Tests/Engine/ModuleLoaderTests.cs` for:
+  - resolved promise + module namespace return shape
+  - relative-resolution correctness inside a module graph
+  - rejected-promise behavior for missing modules with catch-observable failure
+- Verification on 2026-03-20: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `25/25`.
+- Scope note: this tranche fixes the active dynamic-import runtime path, but it does not close the broader ES-module finding. Module-record/linking/live-binding/cycle completeness remains tracked in `JS_ENGINE_FINAL.md` finding `1`.
 ---
 
 ## 3. The Rendering Pipeline (`FenBrowser.FenEngine.Rendering`)
@@ -4758,3 +4789,43 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added focused regressions for `Element.prototype.matches`, `Date.prototype.getTimezoneOffset`, and the real `whatismybrowser.com` site bundle bootstrap path.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JavaScriptEngineLifecycleTests"`: `18/18` pass.
+
+## 2.136 DOM Error Reporting Hardening: Real `window.onerror` Error Objects (2026-03-20)
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+  - Listener exception reporting no longer synthesizes a placeholder error object for `window.onerror`.
+  - The reporter now unwraps real thrown values from `JsThrownValueException`, `FenError`, and other `ThrownValue` carriers, preserving the original JS-visible error identity.
+  - `window.onerror` dispatch now resolves the active window target explicitly and invokes the original callable handler value with the real `(message, source, line, column, error)` payload.
+  - Added a warning path when `window.onerror` reporting itself fails, so the engine no longer silently drops internal reporter faults during diagnostics.
+- `FenBrowser.Tests/DOM/InputEventTests.cs`
+  - Added/updated `DispatchEvent_WindowOnError_Receives_ActualThrownErrorObject` to assert that listener-thrown `TypeError('boom')` reaches `window.onerror` with the real `error.name`, `error.message`, and message argument.
+- Verification:
+  - `dotnet build FenBrowser.Tests --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - Focused runtime verification through a published single-file harness confirmed:
+    - `window.onerror` executed
+    - `error.name === "TypeError"`
+    - `error.message === "boom"`
+    - `message === "boom"`
+  - `dotnet test` remains blocked on this machine by Windows Application Control for fresh test assemblies, so final runtime proof used the published verifier instead of the xUnit host.
+
+## 2.137 AbortSignal Listener Lifetime Hardening for `addEventListener(..., { signal })` (2026-03-20)
+- `FenBrowser.FenEngine/DOM/EventListenerRegistry.cs`
+  - The shared DOM listener registry now stores listener-bound `AbortSignal` metadata and an internal abort cleanup callback for each registered listener.
+  - Registry adds now reject already-aborted signals, attach abort cleanup only after a listener is actually accepted, and detach abort callbacks when listeners are removed explicitly or through `once` cleanup.
+  - This closes the earlier gap where AbortSignal-backed lifetime management was marked as not implemented and where duplicate registrations could remove the wrong listener.
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - Element `addEventListener(...)` now routes `signal` through the shared registry path instead of wiring a one-off element-local abort callback after registration.
+- `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+  - Non-element node `addEventListener(...)` now forwards `{ signal }` to the shared registry so node wrappers and element wrappers share the same abort semantics.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Generic `EventTarget` listener storage on runtime objects now honors `{ signal }`, skips already-aborted registrations, and detaches abort callbacks when listeners are removed.
+  - `AbortController` / `AbortSignal` plumbing now supports `onabort`, duplicate suppression, `removeEventListener`, `once`, and callable-object listener dispatch for `abort` listeners.
+- `FenBrowser.Tests/DOM/InputEventTests.cs`
+  - Added `AddEventListener_WindowSignal_RemovesListenerAfterAbort` to prove generic `window` listeners are removed after `AbortController.abort()`.
+  - Added `AddEventListener_DuplicateSignalRegistration_DoesNotRemoveOriginalListener` to prove a duplicate registration with `{ signal }` does not corrupt the original listener entry.
+- Verification:
+  - `dotnet build FenBrowser.Tests --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests --no-restore --filter "FullyQualifiedName~AddEventListener_WindowSignal_RemovesListenerAfterAbort|FullyQualifiedName~AddEventListener_DuplicateSignalRegistration_DoesNotRemoveOriginalListener"` passed on `2026-03-20` with `2/2` tests green.
+  - Focused runtime verification through a published single-file harness confirmed:
+    - `calls=1`
+    - `plainCalls=2`
+    - `aborted=True`
