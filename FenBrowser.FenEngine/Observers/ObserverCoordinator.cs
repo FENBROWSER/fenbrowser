@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -239,15 +240,78 @@ namespace FenBrowser.FenEngine.Observers
     /// </summary>
     public class IntersectionObserverInstance
     {
+        public readonly struct RootMarginOffsets
+        {
+            public RootMarginOffsets(RootMarginValue top, RootMarginValue right, RootMarginValue bottom, RootMarginValue left)
+            {
+                Top = top;
+                Right = right;
+                Bottom = bottom;
+                Left = left;
+            }
+
+            public RootMarginValue Top { get; }
+            public RootMarginValue Right { get; }
+            public RootMarginValue Bottom { get; }
+            public RootMarginValue Left { get; }
+        }
+
+        public readonly struct RootMarginValue
+        {
+            public RootMarginValue(float value, bool isPercent)
+            {
+                Value = value;
+                IsPercent = isPercent;
+            }
+
+            public float Value { get; }
+            public bool IsPercent { get; }
+
+            public float Resolve(float referenceLength)
+            {
+                return IsPercent ? referenceLength * (Value / 100f) : Value;
+            }
+        }
+
+        private sealed class ObservedTargetState
+        {
+            public bool HasSnapshot { get; set; }
+            public bool IsIntersecting { get; set; }
+            public double Ratio { get; set; }
+            public int ThresholdIndex { get; set; } = -1;
+        }
+
         private readonly IValue _callback;
-        private readonly double _threshold;
+        private readonly List<double> _thresholds;
+        private readonly string _rootMargin;
+        private readonly RootMarginOffsets _rootMarginOffsets;
         private readonly List<IObject> _observedTargets = new List<IObject>();
-        private readonly Dictionary<IObject, bool> _previouslyIntersecting = new Dictionary<IObject, bool>();
+        private readonly Dictionary<IObject, ObservedTargetState> _targetStates = new Dictionary<IObject, ObservedTargetState>();
+        private readonly List<FenObject> _queuedEntries = new List<FenObject>();
+        private readonly object _queueLock = new object();
+        private FenObject _observerObject;
+        private bool _callbackQueued;
 
         public IntersectionObserverInstance(IValue callback, double threshold)
+            : this(callback, new[] { threshold }, "0px", new RootMarginOffsets(
+                new RootMarginValue(0, false),
+                new RootMarginValue(0, false),
+                new RootMarginValue(0, false),
+                new RootMarginValue(0, false)))
+        {
+        }
+
+        public IntersectionObserverInstance(IValue callback, IEnumerable<double> thresholds, string rootMargin, RootMarginOffsets rootMarginOffsets)
         {
             _callback = callback;
-            _threshold = Math.Max(0, Math.Min(1, threshold));
+            _thresholds = NormalizeThresholds(thresholds);
+            _rootMargin = string.IsNullOrWhiteSpace(rootMargin) ? "0px" : rootMargin.Trim();
+            _rootMarginOffsets = rootMarginOffsets;
+        }
+
+        public void AttachObserverObject(FenObject observerObject)
+        {
+            _observerObject = observerObject;
         }
 
         public void Observe(IObject target)
@@ -257,7 +321,7 @@ namespace FenBrowser.FenEngine.Observers
                 if (!_observedTargets.Contains(target))
                 {
                     _observedTargets.Add(target);
-                    _previouslyIntersecting[target] = false;
+                    _targetStates[target] = new ObservedTargetState();
                 }
             }
         }
@@ -267,7 +331,7 @@ namespace FenBrowser.FenEngine.Observers
             lock (_observedTargets)
             {
                 _observedTargets.Remove(target);
-                _previouslyIntersecting.Remove(target);
+                _targetStates.Remove(target);
             }
         }
 
@@ -276,9 +340,32 @@ namespace FenBrowser.FenEngine.Observers
             lock (_observedTargets)
             {
                 _observedTargets.Clear();
-                _previouslyIntersecting.Clear();
+                _targetStates.Clear();
+            }
+            lock (_queueLock)
+            {
+                _queuedEntries.Clear();
+                _callbackQueued = false;
             }
             ObserverCoordinator.Instance.UnregisterIntersectionObserver(this);
+        }
+
+        public FenObject TakeRecords()
+        {
+            var entriesArray = FenObject.CreateArray();
+            lock (_queueLock)
+            {
+                for (var i = 0; i < _queuedEntries.Count; i++)
+                {
+                    entriesArray.Set(i.ToString(), FenValue.FromObject(_queuedEntries[i]));
+                }
+
+                entriesArray.Set("length", FenValue.FromNumber(_queuedEntries.Count));
+                _queuedEntries.Clear();
+                _callbackQueued = false;
+            }
+
+            return entriesArray;
         }
 
         /// <summary>
@@ -299,6 +386,8 @@ namespace FenBrowser.FenEngine.Observers
                 targets = _observedTargets.ToArray();
             }
 
+            var effectiveRootBounds = ApplyRootMargin(viewport);
+
             foreach (var jsTarget in targets)
             {
                 var element = elementLookup(jsTarget);
@@ -306,11 +395,14 @@ namespace FenBrowser.FenEngine.Observers
 
                 if (!result.TryGetElementRect(element, out var targetRect)) continue;
 
-                // Calculate intersection
-                float intersectX = Math.Max(viewport.X, targetRect.X);
-                float intersectY = Math.Max(viewport.Y, targetRect.Y);
-                float intersectRight = Math.Min(viewport.Right, targetRect.Right);
-                float intersectBottom = Math.Min(viewport.Bottom, targetRect.Bottom);
+                var targetState = _targetStates.TryGetValue(jsTarget, out var existingState)
+                    ? existingState
+                    : (_targetStates[jsTarget] = new ObservedTargetState());
+
+                float intersectX = Math.Max(effectiveRootBounds.X, targetRect.X);
+                float intersectY = Math.Max(effectiveRootBounds.Y, targetRect.Y);
+                float intersectRight = Math.Min(effectiveRootBounds.Right, targetRect.Right);
+                float intersectBottom = Math.Min(effectiveRootBounds.Bottom, targetRect.Bottom);
 
                 float intersectWidth = Math.Max(0, intersectRight - intersectX);
                 float intersectHeight = Math.Max(0, intersectBottom - intersectY);
@@ -318,43 +410,234 @@ namespace FenBrowser.FenEngine.Observers
 
                 float targetArea = targetRect.Width * targetRect.Height;
                 double ratio = targetArea > 0 ? intersectArea / targetArea : 0;
+                bool isIntersecting = intersectArea > 0;
+                var thresholdIndex = GetThresholdIndex(ratio, isIntersecting);
 
-                bool isIntersecting = intersectArea > 0 && ratio >= _threshold;
-
-                // Check if state changed
-                bool wasIntersecting = _previouslyIntersecting.TryGetValue(jsTarget, out var prev) && prev;
-
-                if (isIntersecting != wasIntersecting)
+                if (ShouldQueueEntry(targetState, ratio, isIntersecting, thresholdIndex))
                 {
-                    _previouslyIntersecting[jsTarget] = isIntersecting;
+                    targetState.HasSnapshot = true;
+                    targetState.IsIntersecting = isIntersecting;
+                    targetState.Ratio = ratio;
+                    targetState.ThresholdIndex = thresholdIndex;
 
-                    var entry = CreateEntry(jsTarget, isIntersecting, ratio, targetRect, viewport, intersectX, intersectY, intersectWidth, intersectHeight);
+                    var entry = CreateEntry(
+                        jsTarget,
+                        isIntersecting,
+                        ratio,
+                        targetRect,
+                        effectiveRootBounds,
+                        intersectX,
+                        intersectY,
+                        intersectWidth,
+                        intersectHeight);
                     entries.Add(entry);
                 }
             }
 
             if (entries.Count > 0)
             {
-                // Enqueue callback for JS Execution Window
-                ObserverCoordinator.Instance.EnqueueCallback(() =>
-                {
-                    if (!_callback.IsFunction) return;
-
-                    var entriesArray = new FenObject();
-                    for (int i = 0; i < entries.Count; i++)
-                    {
-                        entriesArray.Set(i.ToString(), FenValue.FromObject(entries[i]));
-                    }
-                    entriesArray.Set("length", FenValue.FromNumber(entries.Count));
-
-                    try
-                    {
-                        var fn = _callback.AsFunction();
-                        fn?.Invoke(new FenValue[] { FenValue.FromObject(entriesArray) }, null);
-                    }
-                    catch { /* Callback errors don't break observers */ }
-                });
+                EnqueueEntries(entries);
             }
+        }
+
+        public static bool TryParseRootMargin(string rawValue, out RootMarginOffsets offsets, out string error)
+        {
+            offsets = default;
+            error = null;
+
+            var value = string.IsNullOrWhiteSpace(rawValue) ? "0px" : rawValue.Trim();
+            var parts = value.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 1 || parts.Length > 4)
+            {
+                error = "IntersectionObserver rootMargin is invalid.";
+                return false;
+            }
+
+            var parsedValues = new RootMarginValue[4];
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (!TryParseRootMarginValue(parts[i], out parsedValues[i]))
+                {
+                    error = "IntersectionObserver rootMargin is invalid.";
+                    return false;
+                }
+            }
+
+            var top = parsedValues[0];
+            var right = parts.Length switch
+            {
+                1 => parsedValues[0],
+                2 => parsedValues[1],
+                3 => parsedValues[1],
+                _ => parsedValues[1]
+            };
+            var bottom = parts.Length switch
+            {
+                1 => parsedValues[0],
+                2 => parsedValues[0],
+                3 => parsedValues[2],
+                _ => parsedValues[2]
+            };
+            var left = parts.Length switch
+            {
+                1 => parsedValues[0],
+                2 => parsedValues[1],
+                3 => parsedValues[1],
+                _ => parsedValues[3]
+            };
+
+            offsets = new RootMarginOffsets(top, right, bottom, left);
+            return true;
+        }
+
+        private static bool TryParseRootMarginValue(string token, out RootMarginValue value)
+        {
+            value = default;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim();
+            bool isPercent;
+            string numericPart;
+            if (token.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                isPercent = false;
+                numericPart = token.Substring(0, token.Length - 2);
+            }
+            else if (token.EndsWith("%", StringComparison.Ordinal))
+            {
+                isPercent = true;
+                numericPart = token.Substring(0, token.Length - 1);
+            }
+            else
+            {
+                return false;
+            }
+
+            if (!float.TryParse(numericPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var numericValue))
+            {
+                return false;
+            }
+
+            value = new RootMarginValue(numericValue, isPercent);
+            return true;
+        }
+
+        private static List<double> NormalizeThresholds(IEnumerable<double> thresholds)
+        {
+            var normalized = new SortedSet<double>();
+            if (thresholds != null)
+            {
+                foreach (var threshold in thresholds)
+                {
+                    var clamped = Math.Max(0d, Math.Min(1d, threshold));
+                    normalized.Add(clamped);
+                }
+            }
+
+            if (normalized.Count == 0)
+            {
+                normalized.Add(0d);
+            }
+
+            return new List<double>(normalized);
+        }
+
+        private ElementGeometry ApplyRootMargin(ElementGeometry viewport)
+        {
+            var topMargin = _rootMarginOffsets.Top.Resolve(viewport.Height);
+            var rightMargin = _rootMarginOffsets.Right.Resolve(viewport.Width);
+            var bottomMargin = _rootMarginOffsets.Bottom.Resolve(viewport.Height);
+            var leftMargin = _rootMarginOffsets.Left.Resolve(viewport.Width);
+
+            return new ElementGeometry(
+                viewport.X - leftMargin,
+                viewport.Y - topMargin,
+                viewport.Width + leftMargin + rightMargin,
+                viewport.Height + topMargin + bottomMargin);
+        }
+
+        private bool ShouldQueueEntry(ObservedTargetState state, double ratio, bool isIntersecting, int thresholdIndex)
+        {
+            if (state == null || !state.HasSnapshot)
+            {
+                return true;
+            }
+
+            if (state.IsIntersecting != isIntersecting)
+            {
+                return true;
+            }
+
+            return state.ThresholdIndex != thresholdIndex;
+        }
+
+        private int GetThresholdIndex(double ratio, bool isIntersecting)
+        {
+            if (!isIntersecting && ratio <= 0d)
+            {
+                return _thresholds.Count > 0 && _thresholds[0] == 0d ? 0 : -1;
+            }
+
+            var index = -1;
+            for (var i = 0; i < _thresholds.Count; i++)
+            {
+                if (ratio >= _thresholds[i])
+                {
+                    index = i;
+                }
+            }
+
+            return index;
+        }
+
+        private void EnqueueEntries(List<FenObject> entries)
+        {
+            var shouldSchedule = false;
+            lock (_queueLock)
+            {
+                _queuedEntries.AddRange(entries);
+                if (!_callbackQueued)
+                {
+                    _callbackQueued = true;
+                    shouldSchedule = true;
+                }
+            }
+
+            if (!shouldSchedule)
+            {
+                return;
+            }
+
+            ObserverCoordinator.Instance.EnqueueCallback(() =>
+            {
+                if (!_callback.IsFunction)
+                {
+                    TakeRecords();
+                    return;
+                }
+
+                var entriesArray = TakeRecords();
+                if (entriesArray.Get("length").ToNumber() <= 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    var fn = _callback.AsFunction();
+                    var args = _observerObject != null
+                        ? new[] { FenValue.FromObject(entriesArray), FenValue.FromObject(_observerObject) }
+                        : new[] { FenValue.FromObject(entriesArray) };
+                    fn?.Invoke(args, null);
+                }
+                catch
+                {
+                    // Callback errors don't break observers.
+                }
+            });
         }
 
         private FenObject CreateEntry(

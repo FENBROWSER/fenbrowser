@@ -41,11 +41,18 @@ namespace FenBrowser.FenEngine.WebAPIs
                     throw new InvalidOperationException(error ?? "Invalid IntersectionObserver options.");
                 }
 
-                var instance = new IntersectionObserverInstance(callback, thresholds[0]);
+                if (!IntersectionObserverInstance.TryParseRootMargin(rootMargin, out var rootMarginOffsets, out error))
+                {
+                    throw new InvalidOperationException(error ?? "Invalid IntersectionObserver options.");
+                }
+
+                var instance = new IntersectionObserverInstance(callback, thresholds, rootMargin, rootMarginOffsets);
                 ObserverCoordinator.Instance.RegisterIntersectionObserver(instance);
 
                 var observerObj = new FenObject();
                 observerObj.NativeObject = instance;
+                instance.AttachObserverObject(observerObj);
+                observerObj.Set("root", FenValue.Null);
                 observerObj.Set("rootMargin", FenValue.FromString(rootMargin));
                 observerObj.Set("thresholds", FenValue.FromObject(CreateThresholdArray(thresholds)));
 
@@ -79,9 +86,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 
                 observerObj.Set("takeRecords", FenValue.FromFunction(new FenFunction("takeRecords", (obsArgs, obsThis) =>
                 {
-                    var entriesArray = new FenObject();
-                    entriesArray.Set("length", FenValue.FromNumber(0));
-                    return FenValue.FromObject(entriesArray);
+                    return FenValue.FromObject(instance.TakeRecords());
                 })));
 
                 return FenValue.FromObject(observerObj);
