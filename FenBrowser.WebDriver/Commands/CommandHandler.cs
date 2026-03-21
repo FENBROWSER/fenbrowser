@@ -51,6 +51,9 @@ namespace FenBrowser.WebDriver.Commands
             "FindElements",
             "FindElementFromElement",
             "FindElementsFromElement",
+            "GetShadowRoot",
+            "FindElementFromShadowRoot",
+            "FindElementsFromShadowRoot",
             "GetActiveElement",
             "IsElementSelected",
             "GetElementText",
@@ -168,6 +171,9 @@ namespace FenBrowser.WebDriver.Commands
                 "FindElements" => await _elementCommands.FindElementsAsync(match.GetSessionId(), json),
                 "FindElementFromElement" => await _elementCommands.FindElementFromElementAsync(match.GetSessionId(), match.GetElementId(), json),
                 "FindElementsFromElement" => await _elementCommands.FindElementsFromElementAsync(match.GetSessionId(), match.GetElementId(), json),
+                "GetShadowRoot" => await _elementCommands.GetShadowRootAsync(match.GetSessionId(), match.GetElementId()),
+                "FindElementFromShadowRoot" => await _elementCommands.FindElementFromShadowRootAsync(match.GetSessionId(), match.GetShadowId(), json),
+                "FindElementsFromShadowRoot" => await _elementCommands.FindElementsFromShadowRootAsync(match.GetSessionId(), match.GetShadowId(), json),
                 "GetActiveElement" => await _elementCommands.GetActiveElementAsync(match.GetSessionId()),
                 "IsElementSelected" => await _elementCommands.IsSelectedAsync(match.GetSessionId(), match.GetElementId()),
                 "GetElementText" => await _elementCommands.GetElementTextAsync(match.GetSessionId(), match.GetElementId()),
@@ -563,6 +569,7 @@ namespace FenBrowser.WebDriver.Commands
         Task<object> FindElementAsync(string strategy, string selector, object parentElement = null);
         Task<object[]> FindElementsAsync(string strategy, string selector, object parentElement = null);
         Task<object> GetActiveElementAsync();
+        Task<object> GetShadowRootAsync(object element);
         Task<bool> IsElementSelectedAsync(object element);
         Task<object> GetElementPropertyAsync(object element, string name);
         Task<string> GetElementCssValueAsync(object element, string propertyName);

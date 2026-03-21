@@ -205,8 +205,9 @@ namespace FenBrowser.FenEngine.Rendering
         private int _historyIndex = -1;
         private bool _isNavigatingHistory;
         
-        // Map WebDriver Element IDs to LiteElements
+        // Map WebDriver element and shadow-root IDs to live DOM nodes.
         private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
+        private readonly Dictionary<string, ShadowRoot> _shadowRootMap = new Dictionary<string, ShadowRoot>();
         private readonly Stack<Element> _frameContextStack = new Stack<Element>();
         private Element _currentFrameElement;
         private Action<string> _fontLoadedHandler;
@@ -1736,6 +1737,7 @@ pre {{
                 _currentFrameElement = null;
                 _frameContextStack.Clear();
                 _elementMap.Clear();
+                _shadowRootMap.Clear();
                 return Task.CompletedTask;
             }
 
@@ -1753,6 +1755,7 @@ pre {{
 
             _currentFrameElement = frameElement;
             _elementMap.Clear();
+            _shadowRootMap.Clear();
             return Task.CompletedTask;
         }
 
@@ -1760,13 +1763,14 @@ pre {{
         {
             _currentFrameElement = _frameContextStack.Count > 0 ? _frameContextStack.Pop() : null;
             _elementMap.Clear();
+            _shadowRootMap.Clear();
             return Task.CompletedTask;
         }
 
         public async Task<string> FindElementAsync(string strategy, string value, string parentId = null)
         {
             await Task.CompletedTask;
-            Element searchRoot = ResolveSearchRoot(parentId);
+            Node searchRoot = ResolveSearchRootNode(parentId);
             if (searchRoot == null) return null;
 
             Element found = FindElementByStrategy(searchRoot, strategy, value);
@@ -1913,7 +1917,7 @@ pre {{
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
         {
             await Task.CompletedTask;
-            Element searchRoot = ResolveSearchRoot(parentId);
+            Node searchRoot = ResolveSearchRootNode(parentId);
             if (searchRoot == null) return Array.Empty<string>();
 
             var elements = FindElementsByStrategy(searchRoot, strategy, value);
@@ -1927,7 +1931,7 @@ pre {{
             return ids.ToArray();
         }
 
-        private Element FindElementByStrategy(Element root, string strategy, string value)
+        private Element FindElementByStrategy(Node root, string strategy, string value)
         {
             if (strategy == "css selector")
             {
@@ -1966,7 +1970,7 @@ pre {{
             return null;
         }
 
-        private IEnumerable<Element> FindElementsByStrategy(Element root, string strategy, string value)
+        private IEnumerable<Element> FindElementsByStrategy(Node root, string strategy, string value)
         {
             if (strategy == "css selector")
             {
@@ -1992,11 +1996,16 @@ pre {{
             return Enumerable.Empty<Element>();
         }
 
-        private Element ResolveSearchRoot(string parentId = null)
+        private Node ResolveSearchRootNode(string parentId = null)
         {
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
             {
                 return parent;
+            }
+
+            if (!string.IsNullOrEmpty(parentId) && _shadowRootMap.TryGetValue(parentId, out var shadowRoot))
+            {
+                return shadowRoot;
             }
 
             if (_currentFrameElement != null)
@@ -2006,6 +2015,11 @@ pre {{
 
             var dom = _engine.GetActiveDom();
             return (dom as Element) ?? (dom as Document)?.DocumentElement;
+        }
+
+        private Element ResolveSearchRoot(string parentId = null)
+        {
+            return ResolveSearchRootNode(parentId) as Element;
         }
 
         private Element ResolveFrameReference(object frameReference)
@@ -2117,8 +2131,23 @@ pre {{
 
         public Task<string> GetShadowRootAsync(string elementId)
         {
-            // Shadow DOM not supported
-            return Task.FromResult<string>(null);
+            var element = ResolveElementInActiveContext(elementId);
+            if (element?.ShadowRoot == null)
+            {
+                return Task.FromResult<string>(null);
+            }
+
+            foreach (var entry in _shadowRootMap)
+            {
+                if (ReferenceEquals(entry.Value, element.ShadowRoot))
+                {
+                    return Task.FromResult(entry.Key);
+                }
+            }
+
+            var id = Guid.NewGuid().ToString();
+            _shadowRootMap[id] = element.ShadowRoot;
+            return Task.FromResult(id);
         }
 
         public Task<bool> IsElementSelectedAsync(string elementId)
