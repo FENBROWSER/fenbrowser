@@ -141,12 +141,18 @@ namespace FenBrowser.FenEngine.Core
                 (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-                
+
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx))
+                {
+                    _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                }
+
+                var target = targetIdx >= 0 && _properties[targetIdx].Value.HasValue
+                    ? _properties[targetIdx].Value.Value
+                    : FenValue.Undefined;
                 if (_shape.TryGetPropertyOffset("__proxyGet__", out var pgIdx) && 
                     (_properties[pgIdx].Value.HasValue && _properties[pgIdx].Value.Value.IsFunction))
                 {
-                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
-                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
                     FenValue handler = FenValue.Undefined;
                     if (!TryGetDirect("__proxyHandler__", out handler))
                     {
@@ -154,7 +160,12 @@ namespace FenBrowser.FenEngine.Core
                     }
 
                     var fn = _properties[pgIdx].Value.Value.AsFunction();
-                    return fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), receiver }, context, handler);
+                    return fn.Invoke(new FenValue[] { target, FenValue.FromString(key), receiver }, context, handler);
+                }
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                {
+                    return targetObject.GetWithReceiver(key, receiver, context);
                 }
             }
 
@@ -214,14 +225,14 @@ namespace FenBrowser.FenEngine.Core
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
+                TryGetDirect("__proxyTarget__", out var target);
+                if (target.IsUndefined)
+                {
+                    TryGetDirect("__target__", out target);
+                }
+
                 if (TryGetDirect("__proxyGet__", out var proxyGet) && proxyGet.IsFunction)
                 {
-                    TryGetDirect("__proxyTarget__", out var target);
-                    if (target.IsUndefined)
-                    {
-                        TryGetDirect("__target__", out target);
-                    }
-
                     FenValue handler = FenValue.Undefined;
                     if (!TryGetDirect("__proxyHandler__", out handler))
                     {
@@ -232,6 +243,11 @@ namespace FenBrowser.FenEngine.Core
                         new[] { target, key, receiver },
                         context,
                         handler);
+                }
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                {
+                    return targetObject.GetWithReceiver(key, receiver, context);
                 }
             }
 
@@ -318,13 +334,31 @@ namespace FenBrowser.FenEngine.Core
                 (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx))
+                {
+                    _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                }
+
+                var target = targetIdx >= 0 && _properties[targetIdx].Value.HasValue
+                    ? _properties[targetIdx].Value.Value
+                    : FenValue.Undefined;
                 if (_shape.TryGetPropertyOffset("__proxySet__", out var psIdx) &&
                     (_properties[psIdx].Value.HasValue && _properties[psIdx].Value.Value.IsFunction))
                 {
-                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
-                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                    FenValue handler = FenValue.Undefined;
+                    if (!TryGetDirect("__proxyHandler__", out handler))
+                    {
+                        TryGetDirect("__handler__", out handler);
+                    }
+
                     var fn = _properties[psIdx].Value.Value.AsFunction();
-                    fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, receiver }, null);
+                    fn.Invoke(new FenValue[] { target, FenValue.FromString(key), value, receiver }, null, handler);
+                    return;
+                }
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                {
+                    targetObject.SetWithReceiver(key, value, receiver, null);
                     return;
                 }
             }
@@ -406,15 +440,32 @@ namespace FenBrowser.FenEngine.Core
                 (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-                
+
+                if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx))
+                {
+                    _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                }
+
+                var target = targetIdx >= 0 && _properties[targetIdx].Value.HasValue
+                    ? _properties[targetIdx].Value.Value
+                    : FenValue.Undefined;
                 if (_shape.TryGetPropertyOffset("__proxySet__", out var psIdx) && 
                     (_properties[psIdx].Value.HasValue && _properties[psIdx].Value.Value.IsFunction))
                 {
-                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
-                    var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
-                    
+                    FenValue handler = FenValue.Undefined;
+                    if (!TryGetDirect("__proxyHandler__", out handler))
+                    {
+                        TryGetDirect("__handler__", out handler);
+                    }
+
                     var fn = _properties[psIdx].Value.Value.AsFunction();
-                    fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key), value, receiver }, context);
+                    fn.Invoke(new FenValue[] { target, FenValue.FromString(key), value, receiver }, context, handler);
+                    return;
+                }
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                {
+                    targetObject.SetWithReceiver(key, value, receiver, context);
                     return;
                 }
             }
@@ -540,15 +591,27 @@ namespace FenBrowser.FenEngine.Core
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
+                TryGetDirect("__proxyTarget__", out var target);
+                if (target.IsUndefined)
+                {
+                    TryGetDirect("__target__", out target);
+                }
+
                 if (TryGetDirect("__proxySet__", out var proxySet) && proxySet.IsFunction)
                 {
-                    TryGetDirect("__proxyTarget__", out var target);
-                    if (target.IsUndefined)
+                    FenValue handler = FenValue.Undefined;
+                    if (!TryGetDirect("__proxyHandler__", out handler))
                     {
-                        TryGetDirect("__target__", out target);
+                        TryGetDirect("__handler__", out handler);
                     }
 
-                    proxySet.AsFunction().Invoke(new[] { target, key, value, receiver }, context);
+                    proxySet.AsFunction().Invoke(new[] { target, key, value, receiver }, context, handler);
+                    return;
+                }
+
+                if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                {
+                    targetObject.SetWithReceiver(key, value, receiver, context);
                     return;
                 }
             }
@@ -666,15 +729,31 @@ namespace FenBrowser.FenEngine.Core
                 if (_shape.TryGetPropertyOffset("__isProxy__", out var selfProxyIdx) && 
                     (_properties[selfProxyIdx].Value.HasValue && _properties[selfProxyIdx].Value.Value.ToBoolean()))
                 {
+                    if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx))
+                    {
+                        _shape.TryGetPropertyOffset("__target__", out targetIdx);
+                    }
+
+                    var target = targetIdx >= 0 && _properties[targetIdx].Value.HasValue
+                        ? _properties[targetIdx].Value.Value
+                        : FenValue.Undefined;
                     if (_shape.TryGetPropertyOffset("__proxyHas__", out var phIdx) && 
                         (_properties[phIdx].Value.HasValue && _properties[phIdx].Value.Value.IsFunction))
                     {
-                        if (!_shape.TryGetPropertyOffset("__proxyTarget__", out var targetIdx)) _shape.TryGetPropertyOffset("__target__", out targetIdx);
-                        var target = targetIdx >= 0 ? _properties[targetIdx].Value : FenValue.Undefined;
+                        FenValue handler = FenValue.Undefined;
+                        if (!TryGetDirect("__proxyHandler__", out handler))
+                        {
+                            TryGetDirect("__handler__", out handler);
+                        }
 
                         var fn = _properties[phIdx].Value.Value.AsFunction();
-                        var res = fn.Invoke(new FenValue[] { target ?? FenValue.Undefined, FenValue.FromString(key) }, context);
+                        var res = fn.Invoke(new FenValue[] { target, FenValue.FromString(key) }, context, handler);
                         return res.ToBoolean();
+                    }
+
+                    if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                    {
+                        return targetObject.Has(key, context);
                     }
                 }
 
@@ -711,15 +790,26 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (TryGetDirect("__isProxy__", out var proxyMarker) && proxyMarker.ToBoolean())
                 {
+                    TryGetDirect("__proxyTarget__", out var target);
+                    if (target.IsUndefined)
+                    {
+                        TryGetDirect("__target__", out target);
+                    }
+
                     if (TryGetDirect("__proxyHas__", out var proxyHas) && proxyHas.IsFunction)
                     {
-                        TryGetDirect("__proxyTarget__", out var target);
-                        if (target.IsUndefined)
+                        FenValue handler = FenValue.Undefined;
+                        if (!TryGetDirect("__proxyHandler__", out handler))
                         {
-                            TryGetDirect("__target__", out target);
+                            TryGetDirect("__handler__", out handler);
                         }
 
-                        return proxyHas.AsFunction().Invoke(new[] { target, key }, context).ToBoolean();
+                        return proxyHas.AsFunction().Invoke(new[] { target, key }, context, handler).ToBoolean();
+                    }
+
+                    if ((target.IsObject || target.IsFunction) && target.AsObject() is FenObject targetObject)
+                    {
+                        return targetObject.Has(key, context);
                     }
                 }
 

@@ -35,6 +35,8 @@ namespace FenBrowser.FenEngine.Core
         private readonly IStorageBackend _storageBackend;
         private readonly IDomBridge _domBridge; // Bridge to Engine's DOM
         private IHistoryBridge _historyBridge;
+        private readonly List<HistoryEntryState> _localHistoryEntries = new List<HistoryEntryState>();
+        private int _localHistoryIndex = -1;
         private IObject _realmObjectPrototype;
         private IObject _realmFunctionPrototype;
         private IObject _realmArrayPrototype;
@@ -46,6 +48,9 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _domTextPrototype;
         private FenObject _domCommentPrototype;
         private FenObject _domAttrPrototype;
+        private FenObject _windowObject;
+        private FenObject _locationObject;
+        private FenObject _historyObject;
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
@@ -53,6 +58,13 @@ namespace FenBrowser.FenEngine.Core
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
         private static readonly Random _mathRandom = new Random(); // Cached Random for Math.random()
+
+        private sealed class HistoryEntryState
+        {
+            public Uri Url { get; set; }
+            public FenValue State { get; set; }
+            public string Title { get; set; }
+        }
 
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
             IDomBridge domBridge = null, IHistoryBridge historyBridge = null)
@@ -109,7 +121,11 @@ namespace FenBrowser.FenEngine.Core
         public Func<HttpRequestMessage, Task<HttpResponseMessage>> NetworkFetchHandler { get; set; }
         public Action<Uri> NavigationRequested { get; set; }
 
-        public void SetHistoryBridge(IHistoryBridge bridge) => _historyBridge = bridge;
+        public void SetHistoryBridge(IHistoryBridge bridge)
+        {
+            _historyBridge = bridge;
+            SynchronizeHistorySurface();
+        }
         private static Task RunDetachedAsync(Func<Task> operation)
         {
             return Task.Factory.StartNew(async () =>
@@ -145,51 +161,15 @@ namespace FenBrowser.FenEngine.Core
             try
             {
                 FenLogger.Debug($"[FenRuntime] NotifyPopState: {state}", LogCategory.Events);
+                var clonedState = state != null
+                    ? CloneHistoryState(ConvertNativeToFenValue(state))
+                    : FenValue.Null;
 
-                // Build the PopStateEvent object once, shared by both listener paths
-                var eventObj = new FenObject();
-                eventObj.Set("type", FenValue.FromString("popstate"));
-                eventObj.Set("state", state != null ? ConvertNativeToFenValue(state) : FenValue.Null);
-                eventObj.Set("bubbles", FenValue.FromBoolean(false));
-                eventObj.Set("cancelable", FenValue.FromBoolean(false));
-                var popStateArgs = new FenValue[] { FenValue.FromObject(eventObj) };
-
-                if (_windowEventListeners.ContainsKey("popstate"))
-                {
-                    // Dispatch to all addEventListener("popstate", ...) listeners
-                    var listeners = _windowEventListeners["popstate"].ToList();
-                    foreach (var listener in listeners)
-                    {
-                        var callback = listener.Callback;
-                        if (callback.IsFunction)
-                        {
-                            ExecuteFunction(callback.AsFunction() as FenFunction, popStateArgs);
-                        }
-                        else if (callback.IsObject)
-                        {
-                            var handleEvent = callback.AsObject().Get("handleEvent");
-                            if (handleEvent.IsFunction)
-                            {
-                                _context.ThisBinding = callback;
-                                handleEvent.AsFunction().Invoke(popStateArgs, _context, callback);
-                            }
-                        }
-
-                        if (listener.Once)
-                        {
-                            _windowEventListeners["popstate"].Remove(listener);
-                        }
-                    }
-                }
-
-                // Check window.onpopstate property (event handler IDL attribute)
-                var windowVal = _globalEnv.Get("window");
-                if (windowVal is FenValue fvWin && fvWin.IsObject)
-                {
-                    var handler = fvWin.AsObject().Get("onpopstate");
-                    if (handler.IsFunction)
-                        handler.AsFunction()?.Invoke(popStateArgs, _context);
-                }
+                SynchronizeHistorySurface();
+                EventLoop.EventLoopCoordinator.Instance.ScheduleTask(
+                    () => DispatchPopStateEvent(clonedState),
+                    EventLoop.TaskSource.History,
+                    "history.popstate");
             }
             catch (Exception ex)
             {
@@ -6041,37 +6021,50 @@ namespace FenBrowser.FenEngine.Core
 
             // history object
             var history = new FenObject();
-            history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));
-            history.Set("state", FenValue.Null); // Initial state
-
-            // Getters for state and length that query the bridge dynamicall if possible?
-            // Since we can't easily do getters on FenObject yet (unless we use DefineProperty which isn't fully exposed via Set),
-            // we'll rely on methods updates or proxied access. 
-            // Ideally FenObject should support property descriptors.
-            // For now, simple methods are key.
+            _historyObject = history;
+            history.DefineOwnProperty("length", PropertyDescriptor.Accessor(
+                new FenFunction("get length", (FenValue[] args, FenValue thisVal) =>
+                {
+                    return FenValue.FromNumber(GetHistoryLength());
+                }),
+                null,
+                enumerable: true,
+                configurable: true));
+            history.DefineOwnProperty("state", PropertyDescriptor.Accessor(
+                new FenFunction("get state", (FenValue[] args, FenValue thisVal) =>
+                {
+                    return GetHistoryStateValue();
+                }),
+                null,
+                enumerable: true,
+                configurable: true));
 
             history.Set("pushState", FenValue.FromFunction(new FenFunction("pushState",
                 (FenValue[] args, FenValue thisVal) =>
                 {
                     if (args.Length >= 2)
                     {
-                        var state = args[0].AsObject(); // Or generic value? History supports any serializable.
-                        // For now assuming object or primitive.
-                        object stateObj = null;
-                        if (args[0].IsObject) stateObj = args[0].AsObject(); // Simplified
-                        else if (args[0].IsString) stateObj = args[0].ToString();
-                        else if (args[0].IsNumber) stateObj = args[0].ToNumber();
-                        else if (args[0].IsBoolean) stateObj = args[0].ToBoolean();
-
+                        var clonedState = CloneHistoryState(args[0]);
                         var title = args[1].ToString();
                         var url = args.Length > 2 ? args[2].ToString() : null;
+                        var target = string.IsNullOrWhiteSpace(url)
+                            ? GetCurrentHistoryUrl()
+                            : ResolveLocationTarget(url, location);
+                        if (!string.IsNullOrWhiteSpace(url) && target == null)
+                        {
+                            throw new FenTypeError($"TypeError: Failed to resolve history URL '{url}'");
+                        }
 
-                        _historyBridge?.PushState(stateObj, title, url);
+                        if (_historyBridge != null)
+                        {
+                            _historyBridge.PushState(clonedState, title, url);
+                        }
+                        else
+                        {
+                            PushLocalHistoryState(clonedState, title, target);
+                        }
 
-                        // Update local history object state immediately?
-                        // Ideally bridge syncs back but for now:
-                        history.Set("state", args[0]);
-                        history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));
+                        SynchronizeHistorySurface(target);
                     }
 
                     return FenValue.Undefined;
@@ -6082,15 +6075,27 @@ namespace FenBrowser.FenEngine.Core
                 {
                     if (args.Length >= 2)
                     {
-                        object stateObj = null;
-                        if (args[0].IsObject) stateObj = args[0].AsObject();
-                        else if (args[0].IsString) stateObj = args[0].ToString();
-
+                        var clonedState = CloneHistoryState(args[0]);
                         var title = args[1].ToString();
                         var url = args.Length > 2 ? args[2].ToString() : null;
+                        var target = string.IsNullOrWhiteSpace(url)
+                            ? GetCurrentHistoryUrl()
+                            : ResolveLocationTarget(url, location);
+                        if (!string.IsNullOrWhiteSpace(url) && target == null)
+                        {
+                            throw new FenTypeError($"TypeError: Failed to resolve history URL '{url}'");
+                        }
 
-                        _historyBridge?.ReplaceState(stateObj, title, url);
-                        history.Set("state", args[0]);
+                        if (_historyBridge != null)
+                        {
+                            _historyBridge.ReplaceState(clonedState, title, url);
+                        }
+                        else
+                        {
+                            ReplaceLocalHistoryState(clonedState, title, target);
+                        }
+
+                        SynchronizeHistorySurface(target);
                     }
 
                     return FenValue.Undefined;
@@ -6101,11 +6106,25 @@ namespace FenBrowser.FenEngine.Core
                 if (args.Length > 0)
                 {
                     int delta = (int)args[0].ToNumber();
-                    _historyBridge?.Go(delta);
+                    if (_historyBridge != null)
+                    {
+                        _historyBridge.Go(delta);
+                    }
+                    else
+                    {
+                        TraverseLocalHistory(delta);
+                    }
                 }
                 else
                 {
-                    _historyBridge?.Go(0); // reload
+                    if (_historyBridge != null)
+                    {
+                        _historyBridge.Go(0); // reload
+                    }
+                    else
+                    {
+                        TraverseLocalHistory(0);
+                    }
                 }
 
                 return FenValue.Undefined;
@@ -6113,14 +6132,28 @@ namespace FenBrowser.FenEngine.Core
 
             history.Set("back", FenValue.FromFunction(new FenFunction("back", (FenValue[] args, FenValue thisVal) =>
             {
-                _historyBridge?.Go(-1);
+                if (_historyBridge != null)
+                {
+                    _historyBridge.Go(-1);
+                }
+                else
+                {
+                    TraverseLocalHistory(-1);
+                }
                 return FenValue.Undefined;
             })));
 
             history.Set("forward", FenValue.FromFunction(new FenFunction("forward",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    _historyBridge?.Go(1);
+                    if (_historyBridge != null)
+                    {
+                        _historyBridge.Go(1);
+                    }
+                    else
+                    {
+                        TraverseLocalHistory(1);
+                    }
                     return FenValue.Undefined;
                 })));
 
@@ -6151,6 +6184,7 @@ namespace FenBrowser.FenEngine.Core
             // window object - Comprehensive with all standard properties
             window.Set("console", FenValue.FromObject(console));
             window.Set("navigator", FenValue.FromObject(navigator));
+            _locationObject = location;
             window.Set("location", FenValue.FromObject(location));
             window.Set("screen", FenValue.FromObject(screen));
             window.Set("localStorage", FenValue.FromObject(localStorage));
@@ -6719,6 +6753,7 @@ namespace FenBrowser.FenEngine.Core
             }));
             window.Set("open", windowOpenFunc);
 
+            _windowObject = window;
             SetGlobal("window", FenValue.FromObject(window));
             // Bridge DOM EventTarget static dispatch to FenRuntime top-level listener storage.
             FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = _ => window;
@@ -15063,6 +15098,318 @@ namespace FenBrowser.FenEngine.Core
             return null;
         }
 
+        private void EnsureLocalHistoryInitialized()
+        {
+            if (_historyBridge != null || _localHistoryEntries.Count > 0)
+            {
+                return;
+            }
+
+            _localHistoryEntries.Add(new HistoryEntryState
+            {
+                Url = BaseUri ?? new Uri("about:blank"),
+                State = FenValue.Null,
+                Title = string.Empty
+            });
+            _localHistoryIndex = 0;
+        }
+
+        private Uri GetCurrentHistoryUrl()
+        {
+            if (_historyBridge?.CurrentUrl != null)
+            {
+                return _historyBridge.CurrentUrl;
+            }
+
+            if (_localHistoryIndex >= 0 && _localHistoryIndex < _localHistoryEntries.Count)
+            {
+                return _localHistoryEntries[_localHistoryIndex].Url;
+            }
+
+            return BaseUri;
+        }
+
+        private int GetHistoryLength()
+        {
+            if (_historyBridge != null)
+            {
+                return Math.Max(1, _historyBridge.Length);
+            }
+
+            EnsureLocalHistoryInitialized();
+            return Math.Max(1, _localHistoryEntries.Count);
+        }
+
+        private FenValue GetHistoryStateValue()
+        {
+            if (_historyBridge != null)
+            {
+                return _historyBridge.State != null
+                    ? CloneHistoryState(ConvertNativeToFenValue(_historyBridge.State))
+                    : FenValue.Null;
+            }
+
+            EnsureLocalHistoryInitialized();
+            if (_localHistoryIndex >= 0 && _localHistoryIndex < _localHistoryEntries.Count)
+            {
+                return CloneHistoryState(_localHistoryEntries[_localHistoryIndex].State);
+            }
+
+            return FenValue.Null;
+        }
+
+        private FenValue CloneHistoryState(FenValue state)
+        {
+            var structuredClone = _globalEnv.Get("structuredClone");
+            if (structuredClone.IsFunction)
+            {
+                return structuredClone.AsFunction().Invoke(
+                    new[] { state },
+                    _context,
+                    _windowObject != null ? FenValue.FromObject(_windowObject) : FenValue.Undefined);
+            }
+
+            return state;
+        }
+
+        private void PushLocalHistoryState(FenValue state, string title, Uri target)
+        {
+            EnsureLocalHistoryInitialized();
+            var resolvedUrl = target ?? GetCurrentHistoryUrl() ?? BaseUri ?? new Uri("about:blank");
+            if (_localHistoryIndex < _localHistoryEntries.Count - 1)
+            {
+                _localHistoryEntries.RemoveRange(_localHistoryIndex + 1, _localHistoryEntries.Count - (_localHistoryIndex + 1));
+            }
+
+            _localHistoryEntries.Add(new HistoryEntryState
+            {
+                Url = resolvedUrl,
+                State = CloneHistoryState(state),
+                Title = title ?? string.Empty
+            });
+            _localHistoryIndex = _localHistoryEntries.Count - 1;
+        }
+
+        private void ReplaceLocalHistoryState(FenValue state, string title, Uri target)
+        {
+            EnsureLocalHistoryInitialized();
+            var resolvedUrl = target ?? GetCurrentHistoryUrl() ?? BaseUri ?? new Uri("about:blank");
+            if (_localHistoryIndex < 0 || _localHistoryIndex >= _localHistoryEntries.Count)
+            {
+                _localHistoryEntries.Add(new HistoryEntryState
+                {
+                    Url = resolvedUrl,
+                    State = CloneHistoryState(state),
+                    Title = title ?? string.Empty
+                });
+                _localHistoryIndex = _localHistoryEntries.Count - 1;
+                return;
+            }
+
+            var entry = _localHistoryEntries[_localHistoryIndex];
+            entry.Url = resolvedUrl;
+            entry.State = CloneHistoryState(state);
+            entry.Title = title ?? entry.Title;
+        }
+
+        private void TraverseLocalHistory(int delta)
+        {
+            EnsureLocalHistoryInitialized();
+            if (delta == 0)
+            {
+                ReloadWindowLocation(_locationObject);
+                return;
+            }
+
+            var targetIndex = _localHistoryIndex + delta;
+            if (targetIndex < 0 || targetIndex >= _localHistoryEntries.Count)
+            {
+                return;
+            }
+
+            _localHistoryIndex = targetIndex;
+            var entry = _localHistoryEntries[_localHistoryIndex];
+            SynchronizeHistorySurface(entry.Url);
+            NotifyPopState(entry.State);
+        }
+
+        private void SynchronizeHistorySurface(Uri explicitUrl = null)
+        {
+            var currentUrl = explicitUrl ?? GetCurrentHistoryUrl();
+            if (currentUrl != null)
+            {
+                BaseUri = currentUrl;
+            }
+
+            if (_locationObject != null)
+            {
+                UpdateLocationState(_locationObject, currentUrl ?? BaseUri);
+            }
+        }
+
+        private void DispatchPopStateEvent(FenValue state)
+        {
+            SynchronizeHistorySurface();
+
+            var eventObj = new DomEvent("popstate", false, false, false, _context);
+            eventObj.Set("state", CloneHistoryState(state));
+            var popStateArgs = new[] { FenValue.FromObject(eventObj) };
+
+            InvokeWindowObjectListeners("popstate", popStateArgs[0]);
+
+            if (_windowEventListeners.ContainsKey("popstate"))
+            {
+                var listeners = _windowEventListeners["popstate"].ToList();
+                foreach (var listener in listeners)
+                {
+                    var callback = listener.Callback;
+                    if (callback.IsFunction)
+                    {
+                        ExecuteFunction(callback.AsFunction() as FenFunction, popStateArgs);
+                    }
+                    else if (callback.IsObject)
+                    {
+                        var handleEvent = callback.AsObject().Get("handleEvent");
+                        if (handleEvent.IsFunction)
+                        {
+                            _context.ThisBinding = callback;
+                            handleEvent.AsFunction().Invoke(popStateArgs, _context, callback);
+                        }
+                    }
+
+                    if (listener.Once)
+                    {
+                        _windowEventListeners["popstate"].Remove(listener);
+                    }
+                }
+            }
+
+            var windowVal = _globalEnv.Get("window");
+            if (windowVal is FenValue fvWin && fvWin.IsObject)
+            {
+                var handler = fvWin.AsObject().Get("onpopstate");
+                if (handler.IsFunction)
+                {
+                    handler.AsFunction()?.Invoke(popStateArgs, _context);
+                }
+            }
+        }
+
+        private void InvokeWindowObjectListeners(string eventType, FenValue eventValue)
+        {
+            if (_windowObject == null)
+            {
+                return;
+            }
+
+            var listenersVal = _windowObject.Get("__fen_listeners__");
+            if (!listenersVal.IsObject)
+            {
+                return;
+            }
+
+            var listenersObj = listenersVal.AsObject() as FenObject;
+            var arrVal = listenersObj?.Get(eventType) ?? FenValue.Undefined;
+            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+            if (arr == null)
+            {
+                return;
+            }
+
+            int len = (int)arr.Get("length").ToNumber();
+            for (int i = 0; i < len; i++)
+            {
+                var listenerEntry = arr.Get(i.ToString());
+                var callback = listenerEntry;
+                var onceListener = false;
+
+                if (listenerEntry.IsObject)
+                {
+                    var entryObj = listenerEntry.AsObject();
+                    var cbVal = entryObj.Get("callback");
+                    if (!cbVal.IsUndefined)
+                    {
+                        callback = cbVal;
+                        onceListener = entryObj.Get("once").ToBoolean();
+                    }
+                }
+
+                FenFunction callbackFn = null;
+                var callbackThis = FenValue.FromObject(_windowObject);
+                if (callback.IsFunction)
+                {
+                    callbackFn = callback.AsFunction() as FenFunction;
+                }
+                else if (callback.IsObject)
+                {
+                    var handleEvent = callback.AsObject().Get("handleEvent");
+                    if (handleEvent.IsFunction)
+                    {
+                        callbackFn = handleEvent.AsFunction() as FenFunction;
+                        callbackThis = callback;
+                    }
+                }
+
+                if (callbackFn == null)
+                {
+                    continue;
+                }
+
+                _context.ThisBinding = callbackThis;
+                callbackFn.Invoke(new[] { eventValue }, _context, callbackThis);
+
+                if (onceListener)
+                {
+                    if (listenerEntry.IsObject)
+                    {
+                        DetachAbortSignalRegistration(listenerEntry.AsObject() as FenObject);
+                    }
+
+                    var kept = FenObject.CreateArray();
+                    int k = 0;
+                    for (int j = 0; j < len; j++)
+                    {
+                        if (j == i) continue;
+                        kept.Set(k.ToString(), arr.Get(j.ToString()));
+                        k++;
+                    }
+
+                    kept.Set("length", FenValue.FromNumber(k));
+                    listenersObj.Set(eventType, FenValue.FromObject(kept));
+                    arr = kept;
+                    len = k;
+                    i--;
+                }
+            }
+        }
+
+        private void DetachAbortSignalRegistration(FenObject entryObj)
+        {
+            if (entryObj == null)
+            {
+                return;
+            }
+
+            var signal = entryObj.Get("__signal");
+            var abortCallback = entryObj.Get("__abortCallback");
+            if (!signal.IsObject || !abortCallback.IsFunction)
+            {
+                return;
+            }
+
+            var removeAbortListener = signal.AsObject()?.Get("removeEventListener") ?? FenValue.Undefined;
+            if (removeAbortListener.IsFunction)
+            {
+                removeAbortListener.AsFunction()?.Invoke(new[]
+                {
+                    FenValue.FromString("abort"),
+                    abortCallback
+                }, _context, signal);
+            }
+
+            entryObj.Delete("__abortCallback");
+        }
+
         private static void UpdateLocationState(FenObject location, Uri uri)
         {
             if (location == null)
@@ -15140,6 +15487,15 @@ namespace FenBrowser.FenEngine.Core
         {
             if (root == null) return;
             this.BaseUri = baseUri;
+            if (_historyBridge == null)
+            {
+                EnsureLocalHistoryInitialized();
+                if (_localHistoryIndex >= 0 && _localHistoryIndex < _localHistoryEntries.Count)
+                {
+                    _localHistoryEntries[_localHistoryIndex].Url = baseUri ?? new Uri("about:blank");
+                }
+            }
+            SynchronizeHistorySurface(baseUri);
 
             var documentWrapper = new DocumentWrapper(root, _context, baseUri);
             if (_domDocumentPrototype != null)
@@ -15207,6 +15563,7 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
+                var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
                 var handlerName = "on" + type;
                 var windowObj = _globalEnv.Get("window");
                 if (windowObj is FenValue fvWindow && fvWindow.IsObject)
@@ -15214,11 +15571,12 @@ namespace FenBrowser.FenEngine.Core
                     var handler = fvWindow.AsObject().Get(handlerName);
                     if (handler.IsFunction)
                     {
-                        var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
                         _context.ThisBinding = fvWindow;
                         handler.AsFunction().Invoke(new[] { evt }, _context);
                     }
                 }
+
+                InvokeWindowObjectListeners(type, evt);
 
                 if (_windowEventListeners.ContainsKey(type))
                 {
@@ -15226,7 +15584,6 @@ namespace FenBrowser.FenEngine.Core
                     foreach (var listener in listeners)
                     {
                         var callback = listener.Callback;
-                        var evt = eventData != null ? FenValue.FromObject(eventData) : FenValue.Null;
                         if (callback.IsFunction)
                         {
                             _context.ThisBinding = FenValue.Undefined;
@@ -18337,6 +18694,7 @@ namespace FenBrowser.FenEngine.Core
         private FenValue ConvertNativeToFenValue(object obj)
         {
             if (obj == null) return FenValue.Null;
+            if (obj is FenValue fenValue) return fenValue;
             if (obj is bool b) return FenValue.FromBoolean(b);
             if (obj is string s) return FenValue.FromString(s);
             if (obj is int i) return FenValue.FromNumber(i);
