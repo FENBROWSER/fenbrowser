@@ -58,3 +58,9 @@ TestResults/
 test262_results.md
 *.trx
 *.xml
+
+# Temp and IDE files
+.codex-temp/
+.testrun/
+scratch/
+local_report.md
