@@ -360,8 +360,17 @@ namespace FenBrowser.FenEngine.Scripting
             try 
             {
                 FenLogger.Debug("[JavaScriptEngine] Setting up Modern APIs (Proxy, Reflect)...", LogCategory.JavaScript);
-                _fenRuntime.SetGlobal("Proxy", FenBrowser.FenEngine.Scripting.ProxyAPI.CreateProxyConstructor());
-                _fenRuntime.SetGlobal("Reflect", FenValue.FromObject(FenBrowser.FenEngine.Scripting.ReflectAPI.CreateReflectObject()));
+                var existingProxy = _fenRuntime.GetGlobal("Proxy");
+                if (!existingProxy.IsFunction && !existingProxy.IsObject)
+                {
+                    _fenRuntime.SetGlobal("Proxy", FenBrowser.FenEngine.Scripting.ProxyAPI.CreateProxyConstructor());
+                }
+
+                var existingReflect = _fenRuntime.GetGlobal("Reflect");
+                if (!existingReflect.IsFunction && !existingReflect.IsObject)
+                {
+                    _fenRuntime.SetGlobal("Reflect", FenValue.FromObject(FenBrowser.FenEngine.Scripting.ReflectAPI.CreateReflectObject()));
+                }
             }
             catch (Exception ex)
             {
@@ -4062,17 +4071,24 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
 
                     int scriptIndex = 0;
                     SetCurrentScriptValue(FenValue.Null);
-                    foreach (var s in _domRoot.SelfAndDescendants())
+                    var scriptTraversalRoot = _domRoot;
+                    if (scriptTraversalRoot == null)
                     {
-                        if (s is Element el)
+                        DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptSkip] DOM root missing; skipping script walk.\n");
+                    }
+                    else
+                    {
+                        foreach (var s in scriptTraversalRoot.SelfAndDescendants())
                         {
-                            string tagName = el.TagName?.ToLowerInvariant() ?? "";
-                            if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
+                            if (s is Element el)
                             {
-                                DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptFound] Found script tag.\n");
-                                scriptIndex++;
-                                string code = null;
-                                string srcInfo = "inline";
+                                string tagName = el.TagName?.ToLowerInvariant() ?? "";
+                                if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptFound] Found script tag.\n");
+                                    scriptIndex++;
+                                    string code = null;
+                                    string srcInfo = "inline";
 
                                 // Attribute checks
                                 string type = el.GetAttribute("type")?.ToLowerInvariant() ?? "";
@@ -4266,6 +4282,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                         }
                     }
                     
+                    }
+
                     FenLogger.Debug("[JavaScriptEngine] Inline script execution complete", LogCategory.JavaScript);
                 }
                 catch (Exception ex)

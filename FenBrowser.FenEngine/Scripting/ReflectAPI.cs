@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -97,48 +98,127 @@ namespace FenBrowser.FenEngine.Scripting
                 if (!target.IsFunction) throw new Errors.FenInternalError("Reflect.apply target must be a function");
 
                 var func = target.AsFunction();
-                
-                // Convert argumentsList (array-like) to IValue[]
-                // Simplified: Assuming generic array or object with length
-                var invokeArgs = new System.Collections.Generic.List<FenValue>();
-                
-                if (argumentsList.IsObject)
-                {
-                     var argObj = argumentsList.AsObject();
-                     var lenVal = argObj.Get("length");
-                     if (lenVal.IsNumber)
-                     {
-                         int len = (int)lenVal.ToNumber();
-                         for(int i=0; i<len; i++)
-                         {
-                             invokeArgs.Add(argObj.Get(i.ToString()));
-                         }
-                     }
-                }
-                
-                return func.Invoke(invokeArgs.ToArray(), null); // Context is null? Need to pass 'thisArg'
-                // Wait, Invoke() signature takes Context?
-                // FenFunction.Invoke(args, context)
-                // We need to pass 'thisArg' as binding.
-                // We can create a fake context or modify Invoke to accept ThisBinding directly?
-                // Invoke takes IExecutionContext.
-                // We can pass null context, but how to set 'this'?
-                // Actually FenFunction.Invoke implementation (Line 61) reads context?.ThisBinding.
-                // We must pass a simple context wrapper.
-                
-                // return func.Invoke(invokeArgs.ToArray(), new SimpleContext { ThisBinding = thisArg });
-                // We assume there is a way to pass context.
-                return func.Invoke(invokeArgs.ToArray(), new ExecutionContextShim(thisArg));
+                var invokeArgs = ReadArgumentsList(argumentsList);
+                return func.Invoke(invokeArgs, new ExecutionContextShim(thisArg), thisArg);
             })));
 
             // Reflect.construct(target, argumentsList[, newTarget])
             reflect.Set("construct", FenValue.FromFunction(new FenFunction("construct", (args, thisVal) =>
             {
-                 // Not implemented yet
-                 return FenValue.Null;
+                if (args.Length < 2 || !args[0].IsFunction)
+                {
+                    throw new Errors.FenInternalError("Reflect.construct target must be a constructor");
+                }
+
+                var targetFunction = args[0].AsFunction();
+                if (targetFunction == null)
+                {
+                    throw new Errors.FenInternalError("Reflect.construct target must be a constructor");
+                }
+
+                var newTargetValue = args.Length > 2 ? args[2] : args[0];
+                if (!newTargetValue.IsFunction)
+                {
+                    throw new Errors.FenInternalError("Reflect.construct newTarget must be a constructor");
+                }
+
+                var argsList = ReadArgumentsList(args[1]);
+                return Construct(targetFunction, argsList, newTargetValue);
             })));
 
             return reflect;
+        }
+
+        private static FenValue[] ReadArgumentsList(FenValue argumentsList)
+        {
+            var invokeArgs = new List<FenValue>();
+            if (!(argumentsList.IsObject || argumentsList.IsFunction))
+            {
+                return invokeArgs.ToArray();
+            }
+
+            var argObj = argumentsList.AsObject();
+            var lenVal = argObj.Get("length");
+            if (!lenVal.IsNumber)
+            {
+                return invokeArgs.ToArray();
+            }
+
+            int len = (int)lenVal.ToNumber();
+            for (int i = 0; i < len; i++)
+            {
+                invokeArgs.Add(argObj.Get(i.ToString()));
+            }
+
+            return invokeArgs.ToArray();
+        }
+
+        private static FenValue Construct(FenFunction targetFunction, FenValue[] args, FenValue newTargetValue)
+        {
+            if (!targetFunction.ProxyHandler.IsUndefined && targetFunction.ProxyHandler.IsObject)
+            {
+                var handlerObject = targetFunction.ProxyHandler.AsObject();
+                var constructTrap = handlerObject.Get("construct");
+                if (constructTrap.IsFunction)
+                {
+                    var argsArray = FenObject.CreateArray();
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        argsArray.Set(i.ToString(), args[i]);
+                    }
+
+                    argsArray.Set("length", FenValue.FromNumber(args.Length));
+                    return constructTrap.AsFunction().Invoke(
+                        new[]
+                        {
+                            targetFunction.ProxyTarget.Type != FenBrowser.FenEngine.Core.Interfaces.ValueType.Undefined ? targetFunction.ProxyTarget : FenValue.FromFunction(targetFunction),
+                            FenValue.FromObject(argsArray),
+                            newTargetValue
+                        },
+                        new ExecutionContextShim(FenValue.Undefined) { NewTarget = newTargetValue },
+                        FenValue.FromObject(handlerObject));
+                }
+
+                if (targetFunction.ProxyTarget.IsFunction && targetFunction.ProxyTarget.AsFunction() is FenFunction proxyTargetFunction)
+                {
+                    targetFunction = proxyTargetFunction;
+                }
+            }
+
+            var constructedObject = new FenObject();
+            var prototype = ResolveConstructorPrototype(newTargetValue, targetFunction);
+            if (prototype != null)
+            {
+                constructedObject.SetPrototype(prototype);
+            }
+
+            var thisValue = FenValue.FromObject(constructedObject);
+            var result = targetFunction.Invoke(
+                args ?? Array.Empty<FenValue>(),
+                new ExecutionContextShim(thisValue) { NewTarget = newTargetValue },
+                thisValue);
+
+            return (result.IsObject || result.IsFunction) ? result : thisValue;
+        }
+
+        private static FenObject ResolveConstructorPrototype(FenValue newTargetValue, FenFunction targetFunction)
+        {
+            if ((newTargetValue.IsObject || newTargetValue.IsFunction) && newTargetValue.AsObject() is FenObject newTargetObject)
+            {
+                var explicitPrototype = newTargetObject.Get("prototype");
+                if (explicitPrototype.IsObject && explicitPrototype.AsObject() is FenObject explicitPrototypeObject)
+                {
+                    return explicitPrototypeObject;
+                }
+            }
+
+            var targetPrototype = targetFunction.Get("prototype");
+            if (targetPrototype.IsObject && targetPrototype.AsObject() is FenObject targetPrototypeObject)
+            {
+                return targetPrototypeObject;
+            }
+
+            return FenObject.DefaultPrototype as FenObject;
         }
 
         private class ExecutionContextShim : IExecutionContext
