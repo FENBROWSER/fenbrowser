@@ -50,7 +50,7 @@ namespace FenBrowser.Tests.Rendering
             var mapField = typeof(BrowserHost).GetField("_elementMap", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(mapField);
 
-            var elementMap = mapField!.GetValue(host) as Dictionary<string, Element>;
+            var elementMap = mapField!.GetValue(host) as Dictionary<string, Node>;
             Assert.NotNull(elementMap);
 
             elementMap![elementId] = element;

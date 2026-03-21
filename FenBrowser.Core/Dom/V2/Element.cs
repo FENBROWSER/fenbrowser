@@ -415,7 +415,7 @@ namespace FenBrowser.Core.Dom.V2
         /// Consumers (e.g. BrowserApi) subscribe to schedule a CSS re-cascade so pseudo-class
         /// selectors and class/id rules reflect the updated DOM state.
         /// </summary>
-        public static event Action StyleAttributeChanged;
+        public static event Action<Element> StyleAttributeChanged;
 
         internal void OnAttributeValueChanged(Attr attr, string oldValue)
         {
@@ -454,7 +454,7 @@ namespace FenBrowser.Core.Dom.V2
             if (IsStyleAffectingAttribute(name))
             {
                 MarkDirty(InvalidationKind.Style);
-                try { StyleAttributeChanged?.Invoke(); } catch { }
+                try { StyleAttributeChanged?.Invoke(this); } catch { }
             }
 
             // Update ancestor filter for selector optimization
@@ -493,7 +493,7 @@ namespace FenBrowser.Core.Dom.V2
             if (IsStyleAffectingAttribute(name))
             {
                 MarkDirty(InvalidationKind.Style);
-                try { StyleAttributeChanged?.Invoke(); } catch { }
+                try { StyleAttributeChanged?.Invoke(this); } catch { }
             }
 
             UpdateAncestorFilter();

@@ -4964,6 +4964,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             return false;
         }
+        internal static CodeBlock CompileCallableFunctionBody(
+            List<Identifier> parameters,
+            AstNode body,
+            string functionName,
+            bool forceStrictRoot,
+            out Dictionary<string, int> localMap,
+            out bool needsArgumentsObject)
+        {
+            ValidateSupportedParameterList(parameters, "FenFunction");
+
+            var funcCompiler = CreateFunctionCompiler(parameters, functionName, forceStrictRoot);
+            var compiledBlock = funcCompiler.Compile(BuildCallableBody(body, parameters));
+            localMap = BuildFunctionLocalMap(compiledBlock);
+            needsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap);
+            return compiledBlock;
+        }
+
         private static AstNode BuildCallableBody(AstNode body, List<Identifier> parameters = null)
         {
             BlockStatement normalizedBody;
