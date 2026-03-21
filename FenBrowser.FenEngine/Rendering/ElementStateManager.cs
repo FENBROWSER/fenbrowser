@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
@@ -70,6 +71,11 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Callback for when styles need to be recomputed
         public event Action<Element> OnStateChanged;
+
+        // Interactive pseudo-class changes can restyle large regions without changing geometry.
+        // Damage-raster reuse is unsafe for that class of update, so request one conservative
+        // full repaint the next time the renderer consumes interaction-state changes.
+        private int _fullRepaintRequested;
         #endregion
         
         #region Hover State
@@ -110,7 +116,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // Notify about state changes
+            // Hover state is encoded into paint-tree nodes, so damage diffing can localize
+            // hover repaint without forcing a full-viewport redraw on every mouse move.
             foreach (var el in toUpdate)
             {
                 OnStateChanged?.Invoke(el);
@@ -179,7 +186,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // Notify about state changes
+            // Focus state is encoded into paint-tree nodes, so focus-visible/focus-ring updates
+            // can be localized by paint-tree diffing instead of falling back to full-frame repaint.
             foreach (var el in toUpdate)
             {
                 OnStateChanged?.Invoke(el);
@@ -298,6 +306,7 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[ElementState] Active changed: {oldActive?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
             
             // Notify about both old and new
+            RequestFullRepaint();
             if (oldActive != null)
                 OnStateChanged?.Invoke(oldActive);
             if (element != null)
@@ -347,7 +356,8 @@ namespace FenBrowser.FenEngine.Rendering
                 _checkedElements.Add(element);
             else
                 _checkedElements.Remove(element);
-                
+
+            RequestFullRepaint();
             OnStateChanged?.Invoke(element);
         }
         
@@ -544,6 +554,15 @@ namespace FenBrowser.FenEngine.Rendering
             _hoverChain.Clear();
             _focusWithinChain.Clear();
             _checkedElements.Clear();
+            Interlocked.Exchange(ref _fullRepaintRequested, 0);
+        }
+
+        public bool ConsumeFullRepaintRequest()
+            => Interlocked.Exchange(ref _fullRepaintRequested, 0) != 0;
+
+        private void RequestFullRepaint()
+        {
+            Interlocked.Exchange(ref _fullRepaintRequested, 1);
         }
         
         /// <summary>

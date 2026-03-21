@@ -84,11 +84,69 @@ namespace FenBrowser.FenEngine.Rendering
                 case "POLYGON":
                     RenderPoly(canvas, element, tagName == "POLYGON");
                     break;
+                case "USE":
+                    RenderUse(canvas, element);
+                    break;
                 case "G":
                     // Group - just render children
                     RenderSvgChildren(canvas, element);
                     break;
             }
+        }
+
+        private void RenderUse(SKCanvas canvas, Element element)
+        {
+            var href = element.GetAttribute("href") ?? element.GetAttribute("xlink:href");
+            if (string.IsNullOrEmpty(href) || !href.StartsWith("#")) return;
+
+            var targetId = href.Substring(1);
+            
+            // Walk up to the root to search for the referenced ID
+            var root = element;
+            while (root.ParentElement != null)
+                root = root.ParentElement;
+
+            var target = FindElementById(root, targetId);
+            if (target == null) return;
+
+            var x = ParseFloat(element.GetAttribute("x"));
+            var y = ParseFloat(element.GetAttribute("y"));
+
+            canvas.Save();
+            try
+            {
+                if (x != 0 || y != 0)
+                {
+                    canvas.Translate(x, y);
+                }
+                
+                // Render the target (skip if it's the exact same element to avoid trivial recursion loop)
+                if (target != element)
+                {
+                    RenderSvgShape(canvas, target);
+                }
+            }
+            finally
+            {
+                canvas.Restore();
+            }
+        }
+
+        private Element FindElementById(Element root, string id)
+        {
+            if (root.GetAttribute("id") == id) return root;
+            if (root.Children == null) return null;
+            
+            // Simple recursive search to avoid allocating Descendants/LINQ in rendering loop
+            foreach (var child in root.Children)
+            {
+                if (child is Element elem)
+                {
+                    var found = FindElementById(elem, id);
+                    if (found != null) return found;
+                }
+            }
+            return null;
         }
 
         private void RenderPath(SKCanvas canvas, Element element)

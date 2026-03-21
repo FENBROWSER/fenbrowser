@@ -296,6 +296,12 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
         {
             if (style == null) style = new CssComputed();
 
+            // All standard form elements use border-box by default
+            if (string.IsNullOrEmpty(style.BoxSizing))
+            {
+                style.BoxSizing = "border-box";
+            }
+
             string inputType = node.Attr?.ContainsKey("type") == true 
                 ? node.Attr["type"]?.ToLowerInvariant() : "";
             bool isButtonType = tag == "BUTTON" || inputType == "submit" || 

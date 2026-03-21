@@ -48,6 +48,8 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public sealed class SkiaRenderer
     {
+        private static readonly TimeSpan DebugScreenshotMinimumInterval = TimeSpan.FromSeconds(5);
+
         // ═══════════════════════════════════════════════════════════════════
         // NO FIELDS - COMPLETELY STATELESS
         // ═══════════════════════════════════════════════════════════════════
@@ -111,6 +113,8 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
+            CaptureDebugScreenshot(tree, viewport, backgroundColor);
+
             if (damageRegions == null || damageRegions.Count == 0)
             {
                 Render(canvas, tree, viewport, backgroundColor);
@@ -156,23 +160,61 @@ namespace FenBrowser.FenEngine.Rendering
         {
              try 
             {
-                if (viewport.Width > 0 && viewport.Height > 0 && tree.NodeCount > 2)
+                if (viewport.Width <= 0 || viewport.Height <= 0)
                 {
-                    using (var surface = SKSurface.Create(new SKImageInfo((int)viewport.Width, (int)viewport.Height)))
+                    FenLogger.Debug($"[SkiaRenderer] Skipping debug_screenshot.png capture due to invalid viewport {viewport.Width}x{viewport.Height}", LogCategory.Rendering);
+                    return;
+                }
+
+                if (tree.NodeCount <= 2)
+                {
+                    FenLogger.Debug($"[SkiaRenderer] Skipping debug_screenshot.png capture due to tiny paint tree NodeCount={tree.NodeCount}", LogCategory.Rendering);
+                    return;
+                }
+
+                var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
+                if (!ShouldCaptureDebugScreenshot(screenshotPath))
+                {
+                    return;
+                }
+
+                using (var surface = SKSurface.Create(new SKImageInfo((int)viewport.Width, (int)viewport.Height)))
+                {
+                    if (surface == null)
                     {
-                        if (surface != null)
+                        FenLogger.Warn("[SkiaRenderer] Failed to allocate debug screenshot surface", LogCategory.Rendering);
+                        return;
+                    }
+
+                    var offCanvas = surface.Canvas;
+                    // Recursive delegation would be cleaner but for now just use local backend
+                    var backend = new SkiaRenderBackend(offCanvas);
+                    backend.Clear(backgroundColor);
+                    foreach (var root in tree.Roots)
+                    {
+                        DrawNodeSafe(backend, root, viewport);
+                    }
+
+                    using (var image = surface.Snapshot())
+                    {
+                        if (image == null)
                         {
-                            var offCanvas = surface.Canvas;
-                            // Recursive delegation would be cleaner but for now just use local backend
-                            var backend = new SkiaRenderBackend(offCanvas);
-                            backend.Clear(backgroundColor);
-                            foreach (var root in tree.Roots) DrawNodeSafe(backend, root, viewport);
-                            var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
-                            using (var image = surface.Snapshot())
-                            using (var data = image.Encode(SKEncodedImageFormat.Png, 100))
+                            FenLogger.Warn($"[SkiaRenderer] Snapshot returned null while writing {screenshotPath}", LogCategory.Rendering);
+                            return;
+                        }
+
+                        using (var data = image.Encode(SKEncodedImageFormat.Png, 100))
+                        {
+                            if (data == null)
+                            {
+                                FenLogger.Warn($"[SkiaRenderer] PNG encode returned null while writing {screenshotPath}", LogCategory.Rendering);
+                                return;
+                            }
+
                             using (var stream = File.Open(screenshotPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                             {
                                 data.SaveTo(stream);
+                                FenLogger.Debug($"[SkiaRenderer] Wrote debug_screenshot.png to {screenshotPath} ({viewport.Width}x{viewport.Height}, NodeCount={tree.NodeCount})", LogCategory.Rendering);
                                 FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(screenshotPath);
                             }
                         }
@@ -180,6 +222,24 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             catch (Exception ex) { FenLogger.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
+        }
+
+        private static bool ShouldCaptureDebugScreenshot(string screenshotPath)
+        {
+            try
+            {
+                if (!File.Exists(screenshotPath))
+                {
+                    return true;
+                }
+
+                var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(screenshotPath);
+                return age >= DebugScreenshotMinimumInterval;
+            }
+            catch
+            {
+                return true;
+            }
         }
         
         /// <summary>
@@ -214,9 +274,11 @@ namespace FenBrowser.FenEngine.Rendering
             // INVARIANT: Skip invalid geometry, don't crash
             if (!IsValidBounds(node.Bounds)) return;
             
-            // Cull nodes outside viewport using robust bounds math.
-            // Some node types report viewport intersection incorrectly when bounds are runaway.
-            if (node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
+            // Cull leaf/visual nodes outside the viewport.
+            // Grouping nodes can legitimately carry approximate bounds while their children
+            // remain visible after transforms, sticky offsets, or stacking-context wrapping.
+            if (ShouldCullByOwnBounds(node) &&
+                node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
                 !IntersectsViewportBounds(node.Bounds, viewport))
             {
                 return;
@@ -438,6 +500,16 @@ namespace FenBrowser.FenEngine.Rendering
                    bounds.Left < viewport.Right &&
                    bounds.Bottom > viewport.Top &&
                    bounds.Top < viewport.Bottom;
+        }
+
+        private static bool ShouldCullByOwnBounds(PaintNodeBase node)
+        {
+            return node is not ClipPaintNode &&
+                   node is not StackingContextPaintNode &&
+                   node is not OpacityGroupPaintNode &&
+                   node is not ScrollPaintNode &&
+                   node is not StickyPaintNode &&
+                   node is not MaskPaintNode;
         }
         
         /// <summary>

@@ -1343,6 +1343,59 @@ namespace FenBrowser.FenEngine.Rendering
             await LoadCssAsync(domEl, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
         }
 
+        private static bool NeedsPostScriptStyleRefresh(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> computedStyles)
+        {
+            if (root == null)
+            {
+                return false;
+            }
+
+            if (root.StyleDirty || root.ChildStyleDirty)
+            {
+                return true;
+            }
+
+            if (computedStyles == null || computedStyles.Count == 0)
+            {
+                return true;
+            }
+
+            return HasNodeMissingComputedStyle(root, computedStyles);
+        }
+
+        private static bool HasNodeMissingComputedStyle(
+            Node node,
+            IReadOnlyDictionary<Node, CssComputed> computedStyles)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            if (!computedStyles.ContainsKey(node))
+            {
+                return true;
+            }
+
+            var children = node.ChildNodes;
+            if (children == null || children.Length == 0)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < children.Length; i++)
+            {
+                if (HasNodeMissingComputedStyle(children[i], computedStyles))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private JavaScriptEngine SetupJavaScriptEngine(
              Uri baseUri,
              Action<Uri> onNavigate, 
@@ -1827,6 +1880,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     javascriptExecuted = true;
                     await RunScriptsAsync(_activeJs, dom as Element, baseUri);
+                    if (NeedsPostScriptStyleRefresh(dom, LastComputedStyles))
+                    {
+                        FenLogger.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
+                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
+                    }
                     elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                     scriptExecutionMs = Math.Max(0, elapsed - lastStageMarkMs);
                     lastStageMarkMs = elapsed;
