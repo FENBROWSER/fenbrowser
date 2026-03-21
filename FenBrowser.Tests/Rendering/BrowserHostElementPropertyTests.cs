@@ -36,12 +36,12 @@ namespace FenBrowser.Tests.Rendering
             Assert.Null(await task);
         }
 
-        private static Dictionary<string, Element> GetElementMap(BrowserHost host)
+        private static Dictionary<string, Node> GetElementMap(BrowserHost host)
         {
             var field = typeof(BrowserHost).GetField("_elementMap", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(field);
 
-            var map = field!.GetValue(host) as Dictionary<string, Element>;
+            var map = field!.GetValue(host) as Dictionary<string, Node>;
             Assert.NotNull(map);
             return map!;
         }

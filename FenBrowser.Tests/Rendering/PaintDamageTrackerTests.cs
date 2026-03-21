@@ -42,6 +42,27 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public void HoverStateChange_ReturnsLocalizedDamageForAffectedBounds()
+        {
+            var source = new Element("div");
+            var bounds = new SKRect(20, 20, 120, 60);
+            var previous = new ImmutablePaintTree(new List<PaintNodeBase>
+            {
+                NewBackgroundNode(source, bounds, isHovered: false),
+            });
+            var current = new ImmutablePaintTree(new List<PaintNodeBase>
+            {
+                NewBackgroundNode(source, bounds, isHovered: true),
+            });
+
+            var tracker = new PaintDamageTracker();
+            var damage = tracker.ComputeDamageRegions(previous, current, new SKRect(0, 0, 200, 200));
+
+            Assert.Single(damage);
+            Assert.Equal(bounds, damage[0]);
+        }
+
+        [Fact]
         public void ExcessiveRegions_CollapseToSingleUnionRegion()
         {
             var current = new ImmutablePaintTree(new List<PaintNodeBase>
@@ -58,13 +79,15 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal(new SKRect(0, 0, 50, 50), damage[0]);
         }
 
-        private static BackgroundPaintNode NewBackgroundNode(Element source, SKRect bounds)
+        private static BackgroundPaintNode NewBackgroundNode(Element source, SKRect bounds, bool isHovered = false, bool isFocused = false)
         {
             return new BackgroundPaintNode
             {
                 SourceNode = source,
                 Bounds = bounds,
                 Color = SKColors.Black,
+                IsHovered = isHovered,
+                IsFocused = isFocused,
                 Children = new List<PaintNodeBase>()
             };
         }

@@ -127,6 +127,73 @@ namespace FenBrowser.Tests.Rendering
             // Assuming ClipRect is what we want or the Bounds of the ClipPaintNode.
             Assert.True(clipNode.Bounds.Width <= 50); 
         }
+
+        [Fact]
+        public void Overflow_Hidden_OnInlineChild_PreservesInlinePaintOrder()
+        {
+            var parent = new Element("DIV");
+            var before = new Element("SPAN");
+            var clipped = new Element("SPAN");
+            var after = new Element("SPAN");
+
+            parent.AppendChild(before);
+            parent.AppendChild(clipped);
+            parent.AppendChild(after);
+
+            var clippedChild = new Element("DIV");
+            clipped.AppendChild(clippedChild);
+
+            var styles = new Dictionary<Node, CssComputed>();
+
+            styles[parent] = new CssComputed
+            {
+                Display = "block",
+                Width = 120,
+                LineHeight = 20
+            };
+            styles[before] = new CssComputed
+            {
+                Display = "inline-block",
+                Width = 20,
+                Height = 12,
+                BackgroundColor = SKColors.Red
+            };
+            styles[clipped] = new CssComputed
+            {
+                Display = "inline-block",
+                Width = 20,
+                Height = 12,
+                Overflow = "hidden",
+                BackgroundColor = SKColors.Blue
+            };
+            styles[clippedChild] = new CssComputed
+            {
+                Display = "block",
+                Width = 40,
+                Height = 12,
+                BackgroundColor = SKColors.Black
+            };
+            styles[after] = new CssComputed
+            {
+                Display = "inline-block",
+                Width = 20,
+                Height = 12,
+                BackgroundColor = SKColors.Green
+            };
+
+            var (_, _, tree) = RunPipeline(parent, styles);
+            var paintNodes = FlattenTree(tree.Roots);
+
+            int beforeIndex = paintNodes.FindIndex(n => n is BackgroundPaintNode bg && bg.SourceNode == before);
+            int clipIndex = paintNodes.FindIndex(n => n is ClipPaintNode clip && clip.SourceNode == clipped);
+            int afterIndex = paintNodes.FindIndex(n => n is BackgroundPaintNode bg && bg.SourceNode == after);
+
+            Assert.True(beforeIndex >= 0, "Expected leading inline sibling to paint.");
+            Assert.True(clipIndex >= 0, "Expected clipped inline child to produce a clip node.");
+            Assert.True(afterIndex >= 0, "Expected trailing inline sibling to paint.");
+            Assert.True(beforeIndex < clipIndex, "Expected clipped inline child to remain after preceding inline sibling in paint order.");
+            Assert.True(clipIndex < afterIndex, "Expected clipped inline child to remain before trailing inline sibling in paint order.");
+        }
         
         [Fact]
         public void ZIndex_Stacking_Order()
