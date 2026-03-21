@@ -131,6 +131,69 @@ namespace FenBrowser.WebDriver.Commands
             return WebDriverResponse.Success(refs);
         }
 
+        public async Task<WebDriverResponse> GetShadowRootAsync(string sessionId, string elementId)
+        {
+            var session = _handler.GetSession(sessionId);
+            var element = session.GetElement(elementId);
+
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Browser not connected");
+            }
+
+            var shadowRoot = await _handler.Browser.GetShadowRootAsync(element);
+            if (shadowRoot == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Element does not have an open shadow root");
+            }
+
+            var shadowId = session.RegisterElement(shadowRoot);
+            return WebDriverResponse.Success(new ShadowRootReference(shadowId));
+        }
+
+        public async Task<WebDriverResponse> FindElementFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
+        {
+            var session = _handler.GetSession(sessionId);
+            var shadowRoot = session.GetElement(shadowId);
+            var (strategy, selector) = ParseLocator(body);
+
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, "No element found");
+            }
+
+            var element = await _handler.Browser.FindElementAsync(strategy, selector, shadowRoot);
+            if (element == null)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, $"No element found using {strategy}: {selector}");
+            }
+
+            var elementId = session.RegisterElement(element);
+            return WebDriverResponse.Success(new ElementReference(elementId));
+        }
+
+        public async Task<WebDriverResponse> FindElementsFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
+        {
+            var session = _handler.GetSession(sessionId);
+            var shadowRoot = session.GetElement(shadowId);
+            var (strategy, selector) = ParseLocator(body);
+
+            if (_handler.Browser == null)
+            {
+                return WebDriverResponse.Success(Array.Empty<ElementReference>());
+            }
+
+            var elements = await _handler.Browser.FindElementsAsync(strategy, selector, shadowRoot);
+            var refs = new List<ElementReference>();
+            foreach (var element in elements ?? Array.Empty<object>())
+            {
+                var elementId = session.RegisterElement(element);
+                refs.Add(new ElementReference(elementId));
+            }
+
+            return WebDriverResponse.Success(refs);
+        }
+
         public async Task<WebDriverResponse> GetActiveElementAsync(string sessionId)
         {
             var session = _handler.GetSession(sessionId);

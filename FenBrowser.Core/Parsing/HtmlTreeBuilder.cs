@@ -1101,8 +1101,11 @@ namespace FenBrowser.Core.Parsing
                 {
                     // Simplified Adoption Agency: Just close if on stack
                     if (StackHas(et.TagName)) PopUntil(et.TagName);
-                    // Also remove from active formatting list
-                    _activeFormattingElements.RemoveAll(e => e.TagName == et.TagName);
+                    // Active-formatting markers are stored as null sentinels. Preserve them
+                    // while pruning matching formatting elements so cell/table parsing cannot
+                    // fault when a formatting end tag is reprocessed through "in body".
+                    _activeFormattingElements.RemoveAll(
+                        e => e != null && string.Equals(e.TagName, et.TagName, StringComparison.Ordinal));
                     return true;
                 }
                 
