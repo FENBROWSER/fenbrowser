@@ -131,6 +131,17 @@ namespace FenBrowser.Host.WebDriver
             });
         }
 
+        public async Task<object> GetShadowRootAsync(object element)
+        {
+            return await RunOnMainThread(async () =>
+            {
+                var host = _tabs.ActiveTab?.Browser?.Host;
+                if (host == null || element is not string id) return null;
+                var shadowId = await host.GetShadowRootAsync(id);
+                return (object)shadowId;
+            });
+        }
+
         public async Task<bool> IsElementSelectedAsync(object element)
         {
             return await RunOnMainThread(async () =>

@@ -19,6 +19,7 @@ namespace FenBrowser.WebDriver.Protocol
         
         // Element errors
         public const string NoSuchElement = "no such element";
+        public const string NoSuchShadowRoot = "no such shadow root";
         public const string StaleElementReference = "stale element reference";
         public const string ElementNotInteractable = "element not interactable";
         public const string ElementClickIntercepted = "element click intercepted";
@@ -57,6 +58,7 @@ namespace FenBrowser.WebDriver.Protocol
                 SessionNotCreated => 500,
                 InvalidSessionId => 404,
                 NoSuchElement => 404,
+                NoSuchShadowRoot => 404,
                 NoSuchWindow => 404,
                 NoSuchFrame => 404,
                 NoSuchAlert => 404,

@@ -69,6 +69,9 @@ namespace FenBrowser.WebDriver
             AddRoute("POST", "/session/{sessionId}/elements", "FindElements");
             AddRoute("POST", "/session/{sessionId}/element/{elementId}/element", "FindElementFromElement");
             AddRoute("POST", "/session/{sessionId}/element/{elementId}/elements", "FindElementsFromElement");
+            AddRoute("GET", "/session/{sessionId}/element/{elementId}/shadow", "GetShadowRoot");
+            AddRoute("POST", "/session/{sessionId}/shadow/{shadowId}/element", "FindElementFromShadowRoot");
+            AddRoute("POST", "/session/{sessionId}/shadow/{shadowId}/elements", "FindElementsFromShadowRoot");
             AddRoute("GET", "/session/{sessionId}/element/active", "GetActiveElement");
             
             // Element State
@@ -206,5 +209,6 @@ namespace FenBrowser.WebDriver
         
         public string GetSessionId() => Parameters.GetValueOrDefault("sessionId");
         public string GetElementId() => Parameters.GetValueOrDefault("elementId");
+        public string GetShadowId() => Parameters.GetValueOrDefault("shadowId");
     }
 }

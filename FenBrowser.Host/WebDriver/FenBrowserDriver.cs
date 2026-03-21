@@ -73,6 +73,12 @@ namespace FenBrowser.Host.WebDriver
             return await Host.GetActiveElementAsync();
         }
 
+        public async Task<object> GetShadowRootAsync(object element)
+        {
+            if (Host == null || element is not string id) return null;
+            return await Host.GetShadowRootAsync(id);
+        }
+
         public async Task<bool> IsElementSelectedAsync(object element)
         {
             if (Host == null || element is not string id) return false;

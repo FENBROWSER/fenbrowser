@@ -93,6 +93,22 @@ namespace FenBrowser.WebDriver.Protocol
             ElementId = id;
         }
     }
+
+    /// <summary>
+    /// Shadow root reference.
+    /// </summary>
+    public class ShadowRootReference
+    {
+        public const string Identifier = "shadow-6066-11e4-a52e-4f735466cecf";
+
+        [JsonPropertyName("shadow-6066-11e4-a52e-4f735466cecf")]
+        public string ShadowId { get; set; }
+
+        public ShadowRootReference(string id)
+        {
+            ShadowId = id;
+        }
+    }
     
     /// <summary>
     /// Window rect for position/size.
