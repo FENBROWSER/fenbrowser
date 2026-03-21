@@ -62,7 +62,7 @@ This section maps **every key file** in the DevTools library, covering the Nativ
 
 ### 5.1 Native UI Panels (`FenBrowser.DevTools.Panels`)
 
-#### `ElementsPanel.cs` (Lines 1-2035)
+#### `ElementsPanel.cs` (Lines 1-2034)
 
 The comprehensive DOM visualization and editing suite.
 

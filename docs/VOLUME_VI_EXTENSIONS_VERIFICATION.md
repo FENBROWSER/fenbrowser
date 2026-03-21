@@ -562,7 +562,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - Verification snapshot:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JavaScriptEngineModuleLoadingTests|FullyQualifiedName~ExecutionContextSchedulingTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
   - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
-  - `rg -n "ContinueWith\(" FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`: no matches.
+  - **Check**: `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:218-235` now centralizes background fault observation in `ObserveBackgroundTaskFailureAsync`, and `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4446-4451` routes the deprecated `SetDom(...)` wrapper through that helper instead of `Task.ContinueWith(...)`.
 
 
 ### 4.33 JavaScriptEngine Geolocation Watch Verification (2026-03-06)
