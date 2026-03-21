@@ -172,7 +172,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         placementY = nextY;
                     }
 
-                    LayoutBoxOps.SetPosition(child, fx, yOffset + placementY);
+                    LayoutBoxOps.PositionSubtree(child, fx, yOffset + placementY, childState);
                     floatManager.AddFloat(child, floatStyle == "left");
                     
                     // [Compliance] Ensure float contributes to container height if it establishes a BFC
@@ -243,9 +243,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                             childY = nextY;
                         }
+
+                        if (!explicitInlineSize)
+                        {
+                            var finalSpace = floatManager.GetAvailableSpace(childY, placementHeight, contentWidth);
+                            float availableBand = Math.Max(0f, finalSpace.AvailableWidth);
+                            if (availableBand > 0f && availableBand + floatEpsilon < contentWidth)
+                            {
+                                var narrowedState = CreateChildState(availableBand, state);
+                                FormattingContext.Resolve(child).Layout(child, narrowedState);
+
+                                placementHeight = Math.Max(1f, child.Geometry.MarginBox.Height);
+                                childX = xOffset + finalSpace.LeftOffset;
+                            }
+                        }
                     }
 
-                    LayoutBoxOps.SetPosition(child, childX, yOffset + childY);
+                    LayoutBoxOps.PositionSubtree(child, childX, yOffset + childY, childState);
                     
                     // Advance cursor by CONTENT (BorderBox) height
                     currentY = childY + child.Geometry.BorderBox.Height;
@@ -329,6 +343,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // SHRINK-TO-FIT: If width was auto and available was infinity, we shrink to widest child
             if (blockBox.ComputedStyle != null && !blockBox.ComputedStyle.Width.HasValue && float.IsInfinity(state.AvailableSize.Width))
             {
+                float previousWidth = blockBox.Geometry.ContentBox.Width;
                 float maxWidth = 0;
                 foreach (var child in blockBox.Children)
                 {
@@ -355,6 +370,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 );
                 
                 SyncBoxes(blockBox.Geometry);
+
+                if (maxWidth > 0f &&
+                    float.IsFinite(previousWidth) &&
+                    Math.Abs(previousWidth - maxWidth) > 0.5f &&
+                    blockBox.Children.Count > 0)
+                {
+                    var relayoutState = state.Clone();
+                    relayoutState.AvailableSize = new SKSize(maxWidth, state.AvailableSize.Height);
+                    relayoutState.ContainingBlockWidth = maxWidth;
+                    LayoutCore(blockBox, relayoutState);
+                    return;
+                }
             }
 
             // 4. Resolve Height

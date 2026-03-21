@@ -98,6 +98,36 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(0f, blockBox.Geometry.MarginBox.Left, 1);
         }
 
+        [Fact]
+        public void AutoWidthBlock_ReflowsIntoFloatReducedBand()
+        {
+            var root = new Element("div");
+            var floated = new Element("div");
+            var paragraph = new Element("p");
+            paragraph.AppendChild(new Text("This paragraph must wrap beside the float without overflowing the containing block width."));
+
+            root.AppendChild(floated);
+            root.AppendChild(paragraph);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 300, Height = 240 },
+                [floated] = new CssComputed { Display = "block", Float = "left", Width = 120, Height = 80 },
+                [paragraph] = new CssComputed { Display = "block" }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 300, 240);
+            var floatBox = FindBox(rootBox, floated);
+            var paragraphBox = FindBox(rootBox, paragraph);
+
+            Assert.NotNull(floatBox);
+            Assert.NotNull(paragraphBox);
+
+            Assert.Equal(120f, paragraphBox.Geometry.MarginBox.Left, 1);
+            Assert.True(paragraphBox.Geometry.MarginBox.Right <= 300.5f);
+            Assert.True(paragraphBox.Geometry.MarginBox.Width <= 180.5f);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

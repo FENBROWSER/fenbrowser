@@ -95,7 +95,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 float absoluteLeft = container.Geometry.ContentBox.Left + rect.Left;
                 float absoluteTop = container.Geometry.ContentBox.Top + rect.Top;
-                LayoutBoxOps.SetPosition(childBox, absoluteLeft, absoluteTop);
 
                 var childState = new LayoutState(
                     new SKSize(width, height),
@@ -105,10 +104,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state.ViewportHeight,
                     state.Deadline);
 
+                LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
                 FormattingContext.Resolve(childBox).Layout(childBox, childState);
 
                 // Child layout may have recomputed local geometry; keep final grid placement.
-                LayoutBoxOps.SetPosition(childBox, absoluteLeft, absoluteTop);
+                LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
             }
 
             float measureHeightConstraint = state.AvailableSize.Height;

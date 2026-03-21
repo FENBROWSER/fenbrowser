@@ -128,12 +128,14 @@ namespace FenBrowser.FenEngine.Layout
             DumpBoxTree(rootBox, 0);
             FenLogger.Debug("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
 
+            float contentHeight = ComputeDocumentContentHeight(rootBox, availableHeight);
+
             return new LayoutResult(
                 elementRects,
                 availableWidth,
                 availableHeight,
                 0,
-                rootBox.Geometry.ContentBox.Height // Approx content height
+                contentHeight
             );
             
 
@@ -153,6 +155,64 @@ namespace FenBrowser.FenEngine.Layout
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
+
+        private float ComputeDocumentContentHeight(FenBrowser.FenEngine.Layout.Tree.LayoutBox rootBox, float viewportHeight)
+        {
+            if (rootBox == null)
+            {
+                return Math.Max(0, viewportHeight);
+            }
+
+            float maxBottom = 0;
+            AccumulateDocumentExtents(rootBox, 0, 0, ref maxBottom);
+
+            if (float.IsNaN(maxBottom) || float.IsInfinity(maxBottom))
+            {
+                maxBottom = 0;
+            }
+
+            return Math.Max(viewportHeight, maxBottom);
+        }
+
+        private void AccumulateDocumentExtents(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox box,
+            float parentContentAbsX,
+            float parentContentAbsY,
+            ref float maxBottom)
+        {
+            if (box == null) return;
+
+            float relOffsetX = 0;
+            float relOffsetY = 0;
+            var style = box.ComputedStyle;
+            if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
+            {
+                if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
+                else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
+
+                if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
+                else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
+            }
+
+            string position = style?.Position?.Trim().ToLowerInvariant();
+            bool isFixed = position == "fixed";
+            if (!isFixed)
+            {
+                float absoluteBottom = parentContentAbsY + relOffsetY + box.Geometry.MarginBox.Bottom;
+                if (!float.IsNaN(absoluteBottom) && !float.IsInfinity(absoluteBottom))
+                {
+                    maxBottom = Math.Max(maxBottom, absoluteBottom);
+                }
+            }
+
+            float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
+            float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
+
+            foreach (var child in box.Children)
+            {
+                AccumulateDocumentExtents(child, currentContentAbsX, currentContentAbsY, ref maxBottom);
+            }
+        }
         
         private void CollectBoxesAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> dict, float parentContentAbsX, float parentContentAbsY)
         {
