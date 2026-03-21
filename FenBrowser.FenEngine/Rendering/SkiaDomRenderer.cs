@@ -394,9 +394,16 @@ namespace FenBrowser.FenEngine.Rendering
                     var allDamage = new System.Collections.Generic.List<SKRect>(treeDiffDamage);
                     foreach (var r in scrollDamage) allDamage.Add(r);
 
+                    bool interactionFullRepaintRequested = ElementStateManager.Instance.ConsumeFullRepaintRequest();
                     _lastDamageRegions = allDamage.Count > 0
                         ? _damageNormalizationPolicy.Normalize(allDamage, currentViewport)
                         : treeDiffDamage;
+
+                    if (interactionFullRepaintRequested)
+                    {
+                        _lastDamageRegions = new[] { currentViewport };
+                        FenLogger.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
+                    }
 
                     // Clear Paint Dirty Flags
                     RecursivelyClearDirty(root, InvalidationKind.Paint);

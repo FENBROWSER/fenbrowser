@@ -528,6 +528,7 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         if (isPositioned) currentContext.AddPositionedNodes(clipList, zIndex);
                         else if (isFloat) currentContext.AddFloatNodes(clipList);
+                        else if (isInlineLevel) currentContext.AddInlineNodes(clipList);
                         else currentContext.AddBlockNodes(clipList);
                     }
                 }
@@ -3888,9 +3889,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // Apply Opacity (Stacking Context Atomic Paint)
                 if (Opacity < 1.0f)
                 {
+                    var groupBounds = ComputeAggregateBounds(result, MaskBounds);
                     var opacityNode = new OpacityGroupPaintNode
                     {
-                        Bounds = MaskBounds, // Opacity group bounds usually match border box or union of children. BorderBox is safest approximation for layer size.
+                        Bounds = groupBounds,
                         Opacity = Opacity,
                         Children = result,
                         SourceNode = SourceNode
@@ -3901,9 +3903,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // Apply CSS Transform (outermost wrapper — transform affects entire stacking context)
                 if (TransformMatrix.HasValue || !string.IsNullOrEmpty(Filter) || !string.IsNullOrEmpty(BackdropFilter))
                 {
+                    var groupBounds = ComputeAggregateBounds(result, MaskBounds);
                     var scNode = new StackingContextPaintNode
                     {
-                        Bounds = MaskBounds,
+                        Bounds = groupBounds,
                         ZIndex = ZIndex,
                         Transform = TransformMatrix ?? SKMatrix.Identity,
                         Children = result,
@@ -3915,6 +3918,56 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 return result;
+            }
+
+            private static SKRect ComputeAggregateBounds(IReadOnlyList<PaintNodeBase> nodes, SKRect? fallback)
+            {
+                SKRect aggregate = SKRect.Empty;
+                bool hasBounds = false;
+
+                if (nodes != null)
+                {
+                    foreach (var node in nodes)
+                    {
+                        if (node == null)
+                        {
+                            continue;
+                        }
+
+                        var bounds = node.Bounds;
+                        if (bounds.Width <= 0 || bounds.Height <= 0)
+                        {
+                            continue;
+                        }
+
+                        if (!hasBounds)
+                        {
+                            aggregate = bounds;
+                            hasBounds = true;
+                        }
+                        else
+                        {
+                            aggregate = UnionRects(aggregate, bounds);
+                        }
+                    }
+                }
+
+                if (!hasBounds && fallback.HasValue)
+                {
+                    aggregate = fallback.Value;
+                    hasBounds = aggregate.Width > 0 && aggregate.Height > 0;
+                }
+
+                return hasBounds ? aggregate : SKRect.Empty;
+            }
+
+            private static SKRect UnionRects(SKRect left, SKRect right)
+            {
+                return new SKRect(
+                    Math.Min(left.Left, right.Left),
+                    Math.Min(left.Top, right.Top),
+                    Math.Max(left.Right, right.Right),
+                    Math.Max(left.Bottom, right.Bottom));
             }
         }
 

@@ -128,7 +128,10 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // Node exists in both, check for modifications
                 bool geomChanged = nodeA.Bounds != nodeB.Bounds || nodeA.Transform != nodeB.Transform;
-                bool styleChanged = nodeA.Opacity != nodeB.Opacity || nodeA.ClipRect != nodeB.ClipRect;
+                bool styleChanged = nodeA.Opacity != nodeB.Opacity
+                    || nodeA.ClipRect != nodeB.ClipRect
+                    || nodeA.IsHovered != nodeB.IsHovered
+                    || nodeA.IsFocused != nodeB.IsFocused;
                 
                 if (geomChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Geometry));
                 else if (styleChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Style));

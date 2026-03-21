@@ -518,7 +518,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Wire DOM attribute mutations (class/id/style changes from JS or DOM manipulation)
             // â†’ CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
-            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += () => _engine.ScheduleRecascade();
+            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += _ => _engine.ScheduleRecascade();
 
             _engine.DomReady += (s, dom) =>
             {
@@ -694,14 +694,17 @@ namespace FenBrowser.FenEngine.Rendering
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
 
-            // Wire up FontRegistry to trigger RepaintReady when fonts finish loading
+            // Wire up FontRegistry to trigger full relayout/repaint when fonts finish loading
             _fontLoadedHandler = (family) =>
             {
                 try
                 {
-                    FenLogger.Debug($"[FontRegistry-Repaint] Triggering repaint after font load: {family}", LogCategory.Rendering);
-                    // Trigger layout recalculation by raising RepaintReady
-                    RepaintReady?.Invoke(this, null);
+                    FenLogger.Debug($"[FontRegistry-Repaint] Triggering relayout after font load: {family}", LogCategory.Rendering);
+                    // Force CSS to re-evaluate so CssComputed drops the cached system fallback fonts
+                    _engine.ScheduleRecascade();
+                    var dom = _engine.GetActiveDom();
+                    if (dom != null) RepaintReady?.Invoke(this, dom);
+                    else RepaintReady?.Invoke(this, null);
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
@@ -4063,6 +4066,7 @@ pre {{
         // IHistoryBridge Implementation
         public int Length => _history.Count;
         public object State => (_historyIndex >= 0 && _historyIndex < _history.Count) ? _history[_historyIndex].State : null;
+        public Uri CurrentUrl => _current;
 
         public void PushState(object state, string title, string url)
         {
