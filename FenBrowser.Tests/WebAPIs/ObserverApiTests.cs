@@ -1,6 +1,10 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Reflection;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Observers;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Scripting;
@@ -47,8 +51,12 @@ namespace FenBrowser.Tests.WebAPIs
             Assert.True(instance.Get("unobserve").IsFunction);
             Assert.True(instance.Get("disconnect").IsFunction);
             Assert.True(instance.Get("takeRecords").IsFunction);
+            Assert.True(instance.Get("root").IsNull);
             Assert.Equal("10px", instance.Get("rootMargin").AsString());
-            Assert.True(instance.Get("thresholds").IsObject);
+            var thresholdArray = Assert.IsAssignableFrom<IObject>(instance.Get("thresholds").AsObject());
+            Assert.Equal(2, thresholdArray.Get("length").ToNumber());
+            Assert.Equal(0, thresholdArray.Get("0").ToNumber());
+            Assert.Equal(0.5, thresholdArray.Get("1").ToNumber());
         }
 
         [Fact]
@@ -64,6 +72,60 @@ namespace FenBrowser.Tests.WebAPIs
                 constructor.Invoke(new[] { CreateCallback(), FenValue.FromObject(options) }, context));
 
             Assert.Contains("threshold", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void IntersectionObserverConstructor_RejectsInvalidRootMargin()
+        {
+            var context = CreateTestContext();
+            var constructor = Assert.IsType<FenFunction>(IntersectionObserverAPI.CreateConstructor());
+
+            var options = new FenObject();
+            options.Set("rootMargin", FenValue.FromString("10"));
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                constructor.Invoke(new[] { CreateCallback(), FenValue.FromObject(options) }, context));
+
+            Assert.Contains("rootMargin", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void IntersectionObserverTakeRecords_ReturnsQueuedEntriesFromInstance()
+        {
+            var context = CreateTestContext();
+            var constructor = Assert.IsType<FenFunction>(IntersectionObserverAPI.CreateConstructor());
+            var instanceValue = constructor.Invoke(new[] { CreateCallback() }, context);
+            var instance = Assert.IsAssignableFrom<IObject>(instanceValue.AsObject());
+            var nativeObserver = Assert.IsType<IntersectionObserverInstance>((instance as FenObject)?.NativeObject);
+
+            var element = new Element("div");
+            var target = new FenObject { NativeObject = element };
+            instance.Get("observe").AsFunction().Invoke(new[] { FenValue.FromObject(target) }, context, instanceValue);
+
+            var layoutResult = new LayoutResult(
+                new Dictionary<Element, ElementGeometry>
+                {
+                    { element, new ElementGeometry(0, 0, 100, 100) }
+                },
+                800,
+                600,
+                0,
+                1000);
+
+            nativeObserver.EvaluateWithLayoutResult(layoutResult, layoutResult.GetVisibleViewport(), jsObj =>
+            {
+                if (jsObj is FenObject fenObject && fenObject.NativeObject is Element resolved)
+                {
+                    return resolved;
+                }
+
+                return null;
+            });
+
+            var records = instance.Get("takeRecords").AsFunction().Invoke(Array.Empty<FenValue>(), context, instanceValue).AsObject();
+            Assert.NotNull(records);
+            Assert.Equal(1, records.Get("length").ToNumber());
+            Assert.Equal(0, instance.Get("takeRecords").AsFunction().Invoke(Array.Empty<FenValue>(), context, instanceValue).AsObject().Get("length").ToNumber());
         }
 
         [Fact]
