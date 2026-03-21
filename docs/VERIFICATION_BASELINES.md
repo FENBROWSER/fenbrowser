@@ -5,7 +5,7 @@ Policy: This file is the canonical benchmark snapshot used by CI drift checks.
 
 ## Test262 Full Suite Baseline
 
-SourceFile: `test262_results.md`  
+SourceFile: `docs/test_results.md`  
 SourceDate: 2026-02-16  
 Scope: Full suite
 

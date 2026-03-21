@@ -101,7 +101,7 @@ Test262 tests MUST be run in **chunks of 1000** with strict safety controls:
 1. **Chunk Size**: 1000 tests per chunk (53 total chunks)
 2. **Completion Threshold**: Each chunk MUST have **900+ tests complete** (pass or fail) before moving to the next chunk.
 3. **Memory Safety**: Check RAM before each chunk. **NEVER exceed 70% RAM usage**.
-4. **Results File**: All results go to `test262_results.md` in the project root.
+4. **Results File**: All results go to `docs/test_results.md`.
 5. **Per-test timeout**: 180 seconds.
 
 ```bash
@@ -123,7 +123,7 @@ powershell -Command "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
 - If chunk crashes or <900 tests complete, retry once before moving on
 
 ### Results Format
-Appended as markdown table rows to `test262_results.md`:
+Appended as markdown table rows to `docs/test_results.md`:
 ```
 | Chunk | Range | Time (ms) | Tests | Passed | Failed | Pass % | Avg/Test (ms) |
 ```

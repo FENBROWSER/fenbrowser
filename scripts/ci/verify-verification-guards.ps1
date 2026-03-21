@@ -35,7 +35,7 @@ if ($staleWptName) {
 }
 
 Write-Host "[verify] Checking Test262 baseline drift..."
-$sourcePath = "test262_results.md"
+$sourcePath = "docs/test_results.md"
 $baselinePath = "docs/VERIFICATION_BASELINES.md"
 if (-not (Test-Path $sourcePath)) { Fail "Missing source benchmark file: $sourcePath" }
 if (-not (Test-Path $baselinePath)) { Fail "Missing baseline file: $baselinePath" }

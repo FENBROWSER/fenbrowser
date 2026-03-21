@@ -221,7 +221,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - `scripts/ci/verify-verification-guards.ps1`
   - Fails CI on placeholder assertions.
   - Fails CI on stale legacy WPT runner filename doc references.
-  - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `test262_results.md` metrics.
+  - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `docs/test_results.md` metrics.
 
 ### 4.6 Phase-5 WebDriver Coverage Guard (2026-02-18)
 
@@ -1516,3 +1516,23 @@ _End of Volume VI_
   - eliminate ambiguity between the full-suite watchdog and the per-chunk parallel workflow
   - keep the vendored suite clean so discovery remains deterministic
   - make first-chunk reruns reproducible without ad hoc shell loops
+
+## 6.47 WebDriver ShadowRoot Protocol Coverage (2026-03-20)
+
+- `FenBrowser.WebDriver/CommandRouter.cs`
+  - Added route coverage for WebDriver shadow-root retrieval and shadow-root-scoped element lookup.
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added command dispatch for `GetShadowRoot`, `FindElementFromShadowRoot`, and `FindElementsFromShadowRoot`.
+- `FenBrowser.WebDriver/Commands/ElementCommands.cs`
+  - Implemented session-aware shadow-root retrieval, shadow-root-scoped element lookup, and `no such shadow root` failure reporting.
+- `FenBrowser.WebDriver/Protocol/ErrorCodes.cs`
+  - Added the explicit `no such shadow root` protocol error.
+- `FenBrowser.WebDriver/Protocol/WebDriverResponse.cs`
+  - Added `ShadowRootReference` with the WebDriver identifier key `shadow-6066-11e4-a52e-4f735466cecf`.
+- `FenBrowser.Tests/WebDriver/ShadowRootCommandsTests.cs`
+  - Added protocol regressions proving the route returns a compliant shadow-root reference and resolves element lookup relative to the registered shadow-root context.
+- Verification commands:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\``
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.BrowserHostShadowDomTests|FullyQualifiedName~FenBrowser.Tests.WebDriver.ShadowRootCommandsTests"`
+- Verification result:
+  - focused xUnit coverage: `4/4` passed
