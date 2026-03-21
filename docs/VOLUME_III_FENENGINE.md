@@ -322,7 +322,7 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Gradient backgrounds are parsed into `SKShader` instances during paint-node creation (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs:1440-1570`), enabling linear/radial gradients in the new pipeline.
 - Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
 - Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
-- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
+- Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
 - Engine targets `net8.0` (solution unified via global.json).
 - Web-compat guardrail: site/domain/class-specific styling hooks are prohibited in UA/layout/cascade paths; fixes must land as generic standards behavior with regression coverage (`Rendering/Css/CssLoader.cs`, `Rendering/UserAgent/UAStyleProvider.cs`, `Layout/MinimalLayoutComputer.cs`).
 - Paint/Compositing tranche PC-1 (2026-02-20):
@@ -537,23 +537,25 @@ The public facade for the layout system.
 - **Lines 63-153**: **`ComputeLayout`**: Orchestrates the 2-pass Measure/Arrange protocol.
 - **Lines 296-360**: **`HitTest`**: Converts physical coordinates (x,y) back to DOM nodes.
 
-#### `BoxTreeBuilder.cs` (Lines 1-520)
+#### `BoxTreeBuilder.cs` (Lines 1-379)
 
 **Core Pipeline Stage**. Converts DOM Nodes to Layout Boxes.
 
-- **Lines 80-150**: **`BuildBox`**: Determines if a node needs a box (`display != none`).
-- **Lines 200-250**: **`CreateAnonymousBlocks`**: Fixes malformed block/inline hierarchies.
-- **Lines 210-221**: Custom elements (tag names containing `-`) now default to inline display in the absence of author CSS, matching UA default behavior used by major engines.
+- **Lines 29-167**: **`ConstructBox`**: Determines if a node needs a box (`display != none`) and handles splitting.
+- **Lines 325-373**: **`FixupBlockChildren`**: Fixes malformed block/inline hierarchies (Anonymous Blocks).
+- **Lines 235-238**: Custom elements (tag names containing `-`) now default to inline display in the absence of author CSS, matching UA default behavior used by major engines.
 
 #### `BoxModel.cs` (Lines 1-120)
 
 Data structure representing the CSS Box Model (Content, Padding, Border, Margin).
 
-#### `FloatExclusion.cs` (Lines 1-220)
+#### `FloatExclusion.cs` (Lines 1-191)
 
 Manages the geometry of floating elements (`float: left/right`) and collision detection.
 
-#### `ContainingBlockResolver.cs` (Lines 1-250)
+#### `ContainingBlockResolver.cs` (Lines 1-245)
+
+Determines the reference rectangle for sizing calculations (handling `position: absolute/fixed`).
 
 Determines the reference rectangle for sizing calculations (handling `position: absolute/fixed`).
 
@@ -561,11 +563,11 @@ Determines the reference rectangle for sizing calculations (handling `position: 
 
 Implements the complex CSS margin collapsing rules for Block contexts.
 
-#### `TableLayoutComputer.cs` (Lines 1-600)
+#### `TableLayoutComputer.cs` (Lines 1-595)
 
 Implements HTML Table layout (Auto and Fixed algorithms).
 
-#### `TextLayoutComputer.cs` (Lines 1-400)
+#### `TextLayoutComputer.cs` (Lines 1-292)
 
 Handles text measurement, shaping (via Skia), and line height calculations.
 
@@ -3452,6 +3454,7 @@ Verification snapshot (2026-03-06):
 - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
   - Added `SyncDomContext(...)` as a context-only bridge that updates `document` / `window` bindings for a new DOM without walking script tags or running page script payloads.
   - `SetDomAsync(...)` now reuses that bridge before entering the existing full script/module execution pass, keeping navigation semantics intact.
+  - `SetDomAsync(...)` now treats a missing DOM root as an empty-document navigation and skips the script walk instead of throwing inside `SelfAndDescendants()`. This keeps partial or parser-fallback documents from aborting the host before paint.
   - Lifecycle dispatch now routes `DOMContentLoaded` / `load` through the same top-level listener stores used by `document.addEventListener(...)` and `window.addEventListener(...)`, instead of notifying only engine-internal object listeners.
   - `SetupWindowEvents()` now keeps `window.innerWidth` / `innerHeight` / `outerWidth` / `outerHeight` as numeric browser-style properties and mirrors those values back onto the global scope, instead of overwriting them with callable functions.
   - Added a built-in `WIMB_CAPABILITIES` compatibility object on both `window` and global scope with `capabilities`, `add` / `add_update`, `refresh`, and `get_as_json_string()` so `whatismybrowser.com` can query a browser-capability payload even when its own bootstrap library short-circuits.
@@ -3463,6 +3466,7 @@ Verification snapshot (2026-03-06):
   - `EnableStreamingParsePrepass` now defaults to `false` so the progressive hint parse cannot wedge first paint before the production parser starts on medium-sized real-world pages.
 - `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
   - Added regression coverage proving `document.addEventListener('DOMContentLoaded', ...)` registered by inline script is fired by `SetDomAsync(...)`.
+  - Added regression coverage proving `SetDomAsync(...)` accepts a `Document` with no `DocumentElement` and preserves the live `document` / `window` globals without throwing.
   - Added coverage proving `window.innerWidth` remains a numeric property and that `WIMB_CAPABILITIES.get_as_json_string()` returns a non-empty encoded capability payload.
   - Added coverage proving the `ClipboardJS` compatibility stub is present and reports unsupported clipboard helper availability instead of throwing a `ReferenceError`.
   - Added regression coverage proving external script execution exposes `document.currentScript` during the script body and clears it once the script finishes.
@@ -3927,7 +3931,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ### 2.96 Radio-group activation rollback hardening (2026-03-07, Milestone C2 tranche)
 
-- Click pre-activation for `input[type=radio]` now snapshots the live radio group instead of only the clicked element’s own checked state.
+- Click pre-activation for `input[type=radio]` now snapshots the live radio group instead of only the clicked elementâ€™s own checked state.
 - Synthetic/default-action radio activation now:
   - unchecks competing radios in the same named group/form during pre-activation
   - restores the prior group state if activation is canceled
@@ -4520,7 +4524,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - The runner now excludes `_FIXTURE`/underscore helpers plus local ad hoc files such as `tmp-debug-*`, `debug_*`, `custom-test*`, and the `test/local-host/` scratch area from aggregate suite totals.
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
   - Hardened `Array.from(...)` iterator selection so a present-but-non-callable `@@iterator` now throws `TypeError` instead of silently falling back to array-like handling.
-  - Hardened Annex B RegExp legacy static accessors so invalid receivers throw `TypeError` directly instead of returning error sentinel values that Test262 interprets as “no exception thrown”.
+  - Hardened Annex B RegExp legacy static accessors so invalid receivers throw `TypeError` directly instead of returning error sentinel values that Test262 interprets as â€œno exception thrownâ€.
   - Proxy trap wrappers now invoke handler traps with `this = handler` at the outer trap boundary for `get` / `set` / `has` / `deleteProperty` / `getOwnPropertyDescriptor` / `defineProperty` / `getPrototypeOf` / `setPrototypeOf` / `isExtensible` / `preventExtensions` / `ownKeys` / `apply` / `construct`.
 - `FenBrowser.FenEngine/Core/FenFunction.cs`
   - Added a direct bytecode-backed invocation path for plain synchronous user-defined functions called from native engine code, reducing dependence on the synthetic thunk path for host callback entry.
@@ -4829,3 +4833,448 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `calls=1`
     - `plainCalls=2`
     - `aborted=True`
+
+## 2.138 History Stack And `popstate` Hardening For Same-Document Navigation (2026-03-20)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Replaced stale `history.length` / `history.state` data properties with live accessors backed by either the host history bridge or a runtime-owned fallback history stack.
+  - `history.pushState(...)` and `history.replaceState(...)` now structured-clone their state payloads, resolve same-document target URLs against the active `location`, and synchronize `BaseUri` plus `location` immediately after mutation.
+  - Added a real local session-history model for headless/runtime-only paths so `pushState`, `replaceState`, `back`, `forward`, and `go` no longer degrade into placeholders when no browser host bridge is attached.
+  - `NotifyPopState(...)` now queues `popstate` on `EventLoopCoordinator` under `TaskSource.History`, updates `location` before delivery, and dispatches through the actual `window` listener bag as well as `window.onpopstate`, preserving browser-style task timing instead of synchronous inline callbacks.
+  - Shared window listener dispatch now detaches abort-linked listener registrations during `once` cleanup so the queued history path uses the same production listener lifetime rules as other window-targeted events.
+- `FenBrowser.FenEngine/Core/Interfaces/IHistoryBridge.cs`
+  - Added `CurrentUrl` so bridge-backed traversals can publish the active history entry URL back into the runtime.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `BrowserHost` now exposes the active history-entry URL through `IHistoryBridge.CurrentUrl`, allowing bridge-driven `back` / `forward` traversals to keep runtime `location` state synchronized with the host session history.
+- `FenBrowser.Tests/WebAPIs/HistoryApiTests.cs`
+  - Added bridge-backed regressions for cloned history state, live `history.length`, synchronized `location.href`, and queued `popstate` delivery after traversal.
+- `FenBrowser.Tests/Engine/FenRuntimeLocationTests.cs`
+  - Added no-bridge regressions covering local fallback history state cloning, `location` synchronization, and queued `popstate` dispatch after `history.back()`.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~HistoryApiTests|FullyQualifiedName~FenRuntimeLocationTests"` passed on `2026-03-20` with `11/11` tests green.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~InputEventTests.AddEventListener_WindowSignal_RemovesListenerAfterAbort|FullyQualifiedName~InputEventTests.AddEventListener_DuplicateSignalRegistration_DoesNotRemoveOriginalListener"` stayed green on `2026-03-20` with `2/2` tests green, verifying the shared window listener path used by queued `popstate` delivery.
+
+## 2.139 IntersectionObserver Threshold, `rootMargin`, And Record Queue Hardening (2026-03-20)
+- `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs`
+  - `IntersectionObserverInstance` no longer collapses observer configuration to a single threshold boolean. It now stores the full normalized threshold list, computes threshold-index transitions, and emits entries when an observed target crosses any configured threshold boundary or changes intersection state.
+  - Added production `rootMargin` parsing for `px` and `%` units with CSS shorthand expansion, and the evaluator now expands the effective viewport bounds before intersection math instead of leaving `rootMargin` as a dead wrapper-only string.
+  - Added a real per-observer queued-record store shared by callback delivery and `takeRecords()`, so manual draining, callback scheduling, and once-per-batch delivery all operate on the same record queue.
+  - Queued observer callbacks now deliver the real drained entries array and the observer object, and no-op gracefully if records were already consumed through `takeRecords()`.
+- `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs`
+  - Constructor validation now rejects invalid `rootMargin` syntax using the same parser the runtime evaluator uses.
+  - The API now creates native observers with full threshold arrays and parsed root-margin offsets, exposes `root` as `null` for viewport-root observers, and wires `takeRecords()` to the native observer queue instead of returning a fake empty array.
+- `FenBrowser.Tests/WebAPIs/ObserverApiTests.cs`
+  - Added constructor coverage for the exposed `root` / `thresholds` surface, rejection of invalid `rootMargin`, and `takeRecords()` returning real queued entries from the constructed observer object.
+- `FenBrowser.Tests/Engine/IntersectionObserverTests.cs`
+  - Added regressions for threshold-array crossing behavior, `rootMargin` expanding the effective viewport, and `takeRecords()` draining queued entries before callback delivery.
+- `FenBrowser.Tests/Engine/PrivacyTests.cs`
+  - Existing viewport/root-bounds and observer-clearance coverage remained green against the hardened evaluator.
+- `FenBrowser.Tests/Engine/PlatformInvariantTests.cs`
+  - Existing observer ordering and coordinator-clearance invariants remained green against the new record-queue path.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~ObserverApiTests|FullyQualifiedName~IntersectionObserverTests|FullyQualifiedName~PrivacyTests|FullyQualifiedName~PlatformInvariantTests.ObserverCoordinator_Clear_RemovesAllState|FullyQualifiedName~PlatformInvariantTests.ObserverCoordinator_EvaluatesIntersection_Before_Resize"` passed on `2026-03-20` with `21/21` tests green.
+
+## 2.140 AST-Backed Function Hardening: Constructor-Time Bytecode Or Early Rejection (2026-03-20)
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - AST-backed `FenFunction` construction no longer defers compilation until first call. Both AST-body constructors now compile through the shared callable-body compiler path immediately, persist the resulting `BytecodeBlock` and `LocalMap`, and derive `NeedsArgumentsObject` from the actual compiled body.
+  - `FenFunction.Invoke(...)` no longer returns a runtime error value for a late "bytecode-only mode" escape hatch. A non-native function with no `BytecodeBlock` is now treated as an engine invariant violation instead of a recoverable execution mode.
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added `CompileCallableFunctionBody(...)` so AST-backed function construction uses the same callable-body normalization, parameter lowering, local-slot mapping, and `arguments`-usage detection as ordinary bytecode-emitted function templates.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Removed the VM-side lazy AST function compiler and the `func.Body` fallback path from `Call`, `CallFromArray`, `CallMethod`, `CallMethodFromArray`, `Construct`, and `ConstructFromArray`.
+  - VM call/construct opcodes now require bytecode-backed non-native functions, aligning runtime dispatch with the constructor-time compilation invariant.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Replaced the old "bytecode-only mode failure" assertions with permanent regressions that prove AST-backed functions and constructors execute correctly through direct call, spread-call, `new`, and spread-construct bytecode paths once constructed.
+  - Added a construction-time rejection test proving a non-callable AST body is rejected before the function can become runtime-callable.
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added runtime coverage showing an AST-backed function installed on the global object executes correctly when invoked by separately compiled bytecode.
+  - Added a runtime-surface construction-time rejection test for malformed AST-backed function creation.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore` completed successfully on `2026-03-20`.
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_AstBackedFunction_ShouldRejectUncompilableCallableBody_BeforeInvocation|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests.ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptUsesEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests.ExecuteSimple_AstBackedFunctionCreation_RejectsUncompilableCallableBodyBeforeGlobalRegistration"` passed on `2026-03-20` with `7/7` tests green.
+
+## 2.141 SessionStorage Reload-Scope Hardening: Stable Tab Partition Reuse (2026-03-20)
+- `FenBrowser.FenEngine/Core/IDomBridge.cs`
+  - Added `SessionStoragePartitionId` so the JS runtime can bind `sessionStorage` to a stable tab/session identity supplied by the browser host instead of synthesizing a fresh anonymous partition on each runtime recreation.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - `JavaScriptEngine` now exposes its engine-owned `_sessionStoragePartitionId` through `IDomBridge`, which preserves same-tab session identity across runtime resets and reload-driven `FenRuntime` reconstruction.
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - `CreateSessionStorage(...)` now accepts an optional partition-id provider in addition to the origin provider.
+  - When the caller supplies a stable partition id, the storage layer now reuses the same tab-scoped session bucket across storage recreation and reload, while preserving per-origin isolation inside that tab scope.
+  - When no stable partition id is provided, the API still falls back to per-instance isolation so non-browser callers do not accidentally share session state.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Runtime `sessionStorage` bootstrap now passes both the active origin resolver and the host-provided `SessionStoragePartitionId`, so same-tab reloads preserve `sessionStorage` contents and cross-tab state remains isolated by partition key.
+- `FenBrowser.Tests/WebAPIs/StorageTests.cs`
+  - Added `SessionStorage_ShouldPersistAcrossStorageRecreation_WithSamePartitionAndOrigin` to prove the storage layer itself reuses the correct tab-scoped bucket when origin and partition identity are stable.
+  - Added `SessionStorage_ShouldPersistAcrossFenRuntimeReload_WithStableTabPartition` to prove two separate `FenRuntime` instances created for the same tab/session restore the same `sessionStorage` value after reload.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.StorageTests"` passed on `2026-03-20` with `7/7` tests green.
+
+## 2.142 Authoritative JS Runtime Path Hardening: Remove Placeholder Alternate Runtime (2026-03-20)
+- `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs`
+  - Reframed `IJsRuntime` as the narrow adapter surface for the authoritative `JavaScriptEngine` implementation rather than a speculative future-engine swap point.
+  - Removed the dead `FullJsRuntimeStub` no-op implementation, eliminating the second concrete runtime path that could drift from production behavior and confuse capability ownership.
+  - `JsZeroRuntime` is now the sole concrete `IJsRuntime` implementation in the engine assembly, so the abstraction no longer advertises an unsupported alternate runtime.
+- `FenBrowser.Tests/Engine/JsRuntimeAbstractionTests.cs`
+  - Added `IJsRuntime_HasSingleConcreteImplementation` to fail if another placeholder or dead alternate runtime implementation is introduced.
+  - Added `JsZeroRuntime_DelegatesToAuthoritativeJavaScriptEngine` to prove the adapter still executes script through the real `JavaScriptEngine` surface after the cleanup.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JsRuntimeAbstractionTests"` passed on `2026-03-20` with `2/2` tests green.
+
+## 2.143 Event Loop Task-Source Hardening: Per-Source Queues And Starvation Protection (2026-03-20)
+- `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs`
+  - Replaced the single shared macro-task FIFO with independent FIFO queues per `TaskSource`.
+  - Added deterministic round-robin scheduling across active task sources so timers, history, networking, messaging, and other task classes no longer collapse into one undifferentiated queue.
+  - Preserved FIFO ordering within each source while preventing one hot source from starving the others.
+  - Added source-aware count/pending helpers so scheduler behavior can be asserted directly in regression tests.
+- `FenBrowser.Tests/Engine/ExecutionSemanticsTests.cs`
+  - Added `TaskSources_PreserveFifoWithinEachSource` to prove same-source FIFO remains intact after the queue split.
+  - Added `TaskSources_RunRoundRobinAcrossActiveSources` to prove active sources are interleaved deterministically instead of draining one source to completion before the next.
+  - Added `TaskSources_ReentrantScheduling_DoesNotStarveOtherSources` to prove a source that schedules more work during execution does not monopolize the event loop.
+- `FenBrowser.Tests/Engine/EventLoopTests.cs`
+  - Existing coordinator/task sequencing coverage remained green against the per-source queue model.
+- `FenBrowser.Tests/WebAPIs/HistoryApiTests.cs`
+  - Existing `TaskSource.History` coverage remained green against the source-aware queue path, confirming queued `popstate` delivery still works under the hardened scheduler.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.ExecutionSemanticsTests|FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopTests|FullyQualifiedName~FenBrowser.Tests.WebAPIs.HistoryApiTests"` passed on `2026-03-20` with `25/25` tests green.
+
+## 2.144 Shadow DOM Host-Surface Hardening: First-Class ShadowRoot Search And Automation (2026-03-20)
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Promoted host search scoping from `Element`-only roots to `Node` roots so open `ShadowRoot` instances can participate directly in element lookup, active-element scoping, and serialization.
+  - Added stable node-id registration for shadow roots, implemented `GetShadowRootAsync(...)` for open shadow trees, and prevented light-DOM leakage when searches are rooted inside a registered shadow tree.
+  - `GetPageSourceAsync()` now serializes search roots according to node type, using fragment HTML for `ShadowRoot` and outer HTML for element/document roots.
+- `FenBrowser.WebDriver/Protocol/ErrorCodes.cs`
+  - Added `no such shadow root` so missing open shadow roots are reported through an explicit protocol error instead of a generic lookup failure.
+- `FenBrowser.WebDriver/Protocol/WebDriverResponse.cs`
+  - Added `ShadowRootReference` with the WebDriver shadow-root identifier key `shadow-6066-11e4-a52e-4f735466cecf`.
+- `FenBrowser.WebDriver/CommandRouter.cs`
+  - Added route support for `GET /session/{sessionId}/element/{elementId}/shadow`, `POST /session/{sessionId}/shadow/{shadowId}/element`, and `POST /session/{sessionId}/shadow/{shadowId}/elements`.
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - Added command dispatch for retrieving a shadow root and performing shadow-root-scoped element queries.
+- `FenBrowser.WebDriver/Commands/ElementCommands.cs`
+  - Implemented `GetShadowRootAsync(...)`, `FindElementFromShadowRootAsync(...)`, and `FindElementsFromShadowRootAsync(...)`, including session-level reference registration and protocol-shaped response payloads.
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+  - Forwarded host-driver shadow-root retrieval into the active browser tab so the host path exposes the same open-shadow-root capability as the engine host.
+- `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
+  - Forwarded the shadow-root retrieval surface through the driver wrapper used by automation.
+- `FenBrowser.Tests/Rendering/BrowserHostShadowDomTests.cs`
+  - Added host-level regression coverage proving open shadow roots receive stable registered ids and that shadow-root-scoped element search finds shadow children while rejecting light-DOM siblings.
+- `FenBrowser.Tests/WebDriver/ShadowRootCommandsTests.cs`
+  - Added protocol-level regression coverage proving the WebDriver route returns a compliant shadow-root reference payload and resolves element lookup against the shadow-root parent context.
+- Verification:
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.BrowserHostShadowDomTests|FullyQualifiedName~FenBrowser.Tests.WebDriver.ShadowRootCommandsTests"` passed on `2026-03-20` with `4/4` tests green.
+
+## 2.145 HTML Tree Builder Hardening: Active-Formatting Marker Safety In Table Cells (2026-03-20)
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
+  - Hardened formatting end-tag cleanup in `HandleInBody(...)` so active-formatting markers stored as `null` sentinels are preserved instead of being dereferenced during `RemoveAll(...)`.
+  - This closes the reproduced crash where closing formatting content such as `</a>` inside table-cell insertion mode re-enters the "in body" handler and faults against the cell marker before the document can finish parsing.
+  - The removal path now prunes only real formatting elements whose tag matches the closing end tag, leaving marker sentinels intact for the surrounding table/cell algorithm.
+- `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderTableCellFormattingTests.cs`
+  - Added `Build_FormattingEndTagInsideTableCell_DoesNotCrashAndPreservesContent` to lock the exact reduced crash shape: an anchor closed inside a `<td>` after the cell marker has been pushed into the active-formatting list.
+  - The regression asserts both parser stability and content preservation through the `TD -> A -> SPAN` subtree.
+- Real-site verification:
+  - The previously captured `https://en.wikipedia.org/wiki/Main_Page` network fetch now parses successfully through the production `HtmlTreeBuilder` path in the local repro harness instead of returning an empty fallback `Document`.
+  - A fresh host run now regenerates a full `dom_dump.txt`, CSS artifacts, and `debug_screenshot.png`, proving the parser no longer aborts before DOM construction on that page.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing.HtmlTreeBuilderTableCellFormattingTests"` passed on `2026-03-20` with `1/1` tests green.
+  - A focused local parser reproduction against the saved Wikipedia fetch completed on `2026-03-20` and returned a real `DocumentElement=HTML` instead of the prior `NullReferenceException`.
+
+## 2.146 Flex Height Resolution Hardening: Auto-Height Flex Items No Longer Leak Viewport Height Into `height:%` Descendants (2026-03-20)
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+  - Hardened child layout-state propagation so auto-height flex items no longer pass the viewport down as `ContainingBlockHeight` during intrinsic measurement.
+  - Percentage, min-height, max-height, and expression-driven height resolution in the flex context now use a definite-height resolver with viewport fallback reserved for `HTML`/`BODY`.
+  - This fixes the reproduced Wikipedia header inflation where `.mw-logo{height:100%}` inside an auto-height flex item was resolving against the viewport and stretching the logo/header cluster to nearly full-screen height.
+- `FenBrowser.Tests/Core/HeightResolutionTests.cs`
+  - Added `FlexAutoHeightItem_DoesNotResolveChildHeightPercentAgainstViewport` against the live `SkiaDomRenderer` path.
+  - The regression locks the exact production failure shape: a `height:100%` flex descendant inside an auto-height flex item must remain content-sized instead of expanding toward the viewport.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Core.HeightResolutionTests.FlexAutoHeightItem_DoesNotResolveChildHeightPercentAgainstViewport"` passed on `2026-03-20` with `1/1` tests green.
+  - The fix was prepared directly from the reproduced `en.wikipedia.org` run where the header logo box was laid out at approximately viewport height and displaced most visible content from the first screenful.
+
+## 2.147 Float-Constrained Block Reflow Hardening: Auto-Width Blocks Reflow Into The Remaining Float Band (2026-03-20)
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Hardened normal block-flow layout so auto-width blocks are re-laid out against the float-reduced inline band after float placement is resolved, instead of being measured at full container width and only shifted sideways afterward.
+  - This fixes the reproduced Wikipedia main-page bleed where the featured-article paragraph was positioned to the right of the thumbnail float but retained the full column width, causing text to intrude into the neighboring “In the news” column.
+  - The new flow keeps explicit-width blocks on the existing clearance path while auto-width blocks adopt the actual available band beside active floats.
+- `FenBrowser.Tests/Layout/BlockFormattingContextFloatTests.cs`
+  - Added `AutoWidthBlock_ReflowsIntoFloatReducedBand` to lock the exact BFC regression shape: a block that follows a left float with no explicit width must start after the float and keep its right edge inside the containing block.
+- Real-site verification:
+  - On the reproduced `en.wikipedia.org` main-page run, the featured-article paragraph beside the `120px` floated thumbnail now lays out at approximately `721px` wide instead of retaining the full `859px` column width.
+  - The first-screen screenshot no longer shows the left column text bleeding across the right column boundary.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout.BlockFormattingContextFloatTests.AutoWidthBlock_ReflowsIntoFloatReducedBand"` passed on `2026-03-20` with `1/1` tests green.
+## 2.148 Typography Metrics Hardening: Clamp Pathological Skia Font Metrics To CSS-Sane Inline Heights (2026-03-20)
+
+- Production fix:
+  - [NormalizedFontMetrics.cs](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.FenEngine/Typography/NormalizedFontMetrics.cs) now normalizes pathological Skia ascent/descent pairs before they reach inline layout.
+  - When raw content metrics are non-finite, non-positive, or wildly outside sane CSS proportions for the current `font-size`, FenEngine now scales them back into a controlled range instead of letting a broken font report inflate line boxes.
+- Why this was needed:
+  - Wikipedia's main-page welcome heading was rendering with a reasonable computed `font-size` but a massively inflated inline height.
+  - The repro artifacts in `.verification/wiki-run-20260320-230243` showed the `H1` subtree with text boxes around `116px` tall even though the computed heading size was roughly `19.2px`.
+  - This was a metrics normalization failure, not a cascade failure.
+- Regression coverage:
+  - [NormalizedFontMetricsTests.cs](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.Tests/Architecture/NormalizedFontMetricsTests.cs) now includes a pathological-metrics test that proves FenEngine clamps absurd Skia ascent/descent values back into a sane CSS-scale range.
+
+## 2.149 CSS Grid Shorthand Hardening: `grid-template` Now Populates Rows, Columns, And Areas (2026-03-20)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Added `ApplyGridTemplateShorthand(...)` so `grid-template:` shorthand is expanded into typed `GridTemplateRows`, `GridTemplateColumns`, and `GridTemplateAreas` values during computed-style materialization.
+  - Added top-level `/` splitting that ignores nested parentheses and quoted grid-area strings, so production declarations such as `grid-template: min-content min-content 1fr / minmax(0, 59.25rem) min-content` are not mis-split by function arguments or area tokens.
+  - Added row/area extraction for quoted area-template rows, including implicit `auto` row sizing when an area row omits an explicit trailing track size.
+  - The shorthand expansion only fills missing typed fields, so explicit longhands continue to win and existing cascade behavior stays deterministic.
+- `FenBrowser.Tests/Engine/CssGridTemplateShorthandTests.cs`
+  - Added `ComputeAsync_GridTemplateShorthand_PopulatesTypedGridFields` to lock a MediaWiki-style `grid-template:` declaration into the exact rows, columns, and areas strings the grid layout pipeline consumes.
+  - Added `GridFormattingContext_UsesGridTemplateShorthand_ForWikipediaStyleLayout` to prove a named-area grid declared only through `grid-template:` drives real grid placement in the live layout path.
+- Real-site motivation:
+  - The remaining Wikipedia desktop-shell defects after the parser/flex/float fixes still depended on grid-driven shells such as `.mw-page-container-inner` and `.mw-body`.
+  - Before this change, FenEngine kept the raw `grid-template` text in the style map but left the typed grid fields unset, so later grid layout stages could not consume those declarations as first-class track definitions.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~CssGridTemplateShorthandTests" -v minimal` passed on `2026-03-20` with `2/2` tests green.
+
+## 2.150 Image-Load Invalidation Hardening: Completed Image Fetches Now Force Fresh Paint-Tree Rebuilds (2026-03-20)
+
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Hardened the `ImageLoader.RequestRepaint` and `ImageLoader.RequestRelayout` callbacks so they mark the live active DOM root dirty before waking the host repaint path.
+  - Plain image completions now mark `InvalidationKind.Paint`, preventing the renderer from legally reusing a stale `_lastPaintTree` whose `ImagePaintNode` entries still hold `Bitmap = null`.
+  - Image completions that can affect intrinsic sizing now mark `InvalidationKind.Layout | InvalidationKind.Paint`, ensuring the next frame recomputes layout as well as image paint nodes.
+  - Added a shared active-render-root resolver so the callbacks invalidate the actual HTML root regardless of whether the engine is currently holding a `Document` or its `DocumentElement`.
+- `FenBrowser.Tests/Rendering/BrowserHostImageInvalidationTests.cs`
+  - Added `ImageLoaderRequestRepaint_MarksActiveDomPaintDirty` to lock the repaint-only image completion path.
+  - Added `ImageLoaderRequestRelayout_MarksActiveDomLayoutAndPaintDirty` to lock the intrinsic-size / relayout image completion path.
+- Why this was needed:
+  - Wikipedia was still showing persistent blank image slots even after image prewarm started filling `ImageLoader`'s cache.
+  - The missing piece was invalidation: the host woke the renderer after image completion, but the DOM was not marked dirty, so `SkiaDomRenderer` could reuse the old paint tree and retain image nodes built earlier with `Bitmap = null`.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~BrowserHostImageInvalidationTests" -v minimal` passed on `2026-03-20` with `2/2` tests green.
+  - A fresh `https://en.wikipedia.org` rerun should now rebuild paint after image completion instead of preserving the stale no-bitmap image nodes from the first pass.
+
+## 2.151 Image Prewarm Hardening: Navigation-Time Image Fetches Now Populate The Production Cache (2026-03-20)
+
+- `FenBrowser.FenEngine/Rendering/ImageLoader.cs`
+  - Added `ContainsCachedImage(...)` as a direct cache probe for focused regressions and diagnostics.
+  - Added `PrewarmImageAsync(...)` so navigation-time image fetches can decode and store production `SKBitmap` entries before first paint instead of discarding the fetched bytes.
+  - Refactored decode/store flow through shared `DecodeBitmapFromBytes(...)` and `TryStoreDecodedBitmap(...)` paths so prewarm and normal image fetches use the same authoritative cache population logic.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Reworked `PrewarmImages(...)` into `PrewarmImagesAsync(...)`.
+  - Fixed HTML tag matching to be case-insensitive for real parsed documents (`img`, `link`), preventing production prewarm from silently skipping those nodes.
+  - Changed prewarm workers to route fetched image streams into `ImageLoader.PrewarmImageAsync(...)` instead of throwing the bytes away.
+  - Added a bounded first-paint checkpoint (`ImagePrewarmAwaitBudgetMs = 400`) so a small batch of early image fetches can land in the cache before the initial render proceeds.
+- `FenBrowser.Tests/Engine/CustomHtmlEngineImagePrewarmTests.cs`
+  - Added `PrewarmImageAsync_CachesBitmapForImmediateFirstPaint` to prove prewarmed PNG bytes become synchronously retrievable through the normal cache lookup path.
+  - Added `CustomHtmlEngine_PrewarmImages_PopulatesImageLoaderCache` to prove the live navigation prewarm walk resolves relative URLs and lands decoded images in the production cache.
+- Why this was needed:
+  - The previous navigation prewarm path fetched streams for real page images but never populated `ImageLoader`, so first paint still raced a second fetch/decode path and frequently missed image content.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~CustomHtmlEngineImagePrewarmTests" -v minimal` passed on `2026-03-20` with `2/2` tests green.
+
+## 2.152 Responsive Image Selection Hardening: `img[srcset]` Paint Uses The Same Candidate URL As Prewarm (2026-03-20)
+
+- `FenBrowser.FenEngine/Rendering/ResponsiveImageSourceSelector.cs`
+  - Added a shared responsive-image candidate selector used by both navigation prewarm and paint-tree construction.
+  - Supports width descriptors (`640w`) and density descriptors (`1.5x`) so the engine can choose the same concrete URL for both cache population and painting.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Switched navigation prewarm `srcset` selection over to the shared selector, keeping the prewarm cache key on the same candidate URL the renderer will later request.
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Hardened `IMG` handling so ordinary `img[srcset]` elements no longer ignore `srcset` and fall back blindly to `img.src`.
+  - Updated `<picture><source srcset>` handling to use the same selector instead of taking the raw first entry.
+- `FenBrowser.Tests/Rendering/ResponsiveImageSourceSelectionTests.cs`
+  - Added `PaintTreeBuilder_ImgSrcSet_UsesSelectedCandidateInsteadOfFallbackSrc` to prove the production paint-tree image-node builder consumes the cached `srcset` candidate URL rather than the fallback `src` URL when only the selected candidate is available.
+- Why this was needed:
+  - On Wikipedia, navigation prewarm could cache a `srcset` candidate like `250px-...png`, while the paint tree still asked `ImageLoader` for the smaller `src` URL like `120px-...png`.
+  - That cache-key mismatch left `ImagePaintNode.Bitmap` null on first paint even though the engine had already fetched a valid image candidate.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~ResponsiveImageSourceSelectionTests"` passed on `2026-03-20` with `1/1` tests green.
+
+## 2.153 First-Paint Image Prewarm Hardening: Navigation Now Awaits An Eager Batch Before The Initial Visual Tree (2026-03-21)
+
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Raised the bounded first-paint prewarm wait from `400ms` to `1500ms` for the eager navigation batch.
+  - Split prewarm into two tiers: the first six resolved image candidates are loaded on the critical path before the initial visual tree, while the remaining candidates continue in detached background work.
+  - Added duplicate suppression and explicit queue/concurrency limits so prewarm does not waste the eager budget on repeated URLs or uncontrolled fan-out.
+  - Preserved discovery order so `<link rel="preload" as="image">` and the first DOM-order `img`/`background-image` candidates get priority for first-frame cache population.
+  - Unified eager prewarm behind `ImageLoader.FetchBytesAsync` when the host byte fetcher is available, with stream-loader fallback retained only as a compatibility path. This removes a split where navigation prewarm and steady-state image loading could exercise different network code paths.
+- `FenBrowser.Tests/Engine/CustomHtmlEngineImagePrewarmTests.cs`
+  - Added `CustomHtmlEngine_PrewarmImages_AwaitsEagerBatchBeforeReturning` to prove the initial batch is present in the real image cache when `PrewarmImagesAsync(...)` returns.
+  - Added `CustomHtmlEngine_PrewarmImages_DoesNotBlockOnBackgroundTail` to prove slow trailing images do not stall the render-critical prewarm return path.
+  - Added `CustomHtmlEngine_PrewarmImages_UsesImageLoaderByteFetcherBeforeStreamFallback` to prove production prewarm now prefers the same byte-fetch pipeline as the live renderer instead of silently diverging onto a separate stream-only path.
+- Why this was needed:
+  - Wikipedia had reached a state where text layout was materially corrected but the first screenshot still showed blank image slots, because the navigation prewarm path continued most image work in detached tasks and only weakly waited before the first visual tree.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~CustomHtmlEngineImagePrewarmTests" -v minimal` will now cover `4/4` image-prewarm regression tests for this path.
+
+## 2.154 Inline Probe Geometry Hardening: Atomic Inline Reflow No Longer Reuses Stale Probe Offsets (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - Added an origin reset before probe-layout and final relayout of atomic inline wrappers.
+  - This prevents inline measurement passes from carrying stale `ContentBox.Left/Top` values into the final placement pass when the parent later positions the wrapper in normal flow.
+- `FenBrowser.Tests/Layout/InlineFormattingContextProbeResetTests.cs`
+  - Added `FloatThumbnailInlineWrapper_DoesNotKeepProbeOffset` to model the Wikipedia-style floated thumbnail wrapper (`div > span > a > img`) and prove the inline wrapper, anchor, and image all reflow from `x=0` instead of keeping a stale centered offset.
+- Why this was needed:
+  - Wikipedia’s featured-article thumbnail was receiving a real `120x162` image box, but its inline wrapper was still being placed at `x=340` inside a `120px` float because a probe pass left non-zero geometry behind and the final parent layout reused it.
+  - The final fix also required `BlockFormattingContext` to relayout auto-width shrink-to-fit blocks after their width collapses from an unconstrained probe width to a measured content width; otherwise inline descendants could keep center offsets computed against the old wide pass.
+
+## 2.155 Flex Cross-Axis Auto Sizing: Column Flex Wrappers Now Respect Stacked Replaced Children (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+  - Hardened flex line cross-size measurement to use an effective cross-size helper instead of trusting only the item's current margin-box width or height.
+  - When a flex item is collapsed on the cross axis, the helper now falls back to descendant extents, allowing stacked replaced descendants to contribute to auto cross-size resolution.
+  - The same helper now feeds `ComputeFallbackCrossSize(...)`, so single-line and wrapped flex paths recover through the same production logic.
+- `FenBrowser.Tests/Core/HeightResolutionTests.cs`
+  - Added `FlexAutoWidthColumnItem_ExpandsToStackedImagesSeparatedByWhitespace` to model the Wikipedia logo link shape: a column flex anchor with whitespace text nodes and two stacked `img` elements.
+- Why this was needed:
+  - Fresh Wikipedia layout dumps still showed the logo anchor at `A [45.0, 6.0 0.0x38.0]` while the stacked images under it were `140px` wide.
+  - That meant the earlier float and inline fixes were working, but the flex container itself still failed to auto-size on the cross axis when its children only became measurable through descendant content.
+
+## 2.156 Post-Script Style Refresh And Document Scroll Extents Hardening (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/LayoutEngine.cs`
+  - Replaced the old approximate `LayoutResult.ContentHeight` assignment with a descendant-extent walk over the Box Tree.
+  - Document content height now reflects the deepest non-`position: fixed` box margin extent instead of only the root box's own content height.
+  - This makes host-level viewport scrolling clamp against real document length, which is required for large pages such as Wikipedia.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Added a post-script style-refresh gate before the second visual-tree build in `RenderAsync(...)`.
+  - After JavaScript runs, FenEngine now recomputes CSS when the DOM still carries style-dirty flags or when newly inserted nodes are missing computed-style entries.
+  - This prevents the post-script paint from reusing stale pre-script computed styles after class/id/style mutations on the live DOM.
+- Why this was needed:
+  - The Wikipedia repro was loading real content, but the Host still saw a near-viewport document height and effectively disabled page scrolling.
+  - The same repro also painted mismatched chrome because the post-script visual-tree rebuild could reuse pre-script computed styles even after script-driven class mutations on `<html>` and related shell nodes.
+
+## 2.157 Paint-Tree Group Bounds And Conservative Group Culling Hardening (2026-03-21)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Opacity and transform/filter stacking wrappers now use aggregate child bounds instead of placeholder border-box or mask-only bounds when constructing group paint nodes.
+  - This prevents dynamic post-load wrappers from collapsing to zero/undersized bounds while their children still occupy real viewport-visible geometry.
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Viewport culling is now conservative for grouping/container paint nodes (`StackingContextPaintNode`, `OpacityGroupPaintNode`, `ScrollPaintNode`, `StickyPaintNode`, `ClipPaintNode`, `MaskPaintNode`).
+  - Leaf visual nodes still cull by their own bounds, but grouping nodes always recurse so transformed or delayed-restacked descendants are not dropped solely because the wrapper bounds are approximate.
+- Why this was needed:
+  - The live Wikipedia repro could render correctly at first paint and then turn mostly white a few seconds later even though the final layout tree still contained the main content.
+  - That symptom matches a paint/compositor failure where a later wrapper or stacking context receives bad bounds and its subtree is culled before child nodes are drawn.
+
+## 2.158 Auto-Height Grid Flexible Row Hardening (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`
+  - Flexible (`fr`) tracks now participate in intrinsic track measurement so auto-height grids can derive a real minimum block extent from child content before final placement.
+  - Row-axis flexible track resolution now runs only when the grid container has a definite block size (`height` or resolvable height percentage), preventing auto-height grids from collapsing `1fr` rows against an inherited viewport-sized constraint.
+  - Flexible-track resolution now no-ops for non-finite or non-positive available space, keeping intrinsic sizing authoritative for indefinite axes.
+- `FenBrowser.Tests/Layout/GridContentSizingTests.cs`
+  - Added `FlexibleRows_UseIntrinsicContentWhenContainerHeightIsAuto` to lock the Wikipedia-style `min-content 1fr min-content` regression.
+- Why this was needed:
+  - Wikipedia's `mw-page-container-inner` shell uses an auto-height grid with a middle `1fr` content row and footer/page-tools rows below it.
+  - FenEngine was resolving that middle row against a borrowed finite height even though the grid itself had no definite block size, which pulled the footer chrome upward and left the main content row visually collapsed.
+
+## 2.159 Root Debug Screenshot Capture Hardening For Damage-Raster Frames (2026-03-21)
+
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - `debug_screenshot.png` capture now runs from both the full-frame render path and the damage-raster path, so the root screenshot artifact does not disappear simply because the Host reused partial-raster updates.
+  - Root screenshot emission is now rate-limited to a minimum five-second interval based on the existing artifact timestamp, preventing full offscreen PNG re-encoding on every paint while still keeping the root diagnostic screenshot fresh during a run.
+  - Added explicit diagnostic logging for skipped capture conditions (invalid viewport, tiny paint tree) and for snapshot/PNG encode failures before the root artifact write.
+  - Added a positive debug log on successful root screenshot emission with the resolved output path, viewport size, and paint-tree node count.
+- Why this was needed:
+  - Fresh Wikipedia runs were still producing `dom_dump.txt`, `layout_engine_debug.txt`, and other root diagnostics while `debug_screenshot.png` intermittently vanished.
+  - The production renderer can stay on `RenderDamaged(...)` once damage-rasterization is active, and that path previously bypassed the legacy debug screenshot write completely.
+  - Once damage-path capture was restored, taking a full debug screenshot on every repaint became expensive enough to introduce visible UI stalls on heavy pages such as Wikipedia.
+
+## 2.160 Interaction-State Damage Localization For Hover/Focus Visual Changes (2026-03-21)
+
+- `FenBrowser.FenEngine/Rendering/ElementStateManager.cs`
+  - Interactive state transitions for `:hover` and `:focus` now rely on paint-tree diffing rather than queueing a full-viewport repaint request.
+  - `:active` and checked-state transitions still queue a one-shot full repaint request because the current paint tree does not encode those states directly.
+  - `ClearAll()` resets the pending full repaint flag so page navigations and renderer resets do not leak stale interaction invalidation into the next document.
+- `FenBrowser.FenEngine/Rendering/PaintTree/ImmutablePaintTree.cs`
+  - Paint-tree diffing now treats `IsHovered` and `IsFocused` flag changes as style changes even when node geometry, transforms, opacity, and clip state stay unchanged.
+  - This lets the damage tracker localize hover/focus repaint to the affected paint-node bounds instead of upgrading the entire viewport.
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - After paint-tree diffing and scroll-damage synthesis, the renderer now upgrades the next frame to full-viewport damage when an interaction-state repaint request is pending.
+  - Because hover/focus state is now visible to paint-tree diffing, that full-frame fallback path is reserved for interaction states that remain outside the paint tree, such as `:active` and checked-state changes.
+  - Added an explicit renderer diagnostic message when interaction-state changes force a full repaint.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Pointer hover transitions no longer fire an immediate `RepaintReady` before the scheduled recascade completes.
+  - Hover now presents a single post-recascade frame instead of a stale pre-recascade frame followed by a corrected frame.
+- `FenBrowser.Tests/Rendering/ElementStateManagerTests.cs`
+  - Added coverage that hover changes no longer queue full-frame repaint and that `:active` still requests a one-shot conservative full repaint.
+- `FenBrowser.Tests/Rendering/PaintDamageTrackerTests.cs`
+  - Added coverage that hover-state-only paint-tree changes produce localized damage over the affected node bounds.
+- Why this was needed:
+  - Pages such as `google.com` restyle many elements on hover without changing geometry, transform, opacity, or clip state.
+  - FenEngine's paint-tree damage diff originally ignored hover/focus flags, so pure visual restyles were either missed by damage tracking or pushed into an expensive full-viewport fallback.
+  - Teaching the paint-tree diff about hover/focus state gives the compositor the localized damage it needs without making the entire page look like it refreshes on pointer movement.
+  - The hover input path was also issuing an eager repaint before recascade completion, which made mouse movement look like full content refresh on pages with dense hover styling.
+
+## 2.161 Active-DOM-Scoped Style Mutation Re-cascade (2026-03-21)
+
+- `FenBrowser.Core/Dom/V2/Element.cs`
+  - `StyleAttributeChanged` now reports the specific element whose `class`, `id`, or inline `style` mutation dirtied selector state.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - The BrowserHost-side style-mutation subscription now ignores detached elements and mutations outside the currently active render tree instead of globally scheduling a re-cascade for every style-affecting attribute change in the process.
+  - Active-document recascade still occurs for connected nodes in the live document, including nodes under the current document's shadow-connected tree, because they share the active document surface.
+- Why this was needed:
+  - Google hover diagnostics showed repeated CSS completion and frame recording even when hover-state logging was quiet, which pointed to a broader recascade trigger than the interaction-state path alone.
+  - The previous static event shape carried no mutation target, so any style-affecting attribute write could wake the active document's CSS pipeline even when the mutation came from detached nodes or inactive DOMs.
+  - Scoping re-cascade to the connected active render tree removes that false-positive work without suppressing legitimate live-document selector updates.
+
+## 2.162 Atomic Inline SVG Measurement Hardening (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - `MeasureInlineChild(...)` now short-circuits replaced inline elements through intrinsic-size resolution before normal inline-child aggregation runs.
+  - This keeps inline `svg`/`img`/other replaced elements atomic even when their computed display remains `inline`.
+  - Intrinsic replaced-inline measurement still flows through existing min/max constraint handling, so cases like `max-width:100%` and `max-height:100%` continue to clamp against the current containing block instead of bypassing CSS sizing.
+- `FenBrowser.Tests/Core/HeightResolutionTests.cs`
+  - Added `InlineSvgWithPathChildren_RemainsAtomicAtIntrinsicSize` to lock the reproduced Google wordmark shape: an inline SVG with six `path` children, intrinsic `272x92`, and percent max constraints inside the homepage hero wrapper.
+- Why this was needed:
+  - The live Google homepage dump showed the main `svg.lnXdpd` wordmark laid out as `60x10` instead of near `272x92`.
+  - That `60x10` size exactly matched the inline formatter summing six generic `10x10` fallback child measurements, which meant the SVG was being treated like a normal inline container of `path` nodes rather than one replaced element.
+  - Once the formatter preserves atomic replaced-inline sizing, the Google hero wordmark and other inline SVG-driven controls stop inheriting bogus box sizes from descendant fallback aggregation.
+
+## 2.163 Inline Button Descendant Layout Hardening (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - `TryLayoutReplacedInlineBox(...)` no longer short-circuits `<button>` elements as replaced inline boxes.
+  - Inline buttons now probe and lay out through their normal formatting context, which lets nested flex wrappers, labels, and icon SVG descendants establish real geometry before the outer inline button is measured.
+  - Explicit intrinsic fallback sizing for simple buttons remains available through `TryGetIntrinsicSize(...)`, so text-only controls still get a conservative default when no descendant layout contributes size.
+- `FenBrowser.Tests/Core/HeightResolutionTests.cs`
+  - Added `InlineButton_WithNestedFlexContent_LaysOutDescendants` to lock the reproduced Google control shape: an inline button with absolutely positioned decorative layers, a nested flex content wrapper, an `AI Mode` text label, and leading/trailing SVG icons.
+- Why this was needed:
+  - Google homepage controls such as the upload and AI-mode pills use `<button>` wrappers with nested flex content, decorative background layers, and icon SVG descendants.
+  - FenEngine was previously treating inline buttons like atomic replaced controls too early in layout, which let the outer button receive a fallback size while inner descendants stayed zero-sized or badly aligned.
+  - Routing those buttons through normal inline-block descendant layout gives the control shell, label, and icon boxes a shared sizing system instead of mixing fallback button geometry with missing child layout.
+
+## 2.164 Inline Vertical-Align Restoration In Active Line Layout (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - The active inline formatter now tracks per-line ascent/descent instead of only a flat line height.
+  - Text fragments are positioned from the synthesized line baseline rather than being pinned to the line top, so mixed text/control lines keep a stable shared centerline.
+  - Atomic inline descendants now honor `vertical-align` during final placement, including `middle`, `top`, `bottom`, `sub`, `super`, and numeric `px`/`em`/`%` offsets.
+  - `vertical-align: middle` now uses the actual synthesized line-box center instead of a fixed heuristic offset, which keeps mixed-height inline controls visually centered in the same line.
+- `FenBrowser.Tests/Core/HeightResolutionTests.cs`
+  - Added `InlineHeaderControls_WithVerticalAlignMiddle_ShareCenterline` to lock the Google-style mixed inline-control case: multiple inline-block controls of different heights plus a sign-in pill sharing one line with `vertical-align: middle`.
+- Why this was needed:
+  - The current inline formatting path had regressed compared to the older inline layout code and was ignoring `vertical-align` entirely.
+  - Google homepage chrome still showed visibly off centerlines across inline icon controls and pills even after width/shrink-to-fit fixes were in place.
+  - Restoring line-baseline synthesis and `vertical-align` handling removes another class of mixed inline centerline defects without broadening flex or paint invalidation heuristics.
+
+## 2.165 Relative Position Offsets In Final Subtree Placement (2026-03-21)
+
+- `FenBrowser.FenEngine/Layout/Contexts/LayoutBoxOps.cs`
+  - Added `PositionSubtree(...)`, which performs final in-flow placement for a box and its descendants as one shifted subtree instead of moving only the outer box geometry.
+  - Relative-position offsets are now resolved from `left/right/top/bottom` during final placement, including `%` values against the active containing block dimensions.
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Normal-flow blocks and floats now use subtree-aware placement after layout, so `position: relative` nudges survive the parent BFC placement pass.
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+  - Flex item placement and reverse-direction remapping now preserve relative offsets instead of overwriting them on the last cross/main-axis positioning step.
+- `FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`
+  - Grid child arrange placement now uses subtree-aware positioning, preserving authored nudges inside grid cells.
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - Final inline/text atomic placement now keeps relative-positioned inline controls and their descendants visually shifted together.
+- `FenBrowser.Tests/Engine/LayoutFidelityTests.cs`
+  - Added `RelativePositionedFlexItem_ShiftsSubtreeWithoutChangingSiblingFlow` to lock the Google-style control case: a relative-positioned flex item shifts itself and descendants, while siblings keep their normal flow slot.
+- Why this was needed:
+  - Google homepage chrome still relies on small `position: relative` nudges inside the search-box action cluster and header controls.
+  - The active formatting-context pipeline was losing those nudges during the final parent placement pass, because parent positioning replaced the child’s visual offset.
+  - Final subtree-aware placement restores authored relative offsets without changing normal-flow space reservation, which is the required browser behavior for these control shells.
