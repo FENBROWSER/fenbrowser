@@ -3846,6 +3846,11 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(DictGet(css.Map, "column-gap"), out gapVal)) css.ColumnGap = gapVal;
 
             css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
+            if (string.IsNullOrWhiteSpace(css.GridTemplateRows))
+                css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
+            if (string.IsNullOrWhiteSpace(css.GridTemplateAreas))
+                css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
+            ApplyGridTemplateShorthand(css);
 
             css.Transition = Safe(DictGet(css.Map, "transition"));
             css.TransitionProperty = Safe(DictGet(css.Map, "transition-property"));
@@ -5771,6 +5776,153 @@ private static double? ExtractPx(string text, string prop)
                    s.StartsWith("clamp(") || 
                    s.StartsWith("env(") || 
                    s.StartsWith("var(");
+        }
+
+        private static void ApplyGridTemplateShorthand(CssComputed css)
+        {
+            if (css?.Map == null)
+            {
+                return;
+            }
+
+            var shorthand = Safe(DictGet(css.Map, "grid-template"));
+            if (string.IsNullOrWhiteSpace(shorthand))
+            {
+                return;
+            }
+
+            shorthand = NormalizeWhitespace(shorthand);
+            if (string.Equals(shorthand, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(css.GridTemplateColumns))
+                    css.GridTemplateColumns = "none";
+                if (string.IsNullOrWhiteSpace(css.GridTemplateRows))
+                    css.GridTemplateRows = "none";
+                if (string.IsNullOrWhiteSpace(css.GridTemplateAreas))
+                    css.GridTemplateAreas = "none";
+                return;
+            }
+
+            if (!TrySplitTopLevelGridTemplate(shorthand, out var rowsPart, out var columnsPart))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(css.GridTemplateColumns) && !string.IsNullOrWhiteSpace(columnsPart))
+            {
+                css.GridTemplateColumns = NormalizeWhitespace(columnsPart);
+            }
+
+            ParseGridTemplateRowsAndAreas(rowsPart, out var parsedRows, out var parsedAreas);
+
+            if (string.IsNullOrWhiteSpace(css.GridTemplateRows) && !string.IsNullOrWhiteSpace(parsedRows))
+            {
+                css.GridTemplateRows = parsedRows;
+            }
+
+            if (string.IsNullOrWhiteSpace(css.GridTemplateAreas) && !string.IsNullOrWhiteSpace(parsedAreas))
+            {
+                css.GridTemplateAreas = parsedAreas;
+            }
+        }
+
+        private static bool TrySplitTopLevelGridTemplate(string value, out string rowsPart, out string columnsPart)
+        {
+            rowsPart = null;
+            columnsPart = null;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            int parenDepth = 0;
+            char quote = '\0';
+            for (int i = 0; i < value.Length; i++)
+            {
+                char ch = value[i];
+                if (quote != '\0')
+                {
+                    if (ch == quote)
+                    {
+                        quote = '\0';
+                    }
+
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    quote = ch;
+                    continue;
+                }
+
+                if (ch == '(')
+                {
+                    parenDepth++;
+                    continue;
+                }
+
+                if (ch == ')' && parenDepth > 0)
+                {
+                    parenDepth--;
+                    continue;
+                }
+
+                if (ch == '/' && parenDepth == 0)
+                {
+                    rowsPart = value.Substring(0, i).Trim();
+                    columnsPart = value.Substring(i + 1).Trim();
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void ParseGridTemplateRowsAndAreas(string rowsPart, out string rows, out string areas)
+        {
+            rows = null;
+            areas = null;
+            if (string.IsNullOrWhiteSpace(rowsPart))
+            {
+                return;
+            }
+
+            var matches = Regex.Matches(rowsPart, "\"[^\"]*\"|'[^']*'");
+            if (matches.Count == 0)
+            {
+                rows = NormalizeWhitespace(rowsPart);
+                return;
+            }
+
+            var rowSizes = new List<string>(matches.Count);
+            var areaTokens = new List<string>(matches.Count);
+
+            for (int i = 0; i < matches.Count; i++)
+            {
+                var current = matches[i];
+                areaTokens.Add(current.Value.Trim());
+
+                int segmentStart = current.Index + current.Length;
+                int segmentEnd = i + 1 < matches.Count ? matches[i + 1].Index : rowsPart.Length;
+                string trailingSegment = rowsPart.Substring(segmentStart, segmentEnd - segmentStart).Trim();
+                rowSizes.Add(string.IsNullOrWhiteSpace(trailingSegment)
+                    ? "auto"
+                    : NormalizeWhitespace(trailingSegment));
+            }
+
+            areas = string.Join(" ", areaTokens);
+            rows = string.Join(" ", rowSizes);
+        }
+
+        private static string NormalizeWhitespace(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            return Regex.Replace(value.Trim(), "\\s+", " ");
         }
 
         /// <summary>
