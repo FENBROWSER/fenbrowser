@@ -2488,20 +2488,23 @@ namespace FenBrowser.FenEngine.Rendering
                         var srcset = sibling.GetAttribute("srcset");
                         if (!string.IsNullOrEmpty(srcset))
                         {
-                            // Take the first URL from srcset (ignore width/density descriptors)
-                            var firstCandidate = srcset.Split(',')[0].Trim().Split(' ')[0].Trim();
-                            if (!string.IsNullOrEmpty(firstCandidate))
+                            var candidate = ResponsiveImageSourceSelector.PickBestImageCandidate(null, srcset, _viewportWidth);
+                            if (!string.IsNullOrEmpty(candidate))
                             {
-                                url = firstCandidate;
+                                url = candidate;
                                 break;
                             }
                         }
                     }
                 }
 
-                // Fall back to img.src if no <source> matched
+                // Fall back to img[srcset] / img.src when no <picture> source matched.
                 if (string.IsNullOrEmpty(url))
-                    url = elem.GetAttribute("src");
+                {
+                    var src = elem.GetAttribute("src");
+                    var srcset = elem.GetAttribute("srcset");
+                    url = ResponsiveImageSourceSelector.PickBestImageCandidate(src, srcset, _viewportWidth);
+                }
 
                 // Resolve Relative URLs
                 if (!string.IsNullOrEmpty(url) && 

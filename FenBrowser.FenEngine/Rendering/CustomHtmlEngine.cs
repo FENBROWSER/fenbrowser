@@ -94,6 +94,10 @@ namespace FenBrowser.FenEngine.Rendering
         private const int StreamingPreparseRepaintMaxCount = 4;
         private const int StreamingPreparseRepaintCheckpointStride = 3;
         private const int InterleavedPrimaryParseMinHtmlLength = 8192;
+        private const int ImagePrewarmAwaitBudgetMs = 1500;
+        private const int ImagePrewarmEagerCandidateLimit = 6;
+        private const int ImagePrewarmQueueBudget = 32;
+        private const int ImagePrewarmMaxConcurrency = 6;
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
@@ -619,40 +623,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static string PickBestImageFromSrcSet(string srcset, double viewportWidth)
         {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(srcset)) return null;
-                
-                // Optimization: Avoid LINQ overhead on hot paths if possible, but here LINQ is readable.
-                // Split by comma
-                var candidates = srcset.Split(',')
-                    .Select(s => s.Trim())
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Select(s =>
-                    {
-                        var parts = s.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        var url = parts[0];
-                        int width = 0;
-                        if (parts.Length > 1)
-                        {
-                             var d = parts[1].Trim().ToLowerInvariant();
-                             if (d.EndsWith("w")) int.TryParse(d.TrimEnd('w'), out width);
-                        }
-                        return new { url, width };
-                    })
-                    .OrderBy(s => s.width) // Sort smallest to largest
-                    .ToList();
-
-                // Logic: Find first image >= viewport width. If none, use the largest available.
-                var bestCandidate = candidates.FirstOrDefault(c => c.width >= viewportWidth) ?? candidates.LastOrDefault();
-                
-                return RewriteWebPToJpg(bestCandidate?.url);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[WARN] Srcset parsing failed: {ex.Message}");
-                return null;
-            }
+            var selected = ResponsiveImageSourceSelector.PickBestImageCandidate(null, srcset, viewportWidth);
+            return RewriteWebPToJpg(selected);
         }
 
         // ---------------------------------------------------------
@@ -660,45 +632,85 @@ namespace FenBrowser.FenEngine.Rendering
         // ---------------------------------------------------------
 
         // Kick off background image fetches early (img/srcset/background-image)
-        private static void PrewarmImages(Element root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
+        private static async Task PrewarmImagesAsync(Element root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
         {
             if (root == null || imageLoader == null) return;
             try
             {
-                var tasks = new List<Task>();
-                var gate = new System.Threading.SemaphoreSlim(6);
-                int budget = 32; // avoid over-queuing
+                var eagerLoads = new List<Uri>();
+                var backgroundLoads = new List<Uri>();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                var gate = new System.Threading.SemaphoreSlim(ImagePrewarmMaxConcurrency);
+                int budget = ImagePrewarmQueueBudget; // avoid over-queuing
                 double dw = viewportWidth ?? 0; 
                 try { if (dw <= 0) dw = GetPrimaryWindowWidth(); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed reading primary window width: {ex.Message}", LogCategory.Rendering); }
                 if (dw <= 0) dw = 480;
 
-                // Helper to execute load
-                Action<string> queueLoad = (rawUrl) => 
+                async Task LoadAndCacheAsync(Uri abs)
                 {
-                    if (budget <= 0) return;
+                    try
+                    {
+                        await gate.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            var bytesFetcher = ImageLoader.FetchBytesAsync;
+                            if (bytesFetcher != null)
+                            {
+                                try
+                                {
+                                    var data = await bytesFetcher(abs).ConfigureAwait(false);
+                                    if (data != null && data.Length > 0)
+                                    {
+                                        using var memory = new MemoryStream(data, writable: false);
+                                        if (await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, memory).ConfigureAwait(false))
+                                        {
+                                            return;
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    FenLogger.Debug($"[CustomHtmlEngine] Byte-fetch prewarm fallback triggered for {abs}: {ex.Message}", LogCategory.Rendering);
+                                }
+                            }
+
+                            using var stream = await imageLoader(abs).ConfigureAwait(false);
+                            if (stream != null)
+                            {
+                                await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, stream).ConfigureAwait(false);
+                            }
+                        }
+                        finally
+                        {
+                            gate.Release();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[CustomHtmlEngine] Image load task failed: {ex.Message}", LogCategory.Rendering);
+                    }
+                }
+
+                void queueLoad(string rawUrl)
+                {
+                    if (budget <= 0 || string.IsNullOrWhiteSpace(rawUrl)) return;
                     var clean = RewriteWebPToJpg(rawUrl);
                     var abs = ResolveUri(baseUri, clean);
-                    if (abs != null)
+                    if (abs == null || !seen.Add(abs.AbsoluteUri)) return;
+
+                    budget--;
+                    if (eagerLoads.Count < ImagePrewarmEagerCandidateLimit)
                     {
-                        budget--;
-                        tasks.Add(RunDetachedAsync(async () => 
-                        { 
-                            try 
-                            { 
-                                await gate.WaitAsync(); 
-                                try { await imageLoader(abs); } 
-                                finally { gate.Release(); } 
-                            } 
-                            catch (Exception ex)
-                            {
-                                FenLogger.Warn($"[CustomHtmlEngine] Image load task failed: {ex.Message}", LogCategory.Rendering);
-                            } 
-                        }));
+                        eagerLoads.Add(abs);
                     }
-                };
+                    else
+                    {
+                        backgroundLoads.Add(abs);
+                    }
+                }
 
                 // Preload/Prefetch links
-                foreach (var link in root.Descendants().OfType<Element>().Where(n => n.TagName == "link" && n.Attr != null))
+                foreach (var link in root.Descendants().OfType<Element>().Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase) && n.Attr != null))
                 {
                     string rel;
                     if (link.Attr.TryGetValue("rel", out rel) && (rel == "preload" || rel == "prefetch"))
@@ -724,7 +736,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (n.IsText()) continue;
                         if (n is Element el)
                         {
-                            if (el.TagName == "img" && el.Attr != null)
+                            if (string.Equals(el.TagName, "img", StringComparison.OrdinalIgnoreCase) && el.Attr != null)
                             {
                                 string src = null; el.Attr.TryGetValue("src", out src);
                                 if (string.IsNullOrWhiteSpace(src))
@@ -765,7 +777,28 @@ namespace FenBrowser.FenEngine.Rendering
                         FenLogger.Debug($"[CustomHtmlEngine] PrewarmImages node processing error: {ex.Message}", LogCategory.Rendering);
                     }
                 }
-                // Fire-and-forget; we do not await prewarm tasks to avoid blocking render
+
+                if (eagerLoads.Count > 0)
+                {
+                    var eagerTasks = eagerLoads.Select(LoadAndCacheAsync).ToArray();
+                    var eagerAggregate = Task.WhenAll(eagerTasks);
+                    var completed = await Task.WhenAny(eagerAggregate, Task.Delay(ImagePrewarmAwaitBudgetMs)).ConfigureAwait(false);
+                    if (completed == eagerAggregate)
+                    {
+                        await eagerAggregate.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        FenLogger.Debug(
+                            $"[CustomHtmlEngine] Timed out waiting for eager image prewarm batch after {ImagePrewarmAwaitBudgetMs}ms ({eagerLoads.Count} candidate(s))",
+                            LogCategory.Rendering);
+                    }
+                }
+
+                foreach (var abs in backgroundLoads)
+                {
+                    _ = RunDetachedAsync(() => LoadAndCacheAsync(abs));
+                }
             }
             catch (Exception ex)
             {
@@ -1690,7 +1723,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // 4. Prewarm Images
                 FenLogger.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
-                try { PrewarmImages((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
+                try { await PrewarmImagesAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth).ConfigureAwait(false); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
 
                 // 5. Setup Javascript
                 bool allowJs = EnableJavaScript;
