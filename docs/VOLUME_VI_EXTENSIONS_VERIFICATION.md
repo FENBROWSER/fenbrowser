@@ -88,17 +88,17 @@ The ECMA-262 (JavaScript) conformance test runner.
 
 - **Lines 92-213**: **`RunSingleTestAsync`**: Orchestrates a single test case: Parsing YAML metadata, executing JS, and validating results against expected outcomes.
 
-#### `FenBrowser.Test262/Generated/Tests262Harness.Test262Test.generated.cs`
+#### FenBrowser.Test262/Program.cs
 
-Generated NUnit base fixture from `Test262Harness`.
+Consolidation of Test262 adapter and generated harness runner logic.
 
 - **`RunTestCode`** now enforces correct negative-test semantics:
   - Expected-throw cases fail when no throw occurs.
   - Unexpected throws fail non-negative tests immediately.
 
-#### `FenBrowser.Test262/Test262RuntimeAdapter.cs`
+#### (Section consolidated into Program.cs)
 
-FenRuntime bridge for generated Test262 fixtures.
+
 
 - **`State` partial**:
   - Resolves local Test262 suite path (env override + repo-root discovery).
@@ -550,7 +550,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - Verification snapshot:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ClipboardHelperTests|FullyQualifiedName~BrowserHostElementPropertyTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -clp:ErrorsOnly`: pass.
-  - `rg -n "Thread\.Sleep\(" FenBrowser.Host -g '*.cs'`: no matches.
+  - **Check**: `rg -n "Thread\.Sleep\(" FenBrowser.Host -g '*.cs'` found no matches.
 
 
 ### 4.32 JavaScriptEngine Background Task Fault Observation Verification (2026-03-06)

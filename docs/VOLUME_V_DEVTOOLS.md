@@ -70,14 +70,14 @@ The comprehensive DOM visualization and editing suite.
 - **Lines 1741-1785**: **`Search`**: Implements global search for nodes by tag, ID, or content.
 - **Lines 118-173**: **`HandleProtocolEvent`**: Updates the view in response to engine events.
 
-#### `ConsolePanel.cs` (Lines 1-500)
+#### `ConsolePanel.cs` (Lines 1-423)
 
 Displays JavaScript console logs and errors.
 
 - **Lines 100-300**: **`DrawLogEntry`**: Renders text with syntax highlighting for objects/arrays.
 - **Lines 400-450**: **`EvaluateInput`**: REPL implementation sending commands to the Engine.
 
-#### `NetworkPanel.cs` (Lines 1-400)
+#### `NetworkPanel.cs` (Lines 1-351)
 
 Visualizes network requests (Waterfall, Timing, Headers).
 
@@ -114,15 +114,13 @@ Contains the generated CDP domain classes and DTOs.
 
 #### Protocol Definitions (`FenBrowser.DevTools.Core.Protocol`)
 
-- **`CdpRequest.cs`**: JSON-RPC request wrapper.
-- **`CdpResponse.cs`**: JSON-RPC response wrapper.
-- **`CdpEvent.cs`**: JSON-RPC event notification wrapper.
-- **`Domains/*.cs`**: (e.g., `DomDomain.cs`, `PageDomain.cs`) generated handlers for each CDP domain.
+- **`Protocol/ProtocolMessage.cs`**: Sub-classes representing `Request`, `Response`, and `Event` notification wrappers.
+- **`Domains/*.cs`**: generated handlers for each CDP domain (e.g., `DomDomain.cs`).
 
 #### Utils
 
-- **`JsonHelper.cs`**: Serialization logic for protocol messages.
-- **`WebSocketFrame.cs`**: Low-level WebSocket framing logic.
+- **`Protocol/ProtocolMessage.cs`**: serialization logic using `JsonSerializerOptions`.
+- **`RemoteDebugServer.cs`**: Low-level WebSocket framing logic.
 
 ### 5.4 Phase-0 Security Hardening (2026-02-18)
 
