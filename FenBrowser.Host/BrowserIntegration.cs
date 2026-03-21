@@ -773,14 +773,8 @@ public class BrowserIntegration
             FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering);
 
             _needsRepaint = false;
-            // Primary signal: tell Compositor a new frame is ready.
+            // Signal the Compositor only after a fresh frame is committed.
             NeedsRepaint?.Invoke();
-            // Backup signals: QueueInvalidateOnUiThread coalesces rapid NeedsRepaint calls
-            // into a single main-thread action. If the primary was coalesced with a stale
-            // pending action (fired before _currentFrame was ready), the backup fires after
-            // that stale action has been processed so the new frame is always displayed.
-            _ = Task.Delay(80).ContinueWith(_ => { try { NeedsRepaint?.Invoke(); } catch { } });
-            _ = Task.Delay(250).ContinueWith(_ => { try { NeedsRepaint?.Invoke(); } catch { } });
         }
         catch (Exception ex)
         {
@@ -807,16 +801,18 @@ public class BrowserIntegration
         var token = _lastNavigationTime; // capture; if another navigation starts, stops the old pulse
         _ = Task.Run(async () =>
         {
-            // Fire every 300 ms for up to 10 seconds
+            // Fire every 300 ms for up to 10 seconds, but stop once the first styled
+            // frame is committed. Wake only the render thread; the Compositor should
+            // invalidate from committed frames, not speculative pulses.
             while (_running && (DateTime.Now - pulseStart).TotalSeconds < 10)
             {
                 await Task.Delay(300).ConfigureAwait(false);
                 // Bail if a newer navigation has started
                 if (_lastNavigationTime != token) break;
                 if (!_running) break;
+                if (_hasFirstStyledRender && HasCommittedFrame()) break;
                 _needsRepaint = true;
                 _wakeEvent.Set();
-                NeedsRepaint?.Invoke();
             }
         });
     }
