@@ -109,21 +109,21 @@ Manages the Silk.NET window and input context.
 
 ### 6.3 UI Widgets (`FenBrowser.Host.Widgets`)
 
-#### `SettingsPageWidget.cs` (Lines 1-1358)
+#### SettingsPageWidget.cs (Lines 1-1350)
 
 The browser's internal settings page (`fen://settings`).
 
 - **Lines 111-469**: **`InitializeControls`**: Builds the massive UI tree for settings.
 - **Lines 746-1138**: **`Paint`**: Custom rendering logic for the settings interface.
 
-#### `TabBarWidget.cs` (Lines 1-400) & `TabWidget.cs` (Lines 1-250)
+#### TabBarWidget.cs (Lines 1-388) & TabWidget.cs (Lines 1-250)
 
 The visual implementation of the browser tabs.
 
 - **TabWidget**: Renders the individual tab shape (trapezoid/rounded), title, and close button.
 - **TabBarWidget**: Manages the collection of tabs, scrolling, and dragging logic.
 
-#### `ToolbarWidget.cs` (Lines 1-200)
+#### ToolbarWidget.cs (Lines 1-168)
 
 Container for the Back/Forward buttons and Address Bar.
 
@@ -152,15 +152,15 @@ Overlay primitives for popups.
 
 Standard skinnable button control (Hover/Active states).
 
-#### `StackPanel.cs` (Lines 1-80) & `DockPanel.cs` (Lines 1-120)
+#### StackPanel.cs (Lines 1-72) & DockPanel.cs (Lines 1-120)
 
 Layout containers for arranging child widgets.
 
-#### `InspectorPopupWidget.cs` (Lines 1-200)
+#### InspectorPopupWidget.cs (Lines 1-185)
 
 The container window for the undocked DevTools.
 
-#### `SiteInfoPopupWidget.cs` (Lines 1-300)
+#### SiteInfoPopupWidget.cs (Lines 1-244)
 
 The "Lock Icon" popup showing SSL certificate details and cookies.
 
@@ -172,7 +172,7 @@ Toggle switch UI (used in Settings).
 
 Base class for text entry fields (cursor rendering, selection handling).
 
-#### `AddressBarWidget.cs` (Lines 1-675)
+#### AddressBarWidget.cs (Lines 1-672)
 
 The Omnibox implementation.
 
@@ -218,6 +218,13 @@ The Omnibox implementation.
 
 - `Program.cs`
   - Removed machine-specific absolute default paths for test suites.
+
+### 6.8 Root Diagnostic Cleanup Script Hardening (2026-03-21)
+
+- `clean_root.ps1`
+  - Root-level diagnostics are now explicitly cleaned in addition to host log-folder artifacts.
+  - The script removes the generated text/log/screenshot artifacts used by FenBrowser debugging, including `debug_screenshot.png`, `dom_dump.txt`, `debug_log.txt`, `layout_engine_debug.txt`, `js_debug.log`, CSS debug dumps, xcom stdout/stderr captures, and captured root JavaScript payload dumps such as `main.*.js` / `vendor*.js`.
+  - Cleanup is bounded to diagnostic-style root artifacts so repository documentation and source files are not touched.
   - Default Test262 root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "test262")`.
   - Default WPT root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "wpt")`.
 
@@ -690,3 +697,12 @@ _End of Volume IV_
 - Net effect:
   - Complex pages like Google no longer flicker by swapping a good frame out for a styleless checkpoint frame and then swapping back once CSS catches up.
   - Visible content remains stable across parse-progress and recascade churn, reducing the “disappears and reappears” symptom without blocking later styled frame commits.
+
+### 6.36 Host Repaint Pulse Hardening After Navigation (2026-03-21)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - `RecordFrame(...)` now emits a single `NeedsRepaint` signal after a fresh frame is committed instead of scheduling delayed backup invalidations at `80ms` and `250ms`.
+  - `StartPostNavigationRepaintPulse()` still wakes the render thread during early navigation, but it no longer invalidates the Compositor directly and it stops once the first styled frame has been committed.
+- Net effect:
+  - The Host no longer asks the UI layer to redraw from speculative or stale post-navigation pulses after a committed frame already exists.
+  - Google-style page-wide flicker is reduced because visible swaps now follow committed renderer output instead of redundant host-side repaint nudges.

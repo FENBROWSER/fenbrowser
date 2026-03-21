@@ -1,4 +1,4 @@
-﻿# FenBrowser Codex - Volume II: The Core Foundation
+# FenBrowser Codex - Volume II: The Core Foundation
 
 **State as of:** 2026-02-20
 **Codex Version:** 1.0
@@ -70,8 +70,8 @@ The browser employs a **Sharded 2-Level Cache**:
     - `TrackingPreventionHandler`
     - `AdBlockHandler`
     - `HstsHandler`
-    - **TLS policy**: `NetworkConfiguration.IgnoreCertificateErrors` (default: `false`) Ã¢â‚¬â€ production-safe; only set to `true` for deliberate lab diagnostics.
-    - **Proxy policy**: `NetworkConfiguration.UseSystemProxy` (default: `true`) Ã¢â‚¬â€ respects OS-managed proxies for compliant corporate networks.
+    - **TLS policy**: `NetworkConfiguration.IgnoreCertificateErrors` (default: `false`) â€” production-safe; only set to `true` for deliberate lab diagnostics.
+    - **Proxy policy**: `NetworkConfiguration.UseSystemProxy` (default: `true`) â€” respects OS-managed proxies for compliant corporate networks.
 4.  **Processing**:
     - MIME Sniffing (`MimeSniffer.cs`) if the server sends generic types.
     - Encoding Detection using BOM or headers.
@@ -95,7 +95,7 @@ Based strictly on the **HTML5 Parsing Specification**.
   - numeric reference Windows-1252 remap table is now applied for compatibility code points (`&#128;` -> `\u20AC`).
   - tokenizer now uses cached platform entity decode fallback for broader named-reference coverage (e.g. `&larr;`, `&sum;`) beyond the local hot-path map.
   - invalid numeric-reference starts now preserve literal consumed prefixes instead of dropping markers (`&#;` and `&#x;` remain literal in both text and attribute contexts).
-  - legacy prefix behavior is preserved for compatibility (`&notanentity;` -> `Ã‚Â¬anentity;`).
+  - legacy prefix behavior is preserved for compatibility (`&notanentity;` -> `Â¬anentity;`).
 - **Tokenizer Safety Limits (2026-02-26)**:
   - `HtmlTokenizer` now exposes `MaxTokenEmissions` (default `2,000,000`) and force-emits EOF when the cap is reached to prevent pathological unbounded token streams.
   - `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
@@ -153,9 +153,9 @@ Based strictly on the **HTML5 Parsing Specification**.
 
 This namespace defines the _computed_ values, not the parser (which is in `FenEngine`).
 
-- **CssComputed**: A massive struct/class holding the final resolved values for a node.
-- **CssLength**: Struct representing values like `10px`, `50%`, `auto`.
-- **CssColor**: Internal representation of RGBA colors.
+- **CssComputed**: A massive class holding the final resolved values for a node (consolidates legacy CssColor/CssLength).
+- **Thickness**: Struct for margin/padding (Math/Thickness.cs).
+- **CssCornerRadius**: Struct for border radius.
 
 ---
 
@@ -208,14 +208,14 @@ Base for all components dispatching events.
 - **Lines 24-48**: **`AddEventListener`**: Thread-safe listener registration.
 - **Lines 73-89**: **`DispatchEvent`**: Implements Capture/Target/Bubble phases.
 
-#### `Range.cs` (Lines 1-806)
+#### `Range.cs` (Lines 1-805)
 
 Represents a continuous fragment of the document.
 
 - **Lines 63-156**: **Boundary Management**: `SetStart`, `SetEnd`.
 - **Lines 244-261**: **`DeleteContents`**: Complex logic to remove nodes partially contained in the range.
 
-#### `MutationObserver.cs` (Lines 1-507)
+#### `MutationObserver.cs` (Lines 1-506)
 
 Asynchronous DOM mutation observation.
 
@@ -223,7 +223,7 @@ Asynchronous DOM mutation observation.
 - **Lines 137-160**: **`EnqueueRecord`**: Thread-safe queueing of changes.
 - **Lines 436-483**: **Filter Logic**: `GetObserversForNotification`.
 
-#### `NamedNodeMap.cs` (Lines 1-344)
+#### `NamedNodeMap.cs` (Lines 1-343)
 
 Optimized attribute map storage for Elements.
 
@@ -233,7 +233,7 @@ Represents a DOM attribute node (Legacy DOM Level 1).
 
 - Wraps the attribute data stored in `Element`.
 
-#### `CharacterData.cs` (Lines 1-350)
+#### `CharacterData.cs` (Lines 1-307)
 
 Abstract base for `Text`, `Comment`, and `ProcessingInstruction`.
 
@@ -243,14 +243,14 @@ Abstract base for `Text`, `Comment`, and `ProcessingInstruction`.
 
 Represents HTML comments (`<!-- ... -->`).
 
-#### `DOMTokenList.cs` (Lines 1-301)
+#### `DOMTokenList.cs` (Lines 1-300)
 
 Efficient `class` attribute parsing (Space-separated tokens).
 
 - **Lines 40-80**: **`Add`**: Token insertion.
 - **Lines 120-150**: **`Toggle`**: Conditional addition/removal.
 
-#### `DocumentFragment.cs` (Lines 1-90)
+#### `DocumentFragment.cs` (Lines 1-83)
 
 Lightweight container for nodes (not part of the main tree).
 
@@ -258,7 +258,7 @@ Lightweight container for nodes (not part of the main tree).
 
 Represents the `<!DOCTYPE html>` node.
 
-#### `DomException.cs` (Lines 1-150)
+#### `DomException.cs` (Lines 1-149)
 
 Standard DOM error codes (`HierarchyRequestError`, `InvalidCharacterError`).
 
@@ -287,20 +287,20 @@ Represents text content.
 
 #### Core Types (`FenBrowser.Core.Css`)
 
-- **`CssColor.cs`**: Helper struct for RGBA color parsing and storage.
-- **`CssComputed.cs`**: The large struct holding resolved CSS properties for a node.
-- **`CssLength.cs`**: Struct for numeric values with units (px, em, %).
-- **`CssPropertyNames.cs`**: Enum/Constants for known CSS properties.
+- **CssComputed.cs**: The large class holding resolved CSS properties for a node. Consolidates legacy CssColor, CssLength, and CssPropertyNames.
+- **CssCornerRadius.cs**: Struct for border-radius and CssLength values.
+
+
 
 #### Helpers & Security (`FenBrowser.Core.Dom.V2`)
 
 - **`Mixins.cs`**: Shared logic for `IParentNode` and `IChildNode`.
 - **`NodeFlags.cs`**: Bitflags for optimizing node state checks (IsConnected, HasChildren).
 - **`TreeScope.cs`**: Manages ID lookup boundaries (Document vs ShadowRoot).
-- **`Security/Origin.cs`**: Value object for scheme/host/port tuples.
-- **`Security/SecurityGuard.cs`**: Checks Cross-Origin access rules.
+- **`ProcessIsolation/RendererIsolationPolicies.cs`**: Handles origin-based assignment keys (replaces legacy Origin.cs).
+- **`ProcessIsolation/RendererIsolationPolicies.cs`**: Isolation policy checks (replaces legacy SecurityGuard.cs).
 - **`Security/AttributeSanitizer.cs`**: Validates attribute names/values; inline `on*` handler values are preserved by default for browser compatibility, with opt-in strict blocking via `BlockInlineEventHandlersInStrictMode`.
-- **`Selectors/CssSelector.cs`**: AST for parsed CSS selectors.
+- **`FenBrowser.FenEngine/Rendering/Css/CssModel.cs`**: Internal CSS selector representation.
 - **`Selectors/SelectorParser.cs`**: recursive descent parser for CSS selectors.
 - **`Selectors/SimpleSelector.cs`**: selector primitive implementations (`:not/:is/:has/:nth-*`, attribute/type/id/class matching).
 - **`HtmlToken.cs`**: Data class for the Tokenizer output.
@@ -347,7 +347,7 @@ The central data fetcher.
 - **Lines 708-855**: **`FetchImageAsync`**: Specialized bitmap pipeline.
 - **Lines 919-961**: **`SendAsync`**: The low-level `HttpClient` wrapper.
 
-#### `NetworkClient.cs` (Lines 1-308)
+#### `NetworkClient.cs` (Lines 1-307)
 
 Optimized HTTP client wrapper.
 
@@ -361,7 +361,7 @@ Handles `<link rel="preload">` and `prefetch`.
 - **Lines 104-146**: **`PrefetchFromDomAsync`**: Scans DOM for hint tags.
 - **Lines 280-340**: **`ExecutePrefetchAsync`**: Background low-priority fetcher.
 
-#### `MimeSniffer.cs` (Lines 1-184)
+#### `MimeSniffer.cs` (Lines 1-183)
 
 Determines content type when headers are missing/wrong.
 
@@ -369,7 +369,7 @@ Determines content type when headers are missing/wrong.
 
 ### 6.4 Infrastructure (`FenBrowser.Core`)
 
-#### `CacheManager.cs` (Lines 1-402)
+#### `CacheManager.cs` (Lines 1-401)
 
 Memory management.
 
