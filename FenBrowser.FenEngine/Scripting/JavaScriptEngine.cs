@@ -34,6 +34,7 @@ namespace FenBrowser.FenEngine.Scripting
     /// </summary>
     public sealed partial class JavaScriptEngine : FenBrowser.FenEngine.Core.IDomBridge
     {
+        public string SessionStoragePartitionId => _sessionStoragePartitionId;
         public Func<Uri, Task<string>> FetchOverride { get; set; }
         public Func<Uri, string, bool> SubresourceAllowed { get; set; }
         public Func<string, bool> NonceAllowed { get; set; }

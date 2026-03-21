@@ -6141,8 +6141,11 @@ namespace FenBrowser.FenEngine.Core
             var localStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateLocalStorage(GetCurrentOrigin);
             SetGlobal("localStorage", FenValue.FromObject(localStorage));
 
-            // sessionStorage - Partitioned per runtime instance and origin
-            var sessionStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateSessionStorage(GetCurrentOrigin);
+            // sessionStorage - Partitioned by tab/session identity and origin, so reloads in the
+            // same browsing context keep state while different tabs remain isolated.
+            var sessionStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateSessionStorage(
+                GetCurrentOrigin,
+                () => _domBridge?.SessionStoragePartitionId);
             SetGlobal("sessionStorage", FenValue.FromObject(sessionStorage));
 
             // window object - Comprehensive with all standard properties

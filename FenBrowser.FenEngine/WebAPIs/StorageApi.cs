@@ -263,17 +263,17 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
 
         /// <summary>
-        /// Creates a transient, in-memory storage (sessionStorage).
-        /// Note: This simple implementation isolates per instance, which is correct for tabs.
-        /// (Reload persistence requires tying this to a session ID, which we skip for now).
+        /// Creates a transient, tab-scoped storage (sessionStorage).
+        /// When a stable partition id is supplied, storage persists across reloads within the
+        /// same tab/session while remaining isolated from other tabs.
         /// </summary>
-        public static FenObject CreateSessionStorage(Func<string> getOrigin = null)
+        public static FenObject CreateSessionStorage(Func<string> getOrigin = null, Func<string> getPartitionId = null)
         {
-            // Partition by storage instance to avoid cross-tab bleed, then by origin.
-            var partitionId = Guid.NewGuid().ToString("N");
+            // Fall back to per-instance isolation when no stable tab/session id is provided.
+            var fallbackPartitionId = Guid.NewGuid().ToString("N");
             var originProvider = getOrigin ?? (() => "session");
             return new DomStorage("sessionStorage",
-                () => BuildSessionScope(partitionId, originProvider()),
+                () => BuildSessionScope(getPartitionId?.Invoke() ?? fallbackPartitionId, originProvider()),
                 (originKey) => _sessionStorage.GetOrAdd(originKey, _ => new ConcurrentDictionary<string, string>()),
                 null);
         }
