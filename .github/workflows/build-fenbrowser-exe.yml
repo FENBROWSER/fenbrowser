@@ -28,6 +28,9 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/verify-verification-guards.ps1
 
+      - name: Build WebIdlGen prerequisite
+        run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
+
       - name: Restore FenBrowser.Host (win-x64)
         run: dotnet restore FenBrowser.Host/FenBrowser.Host.csproj -r win-x64
 
