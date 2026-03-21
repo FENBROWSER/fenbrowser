@@ -7,6 +7,7 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public interface IDomBridge
     {
+        string SessionStoragePartitionId { get; }
         FenValue GetElementById(string id);
         FenValue QuerySelector(string selector);
         FenValue GetElementsByTagName(string tagName);

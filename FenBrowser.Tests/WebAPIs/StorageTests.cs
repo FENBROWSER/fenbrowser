@@ -9,6 +9,26 @@ namespace FenBrowser.Tests.WebAPIs
 {
     public class StorageTests : IDisposable
     {
+        private sealed class StubDomBridge : IDomBridge
+        {
+            public StubDomBridge(string sessionStoragePartitionId)
+            {
+                SessionStoragePartitionId = sessionStoragePartitionId;
+            }
+
+            public string SessionStoragePartitionId { get; }
+            public FenValue GetElementById(string id) => FenValue.Undefined;
+            public FenValue QuerySelector(string selector) => FenValue.Undefined;
+            public FenValue GetElementsByTagName(string tagName) => FenValue.Undefined;
+            public FenValue GetElementsByClassName(string classNames) => FenValue.Undefined;
+            public void AddEventListener(string elementId, string eventName, FenValue callback) { }
+            public FenValue CreateElement(string tagName) => FenValue.Undefined;
+            public FenValue CreateElementNS(string namespaceUri, string qualifiedName) => FenValue.Undefined;
+            public FenValue CreateTextNode(string text) => FenValue.Undefined;
+            public void AppendChild(FenValue parent, FenValue child) { }
+            public void SetAttribute(FenValue element, string name, string value) { }
+        }
+
         private readonly string _testPath;
 
         public StorageTests()
@@ -124,6 +144,52 @@ namespace FenBrowser.Tests.WebAPIs
             }, null);
 
             Assert.True(result.IsNull);
+        }
+
+        [Fact]
+        public void SessionStorage_ShouldPersistAcrossStorageRecreation_WithSamePartitionAndOrigin()
+        {
+            const string origin = "http://session.example";
+            const string partitionId = "tab-session-1";
+
+            var storage1 = StorageApi.CreateSessionStorage(() => origin, () => partitionId);
+            storage1.Get("setItem").AsFunction().Invoke(new FenValue[]
+            {
+                FenValue.FromString("sessionData"),
+                FenValue.FromString("123")
+            }, null);
+
+            var storage2 = StorageApi.CreateSessionStorage(() => origin, () => partitionId);
+            var result = storage2.Get("getItem").AsFunction().Invoke(new FenValue[]
+            {
+                FenValue.FromString("sessionData")
+            }, null);
+
+            Assert.Equal("123", result.ToString());
+        }
+
+        [Fact]
+        public void SessionStorage_ShouldPersistAcrossFenRuntimeReload_WithStableTabPartition()
+        {
+            var origin = new Uri("https://reload.example/app");
+            var bridge = new StubDomBridge("tab-reload-1");
+            var sessionScope = StorageApi.BuildSessionScope(bridge.SessionStoragePartitionId, "https://reload.example:443");
+
+            try
+            {
+                var runtime1 = new FenRuntime(domBridge: bridge) { BaseUri = origin };
+                runtime1.ExecuteSimple("sessionStorage.setItem('persisted', 'value');", origin.ToString());
+
+                var runtime2 = new FenRuntime(domBridge: bridge) { BaseUri = origin };
+                runtime2.ExecuteSimple("var restored = sessionStorage.getItem('persisted');", origin.ToString());
+
+                var restored = (FenValue)runtime2.GetGlobal("restored");
+                Assert.Equal("value", restored.ToString());
+            }
+            finally
+            {
+                StorageApi.ClearSessionStorage(sessionScope);
+            }
         }
 
         [Fact]
