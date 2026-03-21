@@ -1,14 +1,28 @@
 using System;
-using Xunit;
+using System.Collections.Generic;
+using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
-using System.Collections.Generic;
+using Xunit;
 
 namespace FenBrowser.Tests.WebAPIs
 {
     public class MockHistoryBridge : IHistoryBridge
     {
+        private sealed class Entry
+        {
+            public Uri Url { get; set; }
+            public object State { get; set; }
+            public string Title { get; set; }
+        }
+
+        private readonly List<Entry> _entries = new();
+        private int _index = -1;
+        private readonly Uri _initialUrl;
+
         public bool PushStateCalled { get; private set; }
         public bool ReplaceStateCalled { get; private set; }
         public bool GoCalled { get; private set; }
@@ -18,12 +32,18 @@ namespace FenBrowser.Tests.WebAPIs
         public string LastUrl { get; private set; }
         public int LastDelta { get; private set; }
         
-        public int MockLength { get; set; } = 1;
-        public object MockState { get; set; } = null;
+        public int Length => _entries.Count;
 
-        public int Length => MockLength;
+        public object State => _index >= 0 && _index < _entries.Count ? _entries[_index].State : null;
 
-        public object State => MockState;
+        public Uri CurrentUrl => _index >= 0 && _index < _entries.Count ? _entries[_index].Url : _initialUrl;
+
+        public MockHistoryBridge(Uri initialUrl)
+        {
+            _initialUrl = initialUrl;
+            _entries.Add(new Entry { Url = initialUrl, State = null, Title = string.Empty });
+            _index = 0;
+        }
 
         public void PushState(object state, string title, string url)
         {
@@ -31,6 +51,14 @@ namespace FenBrowser.Tests.WebAPIs
             LastState = state;
             LastTitle = title;
             LastUrl = url;
+            var nextUrl = string.IsNullOrWhiteSpace(url) ? CurrentUrl : new Uri(CurrentUrl, url);
+            if (_index < _entries.Count - 1)
+            {
+                _entries.RemoveRange(_index + 1, _entries.Count - (_index + 1));
+            }
+
+            _entries.Add(new Entry { Url = nextUrl, State = state, Title = title ?? string.Empty });
+            _index = _entries.Count - 1;
         }
 
         public void ReplaceState(object state, string title, string url)
@@ -39,13 +67,28 @@ namespace FenBrowser.Tests.WebAPIs
             LastState = state;
             LastTitle = title;
             LastUrl = url;
-            MockState = state;
+            var nextUrl = string.IsNullOrWhiteSpace(url) ? CurrentUrl : new Uri(CurrentUrl, url);
+            if (_index < 0)
+            {
+                _entries.Add(new Entry { Url = nextUrl, State = state, Title = title ?? string.Empty });
+                _index = _entries.Count - 1;
+                return;
+            }
+
+            _entries[_index].Url = nextUrl;
+            _entries[_index].State = state;
+            _entries[_index].Title = title ?? _entries[_index].Title;
         }
 
         public void Go(int delta)
         {
             GoCalled = true;
             LastDelta = delta;
+            var target = _index + delta;
+            if (target >= 0 && target < _entries.Count)
+            {
+                _index = target;
+            }
         }
     }
 
@@ -57,15 +100,19 @@ namespace FenBrowser.Tests.WebAPIs
 
         public HistoryApiTests()
         {
+            EngineContext.Reset();
+            EventLoopCoordinator.ResetInstance();
+
             // Setup permissions
             var perm = new PermissionManager(JsPermissions.StandardWeb);
             _context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
             
             // Setup bridge
-            _bridge = new MockHistoryBridge();
+            _bridge = new MockHistoryBridge(new Uri("https://example.test/start"));
             
             // Setup runtime
             _runtime = new FenRuntime(_context, null, null, _bridge);
+            _runtime.SetDom(Document.CreateHtmlDocument(), new Uri("https://example.test/start"));
         }
 
         [Fact]
@@ -84,9 +131,12 @@ namespace FenBrowser.Tests.WebAPIs
         {
             var history = _context.Environment.Get("history").AsObject();
             var pushState = history.Get("pushState").AsFunction();
+            var location = _context.Environment.Get("location").AsObject();
             
             var stateObj = new FenObject();
-            stateObj.Set("foo", FenValue.FromString("bar"));
+            var nested = new FenObject();
+            nested.Set("value", FenValue.FromNumber(5));
+            stateObj.Set("nested", FenValue.FromObject(nested));
             
             // pushState(state, title, url)
             pushState.Invoke(new FenValue[] { 
@@ -98,14 +148,15 @@ namespace FenBrowser.Tests.WebAPIs
             Assert.True(_bridge.PushStateCalled);
             Assert.Equal("New Page", _bridge.LastTitle);
             Assert.Equal("/new-url", _bridge.LastUrl);
-            
-            // Verify state object conversion (native object) - current mock just stores what was passed?
-            // Wait, FenRuntime passes the FenValue arg converted to string/object?
-            // FenRuntime: if (args[0].IsObject) stateObj = args[0].AsObject();
-            // So bridge receives FenObject (implementation of IObject).
             Assert.NotNull(_bridge.LastState);
-            Assert.True(_bridge.LastState is FenObject); 
-            Assert.Equal("bar", ((FenObject)_bridge.LastState).Get("foo").ToString());
+            Assert.True(_bridge.LastState is FenValue);
+
+            nested.Set("value", FenValue.FromNumber(9));
+            var clonedState = history.Get("state").AsObject();
+            Assert.NotNull(clonedState);
+            Assert.Equal(5, clonedState.Get("nested").AsObject().Get("value").ToNumber());
+            Assert.Equal(2, history.Get("length").ToNumber());
+            Assert.Equal("https://example.test/new-url", location.Get("href").ToString());
         }
 
         [Fact]
@@ -113,26 +164,59 @@ namespace FenBrowser.Tests.WebAPIs
         {
             var history = _context.Environment.Get("history").AsObject();
             var replaceState = history.Get("replaceState").AsFunction();
+
+            history.Get("pushState").AsFunction().Invoke(new FenValue[] {
+                FenValue.FromString("old-state"),
+                FenValue.FromString("Old"),
+                FenValue.FromString("/before")
+            }, _context);
             
             replaceState.Invoke(new FenValue[] { 
                 FenValue.FromString("stateStr"), 
                 FenValue.FromString("Title"), 
+                FenValue.FromString("/after")
             }, _context);
             
             Assert.True(_bridge.ReplaceStateCalled);
-            Assert.Equal("stateStr", _bridge.LastState);
+            Assert.True(_bridge.LastState is FenValue);
+            Assert.Equal("stateStr", history.Get("state").ToString());
+            Assert.Equal(2, history.Get("length").ToNumber());
+            Assert.Equal("https://example.test/after", _context.Environment.Get("location").AsObject().Get("href").ToString());
         }
 
         [Fact]
         public void Back_ShouldCallGoMinusOne()
         {
-            var history = _context.Environment.Get("history").AsObject();
-            var back = history.Get("back").AsFunction();
-            
-            back.Invoke(new FenValue[] { }, _context);
-            
+            _runtime.ExecuteSimple(@"
+                window.__popCount = 0;
+                window.__popHref = '';
+                window.__popStateStep = -1;
+                window.addEventListener('popstate', function(e) {
+                    window.__popCount++;
+                    window.__popHref = location.href;
+                    window.__popStateStep = e.state.step;
+                });
+                history.pushState({ step: 1 }, '', '/one');
+                history.pushState({ step: 2 }, '', '/two');
+                history.back();
+            ");
+
             Assert.True(_bridge.GoCalled);
             Assert.Equal(-1, _bridge.LastDelta);
+
+            var window = _runtime.GetGlobal("window").AsObject();
+            Assert.Equal(0, window.Get("__popCount").ToNumber());
+
+            _runtime.NotifyPopState(_bridge.State);
+            Assert.Equal("https://example.test/one", _context.Environment.Get("location").AsObject().Get("href").ToString());
+            Assert.Equal(0, window.Get("__popCount").ToNumber());
+
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            Assert.Equal(1, window.Get("__popCount").ToNumber());
+            Assert.Equal("https://example.test/one", window.Get("__popHref").ToString());
+            Assert.Equal(1, window.Get("__popStateStep").ToNumber());
+            Assert.Equal(1, _context.Environment.Get("history").AsObject().Get("state").AsObject().Get("step").ToNumber());
         }
 
         [Fact]
@@ -162,29 +246,21 @@ namespace FenBrowser.Tests.WebAPIs
         [Fact]
         public void Length_ShouldReflectBridge()
         {
-            _bridge.MockLength = 5;
             var history = _context.Environment.Get("history").AsObject();
-            // Length is set during pushState call or manually?
-            // In FenRuntime, length is updated during pushState: history.Set("length", ...).
-            // But verify if it's a getter?
-            // Looking at FenRuntime.cs: "history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));" is called inside pushState callback.
-            // AND "history.Set("state", args[0]);"
-            // Wait, does history object have a greedy 'length' property or a dynamic getter?
-            // FenRuntime initializes `history` as `new FenObject()`.
-            // FenObject uses standard properties by default unless defined as getter/setter.
-            // FenRuntime DOES NOT seem to define a getter for `length` in InitializeBuiltins lines I saw.
-            // It sets `window.Set("history", ...)`
-            // Wait, implementation of `FenRuntime` might just set properties on `history` object initially and update them on writes.
-            // If `length` is property, checking it immediately after init might show 1 (default) or whatever `_historyBridge.Length` was at init?
-            // Let's re-read FenRuntime lines 600-650 in my memory or task view.
-            // Line 601: `history.Set("length", FenValue.FromNumber(_historyBridge?.Length ?? 1));` inside `pushState`.
-            
-            // Does it set it initially?
-            // I need to check if `FenRuntime` sets `length` initially on history object.
-            // I will assume it does or tests will fail. Standard requires it.
-            // If not, I might need to fix that too.
-            // The snippets showed `history.Set("pushState", ...)` etc. but didn't explicitly show initialization of `length` property outside of methods.
-            // But I will write the test to check existing property if present.
+            Assert.Equal(1, history.Get("length").ToNumber());
+
+            history.Get("pushState").AsFunction().Invoke(new FenValue[] {
+                FenValue.FromString("state-1"),
+                FenValue.FromString("First"),
+                FenValue.FromString("/one")
+            }, _context);
+            history.Get("pushState").AsFunction().Invoke(new FenValue[] {
+                FenValue.FromString("state-2"),
+                FenValue.FromString("Second"),
+                FenValue.FromString("/two")
+            }, _context);
+
+            Assert.Equal(3, history.Get("length").ToNumber());
         }
     }
 }
