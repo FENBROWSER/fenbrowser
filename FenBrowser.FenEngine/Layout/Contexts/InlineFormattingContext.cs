@@ -28,7 +28,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             public float Width = 0;
             public float Height = 0;
             public float Baseline = 0;
+            public float Ascent = 0;
+            public float Descent = 0;
             public List<LayoutBox> Items = new List<LayoutBox>();
+
+            public void IncludeMetrics(float ascent, float descent)
+            {
+                Ascent = Math.Max(Ascent, Math.Max(0f, ascent));
+                Descent = Math.Max(Descent, Math.Max(0f, descent));
+                Baseline = Ascent;
+                Height = Math.Max(Height, Ascent + Descent);
+            }
         }
 
         // Track text lines for each original TextLayoutBox
@@ -61,11 +71,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            bool widthUnconstrained = float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width);
+            bool hasExplicitWidth =
+                box.ComputedStyle?.Width.HasValue == true ||
+                box.ComputedStyle?.WidthPercent.HasValue == true ||
+                !string.IsNullOrEmpty(box.ComputedStyle?.WidthExpression);
+            bool isShrinkToFitProbe = widthUnconstrained && !hasExplicitWidth;
+
             ResolveContextWidth(box, state);
 
-            float contentLimit = box.Geometry.ContentBox.Width;
+            float contentLimit = isShrinkToFitProbe
+                ? float.PositiveInfinity
+                : box.Geometry.ContentBox.Width;
             // Robustness: Handle unconstrained width (shrink-to-fit root)
-            if (float.IsInfinity(contentLimit)) contentLimit = state.ViewportWidth;
+            if (float.IsInfinity(contentLimit)) contentLimit = isShrinkToFitProbe ? 1000000f : state.ViewportWidth;
             if (float.IsNaN(contentLimit)) contentLimit = 800f; // Safe fallback
 
             float startX = (float)box.Geometry.Padding.Left + (float)box.Geometry.Border.Left;
@@ -123,6 +142,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     var metrics = MeasureString("Hg", textBox.ComputedStyle);
                     float lineHeight = metrics.Height;
                     float baseline = lineHeight * 0.8f; // Approximate baseline
+                    float descent = Math.Max(0f, lineHeight - baseline);
 
                     // WORD FLOW - track segments for this textBox
                     int startIdx = 0;
@@ -164,7 +184,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         }
 
                         currentLine.Width = curX + wordWidth;
-                        currentLine.Height = Math.Max(currentLine.Height, lineHeight);
+                        currentLine.IncludeMetrics(baseline, descent);
                         curX += wordWidth;
                         startIdx = endIdx;
                     }
@@ -216,7 +236,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     currentLine.Items.Add(child);
                     currentLine.Width = curX + childSize.Width;
-                    currentLine.Height = Math.Max(currentLine.Height, childSize.Height);
+                    currentLine.IncludeMetrics(childSize.Height, 0f);
                     curX += childSize.Width;
                     previousEndedWithSpace = false;
                 }
@@ -231,8 +251,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             foreach (var line in lines)
             {
                 float xOffset = 0;
-                if (textAlign == SKTextAlign.Center) xOffset = (contentLimit - line.Width) / 2f;
-                else if (textAlign == SKTextAlign.Right) xOffset = (contentLimit - line.Width);
+                if (!isShrinkToFitProbe)
+                {
+                    if (textAlign == SKTextAlign.Center) xOffset = (contentLimit - line.Width) / 2f;
+                    else if (textAlign == SKTextAlign.Right) xOffset = (contentLimit - line.Width);
+                }
 
                 if (xOffset < 0f)
                 {
@@ -269,12 +292,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 foreach (var seg in segments)
                 {
+                    var line = lines[seg.LineIndex];
                     float lineY = lineYPositions[seg.LineIndex];
                     float lineXOffset = lineXOffsets[seg.LineIndex];
 
                     // Calculate position relative to parent's content area
                     float segX = seg.X + lineXOffset;
-                    float segY = lineY;
+                    float segY = lineY + ComputeVerticalAlignOffset(line, seg.Height, seg.Baseline, textBox.ComputedStyle?.VerticalAlign);
 
                     minX = Math.Min(minX, segX);
                     minY = Math.Min(minY, segY);
@@ -296,7 +320,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 // Position the TextLayoutBox relative to parent's content area
                 // (children are positioned relative to parent content box, not border box)
-                LayoutBoxOps.SetPosition(textBox, minX, minY);
+                LayoutBoxOps.PositionSubtree(textBox, minX, minY, state);
 
                 // Now populate Lines with origins relative to the TextLayoutBox's ContentBox
                 foreach (var seg in segments)
@@ -329,10 +353,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 foreach (var item in line.Items)
                 {
+                    var placementState = state;
+
                     // Item's ContentBox.Left was set relative to start of line during measurement
                     // Apply text-align offset and position relative to parent's content area
                     float itemX = xOffset + item.Geometry.ContentBox.Left;
-                    float itemY = lineY;
 
                     // Re-layout atomic inlines with final available size so descendants and
                     // intrinsic controls resolve to stable final geometry before placement.
@@ -360,10 +385,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         itemState.AvailableSize = new SKSize(itemW, itemH);
                         itemState.ContainingBlockWidth = itemW;
                         itemState.ContainingBlockHeight = itemH;
+                        ResetInlineProbeOrigin(item);
                         FormattingContext.Resolve(item).Layout(item, itemState);
+                        placementState = itemState;
                     }
 
-                    LayoutBoxOps.SetPosition(item, itemX, itemY);
+                    float itemHeight = item.Geometry.MarginBox.Height;
+                    if (!float.IsFinite(itemHeight) || itemHeight <= 0f)
+                    {
+                        itemHeight = Math.Max(0f, item.Geometry.BorderBox.Height);
+                    }
+                    if (!float.IsFinite(itemHeight) || itemHeight <= 0f)
+                    {
+                        itemHeight = Math.Max(0f, item.Geometry.ContentBox.Height);
+                    }
+                    if (!float.IsFinite(itemHeight) || itemHeight <= 0f)
+                    {
+                        itemHeight = line.Height;
+                    }
+
+                    float itemBaseline = itemHeight;
+                    float itemY = lineY + ComputeVerticalAlignOffset(line, itemHeight, itemBaseline, item.ComputedStyle?.VerticalAlign);
+
+                    LayoutBoxOps.PositionSubtree(item, itemX, itemY, placementState);
                 }
 
                 // If atomic inline descendants changed width during final re-layout,
@@ -374,7 +418,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float itemLeft = item.Geometry.MarginBox.Left;
                     if (float.IsFinite(runningRight) && itemLeft < runningRight)
                     {
-                        LayoutBoxOps.SetPosition(item, runningRight, item.Geometry.MarginBox.Top);
+                        LayoutBoxOps.PositionSubtree(item, runningRight, item.Geometry.MarginBox.Top, state);
                     }
 
                     if (float.IsFinite(item.Geometry.MarginBox.Right))
@@ -414,6 +458,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (box.ComputedStyle != null && box.ComputedStyle.Height.HasValue)
                 finalContentHeight = (float)box.ComputedStyle.Height.Value;
 
+            ApplyMinMaxConstraints(box.ComputedStyle, state, ref finalContentWidth, ref finalContentHeight);
+
             box.Geometry.ContentBox = new SKRect(
                 box.Geometry.ContentBox.Left,
                 box.Geometry.ContentBox.Top,
@@ -433,7 +479,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
             if (tag != "IMG" && tag != "SVG" && tag != "CANVAS" && tag != "IFRAME" && tag != "OBJECT" && tag != "VIDEO" &&
-                tag != "INPUT" && tag != "TEXTAREA" && tag != "BUTTON" && tag != "SELECT")
+                tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT")
             {
                 return false;
             }
@@ -464,6 +510,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private SKSize MeasureInlineChild(LayoutBox child, LayoutState state)
         {
+            if (TryMeasureAtomicInlineReplacedChild(child, state, out var replacedSize))
+            {
+                return replacedSize;
+            }
+
             if (child is TextLayoutBox textBox)
             {
                 return MeasureString(textBox.TextContent, textBox.ComputedStyle);
@@ -493,6 +544,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             ? state.AvailableSize.Width
                             : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
                         probeState.ContainingBlockHeight = probeHeight;
+                        ResetInlineProbeOrigin(inlineBox);
                         FormattingContext.Resolve(inlineBox).Layout(inlineBox, probeState);
 
                         float probedWidth = inlineBox.Geometry.MarginBox.Width;
@@ -550,6 +602,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     ? state.AvailableSize.Width
                     : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
                 probeState.ContainingBlockHeight = probeHeight;
+                ResetInlineProbeOrigin(child);
                 FormattingContext.Resolve(child).Layout(child, probeState);
 
                 float probedWidth = child.Geometry.MarginBox.Width;
@@ -595,6 +648,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return new SKSize(10,10); // Minimal fallback for unknown items
         }
 
+        private bool TryMeasureAtomicInlineReplacedChild(LayoutBox child, LayoutState state, out SKSize size)
+        {
+            size = SKSize.Empty;
+
+            if (child?.SourceNode is not Element element)
+            {
+                return false;
+            }
+
+            string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+            if (!ReplacedElementSizing.IsReplacedElementTag(tag))
+            {
+                return false;
+            }
+
+            if (!TryGetIntrinsicSize(child, out var intrinsic))
+            {
+                return false;
+            }
+
+            float width = intrinsic.Width;
+            float height = intrinsic.Height;
+            ApplyMinMaxConstraints(child.ComputedStyle, state, ref width, ref height);
+
+            size = AddNonContentSpacing(new SKSize(Math.Max(0f, width), Math.Max(0f, height)), child.ComputedStyle);
+            return size.Width > 0f && size.Height >= 0f;
+        }
+
         private static bool ShouldRelayoutAtomicInline(LayoutBox item)
         {
             if (item == null)
@@ -625,10 +706,93 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return false;
         }
 
+        private static void ResetInlineProbeOrigin(LayoutBox box)
+        {
+            LayoutBoxOps.ResetSubtreeToOrigin(box);
+        }
+
         private static string CollapseWhitespace(string text)
         {
             if (string.IsNullOrEmpty(text)) return string.Empty;
             return CollapsibleWhitespace.Replace(text, " ");
+        }
+
+        private static float ComputeVerticalAlignOffset(LineBox line, float itemHeight, float itemAscent, string verticalAlign)
+        {
+            float safeHeight = float.IsFinite(itemHeight) && itemHeight > 0f ? itemHeight : 0f;
+            float safeAscent = float.IsFinite(itemAscent) && itemAscent >= 0f ? itemAscent : safeHeight;
+            float safeDescent = Math.Max(0f, safeHeight - safeAscent);
+            float lineAscent = Math.Max(0f, line?.Ascent ?? 0f);
+            float lineDescent = Math.Max(0f, line?.Descent ?? 0f);
+            float baseOffset = lineAscent - safeAscent;
+
+            if (string.IsNullOrWhiteSpace(verticalAlign))
+            {
+                return baseOffset;
+            }
+
+            float verticalOffset = 0f;
+            string value = verticalAlign.Trim().ToLowerInvariant();
+            switch (value)
+            {
+                case "sub":
+                    verticalOffset = safeHeight * 0.2f;
+                    break;
+                case "super":
+                    verticalOffset = -safeHeight * 0.3f;
+                    break;
+                case "middle":
+                    verticalOffset = ((lineAscent + lineDescent - safeHeight) / 2f) - baseOffset;
+                    break;
+                case "top":
+                case "text-top":
+                    verticalOffset = -(lineAscent - safeAscent);
+                    break;
+                case "bottom":
+                case "text-bottom":
+                    verticalOffset = lineDescent - safeDescent;
+                    break;
+                default:
+                    if (TryParseVerticalAlignOffset(value, safeHeight, lineAscent + lineDescent, out var parsedOffset))
+                    {
+                        verticalOffset = parsedOffset;
+                    }
+                    break;
+            }
+
+            return baseOffset + verticalOffset;
+        }
+
+        private static bool TryParseVerticalAlignOffset(string value, float itemHeight, float lineHeight, out float offset)
+        {
+            offset = 0f;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            if (value.EndsWith("px", StringComparison.OrdinalIgnoreCase) &&
+                float.TryParse(value[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var pxValue))
+            {
+                offset = -pxValue;
+                return true;
+            }
+
+            if (value.EndsWith("em", StringComparison.OrdinalIgnoreCase) &&
+                float.TryParse(value[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var emValue))
+            {
+                offset = -(emValue * itemHeight);
+                return true;
+            }
+
+            if (value.EndsWith("%", StringComparison.OrdinalIgnoreCase) &&
+                float.TryParse(value[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pctValue))
+            {
+                offset = -((pctValue / 100f) * lineHeight);
+                return true;
+            }
+
+            return false;
         }
 
         private static SKSize AddNonContentSpacing(SKSize content, CssComputed style)
@@ -918,6 +1082,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
             {
                 finalW = (float)box.ComputedStyle.Width.Value;
+            }
+            else if (box.ComputedStyle != null && box.ComputedStyle.WidthPercent.HasValue)
+            {
+                float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+                if (cbWidth > 0f)
+                {
+                    finalW = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
+                }
+            }
+            else if (box.ComputedStyle != null && !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression))
+            {
+                float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+                finalW = LayoutHelper.EvaluateCssExpression(
+                    box.ComputedStyle.WidthExpression,
+                    cbWidth,
+                    state.ViewportWidth,
+                    state.ViewportHeight);
             }
 
             float left = box.Geometry.ContentBox.Left;

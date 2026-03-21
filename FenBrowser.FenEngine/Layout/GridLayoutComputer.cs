@@ -584,7 +584,10 @@ namespace FenBrowser.FenEngine.Layout
             
             // Measure rows
             MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
-            ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
+            if (HasDefiniteBlockSize(style, availableSize.Height))
+            {
+                ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
+            }
 
             // Calculate total dimensions
             float totalWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
@@ -691,7 +694,10 @@ namespace FenBrowser.FenEngine.Layout
 
             // Resolve Track Sizes
             ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
-            ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);
+            if (HasDefiniteBlockSize(style, bounds.Height))
+            {
+                ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);
+            }
 
             // Compute effective gaps for justify/align content
             float effectiveColumnGap = columnGap;
@@ -840,6 +846,10 @@ namespace FenBrowser.FenEngine.Layout
         private static void ResolveFlexibleTracks(List<GridTrack> tracks, float availableSpace, float gap)
         {
             if (tracks.Count == 0) return;
+            if (float.IsNaN(availableSpace) || float.IsInfinity(availableSpace) || availableSpace <= 0)
+            {
+                return;
+            }
 
             // Calculate used space by FIXED tracks (non-flex)
             float usedSpace = 0;
@@ -979,7 +989,7 @@ namespace FenBrowser.FenEngine.Layout
                 bool isMinContent = t.MinLimit.Type == GridUnitType.MinContent || t.MinLimit.Type == GridUnitType.MaxContent || t.MinLimit.Type == GridUnitType.FitContent;
                 bool isMaxContent = t.MaxLimit.Type == GridUnitType.MinContent || t.MaxLimit.Type == GridUnitType.MaxContent || t.MaxLimit.Type == GridUnitType.FitContent;
                 
-                if (t.IsAuto || isMinContent || isMaxContent)
+                if (t.IsAuto || isMinContent || isMaxContent || t.MaxLimit.IsFlex)
                 {
                     hasContentTracks = true;
                     break;
@@ -1038,6 +1048,13 @@ namespace FenBrowser.FenEngine.Layout
 
         private static void UpdateTrackSizes(GridTrack track, float minSize, float maxSize)
         {
+            if (track.MaxLimit.IsFlex)
+            {
+                track.BaseSize = Math.Max(track.BaseSize, minSize);
+                track.GrowthLimit = Math.Max(track.GrowthLimit, maxSize);
+                return;
+            }
+
             if (track.MinLimit.Type == GridUnitType.MinContent || track.MinLimit.Type == GridUnitType.Auto)
                 track.BaseSize = Math.Max(track.BaseSize, minSize);
             else if (track.MinLimit.Type == GridUnitType.MaxContent)
@@ -1054,7 +1071,7 @@ namespace FenBrowser.FenEngine.Layout
             if (extra <= 0) return;
 
             // Simple distribution: evenly among content-sized tracks
-            var growable = tracks.Where(t => t.IsAuto || t.MinLimit.Type == GridUnitType.MinContent || t.MinLimit.Type == GridUnitType.MaxContent).ToList();
+            var growable = tracks.Where(t => t.IsAuto || t.MinLimit.Type == GridUnitType.MinContent || t.MinLimit.Type == GridUnitType.MaxContent || t.MaxLimit.IsFlex).ToList();
             if (growable.Count == 0) growable = tracks; // Fallback
 
             float share = extra / growable.Count;
@@ -1064,6 +1081,24 @@ namespace FenBrowser.FenEngine.Layout
                 else if (!float.IsInfinity(t.GrowthLimit)) t.GrowthLimit += share;
                 else t.BaseSize += share; // Growth limit infinite means base size is the constraint for now
             }
+        }
+
+        private static bool HasDefiniteBlockSize(CssComputed style, float availableHeight)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Height.HasValue)
+            {
+                return true;
+            }
+
+            return style.HeightPercent.HasValue &&
+                   !float.IsNaN(availableHeight) &&
+                   !float.IsInfinity(availableHeight) &&
+                   availableHeight > 0f;
         }
     }
 }

@@ -193,5 +193,69 @@ namespace FenBrowser.Tests.Layout
             // across auto rows. This keeps content contribution visible before stretch.
             Assert.Equal(275, boxes[items[1]].ContentBox.Top);
         }
+
+        [Fact]
+        public void FlexibleRows_UseIntrinsicContentWhenContainerHeightIsAuto()
+        {
+            var (container, items, styles) = CreateGrid("100px", "min-content 1fr min-content", 3);
+            styles[container].Width = 100;
+            styles[container].Height = null;
+
+            styles[items[0]].GridRowStart = "1";
+            styles[items[0]].GridColumnStart = "1";
+            styles[items[0]].Width = 100;
+            styles[items[0]].Height = 10;
+
+            styles[items[1]].GridRowStart = "2";
+            styles[items[1]].GridColumnStart = "1";
+            styles[items[1]].Width = 100;
+            styles[items[1]].Height = 200;
+
+            styles[items[2]].GridRowStart = "3";
+            styles[items[2]].GridColumnStart = "1";
+            styles[items[2]].Width = 100;
+            styles[items[2]].Height = 20;
+
+            LayoutMetrics MeasureChild(Node n, SKSize available, int d)
+            {
+                if (styles.TryGetValue(n, out var s))
+                {
+                    float w = (float)(s.Width ?? 0);
+                    float h = (float)(s.Height ?? 0);
+                    return new LayoutMetrics
+                    {
+                        MaxChildWidth = w,
+                        ContentHeight = h,
+                        MinContentWidth = w,
+                        MaxContentWidth = w
+                    };
+                }
+                return new LayoutMetrics();
+            }
+
+            var measured = GridLayoutComputer.Measure(container, new SKSize(100, 60), styles, 0, MeasureChild);
+            Assert.Equal(230, measured.ContentHeight);
+
+            var boxes = new Dictionary<Node, BoxModel>();
+            GridLayoutComputer.Arrange(
+                container,
+                new SKRect(0, 0, 100, measured.ContentHeight),
+                styles,
+                boxes,
+                0,
+                (node, rect, depth) =>
+                {
+                    if (node is Element el)
+                    {
+                        if (!boxes.ContainsKey(el)) boxes[el] = new BoxModel();
+                        boxes[el].ContentBox = rect;
+                        boxes[el].BorderBox = rect;
+                    }
+                },
+                MeasureChild);
+
+            Assert.Equal(10, boxes[items[1]].ContentBox.Top);
+            Assert.Equal(210, boxes[items[2]].ContentBox.Top);
+        }
     }
 }

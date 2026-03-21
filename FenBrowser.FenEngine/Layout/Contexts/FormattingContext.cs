@@ -136,5 +136,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Default fallback
             return BlockFormattingContext.Instance;
         }
+
     }
 }

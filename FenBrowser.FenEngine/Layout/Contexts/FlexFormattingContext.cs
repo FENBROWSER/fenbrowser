@@ -227,19 +227,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // 5. Resolve flex-basis and compute flex factors
             // Compute gap early so it's included in remaining-space calculation.
+            float fontSizeEarly = (float)(style.FontSize ?? 16);
+            float rootFontSizeEarly = 16f; // Standard default
+
+            float ParseGap(string gapVal)
+            {
+                if (string.IsNullOrWhiteSpace(gapVal) || gapVal.Equals("normal", StringComparison.OrdinalIgnoreCase)) return 0;
+                gapVal = gapVal.Trim().ToLowerInvariant();
+                if (gapVal.EndsWith("px") && float.TryParse(gapVal.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var px)) return px;
+                if (gapVal.EndsWith("rem") && float.TryParse(gapVal.Replace("rem", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var rem)) return rem * rootFontSizeEarly;
+                if (gapVal.EndsWith("em") && float.TryParse(gapVal.Replace("em", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var em)) return em * fontSizeEarly;
+                if (float.TryParse(gapVal, NumberStyles.Float, CultureInfo.InvariantCulture, out var raw)) return raw;
+                return 0f;
+            }
+
             float gapShorthandEarly = (float)(style.Gap ?? 0);
             if (gapShorthandEarly <= 0 && style.Map != null && style.Map.TryGetValue("gap", out var rawGapEarly))
-                float.TryParse(rawGapEarly.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out gapShorthandEarly);
+                gapShorthandEarly = ParseGap(rawGapEarly);
+
             float colGapEarly = (float)(style.ColumnGap ?? 0);
-            if (colGapEarly <= 0 && style.Map != null && style.Map.TryGetValue("column-gap", out var rawCgE) &&
-                !string.Equals(rawCgE?.Trim(), "normal", StringComparison.OrdinalIgnoreCase))
-                float.TryParse(rawCgE.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out colGapEarly);
+            if (colGapEarly <= 0 && style.Map != null && style.Map.TryGetValue("column-gap", out var rawCgE))
+                colGapEarly = ParseGap(rawCgE);
             if (colGapEarly <= 0) colGapEarly = gapShorthandEarly;
+
             float rowGapEarly = (float)(style.RowGap ?? 0);
-            if (rowGapEarly <= 0 && style.Map != null && style.Map.TryGetValue("row-gap", out var rawRgE) &&
-                !string.Equals(rawRgE?.Trim(), "normal", StringComparison.OrdinalIgnoreCase))
-                float.TryParse(rawRgE.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out rowGapEarly);
+            if (rowGapEarly <= 0 && style.Map != null && style.Map.TryGetValue("row-gap", out var rawRgE))
+                rowGapEarly = ParseGap(rawRgE);
             if (rowGapEarly <= 0) rowGapEarly = gapShorthandEarly;
+
             float gapForFlex = isRow ? colGapEarly : rowGapEarly;
 
             // Compute flex base sizes for each item.
@@ -930,7 +945,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         lineMainPos += colMain + gap + itemStepExtra + autoAfter;
                     }
 
-                    LayoutBoxOps.SetPosition(item, x, y);
+                    LayoutBoxOps.PositionSubtree(item, x, y, state);
                 }
 
                 crossPos = isWrapReverse
@@ -950,13 +965,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         {
                             float oldX = item.Geometry.MarginBox.Left;
                             float newX = mainSize - oldX - item.Geometry.MarginBox.Width;
-                            LayoutBoxOps.SetPosition(item, newX, item.Geometry.MarginBox.Top);
+                            LayoutBoxOps.PositionSubtree(item, newX, item.Geometry.MarginBox.Top, state);
                         }
                         else
                         {
                             float oldY = item.Geometry.MarginBox.Top;
                             float newY = mainSize - oldY - GetColumnMainSize(item);
-                            LayoutBoxOps.SetPosition(item, item.Geometry.MarginBox.Left, newY);
+                            LayoutBoxOps.PositionSubtree(item, item.Geometry.MarginBox.Left, newY, state);
                         }
                     }
                 }
