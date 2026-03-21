@@ -4,6 +4,7 @@ using System.Reflection;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using Xunit;
+using ValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.Tests.Engine
 {
@@ -869,6 +870,50 @@ namespace FenBrowser.Tests.Engine
             ");
 
             Assert.True(rt.GetGlobal("proxySymbolGetOut").ToBoolean());
+        }
+
+        [Fact]
+        public void Reflect_Construct_And_Proxy_DefaultForwarding_Work_With_RuntimeBuiltins()
+        {
+            var rt = CreateRuntime();
+            var result = rt.ExecuteSimple(@"
+                function Target(x) { this.value = x; }
+                function NewTarget() {}
+                NewTarget.prototype = { marker: 99 };
+                var propertyTarget = { extra: 4 };
+                var propertyProxy = new Proxy(propertyTarget, {});
+                var proxy = new Proxy(Target, {});
+                var constructed = Reflect.construct(proxy, [6], NewTarget);
+                var proxyReadValue = propertyProxy.extra;
+                var proxyReflectValue = Reflect.get(propertyProxy, 'extra');
+                var proxyTargetOut = propertyProxy.__target__ === propertyTarget;
+                var proxyProxyTargetOut = propertyProxy.__proxyTarget__ === propertyTarget;
+                var proxyGetTypeOut = typeof propertyProxy.__proxyGet__;
+                var proxyReadOut = proxyReadValue === 4;
+                var proxyReflectOut = proxyReflectValue === 4;
+                var constructOut =
+                    constructed.value === 6 &&
+                    Object.getPrototypeOf(constructed) === NewTarget.prototype &&
+                    constructed.marker === 99;
+            ");
+
+            Assert.False(
+                result is FenValue value && (value.Type == ValueType.Error || value.Type == ValueType.Throw),
+                result?.ToString());
+
+            var proxyProbe = string.Join(", ",
+                rt.GetGlobal("proxyReadValue").ToString(),
+                rt.GetGlobal("proxyReflectValue").ToString(),
+                rt.GetGlobal("proxyTargetOut").ToString(),
+                rt.GetGlobal("proxyProxyTargetOut").ToString(),
+                rt.GetGlobal("proxyGetTypeOut").ToString(),
+                rt.GetGlobal("proxyReadOut").ToString(),
+                rt.GetGlobal("proxyReflectOut").ToString(),
+                rt.GetGlobal("constructOut").ToString());
+
+            Assert.True(rt.GetGlobal("proxyReadOut").ToBoolean(), proxyProbe);
+            Assert.True(rt.GetGlobal("proxyReflectOut").ToBoolean());
+            Assert.True(rt.GetGlobal("constructOut").ToBoolean());
         }
 
         [Fact]

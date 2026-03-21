@@ -297,5 +297,132 @@ namespace FenBrowser.Tests.Engine
             // Assert
             Assert.Equal(1, callbackCalls);
         }
+
+        [Fact]
+        public void IntersectionObserver_ThresholdArray_FiresWhenCrossingThresholdBoundaries()
+        {
+            var callbackCalls = 0;
+            var lastRatio = 0d;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                var entries = args[0].AsObject();
+                var firstEntry = entries.Get("0").AsObject();
+                lastRatio = firstEntry.Get("intersectionRatio").ToNumber();
+                return FenValue.Undefined;
+            }));
+
+            Assert.True(IntersectionObserverInstance.TryParseRootMargin("0px", out var rootMargin, out _));
+            var observer = new IntersectionObserverInstance(callback, new[] { 0d, 0.5d, 1d }, "0px", rootMargin);
+            var element = new Element("div");
+            var wrapper = new FenObject { NativeObject = element };
+            observer.Observe(wrapper);
+
+            observer.EvaluateWithLayoutResult(
+                new LayoutResult(
+                    new Dictionary<Element, ElementGeometry> { { element, new ElementGeometry(0, 550, 100, 100) } },
+                    800,
+                    600,
+                    0,
+                    1000),
+                new ElementGeometry(0, 0, 800, 600),
+                jsObj => jsObj is FenObject fenObj && fenObj.NativeObject is Element resolved ? resolved : null);
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+
+            observer.EvaluateWithLayoutResult(
+                new LayoutResult(
+                    new Dictionary<Element, ElementGeometry> { { element, new ElementGeometry(0, 525, 100, 100) } },
+                    800,
+                    600,
+                    0,
+                    1000),
+                new ElementGeometry(0, 0, 800, 600),
+                jsObj => jsObj is FenObject fenObj && fenObj.NativeObject is Element resolved ? resolved : null);
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+
+            observer.EvaluateWithLayoutResult(
+                new LayoutResult(
+                    new Dictionary<Element, ElementGeometry> { { element, new ElementGeometry(0, 500, 100, 100) } },
+                    800,
+                    600,
+                    0,
+                    1000),
+                new ElementGeometry(0, 0, 800, 600),
+                jsObj => jsObj is FenObject fenObj && fenObj.NativeObject is Element resolved ? resolved : null);
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+
+            Assert.Equal(2, callbackCalls);
+            Assert.Equal(1d, lastRatio);
+        }
+
+        [Fact]
+        public void IntersectionObserver_RootMargin_ExpandsViewportForIntersection()
+        {
+            var intersectingEntries = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                var entries = args[0].AsObject();
+                var firstEntry = entries.Get("0").AsObject();
+                if (firstEntry.Get("isIntersecting").ToBoolean())
+                {
+                    intersectingEntries++;
+                }
+
+                return FenValue.Undefined;
+            }));
+
+            Assert.True(IntersectionObserverInstance.TryParseRootMargin("0px 0px 100px 0px", out var rootMargin, out _));
+            var observer = new IntersectionObserverInstance(callback, new[] { 0d }, "0px 0px 100px 0px", rootMargin);
+            var element = new Element("div");
+            var wrapper = new FenObject { NativeObject = element };
+            observer.Observe(wrapper);
+
+            observer.EvaluateWithLayoutResult(
+                new LayoutResult(
+                    new Dictionary<Element, ElementGeometry> { { element, new ElementGeometry(0, 650, 100, 40) } },
+                    800,
+                    600,
+                    0,
+                    1000),
+                new ElementGeometry(0, 0, 800, 600),
+                jsObj => jsObj is FenObject fenObj && fenObj.NativeObject is Element resolved ? resolved : null);
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+
+            Assert.Equal(1, intersectingEntries);
+        }
+
+        [Fact]
+        public void IntersectionObserver_TakeRecords_DrainsQueuedEntries()
+        {
+            var callbackCalls = 0;
+            var callback = FenValue.FromFunction(new FenFunction("callback", (args, thisVal) =>
+            {
+                callbackCalls++;
+                return FenValue.Undefined;
+            }));
+
+            Assert.True(IntersectionObserverInstance.TryParseRootMargin("0px", out var rootMargin, out _));
+            var observer = new IntersectionObserverInstance(callback, new[] { 0d }, "0px", rootMargin);
+            var element = new Element("div");
+            var wrapper = new FenObject { NativeObject = element };
+            observer.Observe(wrapper);
+
+            observer.EvaluateWithLayoutResult(
+                new LayoutResult(
+                    new Dictionary<Element, ElementGeometry> { { element, new ElementGeometry(10, 10, 100, 100) } },
+                    800,
+                    600,
+                    0,
+                    1000),
+                new ElementGeometry(0, 0, 800, 600),
+                jsObj => jsObj is FenObject fenObj && fenObj.NativeObject is Element resolved ? resolved : null);
+
+            var records = observer.TakeRecords();
+            Assert.Equal(1, records.Get("length").ToNumber());
+            Assert.Equal(0, observer.TakeRecords().Get("length").ToNumber());
+
+            ObserverCoordinator.Instance.ExecutePendingCallbacks(null);
+            Assert.Equal(0, callbackCalls);
+        }
     }
 }

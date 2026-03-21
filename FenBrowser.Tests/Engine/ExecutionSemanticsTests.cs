@@ -120,6 +120,61 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void TaskSources_PreserveFifoWithinEachSource()
+        {
+            var order = new List<string>();
+            var coordinator = EventLoopCoordinator.Instance;
+
+            coordinator.ScheduleTask(() => order.Add("Timer1"), TaskSource.Timer, "Timer1");
+            coordinator.ScheduleTask(() => order.Add("Timer2"), TaskSource.Timer, "Timer2");
+            coordinator.ScheduleTask(() => order.Add("Network1"), TaskSource.Networking, "Network1");
+            coordinator.ScheduleTask(() => order.Add("Network2"), TaskSource.Networking, "Network2");
+
+            coordinator.RunUntilEmpty();
+
+            Assert.Equal(new[] { "Timer1", "Network1", "Timer2", "Network2" }, order);
+        }
+
+        [Fact]
+        public void TaskSources_RunRoundRobinAcrossActiveSources()
+        {
+            var order = new List<string>();
+            var coordinator = EventLoopCoordinator.Instance;
+
+            coordinator.ScheduleTask(() => order.Add("History1"), TaskSource.History, "History1");
+            coordinator.ScheduleTask(() => order.Add("Message1"), TaskSource.Messaging, "Message1");
+            coordinator.ScheduleTask(() => order.Add("Timer1"), TaskSource.Timer, "Timer1");
+            coordinator.ScheduleTask(() => order.Add("History2"), TaskSource.History, "History2");
+            coordinator.ScheduleTask(() => order.Add("Message2"), TaskSource.Messaging, "Message2");
+            coordinator.ScheduleTask(() => order.Add("Timer2"), TaskSource.Timer, "Timer2");
+
+            coordinator.RunUntilEmpty();
+
+            Assert.Equal(
+                new[] { "History1", "Message1", "Timer1", "History2", "Message2", "Timer2" },
+                order);
+        }
+
+        [Fact]
+        public void TaskSources_ReentrantScheduling_DoesNotStarveOtherSources()
+        {
+            var order = new List<string>();
+            var coordinator = EventLoopCoordinator.Instance;
+
+            coordinator.ScheduleTask(() =>
+            {
+                order.Add("Timer1");
+                coordinator.ScheduleTask(() => order.Add("Timer2"), TaskSource.Timer, "Timer2");
+            }, TaskSource.Timer, "Timer1");
+
+            coordinator.ScheduleTask(() => order.Add("Message1"), TaskSource.Messaging, "Message1");
+
+            coordinator.RunUntilEmpty();
+
+            Assert.Equal(new[] { "Timer1", "Message1", "Timer2" }, order);
+        }
+
+        [Fact]
         public void MicrotaskQueue_DrainAll_RunsToEmpty()
         {
             var queue = new MicrotaskQueue();

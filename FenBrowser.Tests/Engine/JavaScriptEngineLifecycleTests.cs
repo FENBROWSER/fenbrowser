@@ -428,6 +428,19 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("ok", engine.Evaluate("globalThis.__bundleEvalStatus")?.ToString());
         }
 
+        [Fact]
+        public async Task SetDomAsync_DocumentWithoutDocumentElement_DoesNotThrow()
+        {
+            var baseUri = new Uri("https://example.com/empty.html");
+            var engine = new JavaScriptEngine(CreateHost());
+            var doc = new FenBrowser.Core.Dom.V2.Document();
+
+            await engine.SetDomAsync(doc, baseUri);
+
+            Assert.Equal("object", engine.Evaluate("typeof document")?.ToString());
+            Assert.Equal("object", engine.Evaluate("typeof window")?.ToString());
+        }
+
         private static JsHostAdapter CreateHost()
         {
             return new JsHostAdapter(

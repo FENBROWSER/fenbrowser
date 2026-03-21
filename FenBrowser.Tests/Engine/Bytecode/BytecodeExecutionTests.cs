@@ -135,6 +135,8 @@ namespace FenBrowser.Tests.Engine.Bytecode
             };
 
             Assert.Equal(expectedName, function.Name);
+            Assert.NotNull(function.BytecodeBlock);
+            Assert.NotNull(function.LocalMap);
 
             // VM constructor path expects ordinary functions to expose a prototype object.
             var prototype = new FenObject();
@@ -484,43 +486,56 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
-        public void Bytecode_CallOpcode_WithAstBackedFunction_ShouldFailInBytecodeOnlyMode()
+        public void Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();
             var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
             env.Set("inc", FenValue.FromFunction(inc));
 
-            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(v) { return inc(v); } run(41);"), env));
+            var result = Evaluate(ParseProgram("function run(v) { return inc(v); } run(41);"), env);
+            Assert.Equal(42, result.AsNumber());
         }
 
         [Fact]
-        public void Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldFailInBytecodeOnlyMode()
+        public void Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();
             var inc = CreateAstBackedFunction(env, "function inc(x) { return x + 1; }", "inc");
             env.Set("inc", FenValue.FromFunction(inc));
 
-            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(v) { return inc(...[v]); } run(41);"), env));
+            var result = Evaluate(ParseProgram("function run(v) { return inc(...[v]); } run(41);"), env);
+            Assert.Equal(42, result.AsNumber());
         }
 
         [Fact]
-        public void Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldFailInBytecodeOnlyMode()
+        public void Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();
             var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
             env.Set("Pair", FenValue.FromFunction(pair));
 
-            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(a, b) { var p = new Pair(a, b); return p.sum; } run(5, 7);"), env));
+            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(a, b); return p.sum; } run(5, 7);"), env);
+            Assert.Equal(12, result.AsNumber());
         }
 
         [Fact]
-        public void Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldFailInBytecodeOnlyMode()
+        public void Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();
             var pair = CreateAstBackedFunction(env, "function Pair(a, b) { this.sum = a + b; }", "Pair");
             env.Set("Pair", FenValue.FromFunction(pair));
 
-            Assert.Throws<Exception>(() => Evaluate(ParseProgram("function run(a, b) { var p = new Pair(...[a, b]); return p.sum; } run(5, 7);"), env));
+            var result = Evaluate(ParseProgram("function run(a, b) { var p = new Pair(...[a, b]); return p.sum; } run(5, 7);"), env);
+            Assert.Equal(12, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_AstBackedFunction_ShouldRejectUncompilableCallableBody_BeforeInvocation()
+        {
+            var env = new FenEnvironment();
+
+            Assert.Throws<FenSyntaxError>(() =>
+                new FenFunction(new List<Identifier>(), new Program(), env));
         }
 
         [Fact]

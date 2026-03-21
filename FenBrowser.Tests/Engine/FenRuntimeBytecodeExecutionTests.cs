@@ -5,6 +5,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Security;
+using FenBrowser.FenEngine.Errors;
 using Xunit;
 using System.Linq;
 
@@ -50,6 +51,7 @@ namespace FenBrowser.Tests.Engine
             };
 
             Assert.Equal(expectedName, function.Name);
+            Assert.NotNull(function.BytecodeBlock);
             var prototype = new FenObject();
             prototype.Set("constructor", FenValue.FromFunction(function));
             function.Prototype = prototype;
@@ -683,7 +685,7 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptFailsInBytecodeOnlyMode()
+        public void ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptUsesEagerCallableBytecode()
         {
             var rt = CreateRuntime();
             var inc = CreateAstBackedFunction("function inc(x) { return x + 1; }", "inc");
@@ -696,7 +698,15 @@ namespace FenBrowser.Tests.Engine
             Assert.NotNull(runVal.AsFunction().BytecodeBlock);
 
             var result = rt.ExecuteSimple("var answer = run(41);");
-            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
+            Assert.NotEqual(FenBrowser.FenEngine.Core.Interfaces.ValueType.Error, result.Type);
+            Assert.Equal(42, ((FenValue)rt.GetGlobal("answer")).AsNumber());
+        }
+
+        [Fact]
+        public void ExecuteSimple_AstBackedFunctionCreation_RejectsUncompilableCallableBodyBeforeGlobalRegistration()
+        {
+            Assert.Throws<FenSyntaxError>(() =>
+                new FenFunction(new System.Collections.Generic.List<Identifier>(), new Program(), new FenEnvironment()));
         }
 
         [Fact]
