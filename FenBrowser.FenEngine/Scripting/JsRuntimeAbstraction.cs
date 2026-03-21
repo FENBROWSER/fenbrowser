@@ -6,9 +6,8 @@ using FenBrowser.Core.Logging;
 namespace FenBrowser.FenEngine.Scripting
 {
     /// <summary>
-    /// Minimal runtime abstraction so we can swap the tiny JS-0 engine
-    /// for a full engine implementation (e.g., NiL.JS) without refactoring callers.
-    /// First slice: only the members we already use widely.
+    /// Narrow runtime adapter surface for the authoritative JavaScriptEngine implementation.
+    /// This exists to keep call sites stable without carrying alternate placeholder engines.
     /// </summary>
     public interface IJsRuntime
     {
@@ -121,26 +120,4 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 
-    /// <summary>
-    /// Placeholder for a future full JS runtime (e.g., NiL.JS). It is a no-op for now.
-    /// This lets us wire flags and call sites incrementally without breaking builds.
-    /// </summary>
-    public sealed class FullJsRuntimeStub : IJsRuntime
-    {
-        public FullJsRuntimeStub()
-        {
-            // C# 5.0 fix: Initialize property in constructor
-            Sandbox = SandboxPolicy.AllowAll;
-        }
-
-        public void Initialize(IJsHost host) { }
-        public void SetDom(Element root) { }
-        public void Reset(JsContext ctx) { }
-        public bool RunInline(string code, JsContext ctx) { return false; }
-        public bool AllowExternalScripts { get; set; }
-        public SandboxPolicy Sandbox { get; set; }
-        public void ExecuteBlock(string code, JsContext ctx) { }
-        public void RegisterHostFunction(string name, string body) { }
-        public string EvaluateExpression(string expr, JsContext ctx) { return null; }
-    }
 }
