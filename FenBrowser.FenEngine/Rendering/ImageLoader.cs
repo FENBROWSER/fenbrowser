@@ -131,6 +131,16 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static int CacheCount => _memoryCache.Count + _legacyCache.Count;
 
+        public static bool ContainsCachedImage(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return false;
+            }
+
+            return _memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url);
+        }
+
         /// <summary>
         /// Number of in-flight image fetch/decode operations.
         /// </summary>
@@ -679,6 +689,61 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        /// <summary>
+        /// Decode and cache a fetched image stream so the first render can consume it synchronously.
+        /// Used by navigation-time image prewarming to avoid a second image-fetch path racing after first paint.
+        /// </summary>
+        public static async Task<bool> PrewarmImageAsync(string url, Stream stream, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
+        {
+            if (string.IsNullOrWhiteSpace(url) || stream == null)
+            {
+                return false;
+            }
+
+            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url))
+            {
+                return true;
+            }
+
+            byte[] data;
+            using (var ms = new MemoryStream())
+            {
+                await stream.CopyToAsync(ms).ConfigureAwait(false);
+                data = ms.ToArray();
+            }
+
+            if (data == null || data.Length == 0)
+            {
+                return false;
+            }
+
+            var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            if (!TryStoreDecodedBitmap(url, bitmap, isLazy))
+            {
+                try
+                {
+                    if (!bitmap.IsNull)
+                    {
+                        bitmap.Dispose();
+                    }
+                }
+                catch
+                {
+                }
+
+                return _memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url);
+            }
+
+            RequestDebouncedRepaint();
+            RequestRelayout?.Invoke();
+            return true;
+        }
+
         private static SKBitmap DecodeDataUri(string url, int? targetWidth, int? targetHeight)
         {
              try
@@ -779,103 +844,28 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
                     return;
                 }
-                SKBitmap bitmap = null;
-                
-                // SVG Detection (Basic)
-                bool isSvg = url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
-                if (!isSvg && url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
-                {
-                    isSvg = true;
-                }
-                
-                if (!isSvg)
-                {
-                     // Peek bytes?
-                     // If it starts with <svg or <?xml, it might be SVG. 
-                     // Simple check:
-                     try {
-                         string header = System.Text.Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 100)).Trim();
-                         if (header.StartsWith("<svg") || header.StartsWith("<?xml") || header.Contains("<svg")) isSvg = true;
-                     } catch (Exception ex) { FenLogger.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering); }
-                }
-
-                if (isSvg)
-                {
-                    // RULE 3 & 5: Use SvgSkiaRenderer adapter for SVG rendering with safety limits
-                    string svgContent = System.Text.Encoding.UTF8.GetString(data);
-                    bitmap = RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
-                    
-                    if (bitmap == null)
-                    {
-                        FenLogger.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
-                    }
-                }
-                
-                // Animated GIF detection + standard image fallback
-                if (bitmap == null)
-                {
-                    // Try animated GIF detection first
-                    bool isAnimatedGif = false;
-                    try
-                    {
-                        using var codec = SKCodec.Create(new MemoryStream(data));
-                        if (codec != null && codec.FrameCount > 1)
-                        {
-                            isAnimatedGif = true;
-                            var animated = DecodeAnimatedGif(codec, data);
-                            if (animated != null && animated.Frames?.Length > 0)
-                            {
-                                _animatedGifs[url] = animated;
-                                bitmap = animated.Frames[0]; // first frame for normal cache
-                                EnsureGifAnimationTimer();
-                                FenLogger.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
-                            }
-                            else
-                            {
-                                // Fallback to standard decode if animated path failed
-                                isAnimatedGif = false;
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        FenLogger.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
-                    }
-
-                    // Standard single-frame decode
-                    if (!isAnimatedGif && bitmap == null)
-                    {
-                        bitmap = SKBitmap.Decode(data);
-                    }
-                }
+                var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
                 
                 if (bitmap != null)
                 {
-                    // Standardize on _memoryCache for all new loads
-                    var entry = new ImageCacheEntry
+                    if (TryStoreDecodedBitmap(url, bitmap, isLazy))
                     {
-                        Bitmap = bitmap,
-                        ByteSize = bitmap.ByteCount,
-                        LastAccessed = DateTime.UtcNow,
-                        IsLazy = isLazy
-                    };
-                    
-                    _memoryCache[url] = entry;
-                    _legacyCache[url] = bitmap; // Keep legacy for fallback
-                    
-                    // Track memory usage
-                    lock (_cacheLock)
-                    {
-                        _currentCacheBytes += bitmap.ByteCount;
+                        RequestDebouncedRepaint();
+                        RequestRelayout?.Invoke();
                     }
-                    EvictIfNeeded();
-                    
-                    // Remove from lazy registry if present
-                    _lazyRegistry.TryRemove(url, out _);
-                    
-                    FenLogger.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
-                    RequestDebouncedRepaint();
-                    RequestRelayout?.Invoke();
+                    else
+                    {
+                        try
+                        {
+                            if (!bitmap.IsNull)
+                            {
+                                bitmap.Dispose();
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
                 }
                 else
                 {
@@ -890,6 +880,118 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 CompletePendingLoad(url);
             }
+        }
+
+        private static SKBitmap DecodeBitmapFromBytes(string url, byte[] data, int? targetWidth, int? targetHeight)
+        {
+            SKBitmap bitmap = null;
+
+            bool isSvg = url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+            if (!isSvg && url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
+            {
+                isSvg = true;
+            }
+
+            if (!isSvg)
+            {
+                try
+                {
+                    string header = System.Text.Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 100)).Trim();
+                    if (header.StartsWith("<svg") || header.StartsWith("<?xml") || header.Contains("<svg"))
+                    {
+                        isSvg = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering);
+                }
+            }
+
+            if (isSvg)
+            {
+                string svgContent = System.Text.Encoding.UTF8.GetString(data);
+                bitmap = RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
+
+                if (bitmap == null)
+                {
+                    FenLogger.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
+                }
+            }
+
+            if (bitmap == null)
+            {
+                bool isAnimatedGif = false;
+                try
+                {
+                    using var codec = SKCodec.Create(new MemoryStream(data));
+                    if (codec != null && codec.FrameCount > 1)
+                    {
+                        isAnimatedGif = true;
+                        var animated = DecodeAnimatedGif(codec, data);
+                        if (animated != null && animated.Frames?.Length > 0)
+                        {
+                            _animatedGifs[url] = animated;
+                            bitmap = animated.Frames[0];
+                            EnsureGifAnimationTimer();
+                            FenLogger.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
+                        }
+                        else
+                        {
+                            isAnimatedGif = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
+                }
+
+                if (!isAnimatedGif && bitmap == null)
+                {
+                    bitmap = SKBitmap.Decode(data);
+                }
+            }
+
+            return bitmap;
+        }
+
+        private static bool TryStoreDecodedBitmap(string url, SKBitmap bitmap, bool isLazy)
+        {
+            if (string.IsNullOrWhiteSpace(url) || bitmap == null || bitmap.IsNull || bitmap.Width <= 0 || bitmap.Height <= 0)
+            {
+                return false;
+            }
+
+            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url))
+            {
+                return false;
+            }
+
+            var entry = new ImageCacheEntry
+            {
+                Bitmap = bitmap,
+                ByteSize = bitmap.ByteCount,
+                LastAccessed = DateTime.UtcNow,
+                IsLazy = isLazy
+            };
+
+            if (!_memoryCache.TryAdd(url, entry))
+            {
+                return false;
+            }
+
+            _legacyCache[url] = bitmap;
+
+            lock (_cacheLock)
+            {
+                _currentCacheBytes += bitmap.ByteCount;
+            }
+
+            EvictIfNeeded();
+            _lazyRegistry.TryRemove(url, out _);
+            FenLogger.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
+            return true;
         }
 
         private static bool TryRegisterPendingLoad(string url)
