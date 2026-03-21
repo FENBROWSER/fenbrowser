@@ -89,5 +89,15 @@ namespace FenBrowser.Tests.Architecture
             // Assert
             Assert.Equal(18f, metrics.EmSize);
         }
+
+        [Fact]
+        public void NormalizeContentMetrics_WithPathologicalMetrics_ClampsContentHeightToSaneRange()
+        {
+            var (ascent, descent) = NormalizedFontMetrics.NormalizeContentMetrics(16f, 96f, 20f);
+            var contentHeight = ascent + descent;
+
+            Assert.InRange(contentHeight, 9.6f, 21.6f);
+            Assert.True(ascent > descent);
+        }
     }
 }

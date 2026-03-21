@@ -1,4 +1,5 @@
 using SkiaSharp;
+using System;
 
 namespace FenBrowser.FenEngine.Typography
 {
@@ -57,7 +58,6 @@ namespace FenBrowser.FenEngine.Typography
             // Skia's ascent is negative (above baseline), we normalize to positive
             float rawAscent = -skMetrics.Ascent;
             float rawDescent = skMetrics.Descent;
-            float rawLeading = skMetrics.Leading;
             
             // CSS line-height: if not specified, use "normal" (typically 1.2)
             float lineHeight;
@@ -74,7 +74,9 @@ namespace FenBrowser.FenEngine.Typography
                 // We decide this, NOT Skia
                 lineHeight = fontSize * 1.2f;
             }
-            
+
+            (rawAscent, rawDescent) = NormalizeContentMetrics(fontSize, rawAscent, rawDescent);
+
             // Ensure line height is at least as tall as content
             float contentHeight = rawAscent + rawDescent;
             if (lineHeight < contentHeight)
@@ -89,6 +91,41 @@ namespace FenBrowser.FenEngine.Typography
                 EmSize = fontSize,
                 Leading = lineHeight - contentHeight
             };
+        }
+
+        internal static (float Ascent, float Descent) NormalizeContentMetrics(float fontSize, float ascent, float descent)
+        {
+            float fallbackAscent = fontSize * 0.8f;
+            float fallbackDescent = Math.Max(fontSize * 0.2f, fontSize - fallbackAscent);
+
+            if (!IsFinitePositive(ascent) || !IsFinitePositive(descent))
+            {
+                return (fallbackAscent, fallbackDescent);
+            }
+
+            float contentHeight = ascent + descent;
+            if (!float.IsFinite(contentHeight) || contentHeight <= 0)
+            {
+                return (fallbackAscent, fallbackDescent);
+            }
+
+            float minSaneContentHeight = fontSize * 0.6f;
+            float maxSaneContentHeight = Math.Max(fontSize * 1.35f, fontSize + 4f);
+
+            if (contentHeight < minSaneContentHeight || contentHeight > maxSaneContentHeight)
+            {
+                float targetContentHeight = Math.Clamp(contentHeight, minSaneContentHeight, maxSaneContentHeight);
+                float scale = targetContentHeight / contentHeight;
+                ascent *= scale;
+                descent *= scale;
+            }
+
+            return (ascent, descent);
+        }
+
+        private static bool IsFinitePositive(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value) && value > 0;
         }
         
         /// <summary>
