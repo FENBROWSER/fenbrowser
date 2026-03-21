@@ -89,7 +89,7 @@ namespace FenBrowser.FenEngine.Core
             NativeImplementation = nativeImplementation;
             IsNative = true;
             Name = name; // setter stores name property + triggers StoreFunctionLengthProperty via fallback
-            StoreFunctionLengthProperty(); // Parameters is null for native, NativeLength=-1 → length=0
+            StoreFunctionLengthProperty(); // Parameters is null for native, NativeLength=-1 -> length=0
             // Functions inherit from Function.prototype (which inherits from Object.prototype)
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
@@ -101,8 +101,9 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
+            CompileAstBodyToBytecode();
             Name = string.Empty; // setter stores name property
-            StoreFunctionLengthProperty(); // Parameters.Count → length
+            StoreFunctionLengthProperty(); // Parameters.Count -> length
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
                 SetPrototype(DefaultFunctionPrototype);
         }
@@ -125,6 +126,7 @@ namespace FenBrowser.FenEngine.Core
             Body = body;
             Env = env;
             IsNative = false;
+            CompileAstBodyToBytecode();
             Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty();
             if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
@@ -144,6 +146,25 @@ namespace FenBrowser.FenEngine.Core
                 Enumerable = false,
                 Configurable = true
             });
+        }
+
+        private void CompileAstBodyToBytecode()
+        {
+            if (IsNative || Body == null || BytecodeBlock != null)
+            {
+                return;
+            }
+
+            BytecodeBlock = Bytecode.Compiler.BytecodeCompiler.CompileCallableFunctionBody(
+                Parameters,
+                Body,
+                Name,
+                forceStrictRoot: false,
+                out var localMap,
+                out var needsArgumentsObject);
+
+            LocalMap = localMap;
+            NeedsArgumentsObject = needsArgumentsObject;
         }
 
         /// <summary>
@@ -204,15 +225,14 @@ namespace FenBrowser.FenEngine.Core
                 var trap = handlerObj.Get("apply");
                 if (trap.IsFunction)
                 {
-                    var thisVal = context?.ThisBinding ?? FenValue.Undefined;
                     var argsArray = new FenObject();
-                    for(int i=0; i<args.Length; i++) argsArray.Set(i.ToString(), args[i]);
+                    for (int i = 0; i < args.Length; i++) argsArray.Set(i.ToString(), args[i]);
                     argsArray.Set("length", FenValue.FromNumber(args.Length));
 
                     return trap.AsFunction().Invoke(new FenValue[]
                     {
                         ProxyTarget.Type != Interfaces.ValueType.Undefined ? ProxyTarget : FenValue.FromObject(this),
-                        thisVal,
+                        actualThis,
                         FenValue.FromObject(argsArray)
                     }, context, FenValue.FromObject(handlerObj));
                 }
@@ -228,25 +248,9 @@ namespace FenBrowser.FenEngine.Core
                 return NativeImplementation(args, actualThis);
             }
 
-            // Lazy-compile AST-backed functions on first Invoke (ECMA-262 §10.2).
-            // BytecodeBlock may be null when the function was created from a parsed AST
-            // (e.g. via eval() or the Function() constructor) and not yet compiled.
-            if (BytecodeBlock == null && Body != null)
-            {
-                try
-                {
-                    var lazyCompiler = new Bytecode.Compiler.BytecodeCompiler();
-                    BytecodeBlock = lazyCompiler.Compile(Body);
-                }
-                catch (Exception)
-                {
-                    // Fall through — the null-check below will return an error gracefully.
-                }
-            }
-
             if (BytecodeBlock == null)
             {
-                return FenValue.FromError("Bytecode-only mode: AST-backed function invocation is not supported.");
+                throw new InvalidOperationException("Non-native FenFunction must be bytecode-backed before invocation.");
             }
 
             if (!IsAsync && !IsGenerator)
@@ -418,8 +422,4 @@ namespace FenBrowser.FenEngine.Core
         }
     }
 }
-
-
-
-
 

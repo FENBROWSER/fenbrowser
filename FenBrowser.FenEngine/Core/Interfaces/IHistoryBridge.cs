@@ -7,5 +7,6 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         void Go(int delta);
         int Length { get; }
         object State { get; }
+        System.Uri CurrentUrl { get; }
     }
 }

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Xunit;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 using FenBrowser.Core;
@@ -122,6 +123,54 @@ namespace FenBrowser.Tests.Engine
             Assert.Single(rootBox.Children);
             Assert.IsType<InlineBox>(rootBox.Children[0]);
             Assert.Same(span, rootBox.Children[0].SourceNode);
+        }
+
+        [Fact]
+        public void RelativePositionedFlexItem_ShiftsSubtreeWithoutChangingSiblingFlow()
+        {
+            var root = new Element("div");
+            var nudged = new Element("div");
+            var sibling = new Element("div");
+            var text = new Text("AI");
+
+            nudged.AppendChild(text);
+            root.AppendChild(nudged);
+            root.AppendChild(sibling);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "flex", Width = 160, Height = 40 },
+                [nudged] = new CssComputed { Display = "block", Width = 36, Height = 20, Position = "relative", Left = 6, Top = 4 },
+                [text] = new CssComputed { Display = "inline" },
+                [sibling] = new CssComputed { Display = "block", Width = 36, Height = 20 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(root);
+
+            var state = new LayoutState(
+                new SKSize(160, 40),
+                160,
+                40,
+                160,
+                40);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var nudgedBox = FindBox(rootBox, nudged);
+            var siblingBox = FindBox(rootBox, sibling);
+            var textBox = FindBox(rootBox, text);
+
+            Assert.NotNull(nudgedBox);
+            Assert.NotNull(siblingBox);
+            Assert.NotNull(textBox);
+
+            Assert.Equal(6f, nudgedBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(4f, nudgedBox.Geometry.MarginBox.Top, 1);
+            Assert.Equal(36f, siblingBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(0f, siblingBox.Geometry.MarginBox.Top, 1);
+            Assert.True(textBox.Geometry.MarginBox.Left >= nudgedBox.Geometry.MarginBox.Left);
+            Assert.True(textBox.Geometry.MarginBox.Top >= nudgedBox.Geometry.MarginBox.Top);
         }
         [Fact]
         public void InlineLayout_EmptyLine_RespectsStrut()
@@ -302,6 +351,30 @@ namespace FenBrowser.Tests.Engine
 
             // Height = 1 (border) + 50 (a) + 10 (collapsed 20 - 10) + 50 (b) + 1 (border) = 112
             Assert.Equal(112, result.ContentHeight);
+        }
+
+        private static LayoutBox FindBox(LayoutBox box, Node target)
+        {
+            if (box == null)
+            {
+                return null;
+            }
+
+            if (ReferenceEquals(box.SourceNode, target))
+            {
+                return box;
+            }
+
+            foreach (var child in box.Children)
+            {
+                var found = FindBox(child, target);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+
+            return null;
         }
     }
 }

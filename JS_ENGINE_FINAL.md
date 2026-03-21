@@ -218,69 +218,175 @@ The target standard is not "good enough to demo". The target standard is browser
        - `plainCalls=2`
        - `aborted=True`
 
-14. `P1` The history state stack and `popstate` semantics are still placeholders.
-   - Evidence:
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3877` says `pushState` is not wired to a real history stack.
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3903` says popstate handling is currently not implemented.
-   - Why this is a gap:
+14. ~~`P1` The history state stack and `popstate` semantics are still placeholders.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3877` said `pushState` was not wired to a real history stack.
+     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3903` said popstate handling was not implemented.
+   - Why this was a gap:
      - SPA routing depends on this behavior. Placeholder history APIs create false positives during smoke tests and hard failures in real navigation flows.
    - Exit bar:
      - real session history entries, state serialization, same-document navigation semantics, and event dispatch timing
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/FenRuntime.cs` now exposes dynamic `history.length` and `history.state` accessors instead of stale data slots, clones state through `structuredClone`, resolves and synchronizes same-document URLs, and maintains a real local session-history stack when no host bridge is attached.
+     - `FenBrowser.FenEngine/Core/FenRuntime.cs` now queues `popstate` through `EventLoopCoordinator` with `TaskSource.History`, updates `location` and `BaseUri` before delivery, and dispatches queued events through the actual `window` listener store plus `window.onpopstate`.
+     - `FenBrowser.FenEngine/Core/Interfaces/IHistoryBridge.cs` and `FenBrowser.FenEngine/Rendering/BrowserApi.cs` now expose the active history-entry URL so bridge-backed traversal keeps `history`, `location`, and runtime state synchronized.
+   - Tests:
+     - `FenBrowser.Tests/WebAPIs/HistoryApiTests.cs`
+     - `FenBrowser.Tests/Engine/FenRuntimeLocationTests.cs`
+     - `FenBrowser.Tests/DOM/InputEventTests.cs`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~HistoryApiTests|FullyQualifiedName~FenRuntimeLocationTests"` passed on `2026-03-20` with `11/11` tests green.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~InputEventTests.AddEventListener_WindowSignal_RemovesListenerAfterAbort|FullyQualifiedName~InputEventTests.AddEventListener_DuplicateSignalRegistration_DoesNotRemoveOriginalListener"` remained green on `2026-03-20` with `2/2` tests green, covering the shared window listener path used by queued `popstate` dispatch.
 
-15. `P1` `IntersectionObserver` is not complete enough for modern app behavior.
-   - Evidence:
-     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:44` only passes `thresholds[0]` into the runtime instance.
-     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:49` stores `rootMargin` on the JS wrapper only.
-     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:83` returns an empty array from `takeRecords()`.
-     - `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs:243`
-     - `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs:250`
-     - The instance state carries `_threshold` only; there is no root-margin state in the evaluator.
-   - Why this is a gap:
+15. ~~`P1` `IntersectionObserver` is not complete enough for modern app behavior.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:44` only passed `thresholds[0]` into the runtime instance.
+     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:49` stored `rootMargin` on the JS wrapper only.
+     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs:83` returned an empty array from `takeRecords()`.
+     - `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs` previously tracked a single `_threshold` and no queued observer records.
+   - Why this was a gap:
      - Virtualized UIs, lazy loading, and infinite-scroll feeds rely on threshold arrays, root margins, and queued records.
    - Exit bar:
      - full threshold array handling, root-margin application, queued entry delivery, and spec-consistent `takeRecords`
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs` now tracks the full normalized threshold list, computes threshold-index transitions instead of a single boolean threshold gate, and applies parsed `rootMargin` offsets to the evaluation viewport before intersection math.
+     - `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs` now maintains a real per-observer record queue shared by queued callback delivery and `takeRecords()`, so manual draining and callback scheduling operate on the same production data structure.
+     - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs` now validates and passes parsed `rootMargin` into the runtime instance, exposes `root`, and wires `takeRecords()` to the native observer queue instead of returning a fake empty array.
+   - Tests:
+     - `FenBrowser.Tests/WebAPIs/ObserverApiTests.cs`
+     - `FenBrowser.Tests/Engine/IntersectionObserverTests.cs`
+     - `FenBrowser.Tests/Engine/PrivacyTests.cs`
+     - `FenBrowser.Tests/Engine/PlatformInvariantTests.cs`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` completed successfully on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~ObserverApiTests|FullyQualifiedName~IntersectionObserverTests|FullyQualifiedName~PrivacyTests|FullyQualifiedName~PlatformInvariantTests.ObserverCoordinator_Clear_RemovesAllState|FullyQualifiedName~PlatformInvariantTests.ObserverCoordinator_EvaluatesIntersection_Before_Resize"` passed on `2026-03-20` with `21/21` tests green.
 
-16. `P1` AST-backed function invocation still has a runtime error escape hatch that should not exist in a production engine.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/FenFunction.cs:249` returns `"Bytecode-only mode: AST-backed function invocation is not supported."`
-   - Why this is a gap:
+16. ~~`P1` AST-backed function invocation still has a runtime error escape hatch that should not exist in a production engine.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/FenFunction.cs:249` previously returned `"Bytecode-only mode: AST-backed function invocation is not supported."`
+   - Why this was a gap:
      - Once functions are accepted into the runtime, the engine should not retain a fallback path that can surface as an execution-mode failure.
    - Exit bar:
      - all runtime-callable functions must be bytecode-backed or intentionally rejected before they become callable
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/FenFunction.cs` now compiles AST-backed function bodies at construction time through the shared bytecode compiler path, persists the resulting `BytecodeBlock`/`LocalMap`, and treats any later missing-bytecode state as an internal invariant violation instead of a recoverable runtime mode.
+     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs` now exposes a shared callable-body compilation helper so AST-backed function construction and normal function-template emission use the same lowering, local-slot, and `arguments`-usage analysis path.
+     - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs` no longer treats `func.Body` as a callable fallback and no longer lazily compiles AST-backed functions or constructors during `Call*` / `Construct*` opcodes.
+   - Tests:
+     - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+     - `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+     - `Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode`
+     - `Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode`
+     - `Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode`
+     - `Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode`
+     - `Bytecode_AstBackedFunction_ShouldRejectUncompilableCallableBody_BeforeInvocation`
+     - `ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptUsesEagerCallableBytecode`
+     - `ExecuteSimple_AstBackedFunctionCreation_RejectsUncompilableCallableBodyBeforeGlobalRegistration`
+   - Verification:
+     - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore` passed on `2026-03-20`.
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_CallFromArrayOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_ConstructOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_ConstructFromArrayOpcode_WithAstBackedConstructor_ShouldExecuteWithEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_AstBackedFunction_ShouldRejectUncompilableCallableBody_BeforeInvocation|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests.ExecuteSimple_WithAstBackedGlobal_CallHeavyScriptUsesEagerCallableBytecode|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests.ExecuteSimple_AstBackedFunctionCreation_RejectsUncompilableCallableBodyBeforeGlobalRegistration"` passed on `2026-03-20` with `7/7` tests green.
 
-17. `P2` Session storage does not persist across reload in a browser-grade way.
-   - Evidence:
-     - `FenBrowser.FenEngine/WebAPIs/StorageApi.cs:268` explicitly skips reload persistence.
-   - Why this is a gap:
+17. ~~`P2` Session storage does not persist across reload in a browser-grade way.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/WebAPIs/StorageApi.cs:268` previously documented session storage as transient without a stable reload-scoped partition identity.
+   - Why this was a gap:
      - Session storage semantics matter for auth flows, tab recovery, and same-tab app boot continuity.
    - Exit bar:
      - tab-scoped persistence model with correct reload/session lifetime semantics
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/IDomBridge.cs` now exposes `SessionStoragePartitionId`, giving the runtime a stable per-tab identity instead of forcing `sessionStorage` to allocate a fresh anonymous scope on every reload.
+     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` now publishes its existing engine-owned tab partition id through `IDomBridge`, so repeated `FenRuntime` creation during same-tab reloads reuses the same browser-session storage scope.
+     - `FenBrowser.FenEngine/WebAPIs/StorageApi.cs` now accepts an optional stable partition-id provider for `CreateSessionStorage(...)` and persists session data across storage recreation when the caller supplies the same tab/session identity, while preserving isolation when no stable partition is present.
+     - `FenBrowser.FenEngine/Core/FenRuntime.cs` now creates `sessionStorage` with both origin and tab partition providers, so reloads in the same tab keep state while origin boundaries and cross-tab isolation still hold.
+   - Tests:
+     - `FenBrowser.Tests/WebAPIs/StorageTests.cs`
+     - `SessionStorage_ShouldPersistAcrossStorageRecreation_WithSamePartitionAndOrigin`
+     - `SessionStorage_ShouldPersistAcrossFenRuntimeReload_WithStableTabPartition`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.StorageTests"` passed on `2026-03-20` with `7/7` tests green.
 
-18. `P2` Shadow DOM is still absent in the host-facing surface.
-   - Evidence:
-     - `FenBrowser.FenEngine/Rendering/BrowserApi.cs:2120` returns `null` because shadow DOM is not supported.
-   - Why this is a gap:
+18. ~~`P2` Shadow DOM was absent in the host-facing surface.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Rendering/BrowserApi.cs` previously returned `null` from `GetShadowRootAsync(...)`, so the host/WebDriver stack could not expose open shadow roots even though the DOM core already implemented them.
+   - Why this was a gap:
      - Modern component frameworks and web components rely on shadow roots, composed tree semantics, and event retargeting.
+     - Engine-internal support is not enough if browser automation and host-facing DOM search surfaces cannot traverse and expose shadow trees.
    - Exit bar:
      - real shadow roots, slotting, composed tree, retargeting, serialization rules, and test coverage
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Rendering/BrowserApi.cs` now treats `ShadowRoot` as a first-class search root, returns stable node ids for open shadow roots, scopes element lookup against node roots instead of element-only roots, and serializes shadow-root page-source requests through fragment HTML.
+     - `FenBrowser.WebDriver/CommandRouter.cs` now exposes WebDriver shadow-root routes for fetching a shadow root and locating elements from that shadow root context.
+     - `FenBrowser.WebDriver/Commands/CommandHandler.cs` and `FenBrowser.WebDriver/Commands/ElementCommands.cs` now execute those commands, return spec-shaped shadow-root references, and surface `no such shadow root` when an open shadow root does not exist.
+     - `FenBrowser.WebDriver/Protocol/ErrorCodes.cs` and `FenBrowser.WebDriver/Protocol/WebDriverResponse.cs` now define the shadow-root error/result protocol surface, including the `shadow-6066-11e4-a52e-4f735466cecf` reference payload.
+     - `FenBrowser.Host/WebDriver/HostBrowserDriver.cs` and `FenBrowser.Host/WebDriver/FenBrowserDriver.cs` now forward shadow-root retrieval through the host driver path so automation sees the same DOM capability the engine exposes internally.
+   - Tests:
+     - `FenBrowser.Tests/Rendering/BrowserHostShadowDomTests.cs`
+     - `GetShadowRootAsync_ReturnsRegisteredShadowRootId_ForOpenShadowRoot`
+     - `FindElementAsync_AllowsSearchWithinRegisteredShadowRoot`
+     - `FenBrowser.Tests/WebDriver/ShadowRootCommandsTests.cs`
+     - `GetShadowRoot_Route_ReturnsShadowRootReference`
+     - `FindElementFromShadowRoot_Route_UsesShadowRootAsParentContext`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.BrowserHostShadowDomTests|FullyQualifiedName~FenBrowser.Tests.WebDriver.ShadowRootCommandsTests"` passed on `2026-03-20` with `4/4` tests green.
 
-19. `P2` The codebase still carries a placeholder alternate JS runtime abstraction that should not survive into a production engine architecture.
-   - Evidence:
-     - `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs:125` defines `FullJsRuntimeStub` as a no-op placeholder.
-   - Why this is a gap:
+19. ~~`P2` The codebase still carries a placeholder alternate JS runtime abstraction that should not survive into a production engine architecture.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs` previously defined `FullJsRuntimeStub` as a no-op second `IJsRuntime` implementation.
+   - Why this was a gap:
      - Placeholder runtime forks invite drift, split ownership, dead code paths, and compatibility confusion.
    - Exit bar:
      - one authoritative runtime path, or a real abstraction layer with tested interchangeable implementations
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs` now documents `IJsRuntime` as the narrow adapter surface for the authoritative `JavaScriptEngine` path instead of a future-engine staging point.
+     - `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs` no longer contains `FullJsRuntimeStub`, leaving `JsZeroRuntime` as the only concrete `IJsRuntime` implementation in the engine assembly.
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsRuntimeAbstractionTests.cs`
+     - `IJsRuntime_HasSingleConcreteImplementation`
+     - `JsZeroRuntime_DelegatesToAuthoritativeJavaScriptEngine`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JsRuntimeAbstractionTests"` passed on `2026-03-20` with `2/2` tests green.
 
-20. `P1` The event loop still collapses all task sources into a single FIFO queue instead of maintaining browser-grade task source semantics.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs:40` stores all scheduled work in a single `Queue<ScheduledTask>`.
-     - `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs:16` owns one `_taskQueue` for all sources.
-     - `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs:44` schedules every task into that shared queue.
-   - Why this is a gap:
+20. ~~`P1` The event loop still collapses all task sources into a single FIFO queue instead of maintaining browser-grade task source semantics.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs` previously stored all scheduled work in one shared `Queue<ScheduledTask>`.
+     - `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs` routed every task source through that single FIFO queue.
+   - Why this was a gap:
      - The HTML event loop model is not just "one FIFO queue"; task source separation affects fairness, ordering, timers, networking, history, and real-site behavioral compatibility.
    - Exit bar:
      - source-aware scheduling with explicit ordering policy, starvation protection, and tests that cover cross-source ordering and reentrancy
+   - Status: Resolved
+   - Resolved on: `2026-03-20`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs` now maintains independent FIFO queues per `TaskSource` instead of one shared queue for all macro-tasks.
+     - `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs` now schedules across active sources with deterministic round-robin selection, preserving in-source FIFO order while preventing one busy source from starving the others.
+     - `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs` now exposes source-aware pending/count inspection helpers so scheduler behavior can be asserted directly in regression tests.
+   - Tests:
+     - `FenBrowser.Tests/Engine/ExecutionSemanticsTests.cs`
+     - `FenBrowser.Tests/Engine/EventLoopTests.cs`
+     - `FenBrowser.Tests/WebAPIs/HistoryApiTests.cs`
+     - `TaskSources_PreserveFifoWithinEachSource`
+     - `TaskSources_RunRoundRobinAcrossActiveSources`
+     - `TaskSources_ReentrantScheduling_DoesNotStarveOtherSources`
+   - Verification:
+     - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
+     - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.ExecutionSemanticsTests|FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopTests|FullyQualifiedName~FenBrowser.Tests.WebAPIs.HistoryApiTests"` passed on `2026-03-20` with `25/25` tests green.
 
 21. `P1` `Reflect` and `Proxy` are still incomplete in ways that will break advanced framework/runtime behavior.
    - Evidence:
@@ -412,45 +518,49 @@ The target standard is not "good enough to demo". The target standard is browser
 
 6. No browser API should be exposed by default if it is only a throw-only skeleton or partial compatibility facade. Presence must imply production-grade semantics.
 
-7. No history, navigation, or worker/service-worker implementation may shortcut the lifecycle model in a way that hides missing state transitions or timing requirements.
+7. No event-loop implementation may collapse distinct task sources into one undifferentiated FIFO queue. Macro-tasks must preserve FIFO within a source, use an explicit cross-source scheduling policy, and defend against starvation.
 
-8. No compatibility fix is complete without a targeted regression test, and site-critical fixes must also get a real-site reproduction or bundle-pattern regression.
+8. No history, navigation, or worker/service-worker implementation may shortcut the lifecycle model in a way that hides missing state transitions or timing requirements.
 
-9. No global-state shortcut may be used where a real realm, document, or pipeline context is required. Explicit state ownership beats hidden global mutation.
+9. No compatibility fix is complete without a targeted regression test, and site-critical fixes must also get a real-site reproduction or bundle-pattern regression.
 
-10. No library may dictate engine architecture. Skia, Win32, or any other dependency must remain behind platform and rendering abstractions.
+10. No global-state shortcut may be used where a real realm, document, or pipeline context is required. Explicit state ownership beats hidden global mutation.
 
-11. No feature should ship if the implementation only passes narrow demos but fails production-scale bundle patterns, cross-script state, or event-loop timing behavior.
+11. No library may dictate engine architecture. Skia, Win32, or any other dependency must remain behind platform and rendering abstractions.
 
-12. No unsupported syntax or runtime feature should be discovered late if the parser or platform already advertises support. Capability gating must happen at the earliest defensible layer.
+12. No feature should ship if the implementation only passes narrow demos but fails production-scale bundle patterns, cross-script state, or event-loop timing behavior.
 
-13. No host integration should diverge between static and dynamic script paths. Script fetching, error dispatch, load dispatch, current-script tracking, and execution timing must be unified.
+13. No unsupported syntax or runtime feature should be discovered late if the parser or platform already advertises support. Capability gating must happen at the earliest defensible layer.
 
-14. No web-platform API should omit abort, cleanup, or lifetime management. Listener removal, worker shutdown, observer disconnect, and storage/session lifetime must all be explicit and tested.
+14. No host integration should diverge between static and dynamic script paths. Script fetching, error dispatch, load dispatch, current-script tracking, and execution timing must be unified.
 
-15. Every new feature must be held to Chrome/Firefox-class compatibility expectations, while explicitly avoiding their historical pitfalls: hidden global state, over-coupling to rendering libraries, under-specified legacy shims, and correctness traded away for short-term boot success.
+15. No web-platform API should omit abort, cleanup, or lifetime management. Listener removal, worker shutdown, observer disconnect, and storage/session lifetime must all be explicit and tested.
 
-16. No JS-facing platform API may return a fake promise, resolved-thenable wrapper, callback-only placeholder, or state bag with `__state` fields where a real engine promise is required.
+16. Every new feature must be held to Chrome/Firefox-class compatibility expectations, while explicitly avoiding their historical pitfalls: hidden global state, over-coupling to rendering libraries, under-specified legacy shims, and correctness traded away for short-term boot success.
 
-17. No binary, canvas, or media API may ship with placeholder read/write paths. `ArrayBuffer`, typed arrays, `ImageData`, canvas pixel access, media buffers, and blob/file flows must operate on real backing storage with browser-correct ownership and mutation semantics.
+17. No JS-facing platform API may return a fake promise, resolved-thenable wrapper, callback-only placeholder, or state bag with `__state` fields where a real engine promise is required.
 
-18. No worker or cross-context messaging path may fall back to JSON serialization in place of structured clone. Transfer lists, cycles, built-in brands, binary ownership transfer, and rejection behavior must be explicit and spec-grade.
+18. No binary, canvas, or media API may ship with placeholder read/write paths. `ArrayBuffer`, typed arrays, `ImageData`, canvas pixel access, media buffers, and blob/file flows must operate on real backing storage with browser-correct ownership and mutation semantics.
 
-19. No IndexedDB implementation may be considered complete while it is process-local, in-memory-only, timer-simulated, or missing transaction scheduling, indexes, cursors, versionchange/blocked coordination, and durable persistence.
+19. No worker or cross-context messaging path may fall back to JSON serialization in place of structured clone. Transfer lists, cycles, built-in brands, binary ownership transfer, and rejection behavior must be explicit and spec-grade.
 
-20. No custom-elements implementation may ship as a name registry plus partial upgrade hook. Construction stack, CEReactions, lifecycle callbacks, observed-attribute processing, and upgrade timing must all be implemented together.
+20. No IndexedDB implementation may be considered complete while it is process-local, in-memory-only, timer-simulated, or missing transaction scheduling, indexes, cursors, versionchange/blocked coordination, and durable persistence.
 
-21. No Web Audio surface may simulate graph behavior with fixed timers, synthetic analyser output, fake decode paths, or placeholder buffers. Audio timing, graph processing, and node state must come from a real audio pipeline.
+21. No custom-elements implementation may ship as a name registry plus partial upgrade hook. Construction stack, CEReactions, lifecycle callbacks, observed-attribute processing, and upgrade timing must all be implemented together.
 
-22. No WebRTC surface may be exposed as production-ready while SDP, ICE, stats, media tracks, data channels, or connection state are mocked or delay-simulated instead of backed by real transport/media behavior.
+22. No Web Audio surface may simulate graph behavior with fixed timers, synthetic analyser output, fake decode paths, or placeholder buffers. Audio timing, graph processing, and node state must come from a real audio pipeline.
 
-23. No finding may be struck through as completed unless the implementation change is production-grade, the related regression tests are already in the tree, and the audit entry is updated in the same change.
+23. No WebRTC surface may be exposed as production-ready while SDP, ICE, stats, media tracks, data channels, or connection state are mocked or delay-simulated instead of backed by real transport/media behavior.
 
-24. No completed item may disappear from this file. Completed work must remain recorded with explicit resolved status, completion date, and the validating test location.
+24. No host, WebDriver, or DevTools surface may treat `ShadowRoot` as invisible once the DOM core exposes it. Search roots, element identity, serialization, and automation protocol support must cover shadow trees explicitly and be regression-tested.
 
-25. No feature request is valid for closure unless it names the target runtime surface, the required browser-grade semantics, the acceptance criteria, and the exact test coverage expected before strike-off.
+25. No finding may be struck through as completed unless the implementation change is production-grade, the related regression tests are already in the tree, and the audit entry is updated in the same change.
 
-26. No test requirement may be satisfied by smoke-only coverage. Each closed finding must have focused regression tests for semantics, edge cases, and at least one real-world or minified-bundle style execution path when applicable.
+25. No completed item may disappear from this file. Completed work must remain recorded with explicit resolved status, completion date, and the validating test location.
+
+26. No feature request is valid for closure unless it names the target runtime surface, the required browser-grade semantics, the acceptance criteria, and the exact test coverage expected before strike-off.
+
+27. No test requirement may be satisfied by smoke-only coverage. Each closed finding must have focused regression tests for semantics, edge cases, and at least one real-world or minified-bundle style execution path when applicable.
 
 ## Promotion Rule
 

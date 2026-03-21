@@ -142,6 +142,69 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("blue", computed[x4].Map["color"]);
         }
 
+        [Fact]
+        public void CompoundSelector_DoesNotMatchWhenRequiredClassIsMissing()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html class='wp25eastereggs-enable-clientpref-1'><body>
+    <div id='notice' class='wp25eastereggs-sitenotice'></div>
+</body></html>");
+
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+
+            Assert.False(
+                SelectorMatcher.Matches(
+                    root,
+                    "html.wp25eastereggs-companion-enabled.wp25eastereggs-enable-clientpref-1:not(.ve-active)"));
+        }
+
+        [Fact]
+        public async Task Cascade_KeepsWikipediaEasterEggNoticeHiddenWithoutCompanionClass()
+        {
+            const string html = @"
+<!doctype html>
+<html class='wp25eastereggs-enable-clientpref-1'>
+<head>
+    <style>
+        .wp25eastereggs-sitenotice,
+        .wp25eastereggs-sitenotice-learn-more-link,
+        .wp25eastereggs-vector-sitenotice-landmark,
+        .wp25eastereggs-video-container { display: none; }
+
+        @media screen and (min-width: 1120px) {
+            html.wp25eastereggs-companion-enabled.wp25eastereggs-enable-clientpref-1:not(.ve-active) .wp25eastereggs-vector-sitenotice-landmark {
+                display: block;
+                width: 12.25rem;
+                height: 12.25rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class='vector-sitenotice-container'>
+        <div id='siteNotice'>
+            <div class='wp25eastereggs-sitenotice'>
+                <div id='landmark' class='wp25eastereggs-vector-sitenotice-landmark'></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://en.wikipedia.org"), null);
+
+            var notice = ById(doc, "siteNotice").Descendants().OfType<Element>()
+                .First(e => e.ClassName?.Contains("wp25eastereggs-sitenotice", StringComparison.Ordinal) == true);
+            var landmark = ById(doc, "landmark");
+
+            Assert.Equal("none", computed[notice].Display);
+            Assert.Equal("none", computed[landmark].Display);
+        }
+
         private static Document Parse(string html)
         {
             var parser = new HtmlParser(html);

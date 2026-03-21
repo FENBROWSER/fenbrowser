@@ -153,5 +153,76 @@ namespace FenBrowser.Tests.Engine
             Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
             Assert.True(result.ToBoolean());
         }
+
+        [Fact]
+        public void Proxy_WithoutTraps_Forwards_Get_Set_And_Has_ToTarget()
+        {
+            string script = @"
+                var target = { attr: 1 };
+                var proxy = new Proxy(target, {});
+                var readOk = proxy.attr === 1;
+                proxy.extra = 7;
+                var setOk = target.extra === 7;
+                var hasOk = ('attr' in proxy) && !('missing' in proxy);
+                [readOk, setOk, hasOk];
+            ";
+
+            var result = Evaluate(script);
+            Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
+            var array = result.AsObject();
+            Assert.NotNull(array);
+            Assert.True(array.Get("0").ToBoolean());
+            Assert.True(array.Get("1").ToBoolean());
+            Assert.True(array.Get("2").ToBoolean());
+        }
+
+        [Fact]
+        public void Proxy_Function_WithoutApplyTrap_Forwards_ThisBinding_AndArguments()
+        {
+            string script = @"
+                var receiver = { base: 5 };
+                var target = function(x) { return this.base + x; };
+                receiver.proxy = new Proxy(target, {});
+                receiver.proxy(3);
+            ";
+
+            var result = Evaluate(script);
+            Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
+            Assert.Equal(8.0, result.ToNumber());
+        }
+
+        [Fact]
+        public void Reflect_Construct_Uses_NewTarget_Prototype()
+        {
+            string script = @"
+                function Target(x) { this.value = x; }
+                function NewTarget() {}
+                NewTarget.prototype = { marker: 42 };
+                var constructed = Reflect.construct(Target, [9], NewTarget);
+                constructed.value === 9 &&
+                Object.getPrototypeOf(constructed) === NewTarget.prototype &&
+                constructed.marker === 42;
+            ";
+
+            var result = Evaluate(script);
+            Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
+            Assert.True(result.ToBoolean());
+        }
+
+        [Fact]
+        public void Reflect_Construct_OnProxyConstructor_WithoutConstructTrap_ForwardsToTarget()
+        {
+            string script = @"
+                function Target(x) { this.value = x; }
+                var proxy = new Proxy(Target, {});
+                var constructed = Reflect.construct(proxy, [11], Target);
+                constructed.value === 11 &&
+                Object.getPrototypeOf(constructed) === Target.prototype;
+            ";
+
+            var result = Evaluate(script);
+            Assert.False(result.Type == ValueType.Error, $"Script failed: {result}");
+            Assert.True(result.ToBoolean());
+        }
     }
 }

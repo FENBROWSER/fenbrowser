@@ -1019,73 +1019,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return evalResult;
         }
 
-        /// <summary>
-        /// Lazily compiles the AST body of a FenFunction to a CodeBlock and stores it on the function.
-        /// Implements ECMA-262 §10.2: Function objects may be created from parsed AST and compiled on demand.
-        /// Throws FenTypeError if compilation fails.
-        /// </summary>
-        private static void LazyCompileAstFunction(FenFunction func)
-        {
-            if (func.BytecodeBlock != null)
-            {
-                return; // already compiled
-            }
-
-            if (func.Body == null)
-            {
-                throw new FenTypeError("TypeError: Function has neither bytecode nor an AST body.");
-            }
-
-            try
-            {
-                var lazyCompiler = new Compiler.BytecodeCompiler();
-                // Build a callable body the same way the up-front compiler does (handles
-                // expression-body arrows, default/destructuring params, etc.).
-                var compiledBlock = lazyCompiler.Compile(
-                    BuildCallableBodyStatic(func.Body, func.Parameters));
-                func.BytecodeBlock = compiledBlock;
-            }
-            catch (FenSyntaxError)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                throw new FenTypeError($"TypeError: Function compilation failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Static helper that mirrors BytecodeCompiler.BuildCallableBody for use in the VM
-        /// during lazy compilation of AST-backed functions.
-        /// </summary>
-        private static AstNode BuildCallableBodyStatic(AstNode body, List<Identifier> parameters)
-        {
-            BlockStatement normalizedBody;
-            if (body is BlockStatement blockBody)
-            {
-                normalizedBody = blockBody;
-            }
-            else if (body is Expression exprBody)
-            {
-                var syntheticBlock = new BlockStatement();
-                syntheticBlock.Statements.Add(new ReturnStatement { ReturnValue = exprBody });
-                normalizedBody = syntheticBlock;
-            }
-            else
-            {
-                // Fallback: wrap in a block with the node as a statement
-                var fallbackBlock = new BlockStatement();
-                if (body is Statement stmt)
-                {
-                    fallbackBlock.Statements.Add(stmt);
-                }
-                return fallbackBlock;
-            }
-
-            return normalizedBody;
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void RequireObjectCoercible(FenValue v, string opName)
         {
@@ -2212,14 +2145,8 @@ run_loop_restart:
                                     ThrowIfNativeError(callResult);
                                     _stack[_sp++] = callResult;
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     if (func.IsGenerator)
                                     {
                                         // Generator call: capture args and return a suspended GeneratorObject
@@ -2275,14 +2202,8 @@ run_loop_restart:
                                     ThrowIfNativeError(callFromArrayResult);
                                     _stack[_sp++] = callFromArrayResult;
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     if (func.IsGenerator)
                                     {
                                         var genArgs = ExtractArrayLikeValues(argsArrayVal);
@@ -2338,14 +2259,8 @@ run_loop_restart:
                                     ThrowIfNativeError(callMethodResult);
                                     _stack[_sp++] = callMethodResult;
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     if (func.IsGenerator)
                                     {
                                         var genArgs = new FenValue[argCount];
@@ -2403,14 +2318,8 @@ run_loop_restart:
                                     ThrowIfNativeError(callMethodFromArrayResult);
                                     _stack[_sp++] = callMethodFromArrayResult;
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed functions on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     if (func.IsGenerator)
                                     {
                                         var genArgs = ExtractArrayLikeValues(argsArrayVal);
@@ -2487,14 +2396,8 @@ run_loop_restart:
                                     if (result.IsObject || result.IsFunction) _stack[_sp++] = result;
                                     else _stack[_sp++] = FenValue.FromObject(newObj);
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed constructors on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {
@@ -2556,14 +2459,8 @@ run_loop_restart:
                                     if (result.IsObject || result.IsFunction) _stack[_sp++] = result;
                                     else _stack[_sp++] = FenValue.FromObject(newObj);
                                 }
-                                else if (func.BytecodeBlock != null || func.Body != null)
+                                else if (func.BytecodeBlock != null)
                                 {
-                                    // Lazy-compile AST-backed constructors on first call (ECMA-262 §10.2)
-                                    if (func.BytecodeBlock == null)
-                                    {
-                                        LazyCompileAstFunction(func);
-                                    }
-
                                     var newEnv = new FenEnvironment(func.Env);
                                     if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
                                     {

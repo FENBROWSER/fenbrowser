@@ -28,60 +28,83 @@ namespace FenBrowser.FenEngine.Scripting
 
         public static FenValue CreateProxyGlobal()
         {
-             var proxyCtor = new FenFunction("Proxy", (args, thisVal) =>
-            {
-               // (Same logic as above)
-                 if (args.Length < 2) throw new Errors.FenInternalError("Proxy requires target and handler");
-                 // ...
-                 return CreateProxy(args[0], args[1]);
-            });
-            
-            // Reflect Revocable?
-            
-            return FenValue.FromFunction(proxyCtor);
+            return CreateProxyConstructor();
         }
 
         public static FenValue CreateProxy(FenValue target, FenValue handler)
         {
-             if (!target.IsObject && !target.IsFunction)
-                    throw new Errors.FenInternalError("Proxy target must be object/function");
-            
-             if (target.IsFunction)
-             {
-                 var targetFunc = target.AsFunction();
-                 var proxyFunc = new FenFunction("ProxyFunc", (pArgs, pThis) => 
-                 {
-                     return targetFunc.Invoke(pArgs, null); // Default call
-                 });
-                 proxyFunc.ProxyTarget = target;
-                 proxyFunc.ProxyHandler = handler;
-                 return FenValue.FromFunction(proxyFunc);
-             }
-             
-             // var targetObj = target.AsObject(); // unused?
-             var handlerObj = handler.AsObject();
-             var proxyObj = new FenObject();
-             
-             proxyObj.Set("__isProxy__", FenValue.FromBoolean(true));
-             proxyObj.Set("__proxyTarget__", target);
-             proxyObj.Set("__handler__", handler);
-             
-             if (handlerObj.Has("get"))
-             {
-                 proxyObj.Set("__proxyGet__", handlerObj.Get("get"));
-             }
-             if (handlerObj.Has("set")) proxyObj.Set("__proxySet__", handlerObj.Get("set"));
-             if (handlerObj.Has("has")) proxyObj.Set("__proxyHas__", handlerObj.Get("has"));
-             
-             // Important: Forwarding Logic
-             // If NO 'get' trap, we must set a custom getter on the FenObject?
-             // FenObject doesn't support "Default Getter".
-             // We MUST rely on the fact that if 'get' is missing, standard behavior applies.
-             // Standard behavior for Proxy(target) is to behave like target.
-             // Since we can't make FenObject wrap another object transparently easily...
-             // We will assume most frameworks provide a 'get' trap.
-             
-             return FenValue.FromObject(proxyObj);
+            if (!target.IsObject && !target.IsFunction)
+            {
+                throw new Errors.FenInternalError("Proxy target must be object/function");
+            }
+
+            if (!handler.IsObject)
+            {
+                throw new Errors.FenInternalError("Proxy handler must be an object");
+            }
+
+            if (target.IsFunction)
+            {
+                var targetFunc = target.AsFunction();
+                var proxyFunc = new FenFunction(targetFunc?.Name ?? "ProxyFunc", (pArgs, pThis) =>
+                {
+                    return targetFunc.Invoke(pArgs, null, pThis);
+                })
+                {
+                    ProxyTarget = target,
+                    ProxyHandler = handler,
+                    IsConstructor = targetFunc?.IsConstructor ?? true,
+                    IsAsync = targetFunc?.IsAsync ?? false,
+                    IsGenerator = targetFunc?.IsGenerator ?? false
+                };
+
+                proxyFunc.SetDirect("__target__", target);
+                proxyFunc.SetDirect("__proxyTarget__", target);
+                proxyFunc.SetDirect("__handler__", handler);
+                proxyFunc.SetDirect("__proxyHandler__", handler);
+                proxyFunc.SetDirect("__isProxy__", FenValue.FromBoolean(true));
+
+                if (targetFunc != null)
+                {
+                    var targetProto = targetFunc.GetPrototype();
+                    if (targetProto != null)
+                    {
+                        proxyFunc.SetPrototype(targetProto);
+                    }
+
+                    var functionPrototypeValue = targetFunc.Get("prototype");
+                    if (functionPrototypeValue.IsObject || functionPrototypeValue.IsFunction)
+                    {
+                        proxyFunc.Set("prototype", functionPrototypeValue);
+                    }
+                }
+
+                return FenValue.FromFunction(proxyFunc);
+            }
+
+            var targetObj = target.AsObject();
+            var handlerObj = handler.AsObject();
+            var proxyObj = new FenObject();
+            if (targetObj?.GetPrototype() != null)
+            {
+                proxyObj.SetPrototype(targetObj.GetPrototype());
+            }
+
+            proxyObj.SetDirect("__proxyTarget__", target);
+            proxyObj.SetDirect("__target__", target);
+            proxyObj.SetDirect("__handler__", handler);
+            proxyObj.SetDirect("__proxyHandler__", handler);
+
+            var getTrap = handlerObj.Get("get");
+            var setTrap = handlerObj.Get("set");
+            var hasTrap = handlerObj.Get("has");
+
+            if (getTrap.IsFunction) proxyObj.SetDirect("__proxyGet__", getTrap);
+            if (setTrap.IsFunction) proxyObj.SetDirect("__proxySet__", setTrap);
+            if (hasTrap.IsFunction) proxyObj.SetDirect("__proxyHas__", hasTrap);
+            proxyObj.SetDirect("__isProxy__", FenValue.FromBoolean(true));
+
+            return FenValue.FromObject(proxyObj);
         }
     }
 }
