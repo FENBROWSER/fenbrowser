@@ -130,7 +130,7 @@ flowchart TD
   - blocked classes: unsafe schemes (`javascript:`, `file:`), private/reserved host targets, and control-character payloads.
 - `Audio.play()` now returns `JsPromise` with deterministic resolve/reject paths, event dispatch (`play`, `playing`, `pause`, `ended`, `error`), and bounded concurrency protection to prevent unbounded playback fan-out.
 - `JavaScriptEngine.SetupPermissions` and `SetupWindowEvents` now expose `Audio`, `AudioContext`, and `webkitAudioContext` as function constructors on both global and `window` surfaces (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
-- Legacy parser fallback for `new Audio("...").play()` feature-gap tracing was removed from `HandlePhase123Builtins`, so execution now flows through the real runtime API.
+- Legacy parser fallback for `new Audio("...").play()` feature-gap tracing was removed from the retired `JavaScriptEngine` compatibility path, so execution now flows through the real runtime API.
 ### 2.9 Notifications API Productionization (2026-03-06)
 
 - `NotificationsAPI` now exposes `Notification` as a real constructor-capable `FenFunction` instead of a plain object surface (`FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`).
@@ -5399,3 +5399,33 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `FetchEvent` was explicitly interoperating with that fallback via legacy settled-state markers, so worker fetch behavior could silently differ from the browser-grade promise path.
 - Verification:
   - `dotnet test FenBrowser.Tests --filter ServiceWorkerLifecycleTests --no-restore`: pass (`11/11`).
+
+## 2.173 Runtime Cleanup and Host Surface Classification (2026-03-28)
+
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Removed regex-based `importScripts()` graph discovery and the eager prefetch path that scanned worker source text before execution.
+  - `importScripts(...)` now resolves, fetches, and caches scripts at the actual runtime call site, which keeps dynamic specifiers correct and avoids false positives from comments or string literals.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Removed the dead `HandlePhase123Builtins(...)` compatibility handler instead of leaving it as an inert fallback path.
+  - Removed the stale `UseMiniPrattEngine` runtime toggle and added explicit host-surface usage tracing for `navigator.userAgentData` and `crypto.subtle`.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+  - Deleted the last `UseMiniPrattEngine` setter, so the retired toggle no longer leaks into host setup.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs`
+  - `RunInline(...)` is now documented as the canonical inline-script host entry point and intentionally delegates through `Evaluate(...)` instead of implying a separate execution mode.
+- `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs`
+  - Clarified the runtime contract so `RunInline(...)` is treated as the shared host entry point, not as a second-class legacy runtime lane.
+- `FenBrowser.FenEngine/Scripting/JavaScriptRuntime.cs`
+  - Deleted the unused legacy wrapper class after confirming it was no longer referenced anywhere in the engine.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Added an explicit catalog that classifies approximate browser-host surfaces as `CompatibilityShim` or `ProductionImplementation` and exposes trace hooks for runtime use.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added host-surface tracing for `Intl`, `window.open`, `window.matchMedia`, and `window.requestIdleCallback` so approximated APIs are no longer silent or implicit.
+- `FenBrowser.Tests/Workers/WorkerTests.cs`
+  - Added regression coverage proving `importScripts()` resolves dynamic specifiers at runtime and ignores comment/string false positives.
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs`
+  - Added cleanup guards that fail if the dead compatibility handler, the unused toggle, the deleted runtime wrapper, or the host-surface classification catalog regress.
+- Why this mattered:
+  - The worker runtime was still using source-text regexes for behavior that browsers resolve during script execution, which made dynamic imports incorrect and brittle.
+  - The scripting layer still carried dead compatibility branches and undocumented approximations, which is the opposite of a production-grade engine surface.
+- Verification:
+  - `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`: pass (`26/26`).
