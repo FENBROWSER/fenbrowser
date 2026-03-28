@@ -84,24 +84,18 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (node == null) return null;
             if (node is PseudoElement pe) return pe.ComputedStyle;
-            if (!_styles.TryGetValue(node, out var style) || style == null)
+            // Primary: node.ComputedStyle (single source of truth, set by CascadeIntoComputedStyles)
+            var style = node.ComputedStyle;
+            if (style == null)
+                _styles.TryGetValue(node, out style);
+            if (style == null)
             {
-                if (node.IsText()) 
+                if (node.IsText())
                 {
                     var parentStyle = GetStyle(node.ParentNode);
                     if (parentStyle != null) return parentStyle;
                 }
-                
-                // CRITICAL FIX: Use node.ComputedStyle as fallback (set during CSS cascade)
-                // This avoids the dictionary key mismatch issue when DOM nodes are different instances
-                if (node.ComputedStyle != null)
-                {
-                    style = node.ComputedStyle;
-                }
-                else
-                {
-                    style = new CssComputed();
-                }
+                style = new CssComputed();
             }
             
             // IMPORTANT: Read CSS properties from Map when typed properties are null OR empty
