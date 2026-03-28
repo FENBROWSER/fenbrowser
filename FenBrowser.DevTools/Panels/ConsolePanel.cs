@@ -22,9 +22,25 @@ public class ConsolePanel : DevToolsPanelBase
     private int _historyIndex = -1;
     private bool _inputFocused;
     private bool _showBrowserLogs = true; // Toggle to show FenLogger entries
+    private readonly SemaphoreSlim _protocolEntryLock = new(1, 1);
+    private int _hostVersion;
     
     private const float INPUT_HEIGHT = 28f;
     
+    protected override void OnHostChanging(IDevToolsHost? previousHost)
+    {
+        _hostVersion++;
+        if (previousHost != null)
+        {
+            previousHost.ProtocolEventReceived -= OnProtocolEvent;
+        }
+
+        LogManager.LogEntryAdded -= OnLogEntryAdded;
+        _entries.Clear();
+        ScrollY = 0;
+        MaxScrollY = 0;
+    }
+
     protected override void OnHostChanged()
     {
         if (Host != null)
@@ -87,24 +103,7 @@ public class ConsolePanel : DevToolsPanelBase
                 var evt = JsonSerializer.Deserialize<ProtocolEvent<ConsoleAPICalledEvent>>(json, ProtocolJson.Options);
                 if (evt?.Params != null)
                 {
-                    foreach (var arg in evt.Params.Args)
-                    {
-                        var level = evt.Params.Type.ToLower() switch
-                        {
-                            "error" => ConsoleLevel.Error,
-                            "warning" => ConsoleLevel.Warn,
-                            "info" => ConsoleLevel.Info,
-                            "debug" => ConsoleLevel.Debug,
-                            _ => ConsoleLevel.Log
-                        };
-
-                        AddEntry(new ConsoleMessageInfo(
-                            arg.Description ?? arg.Value?.ToString() ?? "undefined",
-                            level,
-                            DateTime.Now,
-                            null, null, null
-                        ));
-                    }
+                    _ = AppendProtocolConsoleEntriesAsync(evt.Params, _hostVersion);
                     Invalidate();
                 }
             }
@@ -396,7 +395,7 @@ public class ConsolePanel : DevToolsPanelBase
             
             if (response?.Result?.Result != null)
             {
-                string output = response.Result.Result.Description ?? "undefined";
+                string output = await FormatRemoteObjectAsync(response.Result.Result);
                 _entries.Add(new ConsoleEntry("< " + output, ConsoleLevel.Log, DateTime.Now, null, null));
             }
             else if (response?.Error != null)
@@ -412,8 +411,118 @@ public class ConsolePanel : DevToolsPanelBase
         // Scroll to bottom
         MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
         ScrollY = MaxScrollY;
-        
+
         Invalidate();
+    }
+
+    private async Task AppendProtocolConsoleEntriesAsync(ConsoleAPICalledEvent evt, int hostVersion)
+    {
+        await _protocolEntryLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (hostVersion != _hostVersion)
+            {
+                return;
+            }
+
+            var level = evt.Type.ToLowerInvariant() switch
+            {
+                "error" => ConsoleLevel.Error,
+                "warning" => ConsoleLevel.Warn,
+                "info" => ConsoleLevel.Info,
+                "debug" => ConsoleLevel.Debug,
+                _ => ConsoleLevel.Log
+            };
+
+            foreach (var arg in evt.Args)
+            {
+                if (hostVersion != _hostVersion)
+                {
+                    return;
+                }
+
+                var output = await FormatRemoteObjectAsync(arg).ConfigureAwait(false);
+                AddEntry(new ConsoleMessageInfo(output, level, DateTime.Now, null, null, null));
+            }
+
+            Invalidate();
+        }
+        finally
+        {
+            _protocolEntryLock.Release();
+        }
+    }
+
+    private async Task<string> FormatRemoteObjectAsync(RemoteObject remoteObject)
+    {
+        if (string.IsNullOrWhiteSpace(remoteObject.ObjectId) || Host == null)
+        {
+            return remoteObject.Description ?? remoteObject.Value?.ToString() ?? "undefined";
+        }
+
+        try
+        {
+            var request = new ProtocolRequest<object>
+            {
+                Id = 2101,
+                Method = "Runtime.getProperties",
+                Params = new { objectId = remoteObject.ObjectId, ownProperties = true }
+            };
+
+            var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
+            var response = JsonSerializer.Deserialize<ProtocolResponse<GetPropertiesResult>>(responseJson, ProtocolJson.Options);
+            if (response?.Result?.Result is { Length: > 0 } properties)
+            {
+                return BuildObjectPreview(remoteObject, properties);
+            }
+        }
+        catch
+        {
+            // Fall back to the remote-object description when property inspection fails.
+        }
+
+        return remoteObject.Description ?? remoteObject.Value?.ToString() ?? "undefined";
+    }
+
+    private static string BuildObjectPreview(RemoteObject remoteObject, RuntimePropertyDescriptor[] properties)
+    {
+        var visibleProperties = properties
+            .Where(property => property.Enumerable)
+            .Take(remoteObject.Subtype == "array" ? 5 : 6)
+            .ToArray();
+
+        if (visibleProperties.Length == 0)
+        {
+            return remoteObject.Description ?? "Object";
+        }
+
+        if (remoteObject.Subtype == "array")
+        {
+            var values = visibleProperties
+                .Where(property => property.Name != "length")
+                .Select(property => FormatPropertyValue(property.Value))
+                .ToArray();
+
+            return $"[{string.Join(", ", values)}]";
+        }
+
+        var preview = string.Join(", ", visibleProperties.Select(property => $"{property.Name}: {FormatPropertyValue(property.Value)}"));
+        return "{ " + preview + " }";
+    }
+
+    private static string FormatPropertyValue(RemoteObject? value)
+    {
+        if (value == null)
+        {
+            return "undefined";
+        }
+
+        if (value.Type == "string")
+        {
+            return "\"" + (value.Value?.ToString() ?? string.Empty) + "\"";
+        }
+
+        return value.Description ?? value.Value?.ToString() ?? value.Type;
     }
     
     /// <summary>

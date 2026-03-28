@@ -17,6 +17,8 @@ public class NetworkPanel : DevToolsPanelBase
     private readonly List<NetworkRequestInfo> _requests = new();
     private NetworkRequestInfo? _selectedRequest;
     private int _hoveredIndex = -1;
+    private string? _requestBodyPreview;
+    private string? _responseBodyPreview;
     
     // Layout
     private float _listHeight;
@@ -32,6 +34,22 @@ public class NetworkPanel : DevToolsPanelBase
         ("Size", 70f),
         ("Time", 70f)
     };
+
+    protected override void OnHostChanging(IDevToolsHost? previousHost)
+    {
+        if (previousHost != null)
+        {
+            previousHost.ProtocolEventReceived -= OnProtocolEvent;
+        }
+
+        _requests.Clear();
+        _selectedRequest = null;
+        _hoveredIndex = -1;
+        _requestBodyPreview = null;
+        _responseBodyPreview = null;
+        ScrollY = 0;
+        MaxScrollY = 0;
+    }
     
     protected override void OnHostChanged()
     {
@@ -50,6 +68,26 @@ public class NetworkPanel : DevToolsPanelBase
             _requests.Clear();
             _requests.AddRange(Host.GetNetworkRequests());
         }
+    }
+
+    public override void Paint(SKCanvas canvas, SKRect bounds)
+    {
+        Bounds = bounds;
+
+        canvas.Save();
+        canvas.ClipRect(bounds);
+
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Background);
+        canvas.DrawRect(bounds, bgPaint);
+
+        OnPaint(canvas, bounds);
+
+        if (MaxScrollY > 0)
+        {
+            DrawPaneScrollbar(canvas, new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + _listHeight), ScrollY, MaxScrollY);
+        }
+
+        canvas.Restore();
     }
 
     private void OnProtocolEvent(string json)
@@ -73,6 +111,7 @@ public class NetworkPanel : DevToolsPanelBase
                         DateTime.UnixEpoch.AddSeconds(evt.Params.Timestamp),
                         evt.Params.Dto.Headers,
                         new Dictionary<string, string>(),
+                        null,
                         null, false
                     );
                     UpdateRequest(info);
@@ -170,15 +209,15 @@ public class NetworkPanel : DevToolsPanelBase
         canvas.DrawLine(bounds.Left, y + HEADER_HEIGHT, bounds.Right, y + HEADER_HEIGHT, borderPaint);
         
         // Draw requests
-        y = bounds.Top + HEADER_HEIGHT + ScrollY;
+        y = bounds.Top + HEADER_HEIGHT - ScrollY;
         
         for (int i = 0; i < _requests.Count; i++)
         {
             float itemY = y + i * DevToolsTheme.ItemHeight;
             
             // Skip if outside visible area
-            if (itemY + DevToolsTheme.ItemHeight < bounds.Top + HEADER_HEIGHT - ScrollY) continue;
-            if (itemY > bounds.Bottom - ScrollY) break;
+            if (itemY + DevToolsTheme.ItemHeight < bounds.Top + HEADER_HEIGHT) continue;
+            if (itemY > bounds.Bottom) break;
             
             var request = _requests[i];
             
@@ -294,6 +333,41 @@ public class NetworkPanel : DevToolsPanelBase
             canvas.DrawText(val, x + 150, y + 10, headerValuePaint);
             y += 16;
         }
+
+        y += DevToolsTheme.PaddingNormal;
+        canvas.DrawLine(bounds.Left, y, bounds.Right, y, borderPaint);
+        y += DevToolsTheme.PaddingNormal;
+
+        if (!string.IsNullOrWhiteSpace(_requestBodyPreview))
+        {
+            canvas.DrawText("Request Body", x, y + 12, sectionPaint);
+            y += DevToolsTheme.ItemHeight;
+
+            foreach (var line in TruncatePreview(_requestBodyPreview!, 3).Split('\n'))
+            {
+                if (y + 16 > bounds.Bottom) break;
+                canvas.DrawText(line, x, y + 10, headerValuePaint);
+                y += 16;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_responseBodyPreview) && y + 16 <= bounds.Bottom)
+        {
+            if (!string.IsNullOrWhiteSpace(_requestBodyPreview))
+            {
+                y += DevToolsTheme.PaddingSmall;
+            }
+
+            canvas.DrawText("Response Preview", x, y + 12, sectionPaint);
+            y += DevToolsTheme.ItemHeight;
+
+            foreach (var line in TruncatePreview(_responseBodyPreview!, 5).Split('\n'))
+            {
+                if (y + 16 > bounds.Bottom) break;
+                canvas.DrawText(line, x, y + 10, headerValuePaint);
+                y += 16;
+            }
+        }
     }
     
     public override void OnMouseMove(float x, float y)
@@ -327,12 +401,26 @@ public class NetworkPanel : DevToolsPanelBase
             if (index >= 0 && index < _requests.Count)
             {
                 _selectedRequest = _requests[index];
+                _requestBodyPreview = _selectedRequest.RequestBody;
+                _responseBodyPreview = _selectedRequest.ResponseBody;
+                _ = LoadSelectedRequestBodiesAsync(_selectedRequest.Id);
                 Invalidate();
                 return true;
             }
         }
         
         return false;
+    }
+
+    public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)
+    {
+        if (y >= Bounds.Top + _listHeight || MaxScrollY <= 0)
+        {
+            return;
+        }
+
+        ScrollY = Math.Clamp(ScrollY - deltaY * 40, 0, MaxScrollY);
+        Invalidate();
     }
     
     private int GetRequestIndexAt(float y)
@@ -347,5 +435,90 @@ public class NetworkPanel : DevToolsPanelBase
         if (bytes < 1024) return $"{bytes}B";
         if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1}KB";
         return $"{bytes / (1024.0 * 1024.0):F1}MB";
+    }
+
+    private async Task LoadSelectedRequestBodiesAsync(string requestId)
+    {
+        if (Host == null) return;
+
+        string? requestBodyPreview = _selectedRequest?.RequestBody;
+        string? responseBodyPreview = _selectedRequest?.ResponseBody;
+
+        try
+        {
+            var bodyRequest = new ProtocolRequest<object>
+            {
+                Id = 3001,
+                Method = "Network.getResponseBody",
+                Params = new { requestId }
+            };
+
+            var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(bodyRequest, ProtocolJson.Options));
+            var bodyResponse = ProtocolJson.Deserialize<ProtocolResponse<GetResponseBodyResult>>(responseJson);
+            if (bodyResponse?.Result?.Body != null)
+            {
+                responseBodyPreview = bodyResponse.Result.Body;
+            }
+        }
+        catch
+        {
+            // Ignore response-body fetch failures for requests without buffered payloads.
+        }
+
+        try
+        {
+            var requestBodyRequest = new ProtocolRequest<object>
+            {
+                Id = 3002,
+                Method = "Network.getRequestPostData",
+                Params = new { requestId }
+            };
+
+            var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(requestBodyRequest, ProtocolJson.Options));
+            var bodyResponse = ProtocolJson.Deserialize<ProtocolResponse<GetRequestPostDataResult>>(responseJson);
+            if (bodyResponse?.Result?.PostData != null)
+            {
+                requestBodyPreview = bodyResponse.Result.PostData;
+            }
+        }
+        catch
+        {
+            // Ignore request-body fetch failures for GET/HEAD and similar requests.
+        }
+
+        if (_selectedRequest?.Id != requestId)
+        {
+            return;
+        }
+
+        _requestBodyPreview = requestBodyPreview;
+        _responseBodyPreview = responseBodyPreview;
+
+        Invalidate();
+    }
+
+    private static string TruncatePreview(string body, int maxLines)
+    {
+        if (string.IsNullOrEmpty(body))
+        {
+            return string.Empty;
+        }
+
+        var normalized = body.Replace("\r\n", "\n");
+        var lines = normalized.Split('\n');
+        var limited = lines.Length > maxLines ? string.Join('\n', lines.Take(maxLines)) + "\n..." : normalized;
+        return limited.Length > 320 ? limited.Substring(0, 317) + "..." : limited;
+    }
+
+    private static void DrawPaneScrollbar(SKCanvas canvas, SKRect bounds, float scrollY, float maxScrollY)
+    {
+        float scrollbarWidth = 8f;
+        float trackHeight = bounds.Height;
+        float thumbHeight = Math.Max(20, trackHeight * (trackHeight / (trackHeight + maxScrollY)));
+        float thumbY = bounds.Top + (scrollY / maxScrollY) * (trackHeight - thumbHeight);
+        var thumbRect = new SKRect(bounds.Right - scrollbarWidth - 2, thumbY, bounds.Right - 2, thumbY + thumbHeight);
+
+        using var paint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Scrollbar);
+        canvas.DrawRoundRect(thumbRect, 4, 4, paint);
     }
 }

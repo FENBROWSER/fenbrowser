@@ -139,12 +139,16 @@ namespace FenBrowser.FenEngine.DevTools
         /// </summary>
         public void RegisterSource(string url, string content)
         {
+            var existingScriptId = _sources.TryGetValue(url, out var existingSource)
+                ? existingSource.ScriptId
+                : Guid.NewGuid().ToString("N").Substring(0, 8);
+
             var sourceFile = new SourceFile
             {
                 Url = url,
                 Content = content,
                 Lines = content.Split('\n'),
-                ScriptId = Guid.NewGuid().ToString("N").Substring(0, 8)
+                ScriptId = existingScriptId
             };
             _sources[url] = sourceFile;
             FenLogger.Debug($"[DevTools] Registered source: {url} ({sourceFile.Lines.Length} lines)", LogCategory.General);
@@ -470,6 +474,19 @@ namespace FenBrowser.FenEngine.DevTools
         public string GetSourceContent(string url)
         {
             return _sources.TryGetValue(url, out var source) ? source.Content : null;
+        }
+
+        /// <summary>
+        /// Get source content by protocol-facing script identifier.
+        /// </summary>
+        public SourceFile? GetSourceByScriptId(string scriptId)
+        {
+            if (string.IsNullOrWhiteSpace(scriptId))
+            {
+                return null;
+            }
+
+            return _sources.Values.FirstOrDefault(source => string.Equals(source.ScriptId, scriptId, StringComparison.Ordinal));
         }
 
         public bool IsPaused => _isPaused;

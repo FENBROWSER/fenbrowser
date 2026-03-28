@@ -15,11 +15,13 @@ public class DevToolsServer
     private readonly NodeRegistry _registry;
     private readonly MessageRouter _router;
     private readonly List<Action<string>> _jsonOutputListeners = new();
+    private readonly object _jsonOutputLock = new();
     
     // Domain handlers
     private DomDomain? _domDomain;
     private RuntimeDomain? _runtimeDomain;
     private NetworkDomain? _networkDomain;
+    private DebuggerDomain? _debuggerDomain;
     private CSSDomain? _cssDomain;
     
     public NodeRegistry Registry => _registry;
@@ -61,6 +63,12 @@ public class DevToolsServer
         _networkDomain = new NetworkDomain(host);
         _router.RegisterHandler(_networkDomain);
     }
+
+    public void InitializeDebugger(IDevToolsHost host)
+    {
+        _debuggerDomain = new DebuggerDomain(host, BroadcastEvent);
+        _router.RegisterHandler(_debuggerDomain);
+    }
     
     public void InitializeCss(
         Func<Node, CssComputed?> getComputedStyle, 
@@ -78,7 +86,21 @@ public class DevToolsServer
     /// </summary>
     public void OnJsonOutput(Action<string> listener)
     {
-        _jsonOutputListeners.Add(listener);
+        lock (_jsonOutputLock)
+        {
+            _jsonOutputListeners.Add(listener);
+        }
+    }
+
+    /// <summary>
+    /// Remove a JSON output subscriber.
+    /// </summary>
+    public void RemoveJsonOutput(Action<string> listener)
+    {
+        lock (_jsonOutputLock)
+        {
+            _jsonOutputListeners.Remove(listener);
+        }
     }
     
     /// <summary>
@@ -95,7 +117,13 @@ public class DevToolsServer
     /// </summary>
     private void BroadcastJson(string json)
     {
-        foreach (var listener in _jsonOutputListeners)
+        Action<string>[] listeners;
+        lock (_jsonOutputLock)
+        {
+            listeners = _jsonOutputListeners.ToArray();
+        }
+
+        foreach (var listener in listeners)
         {
             try
             {

@@ -126,6 +126,7 @@ public class DevToolsController : IDisposable
     public void Show()
     {
         IsVisible = true;
+        _host?.RequestCursorChange(CursorType.Default);
         _activePanel?.OnActivate();
         Invalidated?.Invoke();
         LayoutChanged?.Invoke();
@@ -181,6 +182,7 @@ public class DevToolsController : IDisposable
         _activePanel?.OnDeactivate();
         _activePanelIndex = index;
         _activePanel = _panels[index];
+        _host?.RequestCursorChange(CursorType.Default);
         _activePanel.OnActivate();
         Invalidated?.Invoke();
     }

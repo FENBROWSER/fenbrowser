@@ -1,5 +1,6 @@
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
+using FenBrowser.DevTools.Domains.DTOs;
 
 namespace FenBrowser.DevTools.Domains;
 
@@ -24,6 +25,8 @@ public class NetworkDomain : IProtocolHandler
         {
             "enable" => EnableAsync(request),
             "disable" => DisableAsync(request),
+            "getResponseBody" => GetResponseBodyAsync(request),
+            "getRequestPostData" => GetRequestPostDataAsync(request),
             _ => Task.FromResult(ProtocolResponse.Failure(request.Id, $"Unknown method: Network.{method}"))
         };
     }
@@ -38,5 +41,80 @@ public class NetworkDomain : IProtocolHandler
     {
         _enabled = false;
         return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
+    }
+
+    private Task<ProtocolResponse> GetResponseBodyAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var requestId = request.Params.Value.GetProperty("requestId").GetString();
+            if (string.IsNullOrWhiteSpace(requestId))
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "requestId required"));
+            }
+
+            var networkRequest = _host.GetNetworkRequests().FirstOrDefault(r => r.Id == requestId);
+            if (networkRequest == null)
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Request not found"));
+            }
+
+            if (networkRequest.ResponseBody == null)
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Response body unavailable"));
+            }
+
+            return Task.FromResult(ProtocolResponse.Success(request.Id, new GetResponseBodyResult
+            {
+                Body = networkRequest.ResponseBody,
+                Base64Encoded = false
+            }));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Network error: {ex.Message}"));
+        }
+    }
+
+    private Task<ProtocolResponse> GetRequestPostDataAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var requestId = request.Params.Value.GetProperty("requestId").GetString();
+            if (string.IsNullOrWhiteSpace(requestId))
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "requestId required"));
+            }
+
+            var networkRequest = _host.GetNetworkRequests().FirstOrDefault(r => r.Id == requestId);
+            if (networkRequest == null)
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Request not found"));
+            }
+
+            if (networkRequest.RequestBody == null)
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Request body unavailable"));
+            }
+
+            return Task.FromResult(ProtocolResponse.Success(request.Id, new GetRequestPostDataResult
+            {
+                PostData = networkRequest.RequestBody
+            }));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Network error: {ex.Message}"));
+        }
     }
 }

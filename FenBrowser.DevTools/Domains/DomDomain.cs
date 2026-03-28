@@ -1,7 +1,10 @@
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
+using System.Net;
+using System.Text;
 
 namespace FenBrowser.DevTools.Domains;
 
@@ -44,6 +47,10 @@ public class DomDomain : IProtocolHandler
             "setAttributeValue" => SetAttributeValueAsync(request),
             "removeAttribute" => RemoveAttributeAsync(request),
             "setNodeValue" => SetNodeValueAsync(request),
+            "getOuterHTML" => GetOuterHtmlAsync(request),
+            "querySelector" => QuerySelectorAsync(request),
+            "querySelectorAll" => QuerySelectorAllAsync(request),
+            "setOuterHTML" => SetOuterHtmlAsync(request),
             _ => Task.FromResult(ProtocolResponse.Failure(request.Id, $"Unknown method: DOM.{method}"))
         };
     }
@@ -248,10 +255,278 @@ public class DomDomain : IProtocolHandler
             return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}"));
         }
     }
+
+    /// <summary>
+    /// Get serialized markup for a node.
+    /// </summary>
+    private Task<ProtocolResponse> GetOuterHtmlAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            return DispatchAsync(() =>
+            {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                return ProtocolResponse.Success(request.Id, new GetOuterHtmlResult
+                {
+                    OuterHTML = SerializeNodeMarkup(node)
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Find the first matching element under a root node.
+    /// </summary>
+    private Task<ProtocolResponse> QuerySelectorAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            var selector = request.Params.Value.GetProperty("selector").GetString();
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Selector required"));
+            }
+
+            return DispatchAsync(() =>
+            {
+                try
+                {
+                    if (!TryResolveQueryRoot(nodeId, out var root, out var errorMessage))
+                    {
+                        return ProtocolResponse.Failure(request.Id, errorMessage!);
+                    }
+
+                    var match = root.QuerySelector(selector);
+                    return ProtocolResponse.Success(request.Id, new QuerySelectorResult
+                    {
+                        NodeId = match != null ? _registry.GetId(match) : 0
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Find every matching element under a root node.
+    /// </summary>
+    private Task<ProtocolResponse> QuerySelectorAllAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            var selector = request.Params.Value.GetProperty("selector").GetString();
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                return Task.FromResult(ProtocolResponse.Failure(request.Id, "Selector required"));
+            }
+
+            return DispatchAsync(() =>
+            {
+                try
+                {
+                    if (!TryResolveQueryRoot(nodeId, out var root, out var errorMessage))
+                    {
+                        return ProtocolResponse.Failure(request.Id, errorMessage!);
+                    }
+
+                    var results = root.QuerySelectorAll(selector);
+                    var nodeIds = new List<int>(results.Length);
+                    for (int i = 0; i < results.Length; i++)
+                    {
+                        if (results[i] is Element element)
+                        {
+                            nodeIds.Add(_registry.GetId(element));
+                        }
+                    }
+
+                    return ProtocolResponse.Success(request.Id, new QuerySelectorAllResult
+                    {
+                        NodeIds = nodeIds.ToArray()
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Replace a node with parsed markup.
+    /// </summary>
+    private Task<ProtocolResponse> SetOuterHtmlAsync(ProtocolRequest request)
+    {
+        if (request.Params == null)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+        }
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            var outerHtml = request.Params.Value.GetProperty("outerHTML").GetString() ?? string.Empty;
+
+            return DispatchAsync(() =>
+            {
+                try
+                {
+                    var node = _registry.GetNode(nodeId);
+                    if (node == null)
+                    {
+                        return ProtocolResponse.Failure(request.Id, "Node not found");
+                    }
+
+                    if (node.ParentNode is not ContainerNode parent)
+                    {
+                        return ProtocolResponse.Failure(request.Id, "Node cannot be replaced because it has no parent");
+                    }
+
+                    var replacement = BuildReplacementFragment(node, outerHtml);
+                    if (replacement.HasChildNodes)
+                    {
+                        parent.ReplaceChild(replacement, node);
+                    }
+                    else
+                    {
+                        parent.RemoveChild(node);
+                    }
+
+                    return ProtocolResponse.Success(request.Id, new { });
+                }
+                catch (Exception ex)
+                {
+                    return ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, $"Error: {ex.Message}"));
+        }
+    }
     
     private Task<ProtocolResponse> DispatchAsync(Func<ProtocolResponse> operation)
     {
         return _dispatchAsync(operation);
+    }
+
+    private bool TryResolveQueryRoot(int nodeId, out ContainerNode root, out string? errorMessage)
+    {
+        root = null!;
+        errorMessage = null;
+
+        var node = _registry.GetNode(nodeId);
+        if (node == null)
+        {
+            errorMessage = "Node not found";
+            return false;
+        }
+
+        if (node is not ContainerNode container)
+        {
+            errorMessage = "Node cannot be queried because it has no subtree";
+            return false;
+        }
+
+        root = container;
+        return true;
+    }
+
+    private static DocumentFragment BuildReplacementFragment(Node target, string outerHtml)
+    {
+        var ownerDocument = target.OwnerDocument ?? target.ParentNode?.OwnerDocument ?? new Document();
+        var fragment = ownerDocument.CreateDocumentFragment();
+
+        if (string.IsNullOrWhiteSpace(outerHtml))
+        {
+            return fragment;
+        }
+
+        // Parse the replacement as body content so multi-node edits are supported.
+        var parsed = new HtmlParser($"<!doctype html><html><body>{outerHtml}</body></html>").Parse();
+        var sourceBody = parsed.Body;
+        if (sourceBody == null)
+        {
+            fragment.AppendChild(ownerDocument.CreateTextNode(outerHtml));
+            return fragment;
+        }
+
+        while (sourceBody.FirstChild != null)
+        {
+            fragment.AppendChild(sourceBody.FirstChild);
+        }
+
+        return fragment;
+    }
+
+    private static string SerializeNodeMarkup(Node node)
+    {
+        return node switch
+        {
+            Document document => SerializeContainerChildren(document),
+            DocumentFragment fragment => SerializeContainerChildren(fragment),
+            Element element => element.OuterHTML,
+            CharacterData data => data.ToHtml(),
+            DocumentType documentType => documentType.ToString(),
+            _ => !string.IsNullOrEmpty(node.ToHtml()) ? node.ToHtml() : node.NodeValue ?? string.Empty
+        };
+    }
+
+    private static string SerializeContainerChildren(ContainerNode container)
+    {
+        var builder = new StringBuilder();
+        for (var child = container.FirstChild; child != null; child = child.NextSibling)
+        {
+            builder.Append(child switch
+            {
+                Element element => element.OuterHTML,
+                CharacterData data => data.ToHtml(),
+                DocumentType documentType => documentType.ToString(),
+                ContainerNode nested => SerializeContainerChildren(nested),
+                _ => WebUtility.HtmlEncode(child.NodeValue ?? string.Empty)
+            });
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>
@@ -267,6 +542,7 @@ public class DomDomain : IProtocolHandler
         {
             Document => 9,   // DOCUMENT_NODE
             Text => 3,       // TEXT_NODE
+            Comment => 8,    // COMMENT_NODE
             Element => 1,    // ELEMENT_NODE
             _ => 0
         };
@@ -276,12 +552,18 @@ public class DomDomain : IProtocolHandler
         {
             Document => "#document",
             Text => "#text",
+            Comment => "#comment",
             Element el => el.TagName?.ToUpper() ?? "UNKNOWN",
             _ => node.GetType().Name
         };
         
         // Get node value (for text nodes)
-        string? nodeValue = node is Text txt ? txt.Data : null;
+        string? nodeValue = node switch
+        {
+            Text txt => txt.Data,
+            Comment comment => comment.Data,
+            _ => null
+        };
         
         // Get attributes (for elements)
         Dictionary<string, string>? attributes = null;

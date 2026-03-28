@@ -84,6 +84,27 @@ public record LoadingFailedEvent
 }
 
 /// <summary>
+/// Result for Network.getResponseBody.
+/// </summary>
+public record GetResponseBodyResult
+{
+    [JsonPropertyName("body")]
+    public required string Body { get; init; }
+
+    [JsonPropertyName("base64Encoded")]
+    public bool Base64Encoded { get; init; }
+}
+
+/// <summary>
+/// Result for Network.getRequestPostData.
+/// </summary>
+public record GetRequestPostDataResult
+{
+    [JsonPropertyName("postData")]
+    public required string PostData { get; init; }
+}
+
+/// <summary>
 /// Network request information in protocol.
 /// </summary>
 public record NetworkRequest

@@ -99,10 +99,17 @@ public abstract class DevToolsPanelBase : IDevToolsPanel
     
     public void SetHost(IDevToolsHost host)
     {
+        if (ReferenceEquals(Host, host))
+        {
+            return;
+        }
+
+        OnHostChanging(Host);
         Host = host;
         OnHostChanged();
     }
     
+    protected virtual void OnHostChanging(IDevToolsHost? previousHost) { }
     protected virtual void OnHostChanged() { }
     
     public virtual void OnActivate() { }
