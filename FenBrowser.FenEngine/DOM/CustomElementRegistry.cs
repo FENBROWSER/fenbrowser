@@ -7,6 +7,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -68,6 +69,53 @@ namespace FenBrowser.FenEngine.DOM
                     Constructor = constructor,
                     Extends = options?.Extends
                 };
+
+                // WHATWG HTML §4.13.4: Extract lifecycle callbacks from constructor.prototype
+                if (constructor is FenValue ctorFenVal && (ctorFenVal.IsObject || ctorFenVal.IsFunction))
+                {
+                    var ctorObj = ctorFenVal.AsObject();
+                    if (ctorObj != null)
+                    {
+                        // Extract observedAttributes from static getter
+                        var observedAttrs = ctorObj.Get("observedAttributes");
+                        if (observedAttrs.IsObject)
+                        {
+                            var attrsObj = observedAttrs.AsObject();
+                            var lenVal = attrsObj?.Get("length");
+                            if (lenVal.HasValue && lenVal.Value.IsNumber)
+                            {
+                                int len = (int)lenVal.Value.ToNumber();
+                                for (int i = 0; i < len; i++)
+                                {
+                                    var attr = attrsObj.Get(i.ToString());
+                                    if (!attr.IsUndefined)
+                                        definition.ObservedAttributes.Add(attr.ToString());
+                                }
+                            }
+                        }
+
+                        // Extract lifecycle callbacks from prototype
+                        var proto = ctorObj.Get("prototype");
+                        if (proto.IsObject)
+                        {
+                            var protoObj = proto.AsObject();
+                            if (protoObj != null)
+                            {
+                                var cb = protoObj.Get("connectedCallback");
+                                if (cb.IsFunction) definition.ConnectedCallback = cb.AsFunction() as FenFunction;
+
+                                cb = protoObj.Get("disconnectedCallback");
+                                if (cb.IsFunction) definition.DisconnectedCallback = cb.AsFunction() as FenFunction;
+
+                                cb = protoObj.Get("adoptedCallback");
+                                if (cb.IsFunction) definition.AdoptedCallback = cb.AsFunction() as FenFunction;
+
+                                cb = protoObj.Get("attributeChangedCallback");
+                                if (cb.IsFunction) definition.AttributeChangedCallback = cb.AsFunction() as FenFunction;
+                            }
+                        }
+                    }
+                }
 
                 _definitions[name] = definition;
 
@@ -163,44 +211,189 @@ namespace FenBrowser.FenEngine.DOM
             lock (_lock)
             {
                 // Check for autonomous custom element (tag name is the custom element name)
-                if (_definitions.TryGetValue(tag, out definition))
-                {
-                    // Mark element as upgraded
-                    element.SetAttribute("data-ce-upgraded", "true");
-                    FenLogger.Debug($"[CustomElements] Upgraded element: {tag}", LogCategory.JavaScript);
-
-                    // Fire connectedCallback if the element is already connected to a document
-                    if (element.IsConnected && _context != null && definition.Constructor is FenValue ctorVal)
-                    {
-                        try
-                        {
-                            var protoObj = ctorVal.AsObject();
-                            if (protoObj != null)
-                            {
-                                var proto = protoObj.Get("prototype");
-                                if (proto.IsObject)
-                                {
-                                    var connectedCb = proto.AsObject()?.Get("connectedCallback");
-                                    if (connectedCb.HasValue && connectedCb.Value.IsFunction)
-                                        connectedCb.Value.AsFunction()?.Invoke(System.Array.Empty<FenValue>(), _context);
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            FenLogger.Error($"[CustomElements] connectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
-                        }
-                    }
-                }
-                else
+                if (!_definitions.TryGetValue(tag, out definition))
                 {
                     // Check for customized built-in element (via is="" attribute)
                     var isAttr = element.GetAttribute("is");
-                    if (!string.IsNullOrEmpty(isAttr) && _definitions.TryGetValue(isAttr, out definition))
+                    if (!string.IsNullOrEmpty(isAttr))
+                        _definitions.TryGetValue(isAttr, out definition);
+                }
+
+                if (definition == null) return;
+
+                // Already upgraded — skip
+                if (element.GetAttribute("data-ce-upgraded") == "true") return;
+
+                // WHATWG HTML §4.13.6: Custom element upgrade algorithm
+                element.SetAttribute("data-ce-upgraded", "true");
+                FenLogger.Debug($"[CustomElements] Upgrading element: {tag}", LogCategory.JavaScript);
+
+                // Step 1: Invoke the constructor
+                if (_context != null && definition.Constructor is FenValue ctorVal && ctorVal.IsFunction)
+                {
+                    try
                     {
-                        element.SetAttribute("data-ce-upgraded", "true");
-                        FenLogger.Debug($"[CustomElements] Upgraded built-in element: {tag} is={isAttr}", LogCategory.JavaScript);
+                        var ctor = ctorVal.AsFunction();
+                        ctor?.Invoke(System.Array.Empty<FenValue>(), _context);
                     }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[CustomElements] Constructor error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                    }
+                }
+
+                // Step 2: Fire attributeChangedCallback for each observed attribute already present
+                if (definition.AttributeChangedCallback != null && _context != null)
+                {
+                    foreach (var attrName in definition.ObservedAttributes)
+                    {
+                        var value = element.GetAttribute(attrName);
+                        if (value != null)
+                        {
+                            try
+                            {
+                                definition.AttributeChangedCallback.Invoke(
+                                    new[]
+                                    {
+                                        FenValue.FromString(attrName),
+                                        FenValue.Null, // oldValue (none — first time)
+                                        FenValue.FromString(value),
+                                        FenValue.Null  // namespace
+                                    }, _context);
+                            }
+                            catch (Exception ex)
+                            {
+                                FenLogger.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
+                            }
+                        }
+                    }
+                }
+
+                // Step 3: Fire connectedCallback if the element is already connected
+                if (element.IsConnected && definition.ConnectedCallback != null && _context != null)
+                {
+                    try
+                    {
+                        definition.ConnectedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[CustomElements] connectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// WHATWG HTML §4.13.5: Invoke disconnectedCallback when element is removed from the document.
+        /// Called by DOM mutation logic when a custom element is disconnected.
+        /// </summary>
+        public void NotifyDisconnected(Element element)
+        {
+            if (element == null) return;
+            if (element.GetAttribute("data-ce-upgraded") != "true") return;
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(tag)) return;
+
+            CustomElementDefinition definition = null;
+            lock (_lock)
+            {
+                if (!_definitions.TryGetValue(tag, out definition))
+                {
+                    var isAttr = element.GetAttribute("is");
+                    if (!string.IsNullOrEmpty(isAttr))
+                        _definitions.TryGetValue(isAttr, out definition);
+                }
+            }
+
+            if (definition?.DisconnectedCallback != null && _context != null)
+            {
+                try
+                {
+                    definition.DisconnectedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[CustomElements] disconnectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                }
+            }
+        }
+
+        /// <summary>
+        /// WHATWG HTML §4.13.5: Invoke attributeChangedCallback when an observed attribute changes.
+        /// Called by DOM mutation logic when an attribute is set/removed on a custom element.
+        /// </summary>
+        public void NotifyAttributeChanged(Element element, string attrName, string oldValue, string newValue)
+        {
+            if (element == null || string.IsNullOrEmpty(attrName)) return;
+            if (element.GetAttribute("data-ce-upgraded") != "true") return;
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(tag)) return;
+
+            CustomElementDefinition definition = null;
+            lock (_lock)
+            {
+                if (!_definitions.TryGetValue(tag, out definition))
+                {
+                    var isAttr = element.GetAttribute("is");
+                    if (!string.IsNullOrEmpty(isAttr))
+                        _definitions.TryGetValue(isAttr, out definition);
+                }
+            }
+
+            if (definition?.AttributeChangedCallback == null || _context == null) return;
+            if (!definition.ObservedAttributes.Contains(attrName)) return;
+
+            try
+            {
+                definition.AttributeChangedCallback.Invoke(
+                    new[]
+                    {
+                        FenValue.FromString(attrName),
+                        oldValue != null ? FenValue.FromString(oldValue) : FenValue.Null,
+                        newValue != null ? FenValue.FromString(newValue) : FenValue.Null,
+                        FenValue.Null // namespace
+                    }, _context);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        /// <summary>
+        /// WHATWG HTML §4.13.5: Invoke adoptedCallback when element is adopted into a new document.
+        /// </summary>
+        public void NotifyAdopted(Element element, Document oldDocument, Document newDocument)
+        {
+            if (element == null) return;
+            if (element.GetAttribute("data-ce-upgraded") != "true") return;
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(tag)) return;
+
+            CustomElementDefinition definition = null;
+            lock (_lock)
+            {
+                if (!_definitions.TryGetValue(tag, out definition))
+                {
+                    var isAttr = element.GetAttribute("is");
+                    if (!string.IsNullOrEmpty(isAttr))
+                        _definitions.TryGetValue(isAttr, out definition);
+                }
+            }
+
+            if (definition?.AdoptedCallback != null && _context != null)
+            {
+                try
+                {
+                    definition.AdoptedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Error($"[CustomElements] adoptedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                 }
             }
         }
@@ -300,6 +493,24 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue CreatePendingWhenDefinedPromise(string name)
         {
+            // Use real JsPromise when execution context is available per WHATWG HTML §4.13.5
+            if (_context != null)
+            {
+                FenValue capturedResolve = FenValue.Undefined;
+                FenValue capturedReject = FenValue.Undefined;
+                var executor = new FenFunction("executor", (args, thisVal) =>
+                {
+                    capturedResolve = args.Length > 0 ? args[0] : FenValue.Undefined;
+                    capturedReject = args.Length > 1 ? args[1] : FenValue.Undefined;
+                    return FenValue.Undefined;
+                });
+                var jsPromise = new Core.Types.JsPromise(FenValue.FromFunction(executor), _context);
+                _ = ObserveWhenDefinedPromiseAsync(name,
+                    value => { if (capturedResolve.IsFunction) capturedResolve.AsFunction().Invoke(new[] { value }, _context); },
+                    reason => { if (capturedReject.IsFunction) capturedReject.AsFunction().Invoke(new[] { FenValue.FromString(reason) }, _context); });
+                return FenValue.FromObject(jsPromise);
+            }
+
             return CreatePromise(
                 "pending",
                 FenValue.Undefined,
@@ -309,11 +520,15 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue CreateResolvedPromise(FenValue value)
         {
+            if (_context != null)
+                return FenValue.FromObject(Core.Types.JsPromise.Resolve(value, _context));
             return CreatePromise("fulfilled", value, string.Empty);
         }
 
         private FenValue CreateRejectedPromise(string reason)
         {
+            if (_context != null)
+                return FenValue.FromObject(Core.Types.JsPromise.Reject(FenValue.FromString(reason ?? string.Empty), _context));
             return CreatePromise("rejected", FenValue.Undefined, reason ?? string.Empty);
         }
 
@@ -543,13 +758,23 @@ namespace FenBrowser.FenEngine.DOM
     }
 
     /// <summary>
-    /// Stores a custom element definition
+    /// Stores a custom element definition with lifecycle callback references.
+    /// WHATWG HTML §4.13.4: Custom element definition
     /// </summary>
     public class CustomElementDefinition
     {
         public string Name { get; set; }
         public IValue Constructor { get; set; }
         public string Extends { get; set; }
+
+        // Lifecycle callbacks resolved from constructor.prototype
+        public FenFunction ConnectedCallback { get; set; }
+        public FenFunction DisconnectedCallback { get; set; }
+        public FenFunction AdoptedCallback { get; set; }
+        public FenFunction AttributeChangedCallback { get; set; }
+
+        // observedAttributes from static getter on constructor
+        public HashSet<string> ObservedAttributes { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 }
 
