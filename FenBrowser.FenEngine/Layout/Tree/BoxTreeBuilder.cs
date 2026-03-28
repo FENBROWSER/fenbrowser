@@ -45,12 +45,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
             }
 
-            // Get style (handle nulls safely)
-            bool found = _styles.TryGetValue(node, out var style);
-            
-            // Fallback to node.ComputedStyle if dictionary lookup fails (instance mismatch)
-            if (style == null && node.ComputedStyle != null) style = node.ComputedStyle;
-            
+            // Get style: prefer node.ComputedStyle (single source of truth), fall back to dictionary
+            var style = node.ComputedStyle;
+            if (style == null)
+                _styles.TryGetValue(node, out style);
+
             if (style == null && node is Element) style = new CssComputed();
 
             // For text nodes, inherit from parent

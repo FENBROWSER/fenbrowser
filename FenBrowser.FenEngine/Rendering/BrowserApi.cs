@@ -1860,7 +1860,21 @@ pre {{
                 ScreenY = y
             };
 
-            bool handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
+            bool handled = false;
+            try
+            {
+                handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
+            }
+            catch (FenBrowser.FenEngine.Errors.FenTimeoutError timeoutEx)
+            {
+                TryLogWarn($"[BrowserHost] Timed out dispatching '{type}' input event: {timeoutEx.Message}", LogCategory.Events);
+                TryInvokeConsoleMessage($"[FenBrowser] Timed out running page '{type}' handler: {timeoutEx.Message}");
+            }
+            catch (Exception ex)
+            {
+                TryLogError($"[BrowserHost] Unhandled exception dispatching '{type}' input event: {ex.Message}", LogCategory.Events);
+                TryInvokeConsoleMessage($"[FenBrowser] Unhandled page error during '{type}' input: {ex.Message}");
+            }
 
             if (string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
             {

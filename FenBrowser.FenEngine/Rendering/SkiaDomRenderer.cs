@@ -127,10 +127,10 @@ namespace FenBrowser.FenEngine.Rendering
             DiagnosticPaths.AppendRootText("debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n");
             CurrentOverlays.Clear();
             
-            // CRITICAL FIX: Detect if styles changed using instance comparison, count, or DOM dirty flags
-            // JavaScript updates (element.style.xxx) mark the node as StyleDirty.
+            // Detect style changes via DOM dirty flags (primary) or dictionary identity (fallback).
+            // node.ComputedStyle is the single source of truth set by CascadeIntoComputedStyles.
             bool treeDirty = root.StyleDirty || root.ChildStyleDirty;
-            bool stylesChanged = _lastStyles == null || styles == null || _lastStyles != styles || (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count) || treeDirty;
+            bool stylesChanged = treeDirty || _lastStyles == null || _lastStyles != styles || (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count);
             _lastStyles = styles;
 
             // [Verification] Capture content metrics for the verification report
