@@ -5429,3 +5429,30 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - The scripting layer still carried dead compatibility branches and undocumented approximations, which is the opposite of a production-grade engine surface.
 - Verification:
   - `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`: pass (`26/26`).
+
+## 2.174 Module, Global, and Parser Browser-Semantics Hardening (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs`
+  - Bare specifiers now fail deterministically by default instead of silently walking `node_modules` or returning the raw unresolved specifier.
+  - Added `EnableNodeModulesResolution` so any Node-style lookup is explicit opt-in rather than implicit browser behavior.
+  - Module parse entry points now run with `allowRecovery: false`, so runtime module loading uses strict execution semantics instead of tooling recovery.
+- `FenBrowser.FenEngine/Core/FenEnvironment.cs`
+  - Removed the lexical/global fallback that treated `document.getElementById(...)` results as environment bindings.
+  - The dead legacy helper and its recursion-depth guard were deleted once environment lookup was restricted to real bindings only.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Unqualified global resolution now goes through the actual global/window object path instead of an environment-level DOM id shortcut.
+  - Direct eval parsing now uses `allowRecovery: false` so execution-mode eval follows the stricter parser path.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Collapsed `Promise`, `queueMicrotask`, and `Intl` to one authoritative registration path each.
+  - Later bootstrap stages now mirror the canonical registration onto `window` where needed instead of re-registering duplicate globals.
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Execution-mode parsing now stops grouped-expression recovery when recovery is disabled, emits explicit invalid-parameter diagnostics, and aborts function/method parse continuation once formal parameter parsing has already failed.
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Test262 execution now uses `allowRecovery: false`, so conformance runs exercise the same strict parser mode as runtime execution.
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs`
+  - Added regression coverage for browser-default module resolution, removal of lexical DOM-id lookup, single global registration for `Promise` / `queueMicrotask` / `Intl`, and strict rejection of malformed parameter lists in execution mode.
+- Why this mattered:
+  - This tranche closes `JS_ENGINE_FINAL.md` findings `#11`, `#12`, `#13`, `#14`, and `#25`.
+  - The runtime no longer mixes browser semantics with permissive convenience fallbacks in core module resolution, global binding lookup, or parser entry points.
+- Verification:
+  - `dotnet test FenBrowser.Tests --filter "ModuleLoaderTests|JavaScriptEngineCleanupTests|ProductionHardeningBatch2Tests" --no-restore`: pass (`47/47`).

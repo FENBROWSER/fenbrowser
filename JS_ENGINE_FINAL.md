@@ -22,13 +22,13 @@ No repo-local `docs/SYSTEM_MANIFEST.md` was present in this checkout, so layer m
 
 FenEngine is no longer accurately described as a mostly-missing JavaScript engine. The current codebase already has a real `JsPromise`, a real event loop coordinator, module namespace exotic objects, dynamic `import()`, WebIDL code generation, a modern fetch path in the browser-integrated host, and a substantial Test262 harness.
 
-It is also not yet Chrome/Firefox-grade. The biggest blocker is architectural, not cosmetic: the runtime still ships two async/promise systems at the same time. That split leaks into `Promise.withResolvers`, `crypto.subtle.digest`, standalone `fetch`, service worker plumbing, and worker event settlement. Chrome and Firefox do not solve this class of problem with parallel promise stacks; they keep one canonical promise/microtask model and force host APIs through it.
+It is also not yet Chrome/Firefox-grade. The biggest blocker is architectural, not cosmetic: the runtime still ships two async/promise systems at the same time. That split still leaks into `Promise.withResolvers`, `crypto.subtle.digest`, and standalone `fetch`. Chrome and Firefox do not solve this class of problem with parallel promise stacks; they keep one canonical promise/microtask model and force host APIs through it.
 
 The correct reading of the engine in March 2026 is:
 
 - Core execution and event-loop plumbing: materially improved and partly browser-aligned.
-- Module system: much stronger than before, but still has browser-divergent resolution shortcuts.
-- Worker/service-worker stack: functional, but still compatibility-heavy and not yet lifecycle-clean.
+- Module system: much stronger than before and now stricter by default, but still needs broader conformance work.
+- Worker/service-worker stack: materially cleaner after promise canonicalization, but still not at full browser lifecycle parity.
 - Host APIs: mixed; some are real enough for compatibility, several are still simulation surfaces.
 - Conformance: measurable progress, but still far from browser parity.
 
@@ -93,8 +93,8 @@ Current count in this file:
 
 - `29` total numbered findings
 - `7` strengths already present: `#5`, `#6`, `#7`, `#8`, `#9`, `#10`, `#26`
-- `10` resolved remediation findings: `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`
-- `10` active remediation findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#25`, `#27`
+- `15` resolved remediation findings: `#11`, `#12`, `#13`, `#14`, `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`
+- `5` active remediation findings: `#1`, `#2`, `#3`, `#4`, `#27`
 - `2` simulation-program findings: `#28`, `#29`
 
 ## Findings
@@ -280,76 +280,77 @@ Required direction:
 
 Keep this structure, but tighten resolution behavior so the stronger loader is not undermined by browser-divergent specifier fallbacks.
 
-### Finding #11 - Module resolution still contains Node-style `node_modules` lookup
+### ~~Finding #11 - Module resolution still contains Node-style `node_modules` lookup~~
 
-Status: High gap
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Core/ModuleLoader.cs:115-124`
-- `FenBrowser.FenEngine/Core/ModuleLoader.cs:247-318`
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:23`
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:111-122`
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:162-184`
 
-Assessment:
+Node-style bare-specifier resolution is no longer the browser default. `ModuleLoader` now treats `node_modules` lookup as an explicit opt-in through `EnableNodeModulesResolution`, so production runtime resolution stays on browser-native URL/import-map semantics unless a caller deliberately enables development-style lookup.
 
-For bare specifiers, `ModuleLoader.Resolve(...)` walks up directories looking for `node_modules`. That is a useful development convenience, but it is not browser-native default module resolution. Chrome and Firefox require browser-side mechanisms such as URL resolution and import maps; they do not silently become Node.
+Verification:
 
-Required direction:
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs:12`
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- `dotnet test FenBrowser.Tests --filter "ModuleLoaderTests|ProductionHardeningBatch2Tests" --no-restore`
 
-Make Node-style resolution opt-in only, or move it behind explicit tooling/dev-mode switches.
+### ~~Finding #12 - Module resolution still falls back to raw unresolved specifiers~~
 
-### Finding #12 - Module resolution still falls back to raw unresolved specifiers
+Status: Resolved on `2026-03-28`
 
-Status: High gap
+Implementation:
 
-Evidence:
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:83`
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:122-158`
+- `FenBrowser.FenEngine/Core/ModuleLoader.cs:184`
 
-- `FenBrowser.FenEngine/Core/ModuleLoader.cs:126-136`
+`ModuleLoader.Resolve(...)` now fails deterministically with `FenTypeError` when a specifier cannot be resolved. The old raw-specifier fallback path is gone, which means browser-mode failures now surface as real resolution errors instead of permissive continuation.
 
-Assessment:
+Verification:
 
-If resolution fails, `Resolve(...)` can return the original `specifier` string after logging a warning. That keeps the engine moving, but it is too permissive for browser-grade semantics and makes failures harder to reason about.
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs:12`
+- `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+- `dotnet test FenBrowser.Tests --filter "ModuleLoaderTests|ProductionHardeningBatch2Tests" --no-restore`
 
-Required direction:
+### ~~Finding #13 - `FenEnvironment` still resolves unknown names through `document.getElementById`~~
 
-Fail hard on unresolved module specifiers in browser mode.
+Status: Resolved on `2026-03-28`
 
-### Finding #13 - `FenEnvironment` still resolves unknown names through `document.getElementById`
+Implementation:
 
-Status: Critical gap
+- `FenBrowser.FenEngine/Core/FenEnvironment.cs:62`
+- `FenBrowser.FenEngine/Core/FenEnvironment.cs:277`
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs:943`
 
-Evidence:
+Lexical/global environment lookup no longer falls back to `document.getElementById(...)`. `FenEnvironment.Get(...)` and `HasBinding(...)` now stay within real bindings only, while the VM resolves named access through the actual global/window object path. That preserves browser-style named properties at the `Window` layer without smuggling DOM ids into lexical scope semantics.
 
-- `FenBrowser.FenEngine/Core/FenEnvironment.cs:95-100`
-- `FenBrowser.FenEngine/Core/FenEnvironment.cs:312-313`
-- `FenBrowser.FenEngine/Core/FenEnvironment.cs:362-412`
+Verification:
 
-Assessment:
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs:39`
+- `dotnet test FenBrowser.Tests --filter ProductionHardeningBatch2Tests --no-restore`
 
-Missing bindings can still fall back to `document.getElementById(name)` and return an element as though it were a lexical/global binding. Browsers have window named-property behavior, but not by directly grafting `getElementById` lookup into lexical environment resolution. This is a semantic shortcut that will create hard-to-debug edge cases.
+### ~~Finding #14 - Runtime initialization still duplicates and overrides global registrations~~
 
-Required direction:
+Status: Resolved on `2026-03-28`
 
-Remove this from lexical environment lookup and, if needed, re-implement named access at the correct `Window` / `WindowProxy` layer only.
+Implementation:
 
-### Finding #14 - Runtime initialization still duplicates and overrides global registrations
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:4472`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:4478`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:9729`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:11176`
 
-Status: High debt
+`Promise`, `queueMicrotask`, and `Intl` now have one canonical registration path each in `FenRuntime`. Later bootstrap stages mirror the already-registered globals onto `window` where needed instead of re-registering and overriding them with duplicate setup blocks.
 
-Evidence:
+Verification:
 
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:4471-4476`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:9724-9724`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:11183-11214`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:12701-12712`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:12970-12971`
-
-Assessment:
-
-`Promise`, `queueMicrotask`, and `Intl` are registered more than once in `FenRuntime`, sometimes as stronger implementations and sometimes as fallback objects. This creates override churn and makes it harder to know which surface is canonical at any given point in runtime construction.
-
-Required direction:
-
-Collapse each global to one authoritative registration path.
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs:90`
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs`
+- `dotnet test FenBrowser.Tests --filter "JavaScriptEngineCleanupTests|ProductionHardeningBatch2Tests" --no-restore`
 
 ### ~~Finding #15 - `ServiceWorkerContainer` still has a hand-rolled promise fallback~~
 
@@ -554,24 +555,25 @@ Verification:
 - `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs:39`
 - `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
-### Finding #25 - The parser still favors permissive recovery over strict browser execution semantics
+### ~~Finding #25 - The parser still favors permissive recovery over strict browser execution semantics~~
 
-Status: High gap
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Core/Parser.cs:2208-2213`
-- `FenBrowser.FenEngine/Core/Parser.cs:2770-2777`
-- `FenBrowser.FenEngine/Core/Parser.cs:3079-3087`
-- `FenBrowser.FenEngine/Core/Parser.cs:5541-5629`
+- `FenBrowser.FenEngine/Core/Parser.cs:1197`
+- `FenBrowser.FenEngine/Core/Parser.cs:1424`
+- `FenBrowser.FenEngine/Core/Parser.cs:1707`
+- `FenBrowser.FenEngine/Core/Parser.cs:2034-2036`
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs:943`
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs:483`
 
-Assessment:
+Execution-mode parsing now runs with `allowRecovery: false` across runtime, direct-eval, module, and Test262 entry points. In that mode the parser stops grouped-expression recovery, fails formal-parameter parsing cleanly, and raises explicit invalid-parameter errors instead of synthesizing placeholder bindings. Tooling-friendly recovery remains available only where a caller opts into it.
 
-The parser returns partial argument lists, partial expression lists, lowers `import()` to a generic `CallExpression`, and creates placeholder identifiers for destructuring/binding recovery. These choices are useful for resilience and tooling, but they are not the same thing as browser-grade parse and early-error behavior.
+Verification:
 
-Required direction:
-
-Split tooling-friendly recovery from execution-mode parsing more aggressively, or harden the execution path to preserve browser semantics.
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs:121`
+- `dotnet test FenBrowser.Tests --filter ProductionHardeningBatch2Tests --no-restore`
 
 ### Finding #26 - WebIDL generation is a real architectural strength
 
@@ -677,7 +679,7 @@ These findings affect canonical runtime semantics and must be closed first:
 - `#2` `Promise.withResolvers()` still on the legacy promise path
 - `#3` `crypto.subtle.digest()` still on the legacy promise path
 - `#4` split `fetch()` behavior between raw runtime and browser host
-- `#13` lexical/global fallback through `document.getElementById`
+- ~~`#13` lexical/global fallback through `document.getElementById`~~ resolved `2026-03-28`
 - ~~`#15` `ServiceWorkerContainer` legacy promise fallback~~ resolved `2026-03-28`
 - ~~`#16` `ServiceWorkerRegistration` legacy promise fallback~~ resolved `2026-03-28`
 - ~~`#17` `ServiceWorkerClients` legacy promise fallback~~ resolved `2026-03-28`
@@ -695,11 +697,11 @@ Required bar for `P0` closure:
 
 These findings should be tackled immediately after `P0`, or in parallel when the write scopes do not conflict:
 
-- `#11` browser-divergent `node_modules` module resolution
-- `#12` silent fallback to raw unresolved specifiers
-- `#14` duplicated and overriding global registration in `FenRuntime`
+- ~~`#11` browser-divergent `node_modules` module resolution~~ resolved `2026-03-28`
+- ~~`#12` silent fallback to raw unresolved specifiers~~ resolved `2026-03-28`
+- ~~`#14` duplicated and overriding global registration in `FenRuntime`~~ resolved `2026-03-28`
 - ~~`#20` regex-based `importScripts()` discovery~~ resolved `2026-03-28`
-- `#25` permissive parser recovery in execution paths
+- ~~`#25` permissive parser recovery in execution paths~~ resolved `2026-03-28`
 - `#27` conformance gap and static-state limitations in the Test262 path
 
 Required bar for `P1` closure:
@@ -733,9 +735,9 @@ If they remain compatibility facades, they should continue to be documented as s
 
 ### Order summary
 
-1. Close every `P0` finding fully.
-2. Close every `P1` finding with test-backed evidence.
-3. Clear `P2` residue so the runtime surface is singular and understandable.
+1. Close the remaining `P0` finding set: `#1`, `#2`, `#3`, `#4`.
+2. Close the remaining `P1` finding: `#27`.
+3. Keep `P2` closed; do not reintroduce duplicate or dead runtime paths.
 4. Decide whether `#28` and `#29` remain explicit simulations or become full subsystem roadmaps.
 
 ## Reference Baseline
