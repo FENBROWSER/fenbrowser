@@ -58,6 +58,67 @@ public class RuntimeDomainTests
         Assert.Contains("Eval error: boom", response.Error!.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task GetPropertiesAsync_ReturnsInspectableOwnPropertiesForObjectResults()
+    {
+        var host = new StubDevToolsHost
+        {
+            EvaluateScriptAsyncHandler = _ => Task.FromResult<object?>(new Dictionary<string, object?>
+            {
+                ["alpha"] = 1,
+                ["beta"] = "two"
+            })
+        };
+        var domain = new RuntimeDomain(host);
+
+        var evaluateResponse = await domain.HandleAsync("evaluate", CreateEvaluateRequest("({ alpha: 1, beta: 'two' })"));
+
+        Assert.True(evaluateResponse.IsSuccess);
+        var evaluateResult = Assert.IsType<EvaluateResult>(evaluateResponse.Result);
+        Assert.Equal("object", evaluateResult.Result.Type);
+        Assert.False(string.IsNullOrWhiteSpace(evaluateResult.Result.ObjectId));
+
+        var propertiesResponse = await domain.HandleAsync("getProperties", CreateGetPropertiesRequest(evaluateResult.Result.ObjectId!));
+
+        Assert.True(propertiesResponse.IsSuccess);
+        var propertiesResult = Assert.IsType<GetPropertiesResult>(propertiesResponse.Result);
+        Assert.Collection(
+            propertiesResult.Result.OrderBy(property => property.Name),
+            property =>
+            {
+                Assert.Equal("alpha", property.Name);
+                Assert.Equal("number", property.Value?.Type);
+                Assert.Equal(1, Convert.ToInt32(property.Value?.Value));
+            },
+            property =>
+            {
+                Assert.Equal("beta", property.Name);
+                Assert.Equal("string", property.Value?.Type);
+                Assert.Equal("two", property.Value?.Value);
+            });
+    }
+
+    [Fact]
+    public async Task ReleaseObjectAsync_RemovesStoredRemoteObject()
+    {
+        var host = new StubDevToolsHost
+        {
+            EvaluateScriptAsyncHandler = _ => Task.FromResult<object?>(new Dictionary<string, object?> { ["alpha"] = 1 })
+        };
+        var domain = new RuntimeDomain(host);
+
+        var evaluateResponse = await domain.HandleAsync("evaluate", CreateEvaluateRequest("({ alpha: 1 })"));
+        var evaluateResult = Assert.IsType<EvaluateResult>(evaluateResponse.Result);
+        Assert.False(string.IsNullOrWhiteSpace(evaluateResult.Result.ObjectId));
+
+        var releaseResponse = await domain.HandleAsync("releaseObject", CreateReleaseObjectRequest(evaluateResult.Result.ObjectId!));
+        Assert.True(releaseResponse.IsSuccess);
+
+        var propertiesResponse = await domain.HandleAsync("getProperties", CreateGetPropertiesRequest(evaluateResult.Result.ObjectId!));
+        Assert.False(propertiesResponse.IsSuccess);
+        Assert.Equal("Remote object not found", propertiesResponse.Error?.Message);
+    }
+
     private static ProtocolRequest CreateEvaluateRequest(string expression)
     {
         using var doc = JsonDocument.Parse($"{{\"expression\":{JsonSerializer.Serialize(expression)}}}");
@@ -65,6 +126,28 @@ public class RuntimeDomainTests
         {
             Id = 1,
             Method = "Runtime.evaluate",
+            Params = doc.RootElement.Clone()
+        };
+    }
+
+    private static ProtocolRequest CreateGetPropertiesRequest(string objectId)
+    {
+        using var doc = JsonDocument.Parse($"{{\"objectId\":{JsonSerializer.Serialize(objectId)}}}");
+        return new ProtocolRequest
+        {
+            Id = 2,
+            Method = "Runtime.getProperties",
+            Params = doc.RootElement.Clone()
+        };
+    }
+
+    private static ProtocolRequest CreateReleaseObjectRequest(string objectId)
+    {
+        using var doc = JsonDocument.Parse($"{{\"objectId\":{JsonSerializer.Serialize(objectId)}}}");
+        return new ProtocolRequest
+        {
+            Id = 3,
+            Method = "Runtime.releaseObject",
             Params = doc.RootElement.Clone()
         };
     }
