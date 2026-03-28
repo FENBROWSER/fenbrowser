@@ -4,6 +4,7 @@ using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine
@@ -737,139 +738,66 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(0.0, buf.Get("byteLength").ToNumber());
         }
 
-        // ── Finding #28: WebAudio API completeness ──
+        // ── Finding #28: simulated WebAudio surface removed ──
 
         [Fact]
-        public void AudioContext_HasAllNodeFactoryMethods()
+        public void JavaScriptEngine_DoesNotExpose_WebAudioSimulationSurfaces()
         {
-            // W3C Web Audio §10.3: AudioContext must expose all node factory methods
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
+            var engine = new JavaScriptEngine(CreateHost());
+            engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
 
-            var ctx = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContext(context);
+            var runtimeField = typeof(JavaScriptEngine).GetField("_fenRuntime", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(runtimeField);
 
-            // Original factories
-            Assert.True(ctx.Get("createOscillator").IsFunction);
-            Assert.True(ctx.Get("createGain").IsFunction);
-            Assert.True(ctx.Get("createAnalyser").IsFunction);
-            Assert.True(ctx.Get("createBufferSource").IsFunction);
-            Assert.True(ctx.Get("createBiquadFilter").IsFunction);
-            Assert.True(ctx.Get("createConvolver").IsFunction);
-            Assert.True(ctx.Get("createDelay").IsFunction);
-            Assert.True(ctx.Get("createDynamicsCompressor").IsFunction);
+            var runtime = runtimeField.GetValue(engine) as FenRuntime;
+            Assert.NotNull(runtime);
 
-            // New factories (Finding #28)
-            Assert.True(ctx.Get("createStereoPanner").IsFunction);
-            Assert.True(ctx.Get("createPanner").IsFunction);
-            Assert.True(ctx.Get("createChannelSplitter").IsFunction);
-            Assert.True(ctx.Get("createChannelMerger").IsFunction);
-            Assert.True(ctx.Get("createWaveShaper").IsFunction);
-            Assert.True(ctx.Get("createConstantSource").IsFunction);
-            Assert.True(ctx.Get("createPeriodicWave").IsFunction);
-            Assert.True(ctx.Get("createIIRFilter").IsFunction);
-            Assert.True(ctx.Get("createMediaElementSource").IsFunction);
-            Assert.True(ctx.Get("createMediaStreamSource").IsFunction);
-            Assert.True(ctx.Get("createMediaStreamDestination").IsFunction);
-            Assert.True(ctx.Get("createScriptProcessor").IsFunction);
+            Assert.True(runtime.GetGlobal("Audio").IsUndefined);
+            Assert.True(runtime.GetGlobal("AudioContext").IsUndefined);
+            Assert.True(runtime.GetGlobal("webkitAudioContext").IsUndefined);
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.True(window.Get("Audio").IsUndefined);
+            Assert.True(window.Get("AudioContext").IsUndefined);
+            Assert.True(window.Get("webkitAudioContext").IsUndefined);
         }
 
-        [Fact]
-        public void AudioContext_CurrentTime_IsMonotonic()
-        {
-            // W3C Web Audio §10.1: currentTime advances monotonically
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
-
-            var ctx = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContext(context);
-            var t0 = ctx.Get("currentTime").ToNumber();
-            Assert.True(t0 >= 0, "currentTime should be non-negative");
-        }
+        // ── Finding #29: simulated WebRTC surface removed ──
 
         [Fact]
-        public void AudioContext_HasOnStateChange()
+        public void JavaScriptEngine_DoesNotExpose_WebRtcSimulationSurfaces()
         {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
+            var engine = new JavaScriptEngine(CreateHost());
+            engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
 
-            var ctx = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContext(context);
-            // onstatechange should be present (null initially)
-            var val = ctx.Get("onstatechange");
-            Assert.True(val.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Null || val.IsFunction || val.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Undefined);
-        }
+            var runtimeField = typeof(JavaScriptEngine).GetField("_fenRuntime", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(runtimeField);
 
-        [Fact]
-        public void AudioContext_StereoPanner_HasPanParam()
-        {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
+            var runtime = runtimeField.GetValue(engine) as FenRuntime;
+            Assert.NotNull(runtime);
 
-            var ctx = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContext(context);
-            var createFn = ctx.Get("createStereoPanner").AsFunction();
-            var node = createFn.Invoke(Array.Empty<FenValue>(), context).AsObject();
-            Assert.True(node.Get("pan").IsObject, "StereoPannerNode must have pan AudioParam");
-        }
+            Assert.True(runtime.GetGlobal("RTCPeerConnection").IsUndefined);
+            Assert.True(runtime.GetGlobal("webkitRTCPeerConnection").IsUndefined);
+            Assert.True(runtime.GetGlobal("MediaStream").IsUndefined);
 
-        [Fact]
-        public void AudioContext_ChannelSplitter_DefaultOutputs()
-        {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
-
-            var ctx = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContext(context);
-            var createFn = ctx.Get("createChannelSplitter").AsFunction();
-            var node = createFn.Invoke(Array.Empty<FenValue>(), context).AsObject();
-            Assert.Equal(6.0, node.Get("numberOfOutputs").ToNumber());
-        }
-
-        // ── Finding #29: WebRTC API completeness ──
-
-        [Fact]
-        public void RTCPeerConnection_HasRestartIce()
-        {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
-
-            var ctor = (FenFunction)FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(context);
-            var pc = ctor.Invoke(Array.Empty<FenValue>(), context).AsObject();
-            Assert.True(pc.Get("restartIce").IsFunction, "RTCPeerConnection must have restartIce()");
-        }
-
-        [Fact]
-        public void RTCPeerConnection_HasAddTransceiver()
-        {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
-
-            var ctor = (FenFunction)FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(context);
-            var pc = ctor.Invoke(Array.Empty<FenValue>(), context).AsObject();
-            Assert.True(pc.Get("addTransceiver").IsFunction, "RTCPeerConnection must have addTransceiver()");
-        }
-
-        [Fact]
-        public void RTCPeerConnection_AddTransceiver_ReturnsTransceiver()
-        {
-            var perm = new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb);
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(perm);
-            context.Environment = new FenEnvironment();
-
-            var ctor = (FenFunction)FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(context);
-            var pc = ctor.Invoke(Array.Empty<FenValue>(), context).AsObject();
-            var addTransceiver = pc.Get("addTransceiver").AsFunction();
-            var transceiver = addTransceiver.Invoke(new[] { FenValue.FromString("audio") }, context).AsObject();
-            Assert.NotNull(transceiver);
-            Assert.True(transceiver.Get("sender").IsObject, "Transceiver must have sender");
-            Assert.True(transceiver.Get("receiver").IsObject, "Transceiver must have receiver");
-            Assert.True(transceiver.Get("stop").IsFunction, "Transceiver must have stop()");
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.True(window.Get("RTCPeerConnection").IsUndefined);
+            Assert.True(window.Get("webkitRTCPeerConnection").IsUndefined);
+            Assert.True(window.Get("MediaStream").IsUndefined);
         }
 
         // ── Finding #26: IndexedDB persistence via IStorageBackend ──
+
+        private static JsHostAdapter CreateHost()
+        {
+            return new JsHostAdapter(
+                navigate: _ => { },
+                post: (_, __) => { },
+                status: _ => { },
+                log: _ => { });
+        }
 
         [Fact]
         public void IndexedDB_SetStorageBackend_AcceptsBackend()
