@@ -14,6 +14,10 @@ namespace FenBrowser.FenEngine.Scripting
         void Initialize(IJsHost host);
         void SetDom(Element root);
         void Reset(JsContext ctx);
+        /// <summary>
+        /// Execute an inline-script snippet through the authoritative JavaScriptEngine path.
+        /// This is an entry-point distinction for host code, not a separate runtime mode.
+        /// </summary>
         bool RunInline(string code, JsContext ctx);
         bool AllowExternalScripts { get; set; }
         SandboxPolicy Sandbox { get; set; }

@@ -15,6 +15,11 @@ namespace FenBrowser.FenEngine.Scripting
 
         private System.Net.Http.HttpClient _http;
 
+        /// <summary>
+        /// Canonical inline-script entry point used by DOM/event plumbing and runtime adapters.
+        /// This intentionally routes through <see cref="Evaluate(string)"/> so inline execution
+        /// and direct script execution share one engine path instead of drifting apart.
+        /// </summary>
         public bool RunInline(string code, JsContext ctx = null, string evt = null, string target = null)
         {
             if (string.IsNullOrWhiteSpace(code)) return false;
@@ -31,10 +36,7 @@ namespace FenBrowser.FenEngine.Scripting
                 snippet = snippet.Replace("\n", " ").Replace("\r", "");
                 FenLogger.Debug($"[JS] RunInline (evt={evt} target={target}): {snippet}", LogCategory.JavaScript);
 
-                // ACTUAL EXECUTION
-                // We delegate to the main Evaluate method which uses FenRuntime
-                var result = Evaluate(code);
-                
+                Evaluate(code);
                 return true;
             }
             catch (Exception ex)
