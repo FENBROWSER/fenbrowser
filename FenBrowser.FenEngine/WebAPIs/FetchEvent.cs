@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.Types;
 
@@ -18,7 +19,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly TaskCompletionSource<bool> _respondWithRegistered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public FetchEvent(string type, IObject request, IExecutionContext context) 
+        public FetchEvent(string type, IObject request, IExecutionContext context)
         {
             Set("type", FenValue.FromString(type));
             Set("request", FenValue.FromObject(request));
@@ -29,20 +30,24 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("waitUntil", FenValue.FromFunction(new FenFunction("waitUntil", WaitUntil)));
         }
 
-        // Response promise set by respondWith
+        // Response promise set by respondWith.
         public FenObject RespondWithPromise { get; private set; }
         public bool HasRespondWith => RespondWithPromise != null;
 
         private FenValue RespondWith(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length < 1) return FenValue.Undefined;
-            
+            if (args.Length < 1)
+            {
+                return FenValue.Undefined;
+            }
+
             var promise = args[0].AsObject();
             if (promise != null)
             {
                 RespondWithPromise = promise as FenObject;
                 _respondWithRegistered.TrySetResult(true);
             }
+
             return FenValue.Undefined;
         }
 
@@ -67,11 +72,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (!HasRespondWith || RespondWithPromise == null)
             {
                 return RespondWithSettlement.NotHandled();
-            }
-
-            if (TryGetLegacySettledState(RespondWithPromise, out var legacy))
-            {
-                return legacy;
             }
 
             var settle = new TaskCompletionSource<RespondWithSettlement>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -109,6 +109,14 @@ namespace FenBrowser.FenEngine.WebAPIs
                         settle.TrySetResult(RespondWithSettlement.Rejected(a.Length > 0 ? a[0] : FenValue.Undefined));
                         return FenValue.Undefined;
                     })));
+
+                // When handlers are attached to an already-settled promise outside normal task processing,
+                // flush the microtask queue so respondWith()/waitUntil() observes settlement promptly.
+                if (jsPromise.IsSettled && EventLoopCoordinator.Instance.HasPendingMicrotasks)
+                {
+                    EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                }
+
                 return true;
             }
 
@@ -132,36 +140,6 @@ namespace FenBrowser.FenEngine.WebAPIs
 
             then.AsFunction().Invoke(new[] { resolveFn, rejectFn }, _context);
             return true;
-        }
-
-        private static bool TryGetLegacySettledState(FenObject promise, out RespondWithSettlement settlement)
-        {
-            settlement = default;
-            if (promise == null)
-            {
-                return false;
-            }
-
-            var stateValue = promise.Get("__state");
-            if (stateValue.IsUndefined)
-            {
-                return false;
-            }
-
-            var state = stateValue.ToString();
-            if (string.Equals(state, "fulfilled", StringComparison.OrdinalIgnoreCase))
-            {
-                settlement = RespondWithSettlement.Fulfilled(promise.Get("__result"));
-                return true;
-            }
-
-            if (string.Equals(state, "rejected", StringComparison.OrdinalIgnoreCase))
-            {
-                settlement = RespondWithSettlement.Rejected(promise.Get("__reason"));
-                return true;
-            }
-
-            return false;
         }
 
         private FenValue WaitUntil(FenValue[] args, FenValue thisVal)
@@ -217,11 +195,6 @@ namespace FenBrowser.FenEngine.WebAPIs
             if (promise == null)
             {
                 return RespondWithSettlement.NotHandled();
-            }
-
-            if (TryGetLegacySettledState(promise, out var legacy))
-            {
-                return legacy;
             }
 
             var settle = new TaskCompletionSource<RespondWithSettlement>(TaskCreationOptions.RunContinuationsAsynchronously);
