@@ -163,6 +163,7 @@ public class DomInstrumenter
         {
             Document => 9,
             Text => 3,
+            Comment => 8,
             Element => 1,
             _ => 0
         };
@@ -171,6 +172,7 @@ public class DomInstrumenter
         {
             Document => "#document",
             Text => "#text",
+            Comment => "#comment",
             Element el => el.TagName?.ToUpper() ?? "UNKNOWN",
             _ => node.GetType().Name
         };
@@ -192,7 +194,12 @@ public class DomInstrumenter
             ParentId = parentId,
             NodeType = nodeType,
             NodeName = nodeName,
-            NodeValue = node is Text t ? t.Data : null,
+            NodeValue = node switch
+            {
+                Text text => text.Data,
+                Comment comment => comment.Data,
+                _ => null
+            },
             Attributes = attributes,
             ChildNodeCount = node.ChildNodes.Length
         };

@@ -129,6 +129,7 @@ public record NetworkRequestInfo(
     DateTime StartTime,
     Dictionary<string, string> RequestHeaders,
     Dictionary<string, string> ResponseHeaders,
+    string? RequestBody,
     string? ResponseBody,
     bool IsComplete
 );
@@ -163,5 +164,8 @@ public enum ConsoleLevel
 public record ScriptSourceInfo(
     string Url,
     string Content,
-    bool IsInline
+    bool IsInline,
+    string ScriptId = "",
+    int StartLine = 0,
+    int StartColumn = 0
 );

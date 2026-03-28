@@ -26,7 +26,7 @@ public record DomNodeDto
     public int NodeType { get; init; }
     
     /// <summary>
-    /// Node name (tag name for elements, "#text" for text nodes).
+    /// Node name (tag name for elements, "#text" for text nodes, "#comment" for comments).
     /// </summary>
     [JsonPropertyName("nodeName")]
     public required string NodeName { get; init; }
@@ -167,6 +167,33 @@ public record RequestChildNodesResult
 {
     [JsonPropertyName("nodes")]
     public required DomNodeDto[] Nodes { get; init; }
+}
+
+/// <summary>
+/// Result for DOM.getOuterHTML.
+/// </summary>
+public record GetOuterHtmlResult
+{
+    [JsonPropertyName("outerHTML")]
+    public required string OuterHTML { get; init; }
+}
+
+/// <summary>
+/// Result for DOM.querySelector.
+/// </summary>
+public record QuerySelectorResult
+{
+    [JsonPropertyName("nodeId")]
+    public int NodeId { get; init; }
+}
+
+/// <summary>
+/// Result for DOM.querySelectorAll.
+/// </summary>
+public record QuerySelectorAllResult
+{
+    [JsonPropertyName("nodeIds")]
+    public required int[] NodeIds { get; init; }
 }
 
 /// <summary>

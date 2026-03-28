@@ -109,3 +109,39 @@ public record ExceptionDetails
     [JsonPropertyName("exception")]
     public RemoteObject? Exception { get; init; }
 }
+
+/// <summary>
+/// Result for Runtime.getProperties.
+/// </summary>
+public record GetPropertiesResult
+{
+    [JsonPropertyName("result")]
+    public required RuntimePropertyDescriptor[] Result { get; init; }
+}
+
+/// <summary>
+/// Property descriptor for a remote object property.
+/// </summary>
+public record RuntimePropertyDescriptor
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("value")]
+    public RemoteObject? Value { get; init; }
+
+    [JsonPropertyName("writable")]
+    public bool? Writable { get; init; }
+
+    [JsonPropertyName("configurable")]
+    public bool Configurable { get; init; }
+
+    [JsonPropertyName("enumerable")]
+    public bool Enumerable { get; init; }
+
+    [JsonPropertyName("isOwn")]
+    public bool? IsOwn { get; init; }
+
+    [JsonPropertyName("wasThrown")]
+    public bool? WasThrown { get; init; }
+}

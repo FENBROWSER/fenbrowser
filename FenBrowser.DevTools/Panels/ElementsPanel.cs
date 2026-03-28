@@ -90,12 +90,37 @@ public class ElementsPanel : DevToolsPanelBase
     private int? _editingElementNodeId = null;
     private string _editingElementHtml = "";
 
+    protected override void OnHostChanging(IDevToolsHost? previousHost)
+    {
+        if (previousHost != null)
+        {
+            previousHost.DomChanged -= HandleDomChanged;
+            previousHost.ProtocolEventReceived -= HandleProtocolEvent;
+        }
+
+        _rootNode = null;
+        _nodeMap.Clear();
+        _flattenedNodes.Clear();
+        _expandedNodes.Clear();
+        _selectedNodeId = null;
+        _hoveredNodeId = null;
+        _hoveredIndex = -1;
+        _treeScrollY = 0;
+        _treeMaxScrollY = 0;
+        _stylesScrollY = 0;
+        _stylesMaxScrollY = 0;
+        _editingAttrKey = null;
+        _editingNodeId = null;
+        _editingCssPropertyName = null;
+        _editingElementAsHtml = false;
+        _editingElementNodeId = null;
+    }
     
     protected override void OnHostChanged()
     {
         if (Host != null)
         {
-            Host.DomChanged += () => _ = RefreshTreeAsync();
+            Host.DomChanged += HandleDomChanged;
             Host.ProtocolEventReceived += HandleProtocolEvent;
         }
         
@@ -111,8 +136,15 @@ public class ElementsPanel : DevToolsPanelBase
     {
         _hoveredIndex = -1;
         _hoveredNodeId = null;
+        _editingElementAsHtml = false;
+        _editingElementNodeId = null;
         _ = SendHighlightCommand(null);
         Invalidate();
+    }
+
+    private void HandleDomChanged()
+    {
+        _ = RefreshTreeAsync();
     }
     
     private void HandleProtocolEvent(string json)
@@ -367,6 +399,7 @@ public class ElementsPanel : DevToolsPanelBase
     public override void Paint(SKCanvas canvas, SKRect bounds)
     {
         Bounds = bounds;
+        UpdateCursorBlink();
 
         // Initialize or re-sync splitter position if it drifted or window resized
         if (_splitterX <= bounds.Left || _splitterX >= bounds.Right)
@@ -408,6 +441,11 @@ public class ElementsPanel : DevToolsPanelBase
         if (_stylesMaxScrollY > 0)
         {
              DrawCustomScrollbar(canvas, stylesContentBounds, _stylesScrollY, _stylesMaxScrollY);
+        }
+
+        if (_editingElementAsHtml)
+        {
+            DrawHtmlEditorOverlay(canvas, bounds);
         }
     }
 
@@ -1263,6 +1301,11 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override bool OnMouseDown(float x, float y, bool isRightButton)
     {
+        if (_editingElementAsHtml)
+        {
+            return true;
+        }
+
         // Check splitter - consistent 10px hit area
         if (Math.Abs(x - _splitterX) <= 5)
         {
@@ -1332,7 +1375,7 @@ public class ElementsPanel : DevToolsPanelBase
                     // Double-click on element enters "Edit as HTML" mode
                     if (isDoubleClick && node.Node.NodeType == 1 && !node.IsClosingTag)
                     {
-                        StartEditAsHtml(node.Node.NodeId);
+                        _ = StartEditAsHtmlAsync(node.Node.NodeId);
                     }
                     // Single click on text node enters edit mode
                     else if (node.Node.NodeType == 3)
@@ -1446,7 +1489,17 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override void OnTextInput(char c)
     {
-        if (_editingAttrKey != null)
+        if (_editingElementAsHtml)
+        {
+            if (!char.IsControl(c))
+            {
+                _editingElementHtml += c;
+                _cursorBlink = true;
+                _lastBlink = DateTime.Now;
+                Invalidate();
+            }
+        }
+        else if (_editingAttrKey != null)
         {
             if (!char.IsControl(c))
             {
@@ -1485,11 +1538,55 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override bool OnKeyDown(int keyCode, bool ctrl, bool shift, bool alt)
     {
-        if (_editingAttrKey == null && _editingNodeId == null && _editingCssPropertyName == null) return false;
+        if (_editingAttrKey == null && _editingNodeId == null && _editingCssPropertyName == null && !_editingElementAsHtml) return false;
         
         const int KEY_BACK = 8;
         const int KEY_ENTER = 13;
         const int KEY_ESC = 27;
+        const int KEY_TAB = 9;
+
+        if (_editingElementAsHtml)
+        {
+            if (keyCode == KEY_BACK)
+            {
+                if (_editingElementHtml.Length > 0)
+                {
+                    _editingElementHtml = _editingElementHtml.Substring(0, _editingElementHtml.Length - 1);
+                    _cursorBlink = true;
+                    _lastBlink = DateTime.Now;
+                    Invalidate();
+                }
+                return true;
+            }
+            else if (keyCode == KEY_ENTER && ctrl)
+            {
+                _ = ApplyHtmlEditAsync();
+                return true;
+            }
+            else if (keyCode == KEY_ENTER)
+            {
+                _editingElementHtml += Environment.NewLine;
+                _cursorBlink = true;
+                _lastBlink = DateTime.Now;
+                Invalidate();
+                return true;
+            }
+            else if (keyCode == KEY_TAB)
+            {
+                _editingElementHtml += "    ";
+                _cursorBlink = true;
+                _lastBlink = DateTime.Now;
+                Invalidate();
+                return true;
+            }
+            else if (keyCode == KEY_ESC)
+            {
+                _editingElementAsHtml = false;
+                _editingElementNodeId = null;
+                Invalidate();
+                return true;
+            }
+        }
         
         if (keyCode == KEY_BACK)
         {
@@ -1547,8 +1644,6 @@ public class ElementsPanel : DevToolsPanelBase
         {
             const int KEY_UP = 38;
             const int KEY_DOWN = 40;
-            const int KEY_TAB = 9;
-            
             if (keyCode == KEY_UP)
             {
                 _autocompleteSelectedIndex = Math.Max(0, _autocompleteSelectedIndex - 1);
@@ -1918,16 +2013,43 @@ public class ElementsPanel : DevToolsPanelBase
     /// <summary>
     /// Start editing an element as HTML.
     /// </summary>
-    private void StartEditAsHtml(int nodeId)
+    private async Task StartEditAsHtmlAsync(int nodeId)
     {
         if (!_nodeMap.TryGetValue(nodeId, out var node)) return;
         
         _editingElementAsHtml = true;
         _editingElementNodeId = nodeId;
         _editingElementHtml = GenerateOuterHtml(node);
+        _editingAttrKey = null;
+        _editingNodeId = null;
+        _editingCssPropertyName = null;
         _cursorBlink = true;
         _lastBlink = DateTime.Now;
         Invalidate();
+
+        if (Host == null) return;
+
+        try
+        {
+            var request = new ProtocolRequest<object>
+            {
+                Id = 1007,
+                Method = "DOM.getOuterHTML",
+                Params = new { nodeId }
+            };
+
+            var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
+            var response = ProtocolJson.Deserialize<ProtocolResponse<GetOuterHtmlResult>>(responseJson);
+            if (response?.Result?.OuterHTML != null)
+            {
+                _editingElementHtml = response.Result.OuterHTML;
+                Invalidate();
+            }
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Error($"[ElementsPanel] getOuterHTML error: {ex.Message}", LogCategory.General);
+        }
     }
     
     /// <summary>
@@ -2022,6 +2144,99 @@ public class ElementsPanel : DevToolsPanelBase
         catch (Exception ex)
         {
             FenBrowser.Core.FenLogger.Error($"[ElementsPanel] setOuterHTML error: {ex.Message}", LogCategory.General);
+        }
+    }
+
+    private void DrawHtmlEditorOverlay(SKCanvas canvas, SKRect bounds)
+    {
+        using var scrimPaint = DevToolsTheme.CreateFillPaint(SKColors.Black.WithAlpha(140));
+        using var overlayPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TabBorder);
+        using var titlePaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeLarge);
+        using var hintPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
+        using var textPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeMedium);
+
+        canvas.DrawRect(bounds, scrimPaint);
+
+        var overlayRect = new SKRect(
+            bounds.Left + 48,
+            bounds.Top + 36,
+            bounds.Right - 48,
+            bounds.Bottom - 36);
+
+        canvas.DrawRoundRect(overlayRect, 6, 6, overlayPaint);
+        canvas.DrawRoundRect(overlayRect, 6, 6, borderPaint);
+
+        float headerX = overlayRect.Left + DevToolsTheme.PaddingLarge;
+        float headerY = overlayRect.Top + 24;
+        canvas.DrawText("Edit Outer HTML", headerX, headerY, titlePaint);
+
+        float hintY = headerY + 20;
+        canvas.DrawText("Ctrl+Enter apply, Enter newline, Esc cancel", headerX, hintY, hintPaint);
+
+        var editorRect = new SKRect(
+            overlayRect.Left + DevToolsTheme.PaddingLarge,
+            overlayRect.Top + 56,
+            overlayRect.Right - DevToolsTheme.PaddingLarge,
+            overlayRect.Bottom - DevToolsTheme.PaddingLarge);
+
+        using var editorBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Background);
+        using var editorBorderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.BorderLight);
+        canvas.DrawRoundRect(editorRect, 4, 4, editorBgPaint);
+        canvas.DrawRoundRect(editorRect, 4, 4, editorBorderPaint);
+
+        canvas.Save();
+        canvas.ClipRect(editorRect);
+
+        var normalized = (_editingElementHtml ?? string.Empty).Replace("\r\n", "\n");
+        var lines = normalized.Split('\n');
+        if (lines.Length == 0)
+        {
+            lines = new[] { string.Empty };
+        }
+
+        const float lineHeight = 18f;
+        float textX = editorRect.Left + DevToolsTheme.PaddingNormal;
+        float textY = editorRect.Top + 20;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (textY > editorRect.Bottom - 4)
+            {
+                break;
+            }
+
+            canvas.DrawText(lines[i], textX, textY, textPaint);
+            textY += lineHeight;
+        }
+
+        if (_cursorBlink)
+        {
+            string lastLine = lines[^1];
+            float caretX = textX + textPaint.MeasureText(lastLine);
+            float caretY = editorRect.Top + 20 + ((lines.Length - 1) * lineHeight);
+            using var caretPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TextPrimary);
+            canvas.DrawLine(caretX + 1, caretY - 12, caretX + 1, caretY + 3, caretPaint);
+        }
+
+        canvas.Restore();
+    }
+
+    private void UpdateCursorBlink()
+    {
+        if (_editingAttrKey == null &&
+            _editingNodeId == null &&
+            _editingCssPropertyName == null &&
+            !_editingElementAsHtml)
+        {
+            return;
+        }
+
+        if ((DateTime.Now - _lastBlink).TotalMilliseconds >= 500)
+        {
+            _cursorBlink = !_cursorBlink;
+            _lastBlink = DateTime.Now;
+            Invalidate();
         }
     }
     
