@@ -973,7 +973,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return FenValue.Undefined;
             }
 
-            var evalEnvironment = new FenEnvironment(frame.Environment);
+            // Non-strict direct eval gets a fresh lexical environment whose var-declaration
+            // environment is still the caller's enclosing var scope. Strict direct eval keeps
+            // var declarations local to the eval itself.
+            var evalEnvironment = inheritStrict
+                ? new FenEnvironment(frame.Environment)
+                : new FenEnvironment(frame.Environment, isLexicalScope: true);
             evalEnvironment.StrictMode = inheritStrict;
 
             var thisBinding = ResolveVariableSafe(frame, "this");
@@ -2153,6 +2158,7 @@ run_loop_restart:
                                 newFunc.IsAsync = templateFunc.IsAsync;
                                 newFunc.IsGenerator = templateFunc.IsGenerator;
                                 newFunc.IsMethodDefinition = templateFunc.IsMethodDefinition;
+                                newFunc.HasOwnNameBinding = templateFunc.HasOwnNameBinding;
                                 newFunc.Source = templateFunc.Source;
                                 newFunc.NeedsArgumentsObject = templateFunc.NeedsArgumentsObject;
                                 newFunc.LocalMap = templateFunc.LocalMap;
@@ -2211,7 +2217,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2265,7 +2271,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2327,7 +2333,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2381,7 +2387,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2454,7 +2460,7 @@ run_loop_restart:
 
                                     // Bind 'this' to newObj
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2515,7 +2521,7 @@ run_loop_restart:
                                         newEnv.StrictMode = true;
                                     }
                                     InitializeFunctionFastStore(func, newEnv);
-                                    if (!string.IsNullOrEmpty(func.Name))
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
                                     {
                                         SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
                                     }
@@ -2920,8 +2926,12 @@ run_loop_restart:
                                 else if (objVal.IsObject || objVal.IsFunction)
                                 {
                                     var obj = objVal.AsObject();
+                                    // for...in must enumerate all enumerable properties in the prototype chain
+                                    // per ECMA-262 §14.7.5.9, not just own properties.
                                     iterObj.NativeObject = obj != null
-                                        ? new KeyIteratorEnumerator(obj.Keys().GetEnumerator())
+                                        ? (obj is FenObject fenObj
+                                            ? new KeyIteratorEnumerator(fenObj.EnumerableKeys().GetEnumerator())
+                                            : new KeyIteratorEnumerator(obj.Keys().GetEnumerator()))
                                         : (IEnumerator<FenValue>)EmptyFenValueEnumerator.Instance;
                                 }
                                 else
@@ -3499,6 +3509,14 @@ run_loop_restart:
 
                 argumentsObj.Set("length", FenValue.FromNumber(effectiveArgs.Length));
                 argumentsObj.Set("callee", FenValue.FromFunction(func));
+
+                // arguments[@@iterator] = Array.prototype.values (ECMA-262 §10.4.4.7)
+                var arrayProtoValues = FenObject.DefaultArrayPrototype?.Get("values");
+                if (arrayProtoValues.HasValue && arrayProtoValues.Value.IsFunction)
+                {
+                    argumentsObj.Set("@@iterator", arrayProtoValues.Value);
+                    argumentsObj.SetSymbol(Types.JsSymbol.Iterator, arrayProtoValues.Value);
+                }
 
                 var paramNames = new FenObject();
                 if (func.Parameters != null)

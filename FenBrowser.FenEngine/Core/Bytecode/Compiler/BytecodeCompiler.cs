@@ -23,6 +23,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly bool _enableLocalSlots;
         private readonly List<Identifier> _functionParameters;
         private readonly string _functionName;
+        private readonly bool _createFunctionNameBinding;
         private readonly bool _isEval;
         private readonly HashSet<FunctionDeclarationStatement> _topLevelHoistedFunctions = new HashSet<FunctionDeclarationStatement>();
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -30,6 +31,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
         private readonly bool _forceStrictRoot;
         private bool _currentCompileIsStrict;
+        private AstNode _compileRoot;
         private int _visitDepth;
         // Production bundles routinely exceed small synthetic depth caps through
         // nested expression trees and generated wrapper functions.
@@ -46,25 +48,27 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly HashSet<FunctionDeclarationStatement> _annexBVarScopedBlockFunctions = new HashSet<FunctionDeclarationStatement>();
 
         public BytecodeCompiler(bool isEval = false)
-            : this(enableLocalSlots: false, functionParameters: null, functionName: null, isEval: isEval)
+            : this(enableLocalSlots: false, functionParameters: null, functionName: null, createFunctionNameBinding: false, isEval: isEval)
         {
         }
 
-        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool isEval = false, bool forceStrictRoot = false)
+        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool createFunctionNameBinding, bool isEval = false, bool forceStrictRoot = false)
         {
             _enableLocalSlots = enableLocalSlots;
             _functionParameters = functionParameters;
             _functionName = functionName;
+            _createFunctionNameBinding = createFunctionNameBinding;
             _isEval = isEval;
             _forceStrictRoot = forceStrictRoot;
         }
 
-        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName, bool forceStrictRoot = false)
+        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName, bool createFunctionNameBinding, bool forceStrictRoot = false)
         {
             return new BytecodeCompiler(
                 enableLocalSlots: true,
                 functionParameters: parameters,
                 functionName: functionName,
+                createFunctionNameBinding: createFunctionNameBinding,
                 isEval: false,
                 forceStrictRoot: forceStrictRoot);
         }
@@ -93,6 +97,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _topLevelHoistedFunctions.Clear();
             _annexBVarScopedBlockFunctions.Clear();
             _visitDepth = 0;
+            _compileRoot = root;
             _currentCompileIsStrict = _forceStrictRoot || IsStrictRoot(root);
 
             if (_enableLocalSlots)
@@ -927,10 +932,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is BlockStatement blockStmt)
             {
-                // Only create a new scope if the block contains let/const/class/function declarations.
-                bool needsScope = false;
-                if (_scopeDepth > 0)
+                // Statement blocks always require a lexical environment when they contain
+                // lexical bindings, even at the top level of a script/eval/function body.
+                // The only exception is the compile root itself, which already executes in
+                // the correct surrounding environment and must not be wrapped again.
+                bool needsScope = !ReferenceEquals(blockStmt, _compileRoot);
+                if (needsScope)
                 {
+                    needsScope = false;
                     foreach (var s in blockStmt.Statements)
                     {
                         if ((s is LetStatement blockLetStmt && blockLetStmt.Kind != DeclarationKind.Var) ||
@@ -1005,7 +1014,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
                 string functionName = !string.IsNullOrEmpty(funcLit.Name) ? funcLit.Name : _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName, funcLit.IsStrict);
+                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName, !string.IsNullOrEmpty(funcLit.Name), funcLit.IsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -1014,6 +1023,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     IsAsync = funcLit.IsAsync,
                     IsGenerator = funcLit.IsGenerator,
                     IsMethodDefinition = funcLit.IsMethodDefinition,
+                    HasOwnNameBinding = !string.IsNullOrEmpty(funcLit.Name),
                     Source = GetFunctionSourceText(funcLit, functionName),
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
@@ -1031,7 +1041,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
                 string asyncFunctionName = asyncFuncExpr.Name?.Value ?? _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName, _currentCompileIsStrict);
+                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName, asyncFuncExpr.Name != null && !string.IsNullOrEmpty(asyncFuncExpr.Name.Value), _currentCompileIsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -1039,6 +1049,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     IsAsync = true,
                     IsMethodDefinition = false,
+                    HasOwnNameBinding = asyncFuncExpr.Name != null && !string.IsNullOrEmpty(asyncFuncExpr.Name.Value),
                     NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                     LocalMap = localMap
                 };
@@ -1054,7 +1065,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             else if (node is ArrowFunctionExpression arrowExpr)
             {
                 ValidateSupportedParameterList(arrowExpr.Parameters, "ArrowFunctionExpression");
-                var funcCompiler = CreateFunctionCompiler(arrowExpr.Parameters, _currentInferredName, _currentCompileIsStrict);
+                var funcCompiler = CreateFunctionCompiler(
+                    parameters: arrowExpr.Parameters,
+                    functionName: _currentInferredName,
+                    createFunctionNameBinding: false,
+                    forceStrictRoot: _currentCompileIsStrict);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -3654,7 +3669,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             AddLocalBinding("this");
             AddLocalBinding("arguments");
 
-            if (!string.IsNullOrEmpty(_functionName))
+            if (_createFunctionNameBinding && !string.IsNullOrEmpty(_functionName))
             {
                 AddLocalBinding(_functionName);
             }
@@ -4980,7 +4995,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             ValidateSupportedParameterList(parameters, "FenFunction");
 
-            var funcCompiler = CreateFunctionCompiler(parameters, functionName, forceStrictRoot);
+            var funcCompiler = CreateFunctionCompiler(parameters, functionName, !string.IsNullOrEmpty(functionName), forceStrictRoot);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(body, parameters));
             localMap = BuildFunctionLocalMap(compiledBlock);
             needsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap);
@@ -5121,7 +5136,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
         {
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name, funcDecl.Function.IsStrict);
+            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name, !string.IsNullOrEmpty(funcDecl.Function.Name), funcDecl.Function.IsStrict);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
             var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -5131,6 +5146,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 IsAsync = funcDecl.Function.IsAsync,
                 IsGenerator = funcDecl.Function.IsGenerator,
                 IsMethodDefinition = funcDecl.Function.IsMethodDefinition,
+                HasOwnNameBinding = !string.IsNullOrEmpty(funcDecl.Function.Name),
                 Source = GetFunctionSourceText(funcDecl.Function, funcDecl.Function.Name),
                 NeedsArgumentsObject = BytecodeBlockMayReferenceArguments(compiledBlock, localMap),
                 LocalMap = localMap
