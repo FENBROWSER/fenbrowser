@@ -579,6 +579,24 @@ namespace FenBrowser.Core.Css
         {
             return InheritedProperties.Contains(property);
         }
+
+        /// <summary>
+        /// Copy inherited property values from a parent style into this style,
+        /// for properties that this style does not explicitly set.
+        /// Used by incremental recascade to propagate inherited values.
+        /// </summary>
+        public void InheritFrom(CssComputed parent)
+        {
+            if (parent == null) return;
+            foreach (var prop in InheritedProperties)
+            {
+                if (!Map.ContainsKey(prop) && parent.Map.TryGetValue(prop, out var val))
+                {
+                    Map[prop] = val;
+                }
+            }
+            InheritCustomProperties(parent);
+        }
         
         /// <summary>
         /// Get the spec-defined initial value for a property.
