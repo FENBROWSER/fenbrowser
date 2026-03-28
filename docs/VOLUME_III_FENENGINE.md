@@ -1074,7 +1074,7 @@ So you want to add `border-radius`? Follow these steps:
     - registration wait (`WaitForRespondWithRegistrationAsync`)
     - settlement wait (`WaitForRespondWithSettlementAsync`)
     - fulfilled/rejected/timeout result model (`RespondWithSettlement`).
-  - Supports both native `JsPromise` and legacy `__state` promise objects.
+  - That tranche temporarily supported both native `JsPromise` and legacy `__state` promise objects; this compatibility path was removed in `2.172`.
 
 - `WebAPIs/FetchApi.cs`
   - Fetch pipeline now extracts fulfilled `respondWith()` values and returns service-worker responses directly.
@@ -5375,3 +5375,27 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Non-strict direct eval now uses a lexical eval environment in [VirtualMachine.cs](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs), which sends `var`-style declaration writes to the caller's variable environment while keeping lexical eval bindings isolated.
 - Effect:
   - Direct-eval/function-scope Annex B tests now observe the required undefined preinitialization, mutable outer binding behavior, and early-error skip behavior.
+
+## 2.172 ServiceWorker Promise Canonicalization (2026-03-28)
+
+- `FenBrowser.FenEngine/Workers/WorkerPromise.cs`
+  - Added a shared worker-side promise bridge that can create pending handles and detached task-backed `JsPromise` instances even when a service-worker surface does not start with a runtime context.
+- `FenBrowser.FenEngine/Workers/ServiceWorkerContainer.cs`
+  - `ready` now comes from the canonical worker promise bridge.
+  - Detached async paths now route through `WorkerPromise.FromTask(...)`; the fake `__state`/callback fallback was removed.
+- `FenBrowser.FenEngine/Workers/ServiceWorkerRegistration.cs`
+  - Registration async methods now route through `WorkerPromise.FromTask(...)` and always return real `JsPromise` instances.
+- `FenBrowser.FenEngine/Workers/ServiceWorkerClients.cs`
+  - `claim()`, `matchAll()`, and `openWindow(...)` now share the same canonical worker promise bridge instead of synthesizing fallback thenables.
+- `FenBrowser.FenEngine/Workers/ServiceWorkerGlobalScope.cs`
+  - Worker-global async methods now delegate to `WorkerPromise.FromTask(...)`; no legacy promise split remains in this surface.
+- `FenBrowser.FenEngine/WebAPIs/FetchEvent.cs`
+  - Removed legacy `__state` settlement probing.
+  - `respondWith()` settlement now observes real handler attachment only, with a microtask checkpoint for already-settled `JsPromise` instances.
+- `FenBrowser.Tests/Workers/ServiceWorkerLifecycleTests.cs`
+  - Added regression coverage that proves context-free service-worker surfaces still return real promises and that `FetchEvent` no longer accepts a legacy state bag as a settled promise.
+- Why this mattered:
+  - Service-worker APIs were still diverging from the canonical promise model whenever `_context` was absent, which kept two settlement models alive in the same subsystem.
+  - `FetchEvent` was explicitly interoperating with that fallback via legacy settled-state markers, so worker fetch behavior could silently differ from the browser-grade promise path.
+- Verification:
+  - `dotnet test FenBrowser.Tests --filter ServiceWorkerLifecycleTests --no-restore`: pass (`11/11`).
