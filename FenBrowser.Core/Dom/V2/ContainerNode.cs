@@ -415,6 +415,9 @@ namespace FenBrowser.Core.Dom.V2
             // Invalidate cache
             InvalidateChildCache();
 
+            // Mark inserted node as style-dirty so incremental recascade picks it up
+            node.MarkDirty(InvalidationKind.Style);
+
             // Notify observers
             NotifyChildListMutation(null, node);
 
@@ -456,6 +459,9 @@ namespace FenBrowser.Core.Dom.V2
             // Invalidate cache
             InvalidateChildCache();
 
+            // Mark inserted node as style-dirty so incremental recascade picks it up
+            node.MarkDirty(InvalidationKind.Style);
+
             // Notify observers
             NotifyChildListMutation(null, node);
 
@@ -495,6 +501,9 @@ namespace FenBrowser.Core.Dom.V2
 
             // Invalidate cache
             InvalidateChildCache();
+
+            // Mark parent style-dirty: removal may affect sibling selectors
+            this.MarkDirty(InvalidationKind.Style);
 
             // Notify observers
             NotifyChildListMutation(child, null);

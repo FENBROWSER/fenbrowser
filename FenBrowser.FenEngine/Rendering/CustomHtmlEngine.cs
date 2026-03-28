@@ -1305,10 +1305,18 @@ namespace FenBrowser.FenEngine.Rendering
         /// RepaintReady that fires after the in-flight task completes will carry the
         /// freshest styles.
         /// </summary>
-        public void ScheduleRecascade()
+        /// <summary>
+        /// Tracks whether a full recascade is needed (stylesheet change) vs incremental (DOM mutation).
+        /// </summary>
+        private volatile bool _fullRecascadeRequired;
+
+        public void ScheduleRecascade(bool fullRecascade = false)
         {
             if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
                 return;
+
+            if (fullRecascade)
+                _fullRecascadeRequired = true;
 
             // Only one re-cascade in flight at a time.
             var pending = _pendingRecascade;
@@ -1317,7 +1325,19 @@ namespace FenBrowser.FenEngine.Rendering
 
             _pendingRecascade = RunDetachedAsync(async () =>
             {
-                try { await RecascadeAsync().ConfigureAwait(false); }
+                try
+                {
+                    if (_fullRecascadeRequired)
+                    {
+                        _fullRecascadeRequired = false;
+                        FenLogger.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
+                        await RecascadeAsync().ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await IncrementalRecascadeAsync().ConfigureAwait(false);
+                    }
+                }
                 catch (Exception ex)
                 {
                     FenLogger.Warn(
@@ -1341,6 +1361,127 @@ namespace FenBrowser.FenEngine.Rendering
             if (domEl == null) return;
 
             await LoadCssAsync(domEl, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Walks the DOM using ChildStyleDirty flags to find dirty subtree roots,
+        /// recascades only those subtrees, then fires OnRepaintReady.
+        /// Falls back to full recascade if >30% of tree is dirty.
+        /// </summary>
+        private async Task IncrementalRecascadeAsync()
+        {
+            if (_activeDom == null) return;
+
+            var domEl = (_activeDom as FenBrowser.Core.Dom.V2.Element)
+                     ?? (_activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
+            if (domEl == null) return;
+
+            // Collect dirty subtree roots by walking ChildStyleDirty flags
+            var dirtyRoots = new List<Element>();
+            int totalElements = 0;
+            CollectDirtySubtrees(domEl, dirtyRoots, ref totalElements);
+
+            // Fallback: if >30% dirty, full recascade is cheaper than incremental
+            if (totalElements > 0 && dirtyRoots.Count > totalElements * 0.3)
+            {
+                FenLogger.Info($"[CustomHtmlEngine] Incremental too broad ({dirtyRoots.Count}/{totalElements} dirty) — falling back to full recascade", LogCategory.CSS);
+                await RecascadeAsync().ConfigureAwait(false);
+                return;
+            }
+
+            if (dirtyRoots.Count == 0)
+            {
+                // No dirty nodes — still fire repaint in case layout changed
+                OnRepaintReady(_activeDom);
+                return;
+            }
+
+            FenLogger.Info($"[CustomHtmlEngine] Incremental recascade: {dirtyRoots.Count} dirty subtrees out of {totalElements} elements", LogCategory.CSS);
+
+            // Use the cached CascadeEngine (built from current stylesheets)
+            var cssEngine = Rendering.Css.CssEngineFactory.GetEngine();
+            foreach (var dirtyRoot in dirtyRoots)
+            {
+                // Compute styles for the dirty subtree: cascade each element, set node.ComputedStyle
+                try
+                {
+                    var parentStyle = dirtyRoot.ParentElement?.ComputedStyle;
+                    RecascadeSubtree(dirtyRoot, parentStyle);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Incremental recascade error on <{dirtyRoot.TagName}>: {ex.Message}", LogCategory.CSS);
+                }
+            }
+
+            OnRepaintReady(_activeDom);
+        }
+
+        /// <summary>
+        /// Walks the DOM tree using ChildStyleDirty flags. Prunes branches where ChildStyleDirty=false.
+        /// Collects the shallowest dirty Elements as subtree roots.
+        /// </summary>
+        private static void CollectDirtySubtrees(Element root, List<Element> dirtyRoots, ref int totalElements)
+        {
+            var stack = new Stack<Element>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var el = stack.Pop();
+                totalElements++;
+
+                if (el.StyleDirty)
+                {
+                    // This element is dirty — add it as a subtree root (don't recurse into children,
+                    // because RecascadeSubtree will handle the full subtree)
+                    dirtyRoots.Add(el);
+                    continue;
+                }
+
+                if (!el.ChildStyleDirty)
+                    continue; // Prune: no dirty descendants in this branch
+
+                // Walk children looking for dirty nodes
+                var children = el.ChildNodes;
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    if (children[i] is Element childEl)
+                        stack.Push(childEl);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Re-cascades a single dirty subtree: recomputes ComputedStyle for each element
+        /// using its inline styles and inherited parent style. Clears StyleDirty flags.
+        /// </summary>
+        private static void RecascadeSubtree(Element root, CssComputed parentStyle)
+        {
+            var stack = new Stack<(Element el, CssComputed parent)>();
+            stack.Push((root, parentStyle));
+            while (stack.Count > 0)
+            {
+                var (el, inherited) = stack.Pop();
+
+                // Recompute: merge inherited values with element's existing computed style
+                var current = el.ComputedStyle ?? new CssComputed();
+                if (inherited != null)
+                {
+                    current.InheritFrom(inherited);
+                }
+                el.ComputedStyle = current;
+
+                // Clear dirty flag on this node
+                el.ClearStyleDirty();
+
+                // Process children
+                var children = el.ChildNodes;
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    if (children[i] is Element childEl)
+                        stack.Push((childEl, current));
+                }
+            }
         }
 
         private static bool NeedsPostScriptStyleRefresh(
@@ -2013,7 +2154,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             repaintCount++;
             _activeDom = snapshotRoot;
-            LastComputedStyles = null;
+            // Do NOT null out LastComputedStyles here. The engine loop polls for styles
+            // and nulling them causes hundreds of wasted render frames with Styles=NULL
+            // before the CSS cascade completes. Keep previous styles visible so layout
+            // can at least partially render with whatever styles were last computed.
             OnRepaintReady(snapshotRoot);
             return true;
         }
@@ -2051,7 +2195,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             incrementalRepaintCount++;
             _activeDom = snapshotRoot;
-            LastComputedStyles = null;
+            // Do NOT null out LastComputedStyles — see TryEmitStreamingParseRepaint comment.
             OnRepaintReady(snapshotRoot);
         }
 

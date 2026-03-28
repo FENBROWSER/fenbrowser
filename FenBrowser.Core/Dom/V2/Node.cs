@@ -296,6 +296,15 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         /// <summary>
+        /// Clears only the StyleDirty flag on this node (preserves ChildStyleDirty).
+        /// Used by incremental recascade after recomputing this node's style.
+        /// </summary>
+        public void ClearStyleDirty()
+        {
+            _flags &= ~NodeFlags.StyleDirty;
+        }
+
+        /// <summary>
         /// Clears dirty flags after processing.
         /// </summary>
         public void ClearDirty(InvalidationKind kind)
