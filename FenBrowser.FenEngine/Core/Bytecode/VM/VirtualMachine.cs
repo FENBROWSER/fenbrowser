@@ -939,7 +939,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     initialStrictMode: inheritStrict,
                     allowNewTargetOutsideFunction: allowNewTarget,
                     allowSuperOutsideClass: allowSuperProperty,
-                    allowSuperInClassFieldInitializer: allowSuperProperty);
+                    allowSuperInClassFieldInitializer: allowSuperProperty,
+                    allowRecovery: false);
                 program = parser.ParseProgram();
             }
             catch (FenSyntaxError)
@@ -1263,17 +1264,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return value;
             }
 
-            if (TryResolveNamedGlobalById(frame, varName, out var namedGlobalById))
-            {
-                return namedGlobalById;
-            }
-
-            if (TryResolveGlobalOwnProperty(frame, varName, out var globalOwnValue))
-            {
-                return globalOwnValue;
-            }
-
-            if (TryResolveGlobalPrototypeProxyBinding(frame, varName, out var globalValue))
+            if (TryResolveGlobalObjectProperty(frame, varName, out var globalValue))
             {
                 return globalValue;
             }
@@ -1310,17 +1301,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return value;
             }
 
-            if (TryResolveNamedGlobalById(frame, varName, out var namedGlobalById))
-            {
-                return namedGlobalById;
-            }
-
-            if (TryResolveGlobalOwnProperty(frame, varName, out var globalOwnValue))
-            {
-                return globalOwnValue;
-            }
-
-            if (TryResolveGlobalPrototypeProxyBinding(frame, varName, out var globalValue))
+            if (TryResolveGlobalObjectProperty(frame, varName, out var globalValue))
             {
                 return globalValue;
             }
