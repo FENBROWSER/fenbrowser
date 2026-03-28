@@ -23,7 +23,8 @@ using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // Added for
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.WebAPIs;
 using FenBrowser.Core.Network.Handlers;
-using FenBrowser.FenEngine.Compatibility;using SkiaSharp;
+using FenBrowser.FenEngine.Compatibility;
+using SkiaSharp;
 using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Scripting
@@ -177,13 +178,6 @@ namespace FenBrowser.FenEngine.Scripting
             SetupPermissions();
             SetupWindowEvents();
             SetupModernAPIs();
-            
-            // Register Fetch API with lazy delegate resolution to support property injection after constructor
-            FenBrowser.FenEngine.WebAPIs.FetchApi.Register(_fenRuntime.Context, async (req) => 
-            {
-                 if (FetchHandler  == null) throw new InvalidOperationException("FetchHandler not configured on engine");
-                 return await FetchHandler(req);
-            });
         }
         
         private static Task RunDetachedAsync(Func<Task> operation)
@@ -1422,6 +1416,7 @@ namespace FenBrowser.FenEngine.Scripting
             uaData.Set("platform", FenValue.FromString("Windows"));
             navObj.Set("userAgentData", FenValue.FromObject(uaData));
             HostApiSurfaceCatalog.TraceUsage("navigator.userAgentData");
+
             // [Compliance] Log Client-Side Identity
             try
             {
@@ -1578,7 +1573,7 @@ namespace FenBrowser.FenEngine.Scripting
             set { _executeInlineScriptsOnInnerHTML = value; }
         }
 
-public Action RequestRender
+        public Action RequestRender
         {
             get => _fenRuntime?.RequestRender;
             set { if (_fenRuntime != null) _fenRuntime.RequestRender = value; }
@@ -2433,7 +2428,6 @@ public Action RequestRender
             TryNavigate(_history[_historyIndex]);
             FireWindowEvent("popstate");
         }
-
         public object Evaluate(string script)
         {
             try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
@@ -3855,7 +3849,7 @@ public Action RequestRender
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
-                                    // SRI check ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â external scripts with an integrity attr must match before execution
+                                    // SRI check ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â external scripts with an integrity attr must match before execution
                                     if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
                                     {
                                         DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
@@ -4201,7 +4195,7 @@ public Action RequestRender
         /// Verifies Subresource Integrity (SRI) for a fetched resource.
         /// Returns true if <paramref name="integrity"/> is absent/empty (no check required) or
         /// if at least one hash token in the space-separated list matches the content.
-        /// Returns false if tokens are present and none match ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â caller must block the resource.
+        /// Returns false if tokens are present and none match ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â caller must block the resource.
         /// Supported algorithms: sha256, sha384, sha512.
         /// </summary>
         private static bool VerifySriIntegrity(string content, string integrity)
@@ -4228,14 +4222,14 @@ public Action RequestRender
                         "sha512" => System.Security.Cryptography.SHA512.Create(),
                         _ => null
                     };
-                    if (alg == null) continue; // Unknown algorithm ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â skip token
+                    if (alg == null) continue; // Unknown algorithm ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â skip token
                     hash = alg.ComputeHash(bytes);
                 }
                 catch { continue; }
 
                 if (Convert.ToBase64String(hash) == expectedB64) return true;
             }
-            // No matching token found ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â block the resource
+            // No matching token found ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â block the resource
             return false;
         }
     }
