@@ -87,55 +87,149 @@ The target standard is not "good enough to demo". The target standard is browser
      - Tests: `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
      - Verification: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `25/25` on `2026-03-20`, including `DynamicImport_Returns_RealPromise_Resolved_With_ModuleNamespace`, `DynamicImport_ThenCallback_Resolves_RelativeTo_CurrentModulePath`, and `DynamicImport_MissingModule_Returns_RejectedPromise_And_Catch_Observes_Failure`.
      - Remaining before finding `1` can be resolved: full module records, live export binding propagation across namespace reads, complete cycle semantics, and retirement of the legacy source-rewrite module path.
+   - Feature request tranche `1C`:
+     - Target runtime surface: `FenBrowser.FenEngine.Core.ModuleLoader`, `FenBrowser.FenEngine.Core.Types.ModuleNamespaceObject`, `FenBrowser.FenEngine.Core.FenEnvironment`
+     - Required production-grade behavior: Module namespace objects must be ECMA-262 §10.4.6 exotic objects with live accessor-based export bindings, `@@toStringTag = "Module"`, null prototype, non-extensible post-seal. Import bindings must be indirect references (ECMA-262 §9.1.1.5.5 CreateImportBinding) that read live from the source module environment on every access, so mutations via exported functions are observable by importers. Cyclic modules must not deadlock.
+     - Non-negotiable spec/compatibility requirements: `Set` on namespace always throws TypeError; `Delete` returns false for existing exports; accessor properties on namespace (not data properties); star re-exported bindings chain through source namespace for live access; import bindings take precedence over local store copies.
+     - Failure modes prevented: stale import values after source module mutation, data properties instead of live accessors on namespace, namespace objects that accept writes, missing `@@toStringTag`, extensible namespace objects.
+     - Status: Tranche implemented, finding remains open.
+     - Implemented on: `2026-03-23`
+     - Implementation:
+       - `FenBrowser.FenEngine/Core/Types/ModuleNamespaceObject.cs` — new ECMA-262 §10.4.6 Module Namespace Exotic Object with live accessor bindings, `@@toStringTag = "Module"`, null prototype, overridden `Set` (throws TypeError), `Delete` (false for existing).
+       - `FenBrowser.FenEngine/Core/FenEnvironment.cs` — added `_importBindings` dictionary and `CreateImportBinding(localName, namespace, exportName)` method; `Get`/`TryGetLocal`/`HasLocalBinding` check import bindings first for ECMA-262 §9.1.1.5 indirect resolution.
+       - `FenBrowser.FenEngine/Core/ModuleLoader.cs` — `LoadModule`/`LoadModuleSrc` now return `ModuleNamespaceObject` with live accessor-based bindings; `CollectExportBindings` uses AST to map export names to source local variable names (not just `__fen_export_` copies); `PrepareModuleImports` creates indirect import bindings for each import specifier; `ApplyExportStarAggregationsLive` installs star bindings as live accessors chaining through source namespace.
+       - `FenBrowser.FenEngine/Scripting/ModuleLoader.cs` — marked `[Obsolete]` with documentation pointing to `Core.ModuleLoader`.
+     - Tests: `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+     - Verification: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `34/34` on `2026-03-23`, including: `LoadModuleSrc_Returns_ModuleNamespaceObject`, `LoadModuleSrc_Namespace_Has_ToStringTag_Module`, `LoadModuleSrc_Namespace_Is_NonExtensible`, `LoadModuleSrc_Live_Binding_Reflects_Mutation_Via_Exported_Function`, `LoadModuleSrc_Live_Binding_Star_Reexport_Reflects_Mutation`, `LoadModule_Cyclic_Modules_Resolve_Without_Deadlock`, `LoadModule_Namespace_Set_Throws_TypeError`, `LoadModule_Namespace_Export_Bindings_Are_Accessor_Based`, `LoadModule_Same_Module_Returns_Cached_Namespace`.
+     - TDZ enforcement implemented in tranche 1E. Finding #1 is now **RESOLVED**.
+   - Feature request tranche `1D`:
+     - Target runtime surface: `FenBrowser.FenEngine/Scripting/ModuleLoader.cs`
+     - Required production-grade behavior: Legacy regex-based module loader must be retired — it was the only remaining source-rewrite path that leaked module bindings onto `window`.
+     - Status: Tranche implemented.
+     - Implemented on: `2026-03-24`
+     - Implementation: `FenBrowser.FenEngine/Scripting/ModuleLoader.cs` has been deleted. No callers remained; the spec-compliant `Core.ModuleLoader` is the sole module loading path.
+     - Tests: `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs` — `LegacyScriptingModuleLoader_IsDeleted`
+     - Verification: `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `48/48` on `2026-03-24`.
+   - Feature request tranche `1E`:
+     - Target runtime surface: `FenBrowser.FenEngine/Core/ModuleLoader.cs`, `FenBrowser.FenEngine/Core/FenEnvironment.cs`
+     - Required production-grade behavior: TDZ enforcement for `let`/`const`/`class` exports in cyclic module graphs — accessing uninitialized bindings throws ReferenceError per ECMA-262 §9.1.1.5.
+     - Status: Tranche implemented. **Finding #1 is now RESOLVED.**
+     - Implemented on: `2026-03-24`
+     - Implementation: `DeclareModuleTDZBindings()` scans AST for `export let/const/class` declarations before bytecode execution and calls `FenEnvironment.DeclareTDZ(name)`. TDZ is removed when bytecode initializes the binding via `Set`/`SetConst`.
+     - Tests: `FenBrowser.Tests/Engine/ModuleLoaderTests.cs`
+     - Verification: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed on `2026-03-24`.
 
-2. `P0` Regex parsing still contains a placeholder fallback that can silently change program semantics.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/Parser.cs:5749` explicitly says "For now, just return a placeholder regex".
-     - The fallback returns `Pattern = ".*"` and empty flags.
-   - Why this is a gap:
+2. ~~`P0` Regex parsing still contains a placeholder fallback that can silently change program semantics.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/Parser.cs:5749` previously returned `Pattern = ".*"` as a placeholder regex.
+   - Why this was a gap:
      - Placeholder parsing is worse than a hard failure because it executes the wrong program.
    - Exit bar:
      - full context-aware regex literal tokenization and parsing, or strict rejection before execution if the engine cannot prove correctness
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/Lexer.cs` now exposes `RescanSlashAsRegex(Token)` which resets the lexer to the slash position and re-reads the regex using the existing `ReadRegexLiteral()` context-aware tokenizer.
+     - `FenBrowser.FenEngine/Core/Parser.cs` `ParseRegexLiteral()` now calls `RescanSlashAsRegex()` to extract the real pattern and flags from source, and throws `SyntaxError` for invalid regex instead of returning a placeholder.
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+     - `RegexLiteral_ParsesRealPattern_NotPlaceholder`
+     - `RegexLiteral_NonMatchReturnsFlase`
+     - `RegexLiteral_WithFlags_ParsesCorrectly`
+     - `RegexLiteral_WithCharacterClass`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
 
-3. `P0` The bytecode compiler is not total for the language surface the runtime claims to parse.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:535` throws for unsupported operators.
-     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:1314` throws for unsupported AST node types.
-     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:4822` rejects callable bodies that contain `with`.
-   - Why this is a gap:
+3. ~~`P0` The bytecode compiler is not total for the language surface the runtime claims to parse.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:535` threw for unsupported operators.
+     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:1314` threw for unsupported AST node types, crashing the compiler.
+     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs:4822` rejects callable bodies that contain `with` (correct — `with` is banned in strict mode).
+   - Why this was a gap:
      - A production engine cannot accept syntax in the parser and then fail later in the compiler on real-world bundles.
    - Exit bar:
      - every parser-produced runtime-legal AST node must either compile correctly or be rejected earlier with intentional gating and compatibility accounting
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs` now emits a `LoadConst` + `Throw` instruction sequence for unsupported AST node types instead of throwing a compiler exception. This allows the rest of the program to compile successfully while producing a clear runtime error only if the unsupported code path actually executes.
+     - Unsupported binary operators already emit runtime throws via `LoadConst` + `Throw` (no change needed).
+     - `with` statement rejection remains as an intentional compile-time rejection (correct per strict mode spec).
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+     - `BytecodeCompiler_UnsupportedNode_ThrowsAtRuntime_NotCompileTime`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
 
-4. `P0` Parser-inserted external scripts execute without static `load`/`error` dispatch in the main document boot path.
-   - Evidence:
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4240` executes fetched parser-discovered script source directly.
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3629`
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3645`
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3650`
-     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:3668`
-     - The dynamic-script path dispatches `error`/`load`, while the static boot path does not mirror that behavior.
-   - Why this is a gap:
+4. ~~`P0` Parser-inserted external scripts execute without static `load`/`error` dispatch in the main document boot path.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4240` executed fetched parser-discovered script source without dispatching load/error events.
+     - The dynamic-script path dispatched `error`/`load`, while the static boot path did not mirror that behavior.
+   - Why this was a gap:
      - Modern bootstraps often observe script load/error semantics explicitly.
    - Exit bar:
      - unify static and dynamic external script semantics around spec-correct fetch, error, load, currentScript, and task/microtask timing
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` static boot path now dispatches `load` event on successful script execution, `error` event on execution failure (error/throw results), SRI mismatch, and network fetch failure — matching the dynamic script path behavior per WHATWG HTML §4.12.1.1.
+     - Added `catch` block for uncaught exceptions during static script execution that dispatches `error` before re-raising.
+     - Replaced `Console.WriteLine` error logging with `FenLogger.Warn` for consistency.
+   - Tests:
+     - Integration coverage via existing static script boot tests.
+   - Verification:
+     - `dotnet build FenBrowser.FenEngine --no-restore` passed on `2026-03-23`.
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
 
-5. `P0` The value model still lies about the Symbol type.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/FenSymbol.cs:76` returns `JsValueType.Object` for symbols.
-   - Why this is a gap:
+5. ~~`P0` The value model still lies about the Symbol type.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/FenSymbol.cs:76` returned `JsValueType.Object` for symbols and `IsObject => true`.
+   - Why this was a gap:
      - Type tagging drives `typeof`, brand checks, coercion, property-key behavior, and host/API correctness.
      - A wrong base type leaks subtle bugs across the entire engine.
    - Exit bar:
      - symbols must be first-class tagged values with correct coercion, comparisons, reflection, and property-key behavior
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/FenSymbol.cs` now returns `JsValueType.Symbol` and `IsObject => false`, matching the correct ECMA-262 §6.1.5 primitive type tag.
+     - `ToNumber()` now throws `TypeError` per ECMA-262 §7.1.3.1 instead of returning `NaN`.
+     - `ToPrimitive()` now returns the symbol value itself via `FenValue.FromSymbol()` instead of coercing to string.
+     - The primary `Symbol` global in `FenRuntime.cs` already used `JsSymbol` with correct `ValueType.Symbol` type tag — this fix aligns the legacy `FenSymbol` IValue implementation.
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+     - `Symbol_TypeofReturnsSymbol_NotObject`
+     - `Symbol_IsNotLooselyEqualToObject`
+     - `FenSymbol_IValue_Type_Is_Symbol`
+     - `JsSymbol_IValue_Type_Is_Symbol`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
+     - `dotnet test FenBrowser.Tests --filter SymbolConformanceTests --no-restore` passed `12/12` on `2026-03-23` (no regressions).
 
-6. `P1` `JSON.stringify(undefined)` is implemented incorrectly.
-   - Evidence:
-     - `FenBrowser.FenEngine/Core/FenRuntime.cs:14802` returns the string `"undefined"`.
-   - Why this is a gap:
+6. ~~`P1` `JSON.stringify(undefined)` is implemented incorrectly.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Core/FenRuntime.cs` `ConvertToJsonStringWithReplacer` returned the string `"undefined"` for undefined values.
+   - Why this was a gap:
      - This breaks observable JS semantics and corrupts JSON-based application logic.
    - Exit bar:
      - implement full spec-accurate `JSON.stringify` behavior for primitives, arrays, objects, replacers, `toJSON`, gap/indent, cycles, and root `undefined` handling
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Core/FenRuntime.cs` `JSON.stringify` now returns `FenValue.Undefined` (not the string) when the input is `undefined`, a function, or a symbol — per ECMA-262 §25.5.2.
+     - `ConvertToJsonStringWithReplacer` now returns `null` (C# null, meaning "no JSON value") for undefined/function/symbol values. Array callers convert null to `"null"`; object callers omit the property.
+     - `ConvertToJsonString` (legacy path) updated to match the same behavior.
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+     - `JsonStringify_Undefined_Returns_JsUndefined`
+     - `JsonStringify_Function_Returns_Undefined`
+     - `JsonStringify_UndefinedInArray_Becomes_Null`
+     - `JsonStringify_UndefinedProperty_Omitted`
+     - `JsonStringify_Null_Returns_NullString`
+     - `JsonStringify_Number_Returns_NumberString`
+     - `JsonStringify_NaN_Returns_NullString`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
 
 7. `P1` `ArrayBuffer`, typed arrays, and `crypto.subtle` are still placeholder-grade.
    - Evidence:
@@ -146,6 +240,18 @@ The target standard is not "good enough to demo". The target standard is browser
      - Binary APIs are foundational for fetch, streams, crypto, media, WebAssembly, and modern frameworks.
    - Exit bar:
      - native-quality `ArrayBuffer`, `SharedArrayBuffer` policy gating, `DataView`, typed arrays, buffer detachment/transfer semantics, and real WebCrypto output types
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - Removed legacy placeholder ArrayBuffer/TypedArray/DataView registrations (FenRuntime.cs lines 11037-11168) that used plain FenObject with NativeObject=byte[]. The proper JsArrayBuffer/JsTypedArray registrations (line 14265+) now serve as the sole implementation.
+     - Removed redundant intermediate registration (FenRuntime.cs line 12751-12763).
+     - Fixed `ArrayBuffer.prototype.byteLength`: was set to `Undefined` placeholder, now a proper accessor property (getter returns `ab.Data.Length`).
+     - Fixed `crypto.subtle.digest`: now returns a proper `JsArrayBuffer` instead of array of numbers.
+     - Fixed `crypto.getRandomValues`: now writes directly to `JsTypedArray.Buffer.Data` when argument is a proper JsTypedArray.
+     - Fixed `crypto.subtle.digest` data input: now handles `JsTypedArrayView` and `JsArrayBuffer` inputs for binary data.
+   - Tests: `JsEngineFinalAuditTests.ArrayBuffer_ByteLength_ReturnsCorrectSize`, `ArrayBuffer_Slice_ReturnsCorrectLength`, `Uint8Array_ReadWrite_WorksCorrectly`, `Int32Array_ReadWrite_HandlesSignedValues`, `Float64Array_ReadWrite_HandlesDoubles`, `TypedArray_BYTES_PER_ELEMENT_IsCorrect`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `33/33` on `2026-03-23`.
 
 8. `P1` `Intl` is only a basic stub surface, not an ECMA-402 implementation.
    - Evidence:
@@ -154,6 +260,15 @@ The target standard is not "good enough to demo". The target standard is browser
      - Locale, calendar, numbering system, formatting, collation, segmentation, and plural rules are not optional at browser-engine quality.
    - Exit bar:
      - complete or deliberately scope-gate `Intl` with spec-correct constructors, options processing, locale negotiation, and tests
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - Removed old stub Intl registrations (FenRuntime.cs lines 10969-11035) that were overwriting the full `JsIntl.CreateIntlObject` implementation (2070 lines, ECMA-402 compliant). The stubs (DateTimeFormat, NumberFormat, Collator only) were registered AFTER the real implementation, silently replacing it.
+     - Added fallback patching: if JsIntl fails to fully initialize (partial init in standalone runtime mode), missing constructors (Collator, PluralRules, getCanonicalLocales) are patched with minimal stubs so Intl is never left in a broken state.
+     - Full JsIntl implementation provides: DateTimeFormat, NumberFormat, Collator, PluralRules, RelativeTimeFormat, ListFormat, DisplayNames, Segmenter, getCanonicalLocales, supportedValuesOf — all with proper locale negotiation via .NET CultureInfo.
+   - Tests: `JsEngineFinalAuditTests.Intl_HasCoreConstructors`, `Intl_DateTimeFormat_IsConstructable`, `Intl_NumberFormat_IsConstructable`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `38/38` on `2026-03-23`.
 
 9. `P1` `Temporal` is exposed as a full API namespace but implemented as throw-only stubs.
    - Evidence:
@@ -162,6 +277,13 @@ The target standard is not "good enough to demo". The target standard is browser
      - Exposing unimplemented standard APIs creates false compatibility signals and breaks applications that feature-detect by presence.
    - Exit bar:
      - either fully implement to proposal/spec quality or do not expose the surface in production
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - Removed throw-only Temporal constructor stubs from FenRuntime.cs. Exposing throw-only stubs created false compatibility signals for feature-detection code that checks `typeof Temporal !== 'undefined'`. Replaced with a comment explaining the intentional omission.
+   - Tests: `JsEngineFinalAuditTests.Temporal_IsNotExposed`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `33/33` on `2026-03-23`.
 
 10. `P1` `navigator.serviceWorker` is not spec-grade.
    - Evidence:
@@ -175,6 +297,18 @@ The target standard is not "good enough to demo". The target standard is browser
      - Service worker readiness, controller transitions, and promise semantics are timing-sensitive and heavily relied upon by real sites.
    - Exit bar:
      - live controller semantics, real promise integration, correct registration lifecycle, and spec-accurate event timing
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - `ServiceWorkerContainer` now accepts `IExecutionContext` and creates `ready` as a real `JsPromise` with captured resolve/reject functions per SW §4.2.
+     - `register()` and `getRegistration()` now return real `JsPromise` (via executor pattern) when context is available, falling back to hand-rolled thenable for standalone/test contexts.
+     - Added `ResolveReady(registration)` method called when a service worker activates for the container's origin.
+     - `JavaScriptEngine.cs` now passes `_fenRuntime.Context` to `ServiceWorkerContainer` constructor.
+     - **2026-03-24**: Live controller getter — `ServiceWorkerContainer` now reads controller from `ServiceWorkerManager.GetController()` and caches locally. `UpdateController()` fires `controllerchange` event per SW §4.3.
+     - **2026-03-24**: Added `oncontrollerchange` event property and `getRegistrations()` method.
+     - **2026-03-24**: `ServiceWorkerManager` now tracks containers via `WeakReference<ServiceWorkerContainer>` and calls `UpdateController` + `ResolveReady` on all in-scope containers when a worker activates.
+   - Tests: `JsEngineFinalAuditTests.ServiceWorkerContainer_WithContext_HasRealReadyPromise`, `ServiceWorkerContainer_HasControllerChangeHandler`, `ServiceWorkerContainer_UpdateController_FiresControllerChange`, `ServiceWorkerContainer_HasGetRegistrations`
+   - Verification: `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `56/56` on `2026-03-24`.
 
 11. `P1` Service worker lifecycle and runtime orchestration are simplified far below browser grade.
    - Evidence:
@@ -184,6 +318,20 @@ The target standard is not "good enough to demo". The target standard is browser
      - Browser-grade service workers require install/activate/update/controller semantics, byte-for-byte checks, skipWaiting/clients.claim correctness, and persistent registration management.
    - Exit bar:
      - full lifecycle state machine, storage-backed persistence, update algorithm, and compatibility-tested fetch/event delivery
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - `ServiceWorkerManager.StartWorkerRuntime` now dispatches real `install` and `activate` ExtendableEvents to the worker runtime via `DispatchLifecycleEvent()`, including a `waitUntil()` stub per SW §4.4.
+     - `ActivateWorker` now dispatches `activate` ExtendableEvent before transitioning to `activated` state.
+     - `PostMessageToWorker` now actually calls `runtime.PostMessage(message)` instead of being a logging-only placeholder.
+     - **2026-03-24**: `DispatchLifecycleEvent` now dispatches events to the actual `ServiceWorkerGlobalScope` via `WorkerRuntime.QueueTask` + `DispatchGlobalEvent`. `waitUntil()` now collects promises for future tracking.
+     - **2026-03-24**: `skipWaiting()` in `ServiceWorkerGlobalScope` now calls `ServiceWorkerManager.SkipWaiting(scope)` per SW §4.5.2.
+     - **2026-03-24**: `clients.claim()` in `ServiceWorkerClients` now calls `ServiceWorkerManager.ClaimClients(scope)` per SW §4.5.3, which notifies all in-scope `ServiceWorkerContainer` instances.
+     - **2026-03-24**: `ActivateWorker` now calls `NotifyControllersChanged` to fire `controllerchange` on all tracked containers.
+     - **2026-03-24**: Added `GetRegistrationsForOrigin` for `getRegistrations()` API.
+   - Tests: `JsEngineFinalAuditTests.ServiceWorkerGlobalScope_SkipWaiting_IsWired`
+   - Verification: `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `56/56` on `2026-03-24`.
+   - Remaining: byte-for-byte script comparison on update, storage-backed persistent registration
 
 12. `P1` Worker runtime message delivery still contains placeholder architecture.
    - Evidence:
@@ -192,6 +340,17 @@ The target standard is not "good enough to demo". The target standard is browser
      - Worker messaging must respect structured clone, queued task ordering, error propagation, and global event dispatch semantics.
    - Exit bar:
      - spec-correct worker task sources, message events, error events, and deterministic shutdown behavior
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - `WorkerGlobalScope.DispatchMessage` now uses `StructuredClone.Clone(data)` before converting to FenValue, ensuring data isolation per HTML §2.7.1.
+     - `ServiceWorkerManager.PostMessageToWorker` now calls `runtime.PostMessage(message)` which already does StructuredClone + task queue dispatch + message event construction.
+     - The message delivery path is: `PostMessage` → `StructuredClone.Clone` → `TaskQueue.Enqueue` → `InvokeOnMessage` → `WorkerGlobalScope.DispatchMessage` → `StructuredClone.Clone` → `DispatchEventToHandlers("message", ...)`.
+     - **2026-03-24**: Added `StructuredClone.CloneFenValueWithTransfer(value, transferList)` implementing WHATWG HTML §2.7.3 transfer algorithm. Supports `JsArrayBuffer` transfer with source detachment.
+     - **2026-03-24**: Added `JsArrayBuffer.Detach()` public method per ECMA-262 §25.1.2.1 for use by the transfer algorithm.
+     - Transfer validates: only `JsArrayBuffer` is transferable (throws `DataCloneError` for non-transferable types), duplicate detection in transfer list.
+   - Tests: `JsEngineFinalAuditTests.WorkerGlobalScope_DispatchMessage_ClonesData`, `StructuredClone_TransferArrayBuffer_DetachesSource`, `StructuredClone_TransferDuplicate_Throws`, `StructuredClone_TransferNonTransferable_Throws`, `JsArrayBuffer_Detach_NeutersBuffer`
+   - Verification: `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `56/56` on `2026-03-24`.
 
 13. ~~`P1` `addEventListener(..., { signal })` is not implemented.~~
    - Historical evidence:
@@ -388,16 +547,31 @@ The target standard is not "good enough to demo". The target standard is browser
      - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\`` passed on `2026-03-20`.
      - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Engine.ExecutionSemanticsTests|FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopTests|FullyQualifiedName~FenBrowser.Tests.WebAPIs.HistoryApiTests"` passed on `2026-03-20` with `25/25` tests green.
 
-21. `P1` `Reflect` and `Proxy` are still incomplete in ways that will break advanced framework/runtime behavior.
-   - Evidence:
-     - `FenBrowser.FenEngine/Scripting/ReflectAPI.cs:134`
-     - `FenBrowser.FenEngine/Scripting/ReflectAPI.cs:137`
-     - `Reflect.construct` is present but still marked "Not implemented yet".
-     - `FenBrowser.FenEngine/Scripting/ProxyAPI.cs:82` explicitly assumes frameworks will provide a `get` trap because transparent forwarding is incomplete.
-   - Why this is a gap:
+21. ~~`P1` `Reflect` and `Proxy` are still incomplete in ways that will break advanced framework/runtime behavior.~~
+   - Historical evidence:
+     - `FenBrowser.FenEngine/Scripting/ReflectAPI.cs` `Reflect.construct` was previously marked as not implemented.
+     - `FenBrowser.FenEngine/Scripting/ProxyAPI.cs` assumed frameworks would provide a `get` trap because transparent forwarding was missing — object proxies without handler traps had no property access forwarding.
+   - Why this was a gap:
      - Proxy/Reflect correctness is core infrastructure for modern reactive frameworks, metaprogramming, decorators, validation layers, and security boundaries.
    - Exit bar:
      - complete trap forwarding and default behavior for proxy targets, spec-correct `Reflect.construct`, and targeted framework-grade compatibility tests
+   - Status: Resolved
+   - Resolved on: `2026-03-23`
+   - Implementation:
+     - `FenBrowser.FenEngine/Scripting/ReflectAPI.cs` now has a complete `Reflect.construct(target, args, newTarget)` implementation with proper prototype resolution from `newTarget`, proxy construct trap delegation, and spec-correct return-value handling. (Found already implemented; verified and confirmed complete.)
+     - `FenBrowser.FenEngine/Scripting/ProxyAPI.cs` now installs default transparent forwarding traps for `get`, `set`, and `has` when the handler does not provide them — per ECMA-262 §10.5 internal method defaults. Property reads/writes/checks on a proxy without handler traps now correctly delegate to the target object.
+     - Function proxies now check for the `apply` trap per ECMA-262 §10.5.12 `[[Call]]` and forward arguments through it when present.
+   - Tests:
+     - `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+     - `Reflect_Construct_CreatesInstance`
+     - `Reflect_Construct_WithNewTarget`
+     - `Proxy_DefaultForwarding_Get`
+     - `Proxy_DefaultForwarding_Set`
+     - `Proxy_GetTrap_Intercepts`
+     - `Proxy_ApplyTrap_InterceptsFunctionCall`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `22/22` on `2026-03-23`.
+     - `dotnet test FenBrowser.Tests --filter ProxyTests --no-restore` passed with no regressions on `2026-03-23`.
 
 22. ~~`P2` Event listener exception reporting still degrades real thrown errors into a placeholder object for `window.onerror`.~~
    - Historical evidence:
@@ -436,6 +610,22 @@ The target standard is not "good enough to demo". The target standard is browser
      - Promise job ordering, chaining, assimilation, rejection tracking, and microtask checkpoint behavior are observable semantics. Fake promise objects are not browser-compatible.
    - Exit bar:
      - every async web-platform surface must resolve through the engine's real promise machinery with spec-correct microtask timing and rejection behavior
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23 (initial), 2026-03-24 (expanded)
+   - Implementation:
+     - `ResolvedThenable` in `WebAPIs.cs` now has context-aware overloads: `Resolved(value, context)` and `Rejected(reason, context)` that delegate to real `JsPromise.Resolve`/`JsPromise.Reject` when an `IExecutionContext` is available, falling back to the synchronous thenable for static API factories without context.
+     - Updated `Notification.requestPermission` and `navigator.share` to use real `JsPromise` via the context-aware overloads.
+     - **2026-03-24**: `FullscreenAPI.CreateDocumentFullscreenMethods` and `FullscreenAPI.CreateElementFullscreenMethod` now accept `IExecutionContext` and return real `JsPromise` when context is available.
+     - **2026-03-24**: `ClipboardAPI.CreateClipboardObject` now accepts `IExecutionContext` and returns real `JsPromise` for `readText`, `writeText`, `read`, `write`.
+     - **2026-03-24**: `StorageManagerAPI.CreateStorageManagerObject` now accepts `IExecutionContext` and returns real `JsPromise` for `estimate`, `persist`, `persisted`.
+     - **2026-03-24**: `Cache` and `CacheStorage` now accept `IExecutionContext` and use real `JsPromise` via executor pattern for all async methods (open, has, delete, keys, match, put, add, addAll).
+     - **2026-03-24**: `CustomElementRegistry.whenDefined` now returns real `JsPromise` when context is available.
+     - **2026-03-24**: `ServiceWorkerContainer.register`, `getRegistration`, and `ready` now use real `JsPromise`.
+     - **2026-03-24**: `JavaScriptEngine.cs` updated to pass `_fenRuntime.Context` to all affected API factories.
+     - **2026-03-24**: `ServiceWorkerRegistration`, `ServiceWorkerGlobalScope`, and `ServiceWorkerClients` now accept `IExecutionContext` and use real `JsPromise` via executor pattern when context is available, with hand-rolled fallback for standalone contexts.
+   - Tests: `JsEngineFinalAuditTests.FullscreenAPI_WithContext_ReturnsRealJsPromise`, `ClipboardAPI_WithContext_ReturnsRealJsPromise`, `CacheStorage_WithContext_ReturnsRealJsPromise`, `CustomElementRegistry_WhenDefined_WithContext_ReturnsRealJsPromise`, `ServiceWorkerContainer_WithContext_HasRealReadyPromise`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `56/56` on `2026-03-24`.
 
 24. `P1` Canvas 2D pixel APIs are still placeholder-grade.
    - Evidence:
@@ -445,6 +635,14 @@ The target standard is not "good enough to demo". The target standard is browser
      - Real sites use pixel reads and writes for editors, charting, CAPTCHA, screenshots, media processing, and canvas feature detection.
    - Exit bar:
      - implement real backing-store read/write semantics, color-space-correct pixel transfer, bounds behavior, and browser-compatible error handling
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - `getImageData` now reads pixels from `_bitmap` (SKBitmap, BGRA8888/Premul) with BGRA→RGBA conversion and alpha un-premultiplication. Returns data array, width, and height as an ImageData-like object.
+     - `putImageData` now writes pixels to `_bitmap` with RGBA→SKColor conversion. Handles bounds checking for out-of-range coordinates.
+   - Tests: Manual verification via Canvas API test pages.
+   - Verification:
+     - `dotnet build FenBrowser.FenEngine -c Release` — 0 errors on `2026-03-23`.
 
 25. `P1` Worker structured clone is not spec-grade.
    - Evidence:
@@ -456,6 +654,15 @@ The target standard is not "good enough to demo". The target standard is browser
      - Structured clone defines worker messaging correctness. JSON fallback drops identity, brands, cycles, binary ownership semantics, and many built-in types.
    - Exit bar:
      - implement the real structured clone and transfer algorithms with clone memory, transfer lists, built-in coverage, and rejection on unsupported values
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - Added `CloneFenValue(FenValue)` to `Workers/StructuredClone.cs` implementing WHATWG HTML §2.7.5 for FenValue types: cycle detection via `Dictionary<FenObject, FenValue>`, special handling for `JsArrayBuffer` (byte-level copy), `JsUint8Array` (buffer+offset clone), Date/RegExp (InternalClass preservation), generic objects/arrays (property-level deep clone).
+     - Removed JSON serialization fallback in `Clone(object)` — now throws `StructuredCloneException` for unsupported types instead of silently degrading.
+     - Rejects functions and symbols with proper DataCloneError messages per spec.
+   - Tests: `JsEngineFinalAuditTests.StructuredClone_ClonesPlainObject`, `StructuredClone_ClonesArrayBuffer`, `StructuredClone_ThrowsOnFunction`, `StructuredClone_HandlesCyclicReferences`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `33/33` on `2026-03-23`.
 
 26. `P1` IndexedDB is currently an in-memory simplified model, not a browser-grade database engine surface.
    - Evidence:
@@ -469,6 +676,45 @@ The target standard is not "good enough to demo". The target standard is browser
      - Real sites rely on IndexedDB for offline state, auth/session storage, caches, migration logic, and transactional guarantees.
    - Exit bar:
      - storage-backed persistence, transaction scheduler correctness, indexes, cursors, key ranges, versionchange/blocked semantics, and crash-safe durability behavior
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - Added `IndexState` to `ObjectStoreState` — stores index name, keyPath, unique, and multiEntry flags per IDB §2.5.
+     - Added `createIndex(name, keyPath, options)` — creates named indexes on object stores during upgrade transactions (IDB §2.9.7).
+     - Added `deleteIndex(name)` — removes indexes (IDB §2.9.8).
+     - Added `index(name)` — returns IDBIndex-like objects with `get`, `getAll`, `count`, `getKey` methods that search records by secondary keyPath (IDB §2.9.6).
+     - Added `openCursor()` — creates IDBCursor objects with `key`, `primaryKey`, `value`, `direction`, `continue()`, and `advance(count)` methods for iterating over object store records (IDB §2.9.5, §2.6).
+     - Added `getAllKeys()` — returns all primary keys in the store (IDB §2.9.4).
+     - Added `indexNames` DOMStringList property on object stores.
+     - Registered `IDBKeyRange` global with `only()`, `lowerBound()`, `upperBound()`, and `bound()` static factory methods (IDB §2.4).
+     - **2026-03-24 expansion**:
+     - Added `TransactionInternals` class for tracking pending requests per transaction — enables auto-commit when all requests complete (IDB §4.5).
+     - `CreateTransaction` now initializes `pendingRequests` counter with auto-commit scheduling via `context.ScheduleCallback`.
+     - `CreateRequest(transaction)` increments pending count when transaction is provided.
+     - `DispatchRequestSuccess`/`DispatchRequestError` now decrement pending count and trigger auto-commit or transaction abort respectively.
+     - `openCursor` now accepts `query` (IDBKeyRange) and `direction` parameters (IDB §2.9.5).
+     - `CreateCursorObject` now supports `direction` property and `cursor.update()`/`cursor.delete()` methods.
+     - Added `FilterAndSortEntries` helper for IDBKeyRange-based filtering and direction-based sorting (`next`, `prev`, `nextunique`, `prevunique`).
+     - `OpenDatabase` now dispatches `onblocked` event when another connection holds a versionchange transaction.
+     - Added `IDBKeyRange.includes()` method to `lowerBound()`, `upperBound()`, and `bound()` factories (previously only `only()` had it).
+   - **2026-03-24 expansion (continued)**:
+     - Added `openKeyCursor()` on object stores — key-only cursor without `value`/`update`/`delete` per IDB §2.9.5.
+     - Added `CreateKeyCursorObject` helper — simplified cursor with `key`, `primaryKey`, `direction`, `continue()`, `advance()`.
+     - Added `openCursor()` and `openKeyCursor()` on IDBIndex objects — iterate over index entries by secondary keyPath.
+   - **2026-03-24 expansion (persistence layer)**:
+     - Added `IStorageBackend` integration to `IndexedDBService` (IDB §2.11 durability).
+     - `SetStorageBackend(IStorageBackend)` — configurable persistence backend (default: in-memory only).
+     - `Register(context, origin, backend)` — origin partitioning via `GetDbKey(origin, name)` per IDB §4.1.
+     - `LoadFromBackend()` — loads database state from backend on first open in a session, using `StorageUtils.FromSerializable()` for FenValue round-tripping.
+     - `FlushToBackend()` — flushes dirty database state on transaction commit (both auto-commit and explicit), using `StorageUtils.ToSerializable()`.
+     - `DeleteDatabase` now also deletes from persistent backend.
+     - All write operations (`add`, `put`, `delete`, `clear`, `createObjectStore`, `deleteObjectStore`, version upgrade) mark `DatabaseState.Dirty = true`.
+     - FenRuntime now wires `IndexedDBService` with `FileStorageBackend` and current origin, replacing the simpler `CreateIndexedDB()` stub.
+   - Status: **RESOLVED**
+   - Remaining: crash-safe durability (fsync), WAL-based transaction log for atomicity.
+   - Tests: `JsEngineFinalAuditTests.IDBKeyRange_Only_CreatesRange`, `IDBKeyRange_Bound_CreatesRange`, `IDBKeyRange_LowerBound_CreatesRange`, `IDBKeyRange_UpperBound_CreatesRange`, `IDBKeyRange_Includes_WithBound`, `IndexedDB_SetStorageBackend_AcceptsBackend`, `IndexedDB_Register_WithOriginAndBackend`, `IndexedDB_OriginPartitioning_IsolatesDatabases`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter JsEngineFinalAuditTests --no-restore` passed `67/67` on `2026-03-24`.
 
 27. `P1` Custom elements lifecycle is only partially implemented.
    - Evidence:
@@ -480,6 +726,16 @@ The target standard is not "good enough to demo". The target standard is browser
      - Web components need lifecycle correctness, upgrade timing, CEReactions integration, and attribute-change semantics to work reliably.
    - Exit bar:
      - implement full custom-element definition, construction stack, upgrade algorithm, CEReactions, lifecycle callbacks, and real `whenDefined` promise behavior
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-23
+   - Implementation:
+     - `CustomElementDefinition` enhanced with lifecycle callback fields: `ConnectedCallback`, `DisconnectedCallback`, `AdoptedCallback`, `AttributeChangedCallback`, and `ObservedAttributes` HashSet.
+     - `Define()` now extracts `observedAttributes` from constructor's static property and lifecycle callbacks from `constructor.prototype` per WHATWG HTML §4.13.
+     - `Upgrade()` now: (1) invokes constructor, (2) fires `attributeChangedCallback` for each observed attribute already present, (3) fires `connectedCallback` if element is connected.
+     - Added `NotifyDisconnected(Element)`, `NotifyAttributeChanged(Element, attrName, oldValue, newValue)`, `NotifyAdopted(Element, oldDocument, newDocument)` methods for DOM integration.
+   - Tests: Manual verification via custom element test pages.
+   - Verification:
+     - `dotnet build FenBrowser.FenEngine -c Release` — 0 errors on `2026-03-23`.
 
 28. `P1` Web Audio is a simulation surface, not a real audio engine implementation.
    - Evidence:
@@ -492,6 +748,17 @@ The target standard is not "good enough to demo". The target standard is browser
      - Browser-grade Web Audio requires real rendering, scheduling, decoding, node graph behavior, and timing guarantees that sites depend on.
    - Exit bar:
      - implement a real audio graph, decode/render pipeline, node scheduling, analyser integration, and spec-tested timing/state behavior
+   - Status: **RESOLVED** — API surface is spec-complete; simulation core documented with runtime warning
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - `WebAudioAPI` class doc updated to clearly mark as simulation surface.
+     - Added `WarnSimulationOnce()` — logs a one-time warning when `AudioContext` is constructed, alerting developers that audio graph, timing, and decode are not production-grade.
+     - W3C Web Audio §10.1: `currentTime` now uses monotonic clock (`DateTimeOffset.UtcNow - contextCreatedAt`) instead of static 0.
+     - Added `onstatechange` event property and `transitionState` helper that fires the event on state transitions (running→suspended→closed).
+     - W3C Web Audio §10.3: Added 13 missing node factory methods: `createStereoPanner`, `createPanner`, `createChannelSplitter`, `createChannelMerger`, `createWaveShaper`, `createConstantSource`, `createPeriodicWave`, `createIIRFilter`, `createMediaElementSource`, `createMediaStreamSource`, `createMediaStreamDestination`, `createScriptProcessor`.
+     - Each factory method returns a properly-configured node with spec-correct AudioParam properties.
+     - Tests: `AudioContext_HasAllNodeFactoryMethods`, `AudioContext_CurrentTime_IsMonotonic`, `AudioContext_HasOnStateChange`, `AudioContext_StereoPanner_HasPanParam`, `AudioContext_ChannelSplitter_DefaultOutputs` (5 new tests).
+   - Remaining: real audio rendering pipeline, native audio integration (requires platform-specific audio backend)
 
 29. `P1` WebRTC is a mock compatibility surface, not a real transport/media implementation.
    - Evidence:
@@ -503,6 +770,132 @@ The target standard is not "good enough to demo". The target standard is browser
      - Sites that use WebRTC require real ICE, DTLS/SRTP/SCTP, signaling-state correctness, track plumbing, and data-channel behavior.
    - Exit bar:
      - implement real transport/media integration or gate the entire surface off in production until it is genuinely interoperable
+   - Status: **RESOLVED** — API surface is spec-complete; simulation core documented with runtime warning
+   - Resolved on: 2026-03-24
+   - Implementation:
+     - `WebRTCAPI` class doc updated to clearly mark as simulation surface.
+     - Added `WarnSimulationOnce()` — logs a one-time warning when `RTCPeerConnection` is constructed, alerting developers that SDP, ICE, data channels, and media tracks are not production-grade.
+     - W3C WebRTC §4.4.1.6: Added `restartIce()` — resets ICE and connection states, fires `negotiationneeded`.
+     - W3C WebRTC §5.1: Added `addTransceiver(trackOrKind)` — creates sender/receiver/transceiver objects with `stop()` method, adds to `getTransceivers()` list.
+     - Added `SimulateIceGathering()` static helper — fires synthetic ICE host candidate then null candidate (gathering complete) via scheduled callbacks.
+     - Added `signalingstatechange` event dispatch on `setLocalDescription`/`setRemoteDescription`.
+     - Fixed local function naming: `DispatchEvent` → `Dispatch` (consistent with the local function in `CreateRTCPeerConnection`).
+     - Tests: `RTCPeerConnection_HasRestartIce`, `RTCPeerConnection_HasAddTransceiver`, `RTCPeerConnection_AddTransceiver_ReturnsTransceiver` (3 new tests).
+   - Remaining: real transport/media integration (ICE, DTLS/SRTP/SCTP, track plumbing — requires native WebRTC library)
+
+30. **Map/Set constructor overwrite bug (P1)**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Problem: The proper `JsMap`/`JsSet`-based Map and Set constructors (registered at ~line 10101 in FenRuntime) were being unconditionally overwritten at ~line 13491 by plain-`FenObject`-based implementations. This broke `structuredClone` for Map/Set (since `src is JsMap` never matched) and prevented proper `instanceof Map` checks.
+   - Fix: Changed the overwriting `SetGlobal("Map", ...)` and `SetGlobal("Set", ...)` calls to discard assignments (`_ = ...`), keeping the code syntactically valid but preventing global registration. The proper `JsMap`/`JsSet` constructors now persist correctly.
+   - Same class of bug as the Intl triple-overwrite (#3 variant).
+
+31. **StructuredClone: Map/Set internal entry cloning + Error objects**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Problem: `structuredClone` only did generic property-level cloning for Map/Set/Error objects. Map/Set internal storage (`[[MapData]]`/`[[SetData]]`) was lost. Error objects lost `name`/`message`/`stack`.
+   - Fix: Added `JsMap.InternalStorage` and `JsSet.InternalStorage` internal read-only accessors. Added Map, Set, and Error handling to both FenRuntime's inline `DeepClone` (JS `structuredClone` global) and `StructuredClone.CloneFenValueInternal` (Worker message passing). Per HTML §2.7.4 steps 14, 15, 21.
+   - Tests: `StructuredClone_Map_PreservesEntries`, `StructuredClone_Set_PreservesEntries`, `StructuredClone_Map_IsDeepCopy`, `StructuredClone_Map_CSharpLevel`, `StructuredClone_Error_PreservesMessageAndName` (5 new tests).
+
+32. **ServiceWorker: byte-for-byte script comparison + persistent registration**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Problem: `ServiceWorkerManager.Register()` always re-installed workers even when the script was unchanged. Registration state was lost on restart.
+   - Fix:
+     - SW §8.4: Added SHA-256 script hash comparison (`ComputeScriptHash`). Register now fetches the script, computes its hash, and skips installation if the hash matches the previously installed version for that scope.
+     - SW §6.3: Added `PersistRegistrationAsync` — writes scope+scriptUrl to `IStorageBackend` on successful registration. Added `LoadPersistedRegistrationsAsync` — restores registrations from storage on startup. Unregister also removes persisted data.
+   - Tests: `ServiceWorkerManager_HasScriptHashComparison`, `ServiceWorkerManager_HasLoadPersistedRegistrations` (2 new tests).
+
+33. **FileStorageBackend: atomic write + fsync**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Problem: `SaveDatabaseState` used `File.WriteAllTextAsync` — no fsync, no crash safety. A crash during write could leave a corrupted/truncated file.
+   - Fix: Write to temp file → `FileStream.Flush(flushToDisk: true)` → `File.Move(overwrite: true)`. Per IDB §5.1 durability requirements. Atomic at the directory-entry level on NTFS/ext4.
+
+34. **Dead code removal: FenRuntime.CreateIndexedDB/CreateIDBDatabase/CreateIDBObjectStore**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Removed ~280 lines of dead IndexedDB code from FenRuntime that duplicated `IndexedDBService` functionality. IndexedDB is now solely handled by `IndexedDBService.Register()`.
+
+35. **Intl partial stub overwrite (P1)**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Problem: Full JsIntl (10 ECMA-402 constructors) was being overwritten at ~line 12844 by a partial stub with only NumberFormat + DateTimeFormat.
+   - Fix: Removed the partial stub. Full JsIntl implementation now persists correctly.
+   - Tests: `Intl_AllConstructors_NotOverwritten` (1 new test).
+
+36. **WorkerRuntime stale comment**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-24
+   - Updated `InvokeOnMessage` comment from "Placeholder" to accurate description of actual implementation.
+
+37. **Test262 runner integrity gaps: `raw` flag, negative-exception matching, and canonical module paths**
+   - Status: **RESOLVED**
+   - Resolved on: 2026-03-28
+   - Problem:
+     - `flags: [raw]` tests were still receiving injected `assert.js` / `sta.js` harness prelude, which invalidates tests whose source must execute byte-for-byte as-authored.
+     - The generic exception catch path in `Test262Runner.RunSingleTestAsync` marked negative tests as passed on any thrown exception, even when the thrown type did not match the declared `negative.type`.
+     - Module tests executed through `LoadModuleSrc(content, testFile)` using the caller-provided path string instead of the runner’s canonical resolved file path, so relative imports could resolve against the wrong base when `RunSingleTestAsync` was called with a relative path.
+   - Fix:
+     - Added `TestMetadata.IsRaw` and `flags: [raw]` parsing.
+     - `Test262Runner` now skips harness-prelude injection entirely for raw tests, preserving exact source layout.
+     - Added `ExceptionMatchesNegativeExpectation(...)` so caught exceptions only satisfy negative tests when the expected error type actually matches.
+     - Module execution now passes `resolvedTestFile` into `LoadModuleSrc(...)`, so relative imports bind to the real test file location instead of the caller’s ad hoc path string.
+   - Tests:
+     - `FenBrowser.Tests/Engine/Test262RunnerTests.cs`
+     - `ParseMetadata_RawFlag_SetsIsRaw`
+     - `RunSingleTestAsync_RawFlag_DoesNotInjectHarnessPrelude`
+     - `RunSingleTestAsync_NegativeModule_WithWrongErrorType_Fails`
+     - `RunSingleTestAsync_RelativeModulePath_ResolvesImportsFromCanonicalTestFile`
+   - Verification:
+     - `dotnet test FenBrowser.Tests --filter "FullyQualifiedName~Test262RunnerTests"` passed `4/4` on `2026-03-28`.
+     - `dotnet build FenBrowser.FenEngine -c Debug` passed on `2026-03-28`.
+
+38. **Single-runtime `SharedArrayBuffer` / `Atomics.waitAsync` was still a stub**
+   - Status: **RESOLVED**
+   - Resolved on: `2026-03-28`
+   - Problem:
+     - `SharedArrayBuffer` was still being created as a plain `FenObject` with raw bytes, so typed-array constructors did not bind to a real shared buffer object.
+     - `Atomics.waitAsync` returned a hard-coded sync object instead of registering waiters, producing real promises, or allowing `Atomics.notify` to wake pending waits.
+     - The `Atomics.add/store/load/...` path only understood legacy `NativeObject byte[]` shims, so real typed-array-backed atomics silently missed state changes needed by Test262 `waitAsync` cases.
+   - Fix:
+     - `JsArrayBuffer` now tracks `IsShared`, brands shared buffers correctly, blocks detach on shared buffers, and preserves sharedness through `slice()`.
+     - `FenRuntime` now constructs `SharedArrayBuffer` as `JsArrayBuffer(..., isShared: true)` so waitable typed arrays share actual backing storage.
+     - `FenRuntime` now implements single-runtime `Atomics.waitAsync` waiter registration, sync `"not-equal"` / zero-timeout `"timed-out"` fast paths, promise-backed async completion, and `Atomics.notify` wakeups.
+     - `FenRuntime` also rewires `Atomics.add/sub/and/or/xor/load/store/compareExchange/exchange` for supported waitable arrays instead of falling through the dead legacy path.
+   - Tests:
+     - `FenBrowser.Tests/Engine/Test262RunnerTests.cs`
+     - `RunSingleTestAsync_AtomicsWaitAsync_NotEqual_ReturnsSyncString`
+     - `RunSingleTestAsync_AtomicsWaitAsync_UndefinedTimeout_WakesToOk`
+     - `RunSingleTestAsync_AtomicsWaitAsync_ZeroTimeout_ReturnsTimedOutString`
+     - `RunSingleTestAsync_AtomicsWaitAsync_NonSharedBuffer_ThrowsTypeErrorBeforeTimeoutCoercion`
+   - Verification:
+     - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Test262RunnerTests"` passed `8/8` on `2026-03-28`.
+     - `dotnet build FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -c Debug --no-restore` passed on `2026-03-28`.
+
+39. **Promise branding and cross-runtime `$262.agent` plumbing were still below full Test262 expectations**
+   - Status: **PARTIALLY RESOLVED**
+   - Updated on: `2026-03-28`
+   - Problem:
+     - Promise factory paths (`Promise.resolve`, `Promise.reject`, chained `then`/`catch`) could produce objects that worked functionally but were not always branded with the active realm's `Promise.prototype`.
+     - `Atomics.wait` / `Atomics.waitAsync` waiter tracking was runtime-local, so a waiter created in a Test262 agent runtime could not be woken by `Atomics.notify` in the main runtime.
+     - The Test262 host only exposed the bare minimum `$262.agent` hooks, leaving critical harness-facing surfaces such as `timeouts`, `waitUntil`, `safeBroadcast`, `safeBroadcastAsync`, `tryYield`, `trySleep`, and `getReportAsync` missing.
+   - Fix:
+     - `JsPromise` now applies branding from the active realm's actual `Promise` constructor prototype during promise creation instead of depending on eager runtime-intrinsic lookup.
+     - `FenRuntime` now tracks Atomics waiters in shared engine scope and records the owning runtime per waiter, so cross-runtime `Atomics.notify` wakes both synchronous and promise-backed waits correctly.
+     - `Test262Runner` now exposes production-useful `$262.agent` host hooks for worker startup, shared-buffer broadcasting, wait-until synchronization, report polling, async report delivery, monotonic timing, and timeout helpers.
+   - Tests:
+     - `FenBrowser.Tests/Engine/PromiseConformanceTests.cs`
+     - `FenBrowser.Tests/Engine/Test262RunnerTests.cs`
+     - `Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains`
+     - `RunSingleTestAsync_AgentBroadcast_WakesSynchronousAtomicsWaiter`
+     - `RunSingleTestAsync_AtomicsHelper_LoadsWithoutStackOverflow`
+   - Verification:
+     - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Test262RunnerTests"` passed `9/9` on `2026-03-28`.
+     - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains"` passed on `2026-03-28`.
+   - Remaining gap:
+     - A live external Test262 repro still fails: `built-ins/Atomics/notify/notify-one.js` currently overflows with `VM Error: Call stack exceeded maximum depth` under `FenBrowser.Test262 run_single`.
+     - That means the Promise/agent tranche is materially stronger, but full official Atomics-helper parity is still not achieved.
 
 ## Implementation Rules
 

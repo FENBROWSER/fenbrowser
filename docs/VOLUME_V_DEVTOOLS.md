@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume V: Developer Tools
 
-**State as of:** 2026-02-06
+**State as of:** 2026-03-28
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -46,6 +46,7 @@ FenBrowser implements a TCP Server on port `9222` to support the **Chrome DevToo
 ### 3.2 Supported Domains (`Domains/`)
 
 - **DOM**: Querying nodes, requesting child nodes, highlighting.
+- **DOM Editing**: Attribute updates, text-node edits, and parsed `outerHTML` replacement through the protocol-backed Elements workflow.
 - **CSS**: modifying stylesheets, computing styles.
 - **Network**: Request/Response monitoring (Basic).
 - **Runtime**: JS evaluation and console logging.
@@ -192,5 +193,190 @@ Contains the generated CDP domain classes and DTOs.
 - Net effect:
   - DevTools domain handlers remain async end-to-end.
   - Cross-thread DOM/CSS access from protocol requests is routed back to the owning host thread instead of executing directly on the transport thread.
+
+### 5.9 DOM Markup Replacement Baseline (2026-03-28)
+
+- `FenBrowser.DevTools/Domains/DomDomain.cs`
+  - Added `DOM.setOuterHTML` support so protocol clients can replace a selected node with parsed markup instead of falling through to an unknown-method failure.
+  - Replacement markup is parsed through the existing core HTML parser and applied as a `DocumentFragment`, which keeps node insertion/removal flowing through the standard DOM mutation path.
+  - Empty markup now removes the selected node.
+
+- `FenBrowser.DevTools/Instrumentation/DomInstrumenter.cs`
+- `FenBrowser.DevTools/Domains/DTOs/DomNodeDto.cs`
+  - DOM snapshots and mutation events now preserve comment-node identity (`nodeType = 8`, `nodeName = "#comment"`), which matters when markup edits introduce or remove comments.
+
+- `FenBrowser.Tests/DevTools/DomDomainTests.cs`
+  - Regression coverage now verifies that `DOM.setOuterHTML` still waits for the owning-thread dispatcher and that parsed replacement nodes are visible to subsequent inspection.
+
+### 5.10 DOM Query + Exact Markup Editing Expansion (2026-03-28)
+
+- `FenBrowser.DevTools/Domains/DomDomain.cs`
+  - Added selector-driven subtree inspection methods:
+    - `DOM.querySelector`
+    - `DOM.querySelectorAll`
+  - Added exact markup retrieval via `DOM.getOuterHTML`.
+  - Markup serialization now preserves document, document-fragment, element, text, comment, and doctype shapes instead of forcing the Elements panel to reconstruct lossy placeholder HTML.
+
+- `FenBrowser.DevTools/Domains/DTOs/DomNodeDto.cs`
+  - Added protocol DTOs for:
+    - `GetOuterHtmlResult`
+    - `QuerySelectorResult`
+    - `QuerySelectorAllResult`
+
+- `FenBrowser.DevTools/Panels/ElementsPanel.cs`
+  - The native Elements panel `Edit as HTML` path now hydrates from protocol-backed `DOM.getOuterHTML` rather than the old local placeholder serializer.
+  - Added a dedicated modal editor overlay with explicit commit/cancel flow:
+    - `Ctrl+Enter` applies the edited markup through `DOM.setOuterHTML`
+    - `Enter` inserts a newline
+    - `Esc` cancels editing
+  - Net effect:
+    - The in-process inspector now edits exact serialized markup.
+    - External protocol clients and the native panel share the same DOM-markup source of truth.
+
+- `FenBrowser.Tests/DevTools/DomDomainTests.cs`
+  - Regression coverage now verifies:
+    - `DOM.getOuterHTML`
+    - `DOM.querySelector`
+    - `DOM.querySelectorAll`
+    - async dispatcher preservation for the new methods.
+
+### 5.11 Network Payload Inspection Baseline (2026-03-28)
+
+- `FenBrowser.DevTools/Domains/NetworkDomain.cs`
+  - Added basic retrieval methods on top of the existing event stream:
+    - `Network.getResponseBody`
+    - `Network.getRequestPostData`
+  - These methods resolve against the host-tracked request ledger instead of remaining a no-op `enable/disable` shell.
+
+- `FenBrowser.DevTools/Core/IDevToolsHost.cs`
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - `NetworkRequestInfo` now carries both request and response bodies.
+  - Host-side network request translation now preserves `RequestBody` / `ResponseBody` from the engine and maps common HTTP status codes to reason phrases (`200 OK`, `404 Not Found`, etc.) for better parity with real DevTools network views.
+
+- `FenBrowser.DevTools/Panels/NetworkPanel.cs`
+  - The native Network panel now fetches protocol-backed payload previews when a request is selected and renders:
+    - request body preview
+    - response body preview
+  - This closes the old gap where the panel only exposed headers and timing metadata despite the engine already buffering bodies.
+
+- `FenBrowser.Tests/DevTools/NetworkDomainTests.cs`
+  - Regression coverage now verifies:
+    - `Network.getResponseBody`
+    - `Network.getRequestPostData`
+    - unavailable-body failure behavior.
+
+### 5.12 Runtime Object Inspection + Source Surfacing (2026-03-28)
+
+- `FenBrowser.DevTools/Domains/RuntimeDomain.cs`
+- `FenBrowser.DevTools/Domains/DTOs/RuntimeDtos.cs`
+  - Added `Runtime.getProperties` and a remote-object handle store so non-primitive evaluation results stop collapsing into opaque `ToString()` output.
+  - `Runtime.evaluate` now shapes primitives, JSON values, dictionaries/lists, and FenEngine `FenValue` / `IObject` results into protocol-grade `RemoteObject` descriptors with stable `objectId` handles for follow-up inspection.
+
+- `FenBrowser.FenEngine/DevTools/DevToolsCore.cs`
+- `FenBrowser.DevTools/Core/IDevToolsHost.cs`
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - Script registration now preserves stable `ScriptId` values for the same URL instead of minting a fresh identifier on every re-registration.
+  - The host adapter now exposes the engine-owned script registry to DevTools, including protocol-facing `ScriptId` values and inline-source detection.
+
+- `FenBrowser.DevTools/Domains/DebuggerDomain.cs`
+- `FenBrowser.DevTools/Domains/DTOs/DebuggerDtos.cs`
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+  - Added a first real `Debugger` domain surface:
+    - `Debugger.enable`
+    - `Debugger.disable`
+    - `Debugger.getScriptSource`
+  - `Debugger.enable` now emits `Debugger.scriptParsed` for already-registered page scripts so protocol clients can build a usable source tree instead of seeing an empty debugger surface.
+
+- `FenBrowser.DevTools/Panels/ConsolePanel.cs`
+  - The in-process console now uses `Runtime.getProperties` to format object and array evaluation results into actual property previews rather than printing only the top-level description string.
+
+- `FenBrowser.DevTools/Panels/SourcesPanel.cs`
+- `FenBrowser.Host/ChromeManager.cs`
+  - Added a native Sources panel to the built-in DevTools shell.
+  - The panel subscribes to `Debugger.scriptParsed`, lists loaded scripts, and fetches source text through `Debugger.getScriptSource`, giving Fen its first end-to-end source inspection workflow.
+
+- `FenBrowser.Tests/DevTools/RuntimeDomainTests.cs`
+- `FenBrowser.Tests/DevTools/DebuggerDomainTests.cs`
+  - Regression coverage now verifies:
+    - `Runtime.getProperties` for object evaluation results
+    - `Debugger.scriptParsed` emission on enable
+    - `Debugger.getScriptSource` source retrieval
+
+### 5.13 Audit-Fix Tranche - Host Lifetime, Target Scoping, Pane Isolation (2026-03-28)
+
+- `FenBrowser.DevTools/Core/IDevToolsPanel.cs`
+  - Panel host assignment now has an explicit `OnHostChanging(...)` lifecycle hook.
+  - This gives each panel a deterministic place to detach protocol/log listeners and clear target-owned UI state before a tab switch reattaches the panel to a new host.
+
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+  - JSON output listeners are now guarded by a lock and can be removed via `RemoveJsonOutput(...)`.
+  - Broadcast now snapshots listeners before iterating, which prevents append-only relay growth from compounding across host churn.
+
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+- `FenBrowser.Host/ChromeManager.cs`
+  - DevTools hosts are now disposable and are explicitly disposed before a new tab host is attached.
+  - Disposal detaches:
+    - browser repaint relay
+    - browser console relay
+    - engine network relay
+    - protocol JSON relay
+  - The debugger/source bridge no longer exposes the entire global script registry blindly.
+    - `GetScriptSources()` now scopes the returned scripts to the active inspected document by walking live `<script>` elements, resolving external `src` URLs relative to the current page, and synthesizing stable inline IDs/URLs when needed.
+    - `eval.js` sources remain visible as explicit evaluation artifacts, but stale page scripts from unrelated tabs or prior navigations no longer dominate the Sources surface.
+
+- `FenBrowser.DevTools/Panels/ElementsPanel.cs`
+- `FenBrowser.DevTools/Panels/ConsolePanel.cs`
+- `FenBrowser.DevTools/Panels/NetworkPanel.cs`
+- `FenBrowser.DevTools/Panels/SourcesPanel.cs`
+  - The core panels now unsubscribe from old hosts during host transitions instead of stacking listeners indefinitely.
+  - Host changes also clear selection, hover, preview, and scroll state so a newly inspected target does not inherit stale UI state from the previous one.
+
+- `FenBrowser.DevTools/Panels/NetworkPanel.cs`
+- `FenBrowser.DevTools/Panels/SourcesPanel.cs`
+  - Split-pane rendering no longer relies on the base panel’s whole-canvas scroll translation.
+  - Each panel now paints its own panes and scrollbars so left/list panes scroll independently from right/detail/source panes.
+  - The Network details loader now snapshots the selected request ID and refuses to overwrite previews when a slower async body fetch completes after the user has already selected another request.
+
+- `FenBrowser.DevTools/Panels/ConsolePanel.cs`
+  - Protocol-backed console entry formatting is now serialized through a gate instead of fire-and-forget per argument.
+  - This keeps object-preview formatting in arrival order and prevents older host work from writing into the panel after a target switch.
+
+- `FenBrowser.DevTools/Core/DevToolsController.cs`
+  - DevTools visibility changes and panel activation now reset the host cursor to `Default` immediately.
+  - This closes the stale-cursor path where switching away from a text-driven panel (for example the Console input) could leave the I-beam cursor visible until the next mouse-move event.
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - Resize drag teardown now reapplies the pending host cursor on mouse-up instead of waiting for the next hover update.
+  - This closes the stale resize-cursor path where DevTools chrome resizing could leave the non-default cursor visible after the drag had already ended.
+
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - DOM input dispatch now contains page-script failures at the browser boundary.
+  - `on*` handler-property callbacks (for example `onmousemove`) now mirror `addEventListener(...)` listeners:
+    - exceptions are logged
+    - `window.onerror` reporting is attempted
+    - the exception does not escape into the host message loop
+  - `BrowserApi.DispatchInputEvent(...)` now treats uncaught page faults and script timeouts as logged page errors rather than process-terminating host exceptions, which hardens interactive paths such as page hover handlers triggered while resizing DevTools.
+
+- `FenBrowser.DevTools/Domains/RuntimeDomain.cs`
+- `FenBrowser.DevTools/Domains/DTOs/RuntimeDtos.cs`
+  - `Runtime` remote-object retention is now bounded and externally releasable.
+  - Added:
+    - `Runtime.releaseObject`
+    - `Runtime.releaseObjectGroup`
+  - The runtime now caps retained remote objects and clears the cache on `Runtime.disable`, preventing unbounded growth from repeated evaluations/property inspection.
+
+- `FenBrowser.Tests/DevTools/RuntimeDomainTests.cs`
+- `FenBrowser.Tests/DevTools/DevToolsServerTests.cs`
+  - Regression coverage now verifies:
+    - `Runtime.getProperties` returns inspectable own properties for object results
+    - `Runtime.releaseObject` removes retained handles
+    - `DevToolsServer.RemoveJsonOutput(...)` stops future broadcasts from reaching removed listeners
+
+Net effect:
+- Tab switches stop duplicating protocol/log events.
+- Sources/debugger inspection is materially closer to the active target instead of the process-global script pool.
+- Network and Sources panes behave like real split views instead of one shared scroller.
+- Console/runtime object inspection no longer grows retained state without a release path.
 
 _End of Volume V_
