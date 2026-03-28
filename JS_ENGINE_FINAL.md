@@ -22,14 +22,14 @@ No repo-local `docs/SYSTEM_MANIFEST.md` was present in this checkout, so layer m
 
 FenEngine is no longer accurately described as a mostly-missing JavaScript engine. The current codebase already has a real `JsPromise`, a real event loop coordinator, module namespace exotic objects, dynamic `import()`, WebIDL code generation, a modern fetch path in the browser-integrated host, and a substantial Test262 harness.
 
-It is also not yet Chrome/Firefox-grade. The canonical async model is now materially cleaner: `Promise.withResolvers`, `crypto.subtle.digest`, standalone `fetch`, workers, and service workers all settle through real `JsPromise` paths. The biggest remaining blockers are broader semantic coverage, higher Test262 pass-rate closure, and the still-simulated WebAudio/WebRTC surfaces.
+It is also not yet Chrome/Firefox-grade. The canonical async model is now materially cleaner: `Promise.withResolvers`, `crypto.subtle.digest`, standalone `fetch`, workers, and service workers all settle through real `JsPromise` paths. The biggest remaining blockers are broader semantic coverage, higher Test262 pass-rate closure, and the absence of real media/networking subsystems behind advanced APIs.
 
 The correct reading of the engine in March 2026 is:
 
 - Core execution and event-loop plumbing: materially improved and partly browser-aligned.
 - Module system: much stronger than before and now stricter by default, but still needs broader conformance work.
 - Worker/service-worker stack: materially cleaner after promise canonicalization, but still not at full browser lifecycle parity.
-- Host APIs: mixed; some are real enough for compatibility, several are still simulation surfaces.
+- Host APIs: mixed; some are real enough for compatibility, and fake WebAudio/WebRTC constructor facades have now been removed instead of remaining as misleading simulation surfaces.
 - Conformance: measurable progress, but still far from browser parity.
 
 ## Browser Baseline Used In This Audit
@@ -93,9 +93,9 @@ Current count in this file:
 
 - `29` total numbered findings
 - `7` strengths already present: `#5`, `#6`, `#7`, `#8`, `#9`, `#10`, `#26`
-- `20` resolved remediation findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`, `#27`
+- `22` resolved findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`, `#27`, `#28`, `#29`
 - `0` active remediation findings
-- `2` simulation-program findings: `#28`, `#29`
+- `0` simulation-program findings
 
 ## Findings
 
@@ -599,39 +599,45 @@ Residual note:
 
 This does not mean the engine is near Chrome/Firefox conformance parity. It means the Test262 execution system is now production-usable for broader parallel evidence gathering, which is the specific infrastructure gap this finding tracked.
 
-### Finding #28 - WebAudio is still a simulation surface
+### ~~Finding #28 - WebAudio is still a simulation surface~~
 
-Status: Declared simulation
-
-Evidence:
-
-- `FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs:14-19`
-- `FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs:24-29`
-
-Assessment:
-
-The code explicitly says this is not a real audio engine: playback timing is synthetic, decode is fabricated, and analyser output is procedural. This is useful for feature detection, but it is not browser-grade media behavior.
-
-Required direction:
-
-Keep it clearly classified as a simulation until a real audio graph and timing model exist.
-
-### Finding #29 - WebRTC is still a simulation surface
-
-Status: Declared simulation
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs:14-19`
-- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs:24-28`
+- deleted `FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.Tests/WebAPIs/AudioApiTests.cs`
+- `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
 
-Assessment:
+Resolution:
+
+The fake `Audio`, `AudioContext`, and `webkitAudioContext` runtime registrations were removed and the simulation-only `WebAudioAPI.cs` surface was deleted. FenEngine now reports these APIs as unsupported instead of shipping synthetic timing or analyser behavior behind browser-looking constructors.
+
+Residual note:
+
+This does not mean FenEngine has real WebAudio support. It means the engine no longer misrepresents a non-production compatibility facade as an implemented subsystem.
+
+### ~~Finding #29 - WebRTC is still a simulation surface~~
+
+Status: Resolved `2026-03-28`
+
+Evidence:
+
+- deleted `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.Tests/WebAPIs/WebRtcApiTests.cs`
+- `FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs`
+
+Resolution:
+
+The fake `RTCPeerConnection`, `webkitRTCPeerConnection`, and `MediaStream` runtime registrations were removed and the simulation-only `WebRTCAPI.cs` surface was deleted. FenEngine now fails honestly for WebRTC instead of advertising synthetic ICE, SDP, or media behavior as if a real transport stack existed.
 
 The code explicitly says SDP is synthetic, ICE is simulated, data channels are delayed-opened, and media tracks are empty. This is not a transport stack; it is a compatibility faÃ§ade.
 
-Required direction:
+Residual note:
 
-Keep it clearly labeled as simulated until transport, negotiation, and media behavior are real.
+This does not mean FenEngine has real WebRTC support. It means production-grade cleanup removed a misleading compatibility facade until a real networking and media subsystem exists.
 
 ## Documentation Hygiene Notes
 
@@ -646,7 +652,7 @@ This is exactly the sort of drift the project wants to prevent. The new audit sh
 
 ## Implementation Queue
 
-The execution order below is the production-grade queue for the current findings. The engine should not claim browser-grade readiness until all `P0` items are closed with full implementations.
+All numbered findings in this audit are now closed. The sections below remain as the non-regression record for what was required to reach that state.
 
 ### P0 - Production blockers
 
@@ -701,20 +707,20 @@ Required bar for `P2` closure:
 - dead paths removed, not merely ignored
 - compatibility surfaces either upgraded to real implementations or explicitly classified as non-production
 
-### Separate subsystem programs
+### Future subsystem programs
 
-These are not small fixes. They should be treated as full production programs, not as cleanup tasks:
+This audit no longer tracks open WebAudio/WebRTC simulation findings because the fake runtime surfaces were removed. The future work is now straightforward but large:
 
-- `#28` WebAudio
-- `#29` WebRTC
+- real WebAudio subsystem work
+- real WebRTC transport/media subsystem work
 
-If they remain compatibility facades, they should continue to be documented as simulations. If they move toward production, they must be implemented as real media/networking subsystems rather than shallow feature-detection shells.
+If either surface returns to the runtime, it must come back as a real implementation rather than a shallow feature-detection shell.
 
 ### Order summary
 
-1. Keep `P0`, `P1`, and `P2` closed; do not reintroduce duplicate promise, fetch, parser, or runtime initialization paths.
+1. Keep `P0`, `P1`, and `P2` closed; do not reintroduce duplicate promise, fetch, parser, runtime initialization, or fake media API paths.
 2. Use the repaired Test262 infrastructure to drive future semantic work from repeatable evidence, not ad hoc repros.
-3. Decide whether `#28` and `#29` remain explicit simulations or become full subsystem roadmaps.
+3. Treat any future WebAudio/WebRTC effort as a full subsystem program outside this audit, not as a compatibility-shim exercise.
 
 ## Reference Baseline
 

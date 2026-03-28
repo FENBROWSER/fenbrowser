@@ -5482,3 +5482,25 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `dotnet test FenBrowser.Tests --filter "ProductionHardeningBatch3Tests|FetchApiTests|PromiseConformanceTests|Test262RunnerTests" --no-restore -v q`: pass (`32/32`).
   - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj --no-restore`: pass.
   - `dotnet run --project .\FenBrowser.Test262\FenBrowser.Test262.csproj --no-build -- run_category built-ins/Array --root <synthetic-fixture> --max 20 --timeout 1000`: pass with auto-isolated worker activation (`20/20`).
+
+## 2.176 Removal Of Simulated WebAudio/WebRTC Runtime Surfaces (2026-03-28)
+
+- FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+  - Removed runtime and window registration of Audio, AudioContext, webkitAudioContext, RTCPeerConnection, webkitRTCPeerConnection, and MediaStream.
+- Deleted simulation-only surfaces:
+  - FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs
+  - FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs
+- FenBrowser.Tests/WebAPIs/AudioApiTests.cs
+  - Replaced constructor/behavior tests with regressions that assert the WebAudio surface is absent and that JavaScriptEngine.cs no longer registers it.
+- FenBrowser.Tests/WebAPIs/WebRtcApiTests.cs
+  - Replaced constructor/behavior tests with regressions that assert the WebRTC surface is absent and that JavaScriptEngine.cs no longer registers it.
+- FenBrowser.Tests/Engine/JsEngineFinalAuditTests.cs
+  - Added audit guards proving the runtime and window expose none of the removed media globals.
+- Why this mattered:
+  - Production-grade means unsupported features fail honestly; they do not ship synthetic browser facades that imply real media, timing, or transport behavior.
+  - This tranche closes JS_ENGINE_FINAL.md findings #28 and #29.
+- Verification:
+  - dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore: pass.
+  - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.AudioApiTests" -v q: pass (2/2).
+  - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.WebRtcApiTests" -v q: pass (2/2).
+  - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~JavaScriptEngine_DoesNotExpose_WebAudioSimulationSurfaces|FullyQualifiedName~JavaScriptEngine_DoesNotExpose_WebRtcSimulationSurfaces" -v q: pass (2/2).
