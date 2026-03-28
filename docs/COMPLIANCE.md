@@ -36,7 +36,7 @@ The engine has undergone a massive **ES6+ Upgrade (Phases 1-10)** and architectu
 | **Layout**        | 10/10 | ✅ Complete | Grid Phase 3 complete (spec sizing). Flexbox full spec compliance with order property. Multi-column hardened. Intrinsic sizing implemented engine-wide.                          |
 | **CSS / Cascade** | 10/10 | ✅ Complete | Tokenizer/Syntax parser implemented. Media Query evaluation hardened. Cascade sorting (Specificity) is spec-compliant. `inherit`/`initial`/`unset` keywords supported.           |
 | **DOM / Events**  | 10/10 | ✅ Complete | Event system matches DOM Level 3. ReadyState transitions and readystatechange event hardened. Full `Attr`, `NamedNodeMap`, `TextContent`, and `CompareDocumentPosition` support. |
-| **Web APIs**      | 10/10 | ✅ Complete | `Fetch` hardened. `IndexedDB` now provides versioned in-memory CRUD/transaction semantics, and Cache Storage now preserves response/header interop more accurately while `Web Audio`/`WebRTC` continue to harden toward fuller parity.                                                                 |
+| **Web APIs**      | 8/10  | Mixed       | `Fetch` is hardened. `IndexedDB` now provides versioned in-memory CRUD/transaction semantics, and Cache Storage preserves response/header interop more accurately. `Web Audio` and `WebRTC` runtime surfaces are intentionally not exposed until real media subsystems exist.                                                                 |
 | **Architecture**  | 4/10  | ❌ Fragile  | Pipeline stages defined and enforced. Event Loop matches WHATWG shape but macro/micro task draining needs strict isolation.                                                      |
 
 ---
