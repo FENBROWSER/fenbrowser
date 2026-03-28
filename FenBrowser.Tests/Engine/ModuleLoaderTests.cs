@@ -97,7 +97,7 @@ namespace FenBrowser.Tests.Engine
         {
             var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
-            var exports = Assert.IsType<FenObject>(
+            var exports = Assert.IsAssignableFrom<FenObject>(
                 loader.LoadModuleSrc("export default function F() {} F.foo = 'ok';", "memory://default-function.mjs"));
 
             var defaultExport = exports.Get("default");
@@ -110,7 +110,7 @@ namespace FenBrowser.Tests.Engine
         {
             var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
-            var exports = Assert.IsType<FenObject>(
+            var exports = Assert.IsAssignableFrom<FenObject>(
                 loader.LoadModuleSrc("export default async function * AG() {} AG.foo = 'ok';", "memory://default-async-generator.mjs"));
 
             var defaultExport = exports.Get("default");
@@ -132,7 +132,7 @@ namespace FenBrowser.Tests.Engine
                 new FenExecutionContext(),
                 uri => sources[uri.AbsoluteUri]);
 
-            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/a.js"));
+            var exports = Assert.IsAssignableFrom<FenObject>(loader.LoadModule("https://example.test/a.js"));
             var defaultExport = exports.Get("default");
             var stringNamedExport = exports.Get("\u263F");
 
@@ -146,7 +146,7 @@ namespace FenBrowser.Tests.Engine
         {
             var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
 
-            var exports = Assert.IsType<FenObject>(
+            var exports = Assert.IsAssignableFrom<FenObject>(
                 loader.LoadModuleSrc("var a = 0; var b = 1; export { a as \"0\", b as \"1\" };", "memory://indexed-exports.mjs"));
 
             var zero = exports.GetOwnPropertyDescriptor("0");
@@ -155,11 +155,13 @@ namespace FenBrowser.Tests.Engine
             Assert.True(zero.HasValue);
             Assert.True(one.HasValue);
             Assert.False(exports.IsExtensible);
-            Assert.False(zero.Value.Writable ?? true);
+            // Module namespace properties are accessor-based (live bindings) and non-configurable
+            Assert.True(zero.Value.IsAccessor, "Export binding should be an accessor (live binding)");
             Assert.False(zero.Value.Configurable ?? true);
-            Assert.False(one.Value.Writable ?? true);
+            Assert.True(one.Value.IsAccessor, "Export binding should be an accessor (live binding)");
             Assert.False(one.Value.Configurable ?? true);
-            Assert.Throws<FenTypeError>(() => exports.Set("0", FenValue.FromNumber(1), strict: true));
+            // Set throws TypeError because module namespaces are read-only
+            Assert.Throws<FenTypeError>(() => exports.Set("0", FenValue.FromNumber(1)));
             Assert.False(exports.Delete("0"));
             Assert.True(exports.Delete("2"));
         }
@@ -371,7 +373,7 @@ namespace FenBrowser.Tests.Engine
                 new FenExecutionContext(),
                 uri => sources[uri.AbsoluteUri]);
 
-            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+            var exports = Assert.IsAssignableFrom<FenObject>(loader.LoadModule("https://example.test/root.js"));
 
             Assert.Equal(1, exports.Get("named").AsNumber());
             Assert.False(exports.GetOwnPropertyDescriptor("default").HasValue);
@@ -391,7 +393,7 @@ namespace FenBrowser.Tests.Engine
                 new FenExecutionContext(),
                 uri => sources[uri.AbsoluteUri]);
 
-            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+            var exports = Assert.IsAssignableFrom<FenObject>(loader.LoadModule("https://example.test/root.js"));
 
             Assert.Equal("local", exports.Get("value").AsString());
         }
@@ -411,7 +413,7 @@ namespace FenBrowser.Tests.Engine
                 new FenExecutionContext(),
                 uri => sources[uri.AbsoluteUri]);
 
-            var exports = Assert.IsType<FenObject>(loader.LoadModule("https://example.test/root.js"));
+            var exports = Assert.IsAssignableFrom<FenObject>(loader.LoadModule("https://example.test/root.js"));
 
             Assert.False(exports.GetOwnPropertyDescriptor("shared").HasValue);
             Assert.True(exports.Get("shared").IsUndefined);
@@ -509,6 +511,196 @@ namespace FenBrowser.Tests.Engine
             var promise = Assert.IsType<JsPromise>(window.Get("dynamicImportPromise").AsObject());
             Assert.True(promise.IsRejected);
             Assert.Contains("Failed to load module", window.Get("dynamicImportCaught").AsString());
+        }
+
+        // ── Tranche 1C: Live bindings, namespace exotic object, cycle semantics ──
+
+        [Fact]
+        public void LoadModuleSrc_Returns_ModuleNamespaceObject()
+        {
+            // ECMA-262 §10.4.6: Module namespace is an exotic object
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var exports = loader.LoadModuleSrc("export const x = 1;", "memory://ns-type.mjs");
+
+            Assert.IsType<ModuleNamespaceObject>(exports);
+        }
+
+        [Fact]
+        public void LoadModuleSrc_Namespace_Has_ToStringTag_Module()
+        {
+            // ECMA-262 §10.4.6: @@toStringTag = "Module"
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var exports = Assert.IsAssignableFrom<FenObject>(
+                loader.LoadModuleSrc("export const x = 1;", "memory://tag.mjs"));
+
+            Assert.Equal("Module", exports.Get("Symbol(Symbol.toStringTag)").AsString());
+        }
+
+        [Fact]
+        public void LoadModuleSrc_Namespace_Is_NonExtensible()
+        {
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var exports = Assert.IsAssignableFrom<FenObject>(
+                loader.LoadModuleSrc("export const x = 1;", "memory://nonext.mjs"));
+
+            Assert.False(exports.IsExtensible);
+        }
+
+        [Fact]
+        public void LoadModuleSrc_Live_Binding_Reflects_Mutation_Via_Exported_Function()
+        {
+            // ECMA-262 §16.2.1.7.4: Live bindings — reading an export
+            // after mutation in the source module environment must see the updated value.
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/counter.js"] = @"
+                    export let count = 0;
+                    export function increment() { count++; }
+                ",
+                ["https://example.test/main.js"] = @"
+                    import { count, increment } from './counter.js';
+                    globalThis.before = count;
+                    increment();
+                    globalThis.after = count;
+                "
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/main.js");
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            Assert.Equal(0, window.Get("before").AsNumber());
+            Assert.Equal(1, window.Get("after").AsNumber());
+        }
+
+        [Fact]
+        public void LoadModuleSrc_Live_Binding_Star_Reexport_Reflects_Mutation()
+        {
+            // Live binding through export * re-export chain
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/base.js"] = @"
+                    export let value = 'initial';
+                    export function mutate() { value = 'mutated'; }
+                ",
+                ["https://example.test/reexport.js"] = "export * from './base.js';",
+                ["https://example.test/main.js"] = @"
+                    import { value, mutate } from './reexport.js';
+                    globalThis.before = value;
+                    mutate();
+                    globalThis.after = value;
+                "
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/main.js");
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            Assert.Equal("initial", window.Get("before").AsString());
+            Assert.Equal("mutated", window.Get("after").AsString());
+        }
+
+        [Fact]
+        public void LoadModule_Cyclic_Modules_Resolve_Without_Deadlock()
+        {
+            // ECMA-262 §16.2.1.5.2: Cyclic module graphs must not deadlock.
+            // Module A imports from B, B imports from A.
+            // A's export may be undefined during B's evaluation (not yet initialized),
+            // but must not throw or hang.
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/a.js"] = @"
+                    import { b } from './b.js';
+                    export const a = 'A';
+                    globalThis.seenBInA = b;
+                ",
+                ["https://example.test/b.js"] = @"
+                    import { a } from './a.js';
+                    export const b = 'B';
+                    globalThis.seenAInB = a;
+                "
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            // Should not throw or deadlock
+            loader.LoadModule("https://example.test/a.js");
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            // B was evaluated first (dependency), so it saw A's export before it was initialized
+            // A saw B's completed export
+            Assert.Equal("B", window.Get("seenBInA").AsString());
+        }
+
+        [Fact]
+        public void LoadModule_Namespace_Set_Throws_TypeError()
+        {
+            // ECMA-262 §10.4.6.8: [[Set]] on module namespace always throws
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var exports = Assert.IsAssignableFrom<FenObject>(
+                loader.LoadModuleSrc("export const x = 1;", "memory://set-throw.mjs"));
+
+            Assert.Throws<FenTypeError>(() => exports.Set("x", FenValue.FromNumber(2)));
+            Assert.Throws<FenTypeError>(() => exports.Set("newProp", FenValue.FromNumber(3)));
+        }
+
+        [Fact]
+        public void LoadModule_Namespace_Export_Bindings_Are_Accessor_Based()
+        {
+            // Live bindings are implemented as accessor properties (getters), not data properties
+            var loader = new ModuleLoader(new FenEnvironment(), new FenExecutionContext());
+            var exports = Assert.IsAssignableFrom<FenObject>(
+                loader.LoadModuleSrc("export const x = 42;", "memory://accessor.mjs"));
+
+            var desc = exports.GetOwnPropertyDescriptor("x");
+            Assert.True(desc.HasValue);
+            Assert.True(desc.Value.IsAccessor, "Export should be an accessor property (live binding)");
+            Assert.NotNull(desc.Value.Getter);
+            Assert.Null(desc.Value.Setter); // Read-only: no setter
+        }
+
+        [Fact]
+        public void LoadModule_Same_Module_Returns_Cached_Namespace()
+        {
+            // ECMA-262 §16.2.1.5.2: Per-realm module cache — same specifier returns same object
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["https://example.test/dep.js"] = "export const x = 1;",
+                ["https://example.test/a.js"] = "import * as dep from './dep.js'; globalThis.nsA = dep;",
+                ["https://example.test/b.js"] = "import * as dep from './dep.js'; globalThis.nsB = dep;"
+            };
+
+            var runtime = new FenRuntime();
+            var loader = new ModuleLoader(
+                runtime.GlobalEnv,
+                runtime.Context,
+                uri => sources[uri.AbsoluteUri]);
+
+            runtime.SetModuleLoader(loader);
+            loader.LoadModule("https://example.test/a.js");
+            loader.LoadModule("https://example.test/b.js");
+
+            var window = ((FenValue)runtime.GetGlobal("window")).AsObject();
+            var nsA = window.Get("nsA").AsObject();
+            var nsB = window.Get("nsB").AsObject();
+            Assert.Same(nsA, nsB);
         }
     }
 }
