@@ -5265,3 +5265,26 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Google homepage chrome still relies on small `position: relative` nudges inside the search-box action cluster and header controls.
   - The active formatting-context pipeline was losing those nudges during the final parent placement pass, because parent positioning replaced the child’s visual offset.
   - Final subtree-aware placement restores authored relative offsets without changing normal-flow space reservation, which is the required browser behavior for these control shells.
+
+## 2.166 Test262 Promise/Agent Conformance Hardening (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/Types/JsPromise.cs`
+  - Promise instances now bind to the active realm's actual `Promise.prototype` during construction instead of relying on eager intrinsic lookup during runtime activation.
+  - This keeps `Promise.resolve(...)`, `Promise.reject(...)`, and chained `then`/`catch` results aligned with `instanceof Promise` and `Object.getPrototypeOf(...) === Promise.prototype` expectations.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Atomics waiters now live in shared engine scope instead of one `FenRuntime` instance at a time.
+  - Each waiter records its owning runtime so cross-runtime `Atomics.notify(...)` can wake synchronous waits and resolve `waitAsync` promises in the correct realm.
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Expanded `$262.agent` host coverage with `timeouts`, `tryYield`, `trySleep`, `waitUntil`, `safeBroadcast`, `safeBroadcastAsync`, and `getReportAsync`.
+  - The Test262 agent host now supports worker startup, shared-buffer broadcast coordination, async report retrieval, and monotonic timing without forcing tests to depend on ad hoc out-of-band shims.
+- `FenBrowser.Tests/Engine/PromiseConformanceTests.cs`
+  - Added `Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains`.
+- `FenBrowser.Tests/Engine/Test262RunnerTests.cs`
+  - Added `RunSingleTestAsync_AgentBroadcast_WakesSynchronousAtomicsWaiter`.
+  - Added `RunSingleTestAsync_AtomicsHelper_LoadsWithoutStackOverflow`.
+- Verification:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Test262RunnerTests"`: pass (`9/9`).
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains"`: pass.
+- Remaining gap:
+  - Official external Test262 agent coverage is still not clean. `FenBrowser.Test262 run_single built-ins/Atomics/notify/notify-one.js` currently reproduces `VM Error: Call stack exceeded maximum depth`.
+  - That leaves the Promise-branding and host-plumbing tranche in place, but the full Atomics helper/runtime parity work is still open.
