@@ -5288,3 +5288,90 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Remaining gap:
   - Official external Test262 agent coverage is still not clean. `FenBrowser.Test262 run_single built-ins/Atomics/notify/notify-one.js` currently reproduces `VM Error: Call stack exceeded maximum depth`.
   - That leaves the Promise-branding and host-plumbing tranche in place, but the full Atomics helper/runtime parity work is still open.
+
+## 2.167 Official Atomics Helper Parity Completion (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Added `HasOwnNameBinding` so inferred function names affect the observable `.name` property without automatically creating an inner lexical self-binding.
+  - Direct bytecode invocation now injects the function-name binding only for declarations and explicit named function expressions.
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Split inferred-name propagation from true name-binding creation.
+  - Bytecode function compilers now allocate name locals only when the source actually declares a local function name; anonymous functions with inferred names no longer shadow outer lexical bindings.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - `Call*` and `Construct*` paths now seed `func.Name` into the callee environment only when `HasOwnNameBinding` is true.
+  - This removes the self-recursive wrapper failure that broke official `atomicsHelper.js` polling helpers.
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Agent report delivery now ignores shutdown-race releases after controller disposal instead of surfacing `SemaphoreSlim` disposal faults during worker teardown.
+- `FenBrowser.Tests/Engine/Test262RunnerTests.cs`
+  - Added `RunSingleTestAsync_InferredFunctionName_DoesNotShadowOuterLexicalBinding`.
+  - Added `RunSingleTestAsync_AtomicsHelper_GetReportWrapper_DoesNotSelfRecurse`.
+  - Existing agent/helper tests continue to cover worker wakeup and helper loading.
+- Why this was needed:
+  - Official `atomicsHelper.js` wraps `$262.agent.getReport` using `let getReport = ...; $262.agent.getReport = function() { ... getReport() ... }`.
+  - Fen previously treated inferred names as real inner bindings in both the compiler and VM call setup, so that wrapper resolved `getReport` to itself and overflowed the VM stack.
+  - Correct inferred-name handling is required for general ECMAScript conformance, not just Test262 helpers.
+- Verification:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~Test262RunnerTests"`: pass (`12/12`).
+  - `dotnet build FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug`: pass.
+  - `dotnet run --no-build --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug -- run_single local/step10.js --root C:\Users\udayk\AppData\Local\Temp\fen-atomics-repro-2b6cb43a0f254595802162f121a4ae8f --timeout 10000`: pass.
+  - `dotnet run --no-build --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug -- run_single local/one-worker.js --root C:\Users\udayk\AppData\Local\Temp\fen-atomics-repro-2b6cb43a0f254595802162f121a4ae8f --timeout 10000`: pass.
+  - `dotnet run --no-build --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Debug -- run_single built-ins/Atomics/notify/notify-one.js --root C:\Users\udayk\Videos\engine\tests\test262 --timeout 10000`: pass.
+
+## 2.168 Test262 Release-Build Unblock For Full-Suite Execution (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - The `arguments` object initialization path reads `Array.prototype.values` through `FenObject.DefaultArrayPrototype?.Get("values")`.
+  - That null-conditional access produces `FenValue?`, so the old code was incorrectly calling `IsFunction` and assigning it as though it were already a non-nullable `FenValue`.
+  - The VM now gates that path with `HasValue` and assigns `.Value` only after the nullable check passes, which preserves `arguments[@@iterator]` / `Symbol.iterator` wiring without breaking nullable correctness.
+- Why this mattered:
+  - The bug was small but blocking: `FenBrowser.Test262` could not be built in Release, which prevented a clean full-suite conformance run from starting.
+- Verification:
+  - `dotnet build FenBrowser.Test262\FenBrowser.Test262.csproj -c Release --no-restore /m:1`: pass.
+  - A full sequential Test262 run was then launched from the repaired Release build with chunking, isolated child-process execution, and an external 10 GB working-set cap.
+
+## 2.169 Test262 Isolated Microchunk Workers (2026-03-28)
+
+- `FenBrowser.Test262/Program.cs`
+  - `run_chunk --isolate-process` no longer spawns one child process per test.
+  - The runner now partitions a logical chunk into a bounded set of isolated microchunks, launches one child process per microchunk via the new internal `run_manifest` command, and aggregates the returned per-test results back in original test order.
+  - Isolated workers pull the next microchunk from a shared queue, so fast workers continue to absorb remaining work instead of idling behind one slow static slice.
+  - The scheduler only oversplits chunks when the per-worker batch size is large enough to justify the extra process startups; smaller chunks stay on the faster low-overhead path.
+  - Worker fan-out is bounded both by `--workers` and by a conservative per-worker memory budget derived from `Test262Config.EstimatedIsolatedWorkerMemoryMB`, so the CLI can stay under a caller-imposed RAM ceiling without serializing the whole chunk.
+  - If a microchunk worker crashes, times out, or returns malformed output, the parent falls back to per-test isolated execution for only that affected batch instead of abandoning the whole chunk.
+- `FenBrowser.Test262/Test262Config.cs`
+  - Added `EstimatedIsolatedWorkerMemoryMB` to keep isolated worker fan-out inside a defensible memory envelope.
+- `FenBrowser.Test262/README.md`
+  - Updated usage guidance to document the new built-in isolated microchunk mode and the `--workers` flag.
+- Why this mattered:
+  - The old isolated mode was safe but too expensive for real conformance work because every single Test262 file paid full `dotnet` and CLR startup cost.
+  - Microchunk workers preserve crash containment while removing most of that startup tax, which makes RAM-capped chunk verification practical.
+
+## 2.170 Test262 Persistent Isolated Worker Pool (2026-03-28)
+
+- `FenBrowser.Test262/PersistentIsolatedWorker.cs`
+  - Added a persistent worker host that accepts JSON-line requests over stdin/stdout and executes explicit test batches inside a long-lived child process.
+  - Added a parent-side worker client that starts the persistent child, streams batches to it, skips protocol-noise lines safely, captures stderr tails for diagnostics, and falls back cleanly if the worker dies or returns malformed output.
+- `FenBrowser.Test262/Program.cs`
+  - `run_chunk --isolate-process` now uses a bounded pool of persistent workers for the duration of a chunk instead of launching a new child per microchunk.
+  - The parent recycles a worker when it serves too many batches or crosses the worker memory threshold, so long-lived crash-safe execution does not quietly turn into unbounded retention.
+  - The older manifest-based isolated process path remains in place as a batch-level fallback, not as the steady-state hot path.
+- `FenBrowser.Test262/Test262Config.cs`
+  - Added `WorkerRecycleBatchCount` to make proactive worker recycling explicit and configurable.
+- Why this mattered:
+  - The microchunk worker tranche removed the worst per-test startup cost, but dynamic oversplitting still paid a full process launch per microchunk.
+  - Persistent workers keep the crash boundary while removing that remaining startup tax, which is the correct production-grade direction for repeated chunk execution under a RAM cap.
+- Verification:
+  - `dotnet build FenBrowser.Test262\FenBrowser.Test262.csproj -c Release --no-restore /m:1`: pass.
+  - `dotnet run --no-build --project FenBrowser.Test262\FenBrowser.Test262.csproj -c Release -- run_chunk 1 --root C:\Users\udayk\Videos\engine\tests\test262 --chunk-size 2000 --timeout 10000 --max-memory-mb 8192 --workers 20 --isolate-process --format json --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_chunk1_persistent_2000_20260328\chunk_01.json`: pass in `129830ms`, exercising persistent worker reuse across a chunk large enough to require more microchunks than workers.
+### 2.171 Top-Level Statement Block Lexical Scope Repair
+
+- Location: [BytecodeCompiler.cs](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs)
+- Problem: Statement blocks at the top level of script/eval/function compilation units were only getting `PushScope` when `_scopeDepth > 0`. That caused lexical declarations and Annex B block functions inside top-level blocks to execute without a real block lexical environment.
+- Resolution:
+  - Introduced compile-root tracking so the compiler can distinguish the root body from nested statement blocks.
+  - Non-root blocks now create lexical scope whenever they contain lexical declarations (`let`, `const`, `class`, block-scoped `function`).
+  - The compile root still avoids an extra wrapper scope, preserving function-body/global-body semantics.
+  - The parser now recognizes general `eval(...)` identifier calls as [DirectEvalExpression](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.FenEngine/Core/Ast.cs), so ordinary direct eval flows through the bytecode VM's direct-eval machinery instead of the indirect global-eval builtin.
+  - Non-strict direct eval now uses a lexical eval environment in [VirtualMachine.cs](C:/Users/udayk/Videos/fenbrowser-test/FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs), which sends `var`-style declaration writes to the caller's variable environment while keeping lexical eval bindings isolated.
+- Effect:
+  - Direct-eval/function-scope Annex B tests now observe the required undefined preinitialization, mutable outer binding behavior, and early-error skip behavior.
