@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Reflection;
+using System.Threading;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
@@ -782,6 +783,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private const int MAX_FRAMES = 1024;
         private readonly CallFrame[] _callFrames = new CallFrame[MAX_FRAMES];
         private int _frameCount = 0;
+
+        // Cooperative cancellation: checked every CANCEL_CHECK_INTERVAL instructions in RunLoop
+        private CancellationToken _cancellationToken;
+        private const int CANCEL_CHECK_INTERVAL = 4096;
+        private int _instructionsSinceCancelCheck;
+
+        // Resource limits — instruction count and memory cap (checked in the amortized interval, zero per-instruction overhead)
+        private long _totalInstructionCount;
+        private Security.IResourceLimits _limits;
 
         public VirtualMachine()
         {
@@ -1577,6 +1587,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return Execute(initialBlock, initialEnv, FenValue.Undefined);
         }
 
+        public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, CancellationToken cancellationToken)
+        {
+            _cancellationToken = cancellationToken;
+            _instructionsSinceCancelCheck = 0;
+            return Execute(initialBlock, initialEnv, FenValue.Undefined);
+        }
+
+        public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, CancellationToken cancellationToken, Security.IResourceLimits limits)
+        {
+            _cancellationToken = cancellationToken;
+            _instructionsSinceCancelCheck = 0;
+            _totalInstructionCount = 0;
+            _limits = limits;
+            FenObject.ResetAllocatedBytes();
+            return Execute(initialBlock, initialEnv, FenValue.Undefined);
+        }
+
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, FenValue initialNewTarget)
         {
             _sp = 0;
@@ -1649,9 +1676,30 @@ run_loop_restart:
                     
                     while (frame.IP < instructions.Length)
                     {
+                        // Cooperative cancellation + resource limit check (amortized: once per CANCEL_CHECK_INTERVAL instructions)
+                        if (++_instructionsSinceCancelCheck >= CANCEL_CHECK_INTERVAL)
+                        {
+                            _instructionsSinceCancelCheck = 0;
+                            if (_cancellationToken.IsCancellationRequested)
+                                throw new OperationCanceledException(_cancellationToken);
+
+                            if (_limits != null)
+                            {
+                                _totalInstructionCount += CANCEL_CHECK_INTERVAL;
+                                if (_totalInstructionCount > _limits.MaxInstructionCount)
+                                    throw new Errors.FenResourceError(
+                                        $"Script exceeded maximum instruction count ({_limits.MaxInstructionCount:N0}). Possible infinite loop.");
+
+                                long allocatedBytes = FenObject.GetAllocatedBytes();
+                                if (allocatedBytes > _limits.MaxTotalMemory)
+                                    throw new Errors.FenResourceError(
+                                        $"Script exceeded memory limit ({_limits.MaxTotalMemory / (1024 * 1024)}MB). Allocated: {allocatedBytes / (1024 * 1024)}MB.");
+                            }
+                        }
+
                         OpCode op = (OpCode)instructions[frame.IP++];
                         int instructionOffset = frame.IP - 1;
-                        
+
                         switch (op)
                         {
                             case OpCode.LoadConst:

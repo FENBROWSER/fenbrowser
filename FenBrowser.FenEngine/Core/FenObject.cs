@@ -53,6 +53,15 @@ namespace FenBrowser.FenEngine.Core
         [ThreadStatic]
         private static int _hasDepth;
         private const int MAX_HAS_DEPTH = 256;
+        // Guard prototype chain traversal from circular or excessively deep chains (prevents stack overflow)
+        [ThreadStatic]
+        private static int _protoChainDepth;
+        private const int MAX_PROTO_CHAIN_DEPTH = 256;
+
+        // Approximate allocation tracking for resource limits (per-thread, reset per script execution)
+        [ThreadStatic]
+        private static long _threadAllocatedBytes;
+        private const int ESTIMATED_OBJECT_BYTES = 80; // Approximate per-object overhead (header + properties array + shape ref)
 
         private static bool TryUnwrapJsThrownValue(Exception ex, out FenValue thrownValue)
         {
@@ -96,6 +105,7 @@ namespace FenBrowser.FenEngine.Core
 
         public FenObject()
         {
+            _threadAllocatedBytes += ESTIMATED_OBJECT_BYTES;
             OwningRuntime = FenRuntime.GetActiveRuntime();
             // Inherit from Object.prototype by default.
             // Guard: don't self-reference (objectPrototype itself is created before DefaultPrototype is set).
@@ -103,6 +113,12 @@ namespace FenBrowser.FenEngine.Core
             if (defaultPrototype != null && !ReferenceEquals(defaultPrototype, this))
                 _prototype = defaultPrototype;
         }
+
+        /// <summary>Returns approximate bytes allocated by FenObject instances on this thread.</summary>
+        public static long GetAllocatedBytes() => _threadAllocatedBytes;
+
+        /// <summary>Resets the per-thread allocation counter (call at script execution start).</summary>
+        public static void ResetAllocatedBytes() => _threadAllocatedBytes = 0;
 
         /// <summary>
         /// Factory method for creating array objects with the correct Array.prototype and [[Class]].
@@ -202,9 +218,23 @@ namespace FenBrowser.FenEngine.Core
                 return namedWindowValue;
             }
 
-            // Prototype chain lookup
+            // Prototype chain lookup (with depth guard against circular/deep chains)
             if (_prototype != null)
-                return _prototype.GetWithReceiver(key, receiver, context);
+            {
+                if (++_protoChainDepth > MAX_PROTO_CHAIN_DEPTH)
+                {
+                    _protoChainDepth--;
+                    return FenValue.Undefined;
+                }
+                try
+                {
+                    return _prototype.GetWithReceiver(key, receiver, context);
+                }
+                finally
+                {
+                    _protoChainDepth--;
+                }
+            }
 
             return FenValue.Undefined;
         }
@@ -286,12 +316,36 @@ namespace FenBrowser.FenEngine.Core
 
             if (_prototype is FenObject fenProto)
             {
-                return fenProto.GetWithReceiver(key, receiver, context);
+                if (++_protoChainDepth > MAX_PROTO_CHAIN_DEPTH)
+                {
+                    _protoChainDepth--;
+                    return FenValue.Undefined;
+                }
+                try
+                {
+                    return fenProto.GetWithReceiver(key, receiver, context);
+                }
+                finally
+                {
+                    _protoChainDepth--;
+                }
             }
 
             if (_prototype != null && !string.IsNullOrEmpty(legacyKey))
             {
-                return _prototype.GetWithReceiver(legacyKey, receiver, context);
+                if (++_protoChainDepth > MAX_PROTO_CHAIN_DEPTH)
+                {
+                    _protoChainDepth--;
+                    return FenValue.Undefined;
+                }
+                try
+                {
+                    return _prototype.GetWithReceiver(legacyKey, receiver, context);
+                }
+                finally
+                {
+                    _protoChainDepth--;
+                }
             }
 
             return FenValue.Undefined;

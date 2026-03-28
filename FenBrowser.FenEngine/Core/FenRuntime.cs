@@ -54,6 +54,8 @@ namespace FenBrowser.FenEngine.Core
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
+        private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWaiter>();
+        private static readonly object s_atomicsWaitersLock = new object();
 
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
@@ -64,6 +66,28 @@ namespace FenBrowser.FenEngine.Core
             public Uri Url { get; set; }
             public FenValue State { get; set; }
             public string Title { get; set; }
+        }
+
+        private sealed class AtomicWaiter
+        {
+            public byte[] Buffer { get; set; }
+            public int ByteOffset { get; set; }
+            public FenRuntime Runtime { get; set; }
+            public FenFunction Resolve { get; set; }
+            public CancellationTokenSource TimeoutSource { get; set; }
+            public ManualResetEventSlim Completion { get; set; }
+            public FenValue Outcome { get; set; }
+            public bool Settled { get; set; }
+        }
+
+        private sealed class AtomicViewInfo
+        {
+            public JsTypedArray TypedArray { get; set; }
+            public JsArrayBuffer Buffer { get; set; }
+            public byte[] BufferData { get; set; }
+            public int Index { get; set; }
+            public int ByteOffset { get; set; }
+            public bool IsBigInt { get; set; }
         }
 
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
@@ -8897,6 +8921,61 @@ namespace FenBrowser.FenEngine.Core
                         return viewCloneValue;
                     }
 
+                    // Map objects (HTML §2.7.4 step 14): clone internal [[MapData]] entries
+                    if (src is FenBrowser.FenEngine.Core.Types.JsMap srcMap)
+                    {
+                        var cloneMap = new FenBrowser.FenEngine.Core.Types.JsMap(_context);
+                        var cloneMapVal = FenValue.FromObject(cloneMap);
+                        visited[src] = cloneMapVal;
+                        foreach (var kvp in srcMap.InternalStorage)
+                        {
+                            var ck = DeepClone(kvp.Key is FenValue fk ? fk : FenValue.FromObject((FenObject)kvp.Key));
+                            var cv = DeepClone(kvp.Value is FenValue fv ? fv : FenValue.FromObject((FenObject)kvp.Value));
+                            var setFn = cloneMap.Get("set");
+                            if (setFn.IsFunction)
+                                setFn.AsFunction().NativeImplementation?.Invoke(new FenValue[] { ck, cv }, cloneMapVal);
+                        }
+                        return cloneMapVal;
+                    }
+
+                    // Set objects (HTML §2.7.4 step 15): clone internal [[SetData]] entries
+                    if (src is FenBrowser.FenEngine.Core.Types.JsSet srcSet)
+                    {
+                        var cloneSet = new FenBrowser.FenEngine.Core.Types.JsSet(_context);
+                        var cloneSetVal = FenValue.FromObject(cloneSet);
+                        visited[src] = cloneSetVal;
+                        foreach (var entry in srcSet.InternalStorage)
+                        {
+                            var ce = DeepClone(entry);
+                            var addFn = cloneSet.Get("add");
+                            if (addFn.IsFunction)
+                                addFn.AsFunction().NativeImplementation?.Invoke(new FenValue[] { ce }, cloneSetVal);
+                        }
+                        return cloneSetVal;
+                    }
+
+                    // Error objects (HTML §2.7.4 step 21): clone name, message, stack
+                    if (src.InternalClass == "Error")
+                    {
+                        var errClone = new FenObject();
+                        errClone.InternalClass = "Error";
+                        errClone.SetPrototype(src.GetPrototype());
+                        var errCloneVal = FenValue.FromObject(errClone);
+                        visited[src] = errCloneVal;
+                        foreach (var prop in new[] { "name", "message", "stack" })
+                        {
+                            var val = src.Get(prop);
+                            if (val.Type != Interfaces.ValueType.Undefined)
+                                errClone.Set(prop, DeepClone(val));
+                        }
+                        foreach (var key in src.Keys())
+                        {
+                            if (key != "name" && key != "message" && key != "stack")
+                                errClone.Set(key, DeepClone(src.Get(key)));
+                        }
+                        return errCloneVal;
+                    }
+
                     bool isArray = src.InternalClass == "Array";
                     var clone = isArray ? FenObject.CreateArray() : new FenObject();
                     clone.InternalClass = src.InternalClass;
@@ -10966,206 +11045,85 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("RegExp", FenValue.FromFunction(regexpCtorEs6));
 
-            // ES6 Intl API - Internationalization (basic stubs)
-            var intl = new FenObject();
-
-            // Intl.DateTimeFormat
-            intl.Set("DateTimeFormat", FenValue.FromFunction(new FenFunction("DateTimeFormat",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    var locale = args.Length > 0 ? args[0].ToString() : "en-US";
-                    var formatter = new FenObject();
-                    formatter.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
-                    {
-                        if (fArgs.Length == 0) return FenValue.FromString("");
-                        double timestamp = fArgs[0].ToNumber();
-                        var dt = DateTimeOffset.FromUnixTimeMilliseconds((long)timestamp).DateTime;
-                        return FenValue.FromString(dt.ToString("G",
-                            System.Globalization.CultureInfo.GetCultureInfo(locale)));
-                    })));
-                    formatter.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions", (a, t) =>
-                    {
-                        var opts = new FenObject();
-                        opts.Set("locale", FenValue.FromString(locale));
-                        opts.Set("calendar", FenValue.FromString("gregory"));
-                        opts.Set("timeZone", FenValue.FromString("UTC"));
-                        return FenValue.FromObject(opts);
-                    })));
-                    return FenValue.FromObject(formatter);
-                })));
-
-            // Intl.NumberFormat
-            intl.Set("NumberFormat", FenValue.FromFunction(new FenFunction("NumberFormat",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    var locale = args.Length > 0 ? args[0].ToString() : "en-US";
-                    var formatter = new FenObject();
-                    formatter.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
-                    {
-                        if (fArgs.Length == 0) return FenValue.FromString("");
-                        double num = fArgs[0].ToNumber();
-                        return FenValue.FromString(num.ToString("N",
-                            System.Globalization.CultureInfo.GetCultureInfo(locale)));
-                    })));
-                    formatter.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions", (a, t) =>
-                    {
-                        var opts = new FenObject();
-                        opts.Set("locale", FenValue.FromString(locale));
-                        opts.Set("style", FenValue.FromString("decimal"));
-                        return FenValue.FromObject(opts);
-                    })));
-                    return FenValue.FromObject(formatter);
-                })));
-
-            // Intl.Collator
-            intl.Set("Collator", FenValue.FromFunction(new FenFunction("Collator",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    var locale = args.Length > 0 ? args[0].ToString() : "en-US";
-                    var collator = new FenObject();
-                    collator.Set("compare", FenValue.FromFunction(new FenFunction("compare", (cArgs, cThis) =>
-                    {
-                        if (cArgs.Length < 2) return FenValue.FromNumber(0);
-                        string a = cArgs[0].ToString(), b = cArgs[1].ToString();
-                        return FenValue.FromNumber(string.Compare(a, b, StringComparison.CurrentCulture));
-                    })));
-                    return FenValue.FromObject(collator);
-                })));
-
-            SetGlobal("Intl", FenValue.FromObject(intl));
-
-            // ES6 ArrayBuffer - Generic, fixed-length raw binary data buffer
-            SetGlobal("ArrayBuffer", FenValue.FromFunction(new FenFunction("ArrayBuffer",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    int length = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-                    var buffer = new FenObject();
-                    byte[] data = new byte[length];
-                    buffer.NativeObject = data;
-                    buffer.Set("byteLength", FenValue.FromNumber(length));
-
-                    buffer.Set("slice", FenValue.FromFunction(new FenFunction("slice", (sliceArgs, sliceThis) =>
-                    {
-                        int start = sliceArgs.Length > 0 ? (int)sliceArgs[0].ToNumber() : 0;
-                        int end = sliceArgs.Length > 1 ? (int)sliceArgs[1].ToNumber() : length;
-                        if (start < 0) start = Math.Max(length + start, 0);
-                        if (end < 0) end = Math.Max(length + end, 0);
-                        int newLen = Math.Max(end - start, 0);
-
-                        var newBuffer = new FenObject();
-                        byte[] newData = new byte[newLen];
-                        Array.Copy(data, start, newData, 0, Math.Min(newLen, length - start));
-                        newBuffer.NativeObject = newData;
-                        newBuffer.Set("byteLength", FenValue.FromNumber(newLen));
-                        return FenValue.FromObject(newBuffer);
-                    })));
-
-                    return FenValue.FromObject(buffer);
-                })));
-
-            // ES6 TypedArrays (Uint8Array, Int32Array, etc.)
-            string[] typedArrayNames =
+            // Intl API: Full JsIntl implementation is registered earlier via JsIntl.CreateIntlObject.
+            // Ensure fallback stubs for core constructors if JsIntl failed to fully initialize.
             {
-                "Uint8Array", "Int8Array", "Uint16Array", "Int16Array", "Uint32Array", "Int32Array", "Float32Array",
-                "Float64Array", "Uint8ClampedArray"
-            };
-            int[] typedArrayElementSizes = { 1, 1, 2, 2, 4, 4, 4, 8, 1 };
-
-            for (int i = 0; i < typedArrayNames.Length; i++)
-            {
-                string name = typedArrayNames[i];
-                int elementSize = typedArrayElementSizes[i];
-
-                SetGlobal(name, FenValue.FromFunction(new FenFunction(name, (FenValue[] args, FenValue thisVal) =>
+                var existingIntl = GetGlobal("Intl");
+                FenObject intlFallback;
+                if (existingIntl.IsUndefined || existingIntl.IsNull || !existingIntl.IsObject)
                 {
-                    FenObject bufferObj = null;
-                    int byteOffset = 0;
-                    int length = 0;
-                    byte[] data = null;
+                    intlFallback = new FenObject();
+                    SetGlobal("Intl", FenValue.FromObject(intlFallback));
+                }
+                else
+                {
+                    intlFallback = existingIntl.AsObject() as FenObject;
+                }
 
-                    var firstArgObj = args[0].AsObject();
-                    var byteLenVal = firstArgObj?.Get("byteLength") ?? FenValue.Undefined;
-                    if (args.Length > 0 && args[0].IsObject && !byteLenVal.IsUndefined && byteLenVal.IsNumber)
+                if (intlFallback != null)
+                {
+                    // Patch missing constructors with minimal fallback stubs
+                    if (intlFallback.Get("Collator").IsUndefined)
                     {
-                        // Constructor(buffer [, byteOffset [, length]])
-                        bufferObj = firstArgObj as FenObject;
-                        data = bufferObj?.NativeObject as byte[];
-                        byteOffset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-                        var blVal = bufferObj?.Get("byteLength") ?? FenValue.Undefined;
-                        int bufferByteLen = (int)blVal.AsNumber();
-                        length = args.Length > 2 ? (int)args[2].ToNumber() : (bufferByteLen - byteOffset) / elementSize;
-                    }
-                    else if (args.Length > 0 && args[0].IsNumber)
-                    {
-                        // Constructor(length)
-                        length = (int)args[0].ToNumber();
-                        data = new byte[length * elementSize];
-                        bufferObj = new FenObject();
-                        bufferObj.NativeObject = data;
-                        bufferObj.Set("byteLength", FenValue.FromNumber(data.Length));
-                    }
-                    else if (args.Length > 0 && args[0].IsObject)
-                    {
-                        // Constructor(typedArray) or Constructor(iterable)
-                        var source = args[0].AsObject();
-                        var lenVal = source?.Get("length");
-                        length = lenVal.HasValue ? (int)lenVal.Value.ToNumber() : 0;
-                        data = new byte[length * elementSize];
-                        // Basic copy logic
-                        for (int j = 0; j < length; j++)
-                        {
-                            var element = source.Get(j.ToString());
-                            double val = element.IsUndefined ? 0 : element.ToNumber();
-                            // Simplified: only handled as double for now
-                        }
-
-                        bufferObj = new FenObject();
-                        bufferObj.NativeObject = data;
-                        bufferObj.Set("byteLength", FenValue.FromNumber(data.Length));
+                        intlFallback.Set("Collator", FenValue.FromFunction(new FenFunction("Collator",
+                            (FenValue[] args, FenValue thisVal) =>
+                            {
+                                var locale = args.Length > 0 ? args[0].ToString() : "en-US";
+                                var col = new FenObject();
+                                col.Set("compare", FenValue.FromFunction(new FenFunction("compare", (cArgs, cThis) =>
+                                {
+                                    if (cArgs.Length < 2) return FenValue.FromNumber(0);
+                                    string a = cArgs[0].ToString(), b = cArgs[1].ToString();
+                                    return FenValue.FromNumber(string.Compare(a, b, StringComparison.CurrentCulture));
+                                })));
+                                col.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions", (a, t) =>
+                                {
+                                    var opts = new FenObject();
+                                    opts.Set("locale", FenValue.FromString(locale));
+                                    return FenValue.FromObject(opts);
+                                })));
+                                return FenValue.FromObject(col);
+                            })));
                     }
 
-                    var typedArray = new FenObject();
-                    typedArray.Set("buffer", FenValue.FromObject(bufferObj));
-                    typedArray.Set("byteOffset", FenValue.FromNumber(byteOffset));
-                    typedArray.Set("byteLength", FenValue.FromNumber(length * elementSize));
-                    typedArray.Set("length", FenValue.FromNumber(length));
-                    typedArray.Set("BYTES_PER_ELEMENT", FenValue.FromNumber(elementSize));
-
-                    typedArray.Set("get", FenValue.FromFunction(new FenFunction("get", (gArgs, gThis) =>
+                    if (intlFallback.Get("PluralRules").IsUndefined)
                     {
-                        int idx = gArgs.Length > 0 ? (int)gArgs[0].ToNumber() : 0;
-                        if (idx < 0 || idx >= length) return FenValue.Undefined;
-                        return FenValue.FromNumber(0); // Placeholder result
-                    })));
+                        intlFallback.Set("PluralRules", FenValue.FromFunction(new FenFunction("PluralRules",
+                            (FenValue[] args, FenValue thisVal) =>
+                            {
+                                var pr = new FenObject();
+                                pr.Set("select", FenValue.FromFunction(new FenFunction("select", (sArgs, sThis) =>
+                                {
+                                    double n = sArgs.Length > 0 ? sArgs[0].ToNumber() : 0;
+                                    return FenValue.FromString(n == 1 ? "one" : "other");
+                                })));
+                                return FenValue.FromObject(pr);
+                            })));
+                    }
 
-                    return FenValue.FromObject(typedArray);
-                })));
+                    if (intlFallback.Get("getCanonicalLocales").IsUndefined)
+                    {
+                        intlFallback.Set("getCanonicalLocales", FenValue.FromFunction(new FenFunction("getCanonicalLocales",
+                            (FenValue[] args, FenValue thisVal) =>
+                            {
+                                var result = new FenObject();
+                                if (args.Length > 0 && !args[0].IsUndefined)
+                                {
+                                    result.Set("0", args[0]);
+                                    result.Set("length", FenValue.FromNumber(1));
+                                }
+                                else
+                                {
+                                    result.Set("length", FenValue.FromNumber(0));
+                                }
+                                return FenValue.FromObject(result);
+                            })));
+                    }
+                }
             }
 
-            // ES6 DataView - Low-level interface for reading/writing multiple number types in a binary ArrayBuffer
-            SetGlobal("DataView", FenValue.FromFunction(new FenFunction("DataView",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    if (args.Length == 0 || (!args[0].IsObject && !args[0].IsFunction)) return FenValue.Null;
-                    var bufferObj = args[0].AsObject() as FenObject;
-                    int byteOffset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-                    int byteLength = args.Length > 2
-                        ? (int)args[2].ToNumber()
-                        : (int)(bufferObj != null ? bufferObj.Get("byteLength").ToNumber() : 0) - byteOffset;
-
-                    var view = new FenObject();
-                    view.Set("buffer", FenValue.FromObject(bufferObj));
-                    view.Set("byteOffset", FenValue.FromNumber(byteOffset));
-                    view.Set("byteLength", FenValue.FromNumber(byteLength));
-
-                    // Simplified getters/setters
-                    view.Set("getUint8",
-                        FenValue.FromFunction(new FenFunction("getUint8", (vArgs, vThis) => FenValue.FromNumber(0))));
-                    view.Set("setUint8",
-                        FenValue.FromFunction(new FenFunction("setUint8", (vArgs, vThis) => FenValue.Undefined)));
-
-                    return FenValue.FromObject(view);
-                })));
+            // ArrayBuffer, TypedArray, and DataView are registered with full JsArrayBuffer/JsTypedArray
+            // implementations in the typed-arrays section below (§14265+). No placeholder needed here.
 
             // Promise - Updated Full Spec Implementation (Phase 1)
             var promiseCtor = new FenFunction("Promise", (FenValue[] args, FenValue thisVal) =>
@@ -11980,6 +11938,12 @@ namespace FenBrowser.FenEngine.Core
                 if (args.Length == 0) return FenValue.Undefined;
                 try
                 {
+                    // ECMA-262 §25.5.2: JSON.stringify(undefined) returns undefined (not the string)
+                    // Also applies to functions and symbols at the top level
+                    var input = args[0];
+                    if (input.IsUndefined || input.IsFunction || input.IsSymbol)
+                        return FenValue.Undefined;
+
                     // Support replacer function (second argument) and space (third argument)
                     FenFunction replacer = null;
                     string[] replacerArray = null;
@@ -12016,8 +11980,11 @@ namespace FenBrowser.FenEngine.Core
                             spaces = Math.Min(10, args[2].ToString().Length);
                     }
 
-                    return FenValue.FromString(ConvertToJsonStringWithReplacer(args[0], replacer, replacerArray, spaces,
-                        ""));
+                    var result = ConvertToJsonStringWithReplacer(input, replacer, replacerArray, spaces,
+                        "");
+                    // ECMA-262 §25.5.2 step 10: if result is undefined, return undefined
+                    if (result == null) return FenValue.Undefined;
+                    return FenValue.FromString(result);
                 }
                 catch (Exception ex)
                 {
@@ -12739,21 +12706,7 @@ namespace FenBrowser.FenEngine.Core
                         })));
             }
 
-            // --- TYPED ARRAYS ---
-            SetGlobal("ArrayBuffer", FenValue.FromFunction(new FenFunction("ArrayBuffer", (args, thisVal) =>
-                FenValue.FromObject(new JsArrayBuffer(args.Length > 0 ? (int)args[0].ToNumber() : 0)))));
-
-            SetGlobal("DataView", FenValue.FromFunction(new FenFunction("DataView", (args, thisVal) =>
-            {
-                if (args.Length == 0 || (!args[0].IsObject && !args[0].IsFunction)) return FenValue.Undefined;
-                var buf = args[0].AsObject() as JsArrayBuffer;
-                if (buf == null) return FenValue.Undefined; // TypeError
-                int offset = args.Length > 1 ? (int)args[1].ToNumber() : 0;
-                int len = args.Length > 2 ? (int)args[2].ToNumber() : -1;
-                return FenValue.FromObject(new JsDataView(buf, offset, len));
-            })));
-
-            // Typed array early registrations replaced by full registrations below (§13846+)
+            // ArrayBuffer, DataView, and TypedArrays: full registrations are below (§14265+).
 
             // --- XHR ---
             SetGlobal("XMLHttpRequest", FenValue.FromFunction(new FenFunction("XMLHttpRequest", (args, thisVal) =>
@@ -12765,43 +12718,38 @@ namespace FenBrowser.FenEngine.Core
 
             var cryptoObj = new FenObject();
 
-            // crypto.getRandomValues(typedArray)
+            // crypto.getRandomValues(typedArray) — ECMA-262 Web Crypto §10.1
             cryptoObj.Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", (args, thisVal) =>
             {
-                if (args.Length < 1) return FenValue.Undefined; // TypeError
+                if (args.Length < 1) throw new FenTypeError("TypeError: getRandomValues requires a typed array argument");
                 var typedArray = args[0];
-                // For now, assume it's an object that might wrap a byte array or we mock it
-                // Minimal implementation: if it has "length", fill with random bytes
-                // Ideally this interacts with proper TypedArrays if implemented
+                if (!typedArray.IsObject) throw new FenTypeError("TypeError: Argument must be a typed array");
 
-                // Since TypedArrays are complex, we'll implement a best-effort fill
-                // Check if it's an object with numeric keys and length
-                if (typedArray.IsObject)
+                var obj = typedArray.AsObject();
+
+                // Proper JsTypedArray path — fills underlying ArrayBuffer directly
+                if (obj is JsTypedArray ta)
                 {
-                    var obj = typedArray.AsObject() as FenObject;
-                    if (obj != null)
-                    {
-                        var lenVal = obj.Get("length");
-                        if (lenVal != null && lenVal.IsNumber)
-                        {
-                            int len = (int)lenVal.ToNumber();
-                            if (len > 65536) throw new FenResourceError("QuotaExceededError"); // Validation
+                    int byteLen = ta.Length * ta.BytesPerElement;
+                    if (byteLen > 65536) throw new FenResourceError("QuotaExceededError: Max 65536 bytes");
+                    byte[] randomBytes = new byte[byteLen];
+                    using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+                        rng.GetBytes(randomBytes);
+                    Array.Copy(randomBytes, 0, ta.Buffer.Data, ta.ByteOffset, byteLen);
+                    return typedArray;
+                }
 
-                            byte[] randomBytes = new byte[len];
-                            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
-                            {
-                                rng.GetBytes(randomBytes);
-                            }
-
-                            // Write back to object
-                            for (int i = 0; i < len; i++)
-                            {
-                                obj.Set(i.ToString(), FenValue.FromNumber(randomBytes[i]));
-                            }
-
-                            return typedArray;
-                        }
-                    }
+                // Fallback for plain objects with length property
+                var lenVal = obj?.Get("length");
+                if (lenVal.HasValue && lenVal.Value.IsNumber)
+                {
+                    int len = (int)lenVal.Value.ToNumber();
+                    if (len > 65536) throw new FenResourceError("QuotaExceededError: Max 65536 bytes");
+                    byte[] randomBytes = new byte[len];
+                    using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+                        rng.GetBytes(randomBytes);
+                    for (int i = 0; i < len; i++)
+                        ((FenObject)obj).Set(i.ToString(), FenValue.FromNumber(randomBytes[i]));
                 }
 
                 return typedArray;
@@ -12849,17 +12797,30 @@ namespace FenBrowser.FenEngine.Core
                     if (dataArg.IsString) data = System.Text.Encoding.UTF8.GetBytes(dataArg.ToString());
                     else if (dataArg.IsObject)
                     {
-                        // Try to read array-like
                         var obj = dataArg.AsObject();
-                        var lenVal = obj.Get("length");
-                        if (lenVal != null && lenVal.IsNumber)
+                        // Proper JsTypedArray/JsArrayBuffer extraction
+                        if (obj is JsTypedArrayView tav)
                         {
-                            int len = (int)lenVal.ToNumber();
-                            data = new byte[len];
-                            for (int i = 0; i < len; i++)
+                            data = new byte[tav.ByteLength];
+                            Array.Copy(tav.Buffer.Data, tav.ByteOffset, data, 0, tav.ByteLength);
+                        }
+                        else if (obj is JsArrayBuffer abuf)
+                        {
+                            data = (byte[])abuf.Data.Clone();
+                        }
+                        else
+                        {
+                            // Fallback: read array-like
+                            var lenVal = obj.Get("length");
+                            if (lenVal != null && lenVal.IsNumber)
                             {
-                                var b = obj.Get(i.ToString());
-                                data[i] = (byte)(b != null && b.IsNumber ? b.ToNumber() : 0);
+                                int len = (int)lenVal.ToNumber();
+                                data = new byte[len];
+                                for (int i = 0; i < len; i++)
+                                {
+                                    var b = obj.Get(i.ToString());
+                                    data[i] = (byte)(b != null && b.IsNumber ? b.ToNumber() : 0);
+                                }
                             }
                         }
                     }
@@ -12879,14 +12840,10 @@ namespace FenBrowser.FenEngine.Core
                         hash = hasher.ComputeHash(data);
                     }
 
-                    // Convert hash to ArrayBuffer/Uint8Array simulation (object with numeric keys)
-                    // In a real engine this would be a native ArrayBuffer
-                    var buffer = CreateArray(new FenValue[0]); // Actually needs to be ArrayBuffer-like
-                    // Let's just return a standard Array of numbers for now as ArrayBuffer emulation
-                    var byteVals = new IValue[hash.Length];
-                    for (int i = 0; i < hash.Length; i++) byteVals[i] = FenValue.FromNumber(hash[i]);
-
-                    resolve(FenValue.FromObject(CreateArray(byteVals)));
+                    // ECMA-262 §25.1: crypto.subtle.digest returns an ArrayBuffer
+                    var resultBuffer = new JsArrayBuffer(hash.Length);
+                    Array.Copy(hash, resultBuffer.Data, hash.Length);
+                    resolve(FenValue.FromObject(resultBuffer));
                 });
             })));
 
@@ -12894,76 +12851,9 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("crypto", FenValue.FromObject(cryptoObj));
 
-            // INTL API
-            var intlObj = new FenObject();
-
-            // Intl.NumberFormat(locales, options)
-            intlObj.Set("NumberFormat", FenValue.FromFunction(new FenFunction("NumberFormat", (args, thisVal) =>
-            {
-                // Returns a NumberFormat object with .format()
-                string locale = "en-US";
-                if (args.Length > 0 && args[0].IsString) locale = args[0].ToString();
-
-                var formatObj = new FenObject();
-                formatObj.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
-                {
-                    if (fArgs.Length < 1 || !fArgs[0].IsNumber) return FenValue.FromString("NaN");
-                    double val = fArgs[0].ToNumber();
-                    try
-                    {
-                        var culture = System.Globalization.CultureInfo.GetCultureInfo(locale);
-                        return FenValue.FromString(val.ToString("N", culture));
-                    }
-                    catch
-                    {
-                        return FenValue.FromString(val.ToString("N")); // Fallback
-                    }
-                })));
-
-                // resolvedOptions()
-                formatObj.Set("resolvedOptions", FenValue.FromFunction(new FenFunction("resolvedOptions",
-                    (fArgs, fThis) =>
-                    {
-                        var opt = new FenObject();
-                        opt.Set("locale", FenValue.FromString(locale));
-                        return FenValue.FromObject(opt);
-                    })));
-
-                return FenValue.FromObject(formatObj);
-            })));
-
-            // Intl.DateTimeFormat(locales, options)
-            intlObj.Set("DateTimeFormat", FenValue.FromFunction(new FenFunction("DateTimeFormat", (args, thisVal) =>
-            {
-                string locale = "en-US";
-                if (args.Length > 0 && args[0].IsString) locale = args[0].ToString();
-
-                var formatObj = new FenObject();
-                formatObj.Set("format", FenValue.FromFunction(new FenFunction("format", (fArgs, fThis) =>
-                {
-                    DateTime date = DateTime.Now;
-                    if (fArgs.Length > 0)
-                    {
-                        // Basic date parsing assumption: number (ticks/ms) or Date object
-                        // If generic IValue had ToDate() that would be great, otherwise assume number
-                        if (fArgs[0].IsNumber)
-                            date = DateTimeOffset.FromUnixTimeMilliseconds((long)fArgs[0].ToNumber()).UtcDateTime;
-                    }
-
-                    try
-                    {
-                        var culture = System.Globalization.CultureInfo.GetCultureInfo(locale);
-                        return FenValue.FromString(date.ToString("d", culture));
-                    }
-                    catch
-                    {
-                        return FenValue.FromString(date.ToString("d"));
-                    }
-                })));
-                return FenValue.FromObject(formatObj);
-            })));
-
-            SetGlobal("Intl", FenValue.FromObject(intlObj));
+            // Intl API — full JsIntl implementation is registered at lines 4397 and 11919 via
+            // JsIntl.CreateIntlObject(_context) which provides all 10 ECMA-402 constructors.
+            // Do NOT re-register a partial Intl object here — it would overwrite the full implementation.
 
             // fetch() - Web API for making HTTP requests
             // Returns a FetchPromise object with .then()/.catch() support
@@ -13013,8 +12903,14 @@ namespace FenBrowser.FenEngine.Core
             // WebSocket is registered at the full implementation site above (line ~5174).
             // Removed duplicate stub registration that was overwriting the full implementation.
 
-            // IndexedDB - Client-side database API
-            SetGlobal("indexedDB", FenValue.FromObject(CreateIndexedDB()));
+            // IndexedDB - Client-side database API (IDB §2.1)
+            // Wire the full IndexedDBService implementation with persistent storage backend
+            IndexedDBService.SetStorageBackend(_storageBackend);
+            IndexedDBService.Register(_context, GetCurrentOrigin(), _storageBackend);
+            // IDBKeyRange — key range factory for IndexedDB queries
+            var idbKeyRangeObj = new FenObject();
+            IndexedDBService.RegisterIDBKeyRange(idbKeyRangeObj);
+            SetGlobal("IDBKeyRange", idbKeyRangeObj.Get("IDBKeyRange"));
 
             // Promise - Full Promise implementation with static methods
             SetGlobal("Promise", FenValue.FromFunction(CreatePromiseConstructorModern()));
@@ -13096,16 +12992,7 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("SharedArrayBuffer", FenValue.FromFunction(new FenFunction("SharedArrayBuffer", (args, thisVal) =>
             {
                 int length = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-                var sab = new FenObject();
-                sab.NativeObject = new byte[length]; // In .NET, arrays are ref types, "shared" by default if ref passed
-                sab.Set("byteLength", FenValue.FromNumber(length));
-                sab.Set("slice", FenValue.FromFunction(new FenFunction("slice", (sArgs, sThis) =>
-                {
-                    // Slice implementation similar to ArrayBuffer
-                    return FenValue.Null; // Stub for brevity
-                })));
-                sab.Set(FenBrowser.FenEngine.Core.Types.JsSymbol.ToStringTag.ToPropertyKey(),
-                    FenValue.FromString("SharedArrayBuffer"));
+                var sab = new JsArrayBuffer(length, isShared: true);
                 return FenValue.FromObject(sab);
             })));
 
@@ -13113,242 +13000,487 @@ namespace FenBrowser.FenEngine.Core
             atomics.Set(FenBrowser.FenEngine.Core.Types.JsSymbol.ToStringTag.ToPropertyKey(),
                 FenValue.FromString("Atomics"));
 
-            // Helper for Atomics Validation
-            Func<FenValue[], int, (byte[] buffer, int index, bool isInt32)> ValidateAtomic = (vArgs, minArgs) =>
+            AtomicViewInfo ValidateAtomicView(FenValue[] vArgs, int minArgs, bool waitable)
             {
-                if (vArgs.Length < minArgs) throw new FenTypeError("TypeError: Missing args");
-                if (!vArgs[0].IsObject) throw new FenTypeError("TypeError: Arg 0 must be TypedArray");
-                var ta = vArgs[0].AsObject() as FenObject;
-                if (ta == null || !(ta.NativeObject is byte[]))
-                    throw new FenTypeError("TypeError: Arg 0 must be TypedArray");
+                if (vArgs.Length < minArgs)
+                    throw new FenTypeError("TypeError: Missing args");
+                if (!vArgs[0].IsObject || vArgs[0].AsObject() is not JsTypedArray typedArray)
+                    throw new FenTypeError("TypeError: Atomics operation requires a typed array");
 
-                var idx = (int)vArgs[1].ToNumber();
-                var buffer = ta.NativeObject as byte[];
-                // Verify bounds
-                // Assuming Int32Array for now mainly
-                bool isInt32 = true; // Simplified assumption for stub
-                if (idx < 0 || idx >= buffer.Length / 4) throw new FenRangeError("RangeError: Out of bounds");
+                bool supported = typedArray is JsInt32Array || typedArray is JsBigInt64Array;
+                if (!supported)
+                    throw new FenTypeError("TypeError: Atomics operation requires a shared Int32Array or BigInt64Array");
 
-                return (buffer, idx, isInt32);
-            };
+                var buffer = typedArray.Buffer;
+                if (buffer == null || !buffer.IsShared)
+                    throw new FenTypeError("TypeError: Atomics operation requires a shared typed array");
 
-            atomics.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
+                double indexNumber = vArgs.Length > 1 && !vArgs[1].IsUndefined ? vArgs[1].ToNumber() : 0;
+                if (double.IsNaN(indexNumber))
+                {
+                    indexNumber = 0;
+                }
+
+                double integerIndex = indexNumber < 0 ? Math.Ceiling(indexNumber) : Math.Floor(indexNumber);
+                if (double.IsInfinity(integerIndex) || integerIndex < 0 || integerIndex >= typedArray.Length)
+                    throw new FenRangeError("RangeError: Out of bounds");
+
+                return new AtomicViewInfo
+                {
+                    TypedArray = typedArray,
+                    Buffer = buffer,
+                    BufferData = buffer.Data,
+                    Index = (int)integerIndex,
+                    ByteOffset = typedArray.ByteOffset + ((int)integerIndex * typedArray.BytesPerElement),
+                    IsBigInt = typedArray is JsBigInt64Array
+                };
+            }
+
+            FenValue CoerceAtomicOperand(AtomicViewInfo view, FenValue value)
             {
+                if (view.IsBigInt)
+                {
+                    if (!value.IsBigInt)
+                        throw new FenTypeError("TypeError: Cannot mix BigInt and other types, use explicit conversions");
+                    return value;
+                }
+
+                return FenValue.FromNumber((int)value.ToNumber());
+            }
+
+            FenValue ReadAtomicValue(AtomicViewInfo view)
+            {
+                if (view.TypedArray is JsBigInt64Array bigInt64Array)
+                    return bigInt64Array.GetBigIntIndex(view.Index);
+
+                if (view.TypedArray is JsInt32Array int32Array)
+                    return FenValue.FromNumber((int)int32Array.GetIndex(view.Index));
+
+                throw new FenTypeError("TypeError: Unsupported typed array for Atomics");
+            }
+
+            void WriteAtomicValue(AtomicViewInfo view, FenValue value)
+            {
+                if (view.TypedArray is JsBigInt64Array bigInt64Array)
+                {
+                    bigInt64Array.SetBigIntIndex(view.Index, value);
+                    return;
+                }
+
+                if (view.TypedArray is JsInt32Array int32Array)
+                {
+                    int32Array.SetIndex(view.Index, value.ToNumber());
+                    return;
+                }
+
+                throw new FenTypeError("TypeError: Unsupported typed array for Atomics");
+            }
+
+            bool AtomicValuesEqual(FenValue left, FenValue right)
+            {
+                if (left.IsBigInt || right.IsBigInt)
+                {
+                    return left.IsBigInt &&
+                           right.IsBigInt &&
+                           left.AsBigInt().Value == right.AsBigInt().Value;
+                }
+
+                return left.ToNumber().Equals(right.ToNumber());
+            }
+
+            double NormalizeWaitTimeout(FenValue[] vArgs)
+            {
+                FenValue timeoutValue = vArgs.Length > 3 ? vArgs[3] : FenValue.Undefined;
+                double q = timeoutValue.IsUndefined ? double.NaN : timeoutValue.ToNumber();
+                if (double.IsNaN(q))
+                {
+                    return double.PositiveInfinity;
+                }
+
+                return Math.Max(q, 0);
+            }
+
+            FenObject CreateWaitResult(bool isAsync, FenValue value)
+            {
+                var result = new FenObject();
+                result.Set("async", FenValue.FromBoolean(isAsync));
+                result.Set("value", value);
+                return result;
+            }
+
+            (JsPromise Promise, FenFunction Resolve) CreatePendingPromise()
+            {
+                FenFunction resolve = null;
+                var promise = new JsPromise(
+                    FenValue.FromFunction(new FenFunction("executor", (promiseArgs, promiseThis) =>
+                    {
+                        resolve = promiseArgs.Length > 0 ? promiseArgs[0].AsFunction() : null;
+                        return FenValue.Undefined;
+                    })),
+                    _context);
+
+                var promiseCtor = GetGlobal("Promise");
+                if (promiseCtor.IsFunction && promiseCtor.AsFunction().Prototype is FenObject promisePrototype)
+                {
+                    promise.SetPrototype(promisePrototype);
+                }
+
+                return (promise, resolve);
+            }
+
+            void SettleAtomicWaiter(AtomicWaiter waiter, FenValue outcome)
+            {
+                bool shouldResolve = false;
+                CancellationTokenSource timeoutSource = null;
+                ManualResetEventSlim completion = null;
+                lock (s_atomicsWaitersLock)
+                {
+                    if (waiter.Settled)
+                        return;
+
+                    waiter.Settled = true;
+                    waiter.Outcome = outcome;
+                    s_atomicsWaiters.Remove(waiter);
+                    timeoutSource = waiter.TimeoutSource;
+                    completion = waiter.Completion;
+                    shouldResolve = true;
+                }
+
                 try
                 {
-                    var (buf, idx, isInt32) = ValidateAtomic(args, 3);
-                    int val = (int)args[2].ToNumber();
-                    // Basic thread safety wrapper (simulated)
-                    lock (buf)
-                    {
-                        int offset = idx * 4;
-                        int current = BitConverter.ToInt32(buf, offset);
-                        int result = current + val;
-                        var bytes = BitConverter.GetBytes(result);
-                        Array.Copy(bytes, 0, buf, offset, 4);
-                        return FenValue.FromNumber(current); // Returns OLD value
-                    }
+                    timeoutSource?.Cancel();
                 }
                 catch
                 {
-                    return FenValue.FromNumber(0);
+                }
+
+                completion?.Set();
+
+                if (shouldResolve && waiter.Resolve != null)
+                {
+                    var ownerRuntime = waiter.Runtime;
+                    if (ownerRuntime != null)
+                    {
+                        ownerRuntime.RunWithRealmActivation(() =>
+                        {
+                            waiter.Resolve.Invoke(new[] { outcome }, ownerRuntime.Context);
+                            EventLoop.EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                        });
+                    }
+                    else
+                    {
+                        waiter.Resolve.Invoke(new[] { outcome }, _context);
+                    }
+                }
+            }
+
+            atomics.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
+            {
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
+                {
+                    if (view.IsBigInt)
+                    {
+                        long current = (long)ReadAtomicValue(view).AsBigInt().Value;
+                        long next = current + (long)operand.AsBigInt().Value;
+                        WriteAtomicValue(view, FenValue.FromBigInt(new JsBigInt(next)));
+                        return FenValue.FromBigInt(new JsBigInt(current));
+                    }
+
+                    int currentNumber = (int)ReadAtomicValue(view).ToNumber();
+                    int nextNumber = currentNumber + (int)operand.ToNumber();
+                    WriteAtomicValue(view, FenValue.FromNumber(nextNumber));
+                    return FenValue.FromNumber(currentNumber);
                 }
             })));
 
             atomics.Set("sub", FenValue.FromFunction(new FenFunction("sub", (args, thisVal) =>
             {
-                try
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, isInt32) = ValidateAtomic(args, 3);
-                    int val = (int)args[2].ToNumber();
-                    lock (buf)
+                    if (view.IsBigInt)
                     {
-                        int offset = idx * 4;
-                        int current = BitConverter.ToInt32(buf, offset);
-                        int result = current - val;
-                        var bytes = BitConverter.GetBytes(result);
-                        Array.Copy(bytes, 0, buf, offset, 4);
-                        return FenValue.FromNumber(current);
+                        long current = (long)ReadAtomicValue(view).AsBigInt().Value;
+                        long next = current - (long)operand.AsBigInt().Value;
+                        WriteAtomicValue(view, FenValue.FromBigInt(new JsBigInt(next)));
+                        return FenValue.FromBigInt(new JsBigInt(current));
                     }
-                }
-                catch
-                {
-                    return FenValue.FromNumber(0);
+
+                    int currentNumber = (int)ReadAtomicValue(view).ToNumber();
+                    int nextNumber = currentNumber - (int)operand.ToNumber();
+                    WriteAtomicValue(view, FenValue.FromNumber(nextNumber));
+                    return FenValue.FromNumber(currentNumber);
                 }
             })));
 
             atomics.Set("and", FenValue.FromFunction(new FenFunction("and", (args, thisVal) =>
             {
-                var (buf, idx, _) = ValidateAtomic(args, 3);
-                int val = (int)args[2].ToNumber();
-                lock (buf)
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    int offset = idx * 4;
-                    int current = BitConverter.ToInt32(buf, offset);
-                    int result = current & val;
-                    var bytes = BitConverter.GetBytes(result);
-                    Array.Copy(bytes, 0, buf, offset, 4);
-                    return FenValue.FromNumber(current);
+                    if (view.IsBigInt)
+                    {
+                        long current = (long)ReadAtomicValue(view).AsBigInt().Value;
+                        long next = current & (long)operand.AsBigInt().Value;
+                        WriteAtomicValue(view, FenValue.FromBigInt(new JsBigInt(next)));
+                        return FenValue.FromBigInt(new JsBigInt(current));
+                    }
+
+                    int currentNumber = (int)ReadAtomicValue(view).ToNumber();
+                    int nextNumber = currentNumber & (int)operand.ToNumber();
+                    WriteAtomicValue(view, FenValue.FromNumber(nextNumber));
+                    return FenValue.FromNumber(currentNumber);
                 }
             })));
 
             atomics.Set("or", FenValue.FromFunction(new FenFunction("or", (args, thisVal) =>
             {
-                var (buf, idx, _) = ValidateAtomic(args, 3);
-                int val = (int)args[2].ToNumber();
-                lock (buf)
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    int offset = idx * 4;
-                    int current = BitConverter.ToInt32(buf, offset);
-                    int result = current | val;
-                    var bytes = BitConverter.GetBytes(result);
-                    Array.Copy(bytes, 0, buf, offset, 4);
-                    return FenValue.FromNumber(current);
+                    if (view.IsBigInt)
+                    {
+                        long current = (long)ReadAtomicValue(view).AsBigInt().Value;
+                        long next = current | (long)operand.AsBigInt().Value;
+                        WriteAtomicValue(view, FenValue.FromBigInt(new JsBigInt(next)));
+                        return FenValue.FromBigInt(new JsBigInt(current));
+                    }
+
+                    int currentNumber = (int)ReadAtomicValue(view).ToNumber();
+                    int nextNumber = currentNumber | (int)operand.ToNumber();
+                    WriteAtomicValue(view, FenValue.FromNumber(nextNumber));
+                    return FenValue.FromNumber(currentNumber);
                 }
             })));
 
             atomics.Set("xor", FenValue.FromFunction(new FenFunction("xor", (args, thisVal) =>
             {
-                var (buf, idx, _) = ValidateAtomic(args, 3);
-                int val = (int)args[2].ToNumber();
-                lock (buf)
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    int offset = idx * 4;
-                    int current = BitConverter.ToInt32(buf, offset);
-                    int result = current ^ val;
-                    var bytes = BitConverter.GetBytes(result);
-                    Array.Copy(bytes, 0, buf, offset, 4);
-                    return FenValue.FromNumber(current);
+                    if (view.IsBigInt)
+                    {
+                        long current = (long)ReadAtomicValue(view).AsBigInt().Value;
+                        long next = current ^ (long)operand.AsBigInt().Value;
+                        WriteAtomicValue(view, FenValue.FromBigInt(new JsBigInt(next)));
+                        return FenValue.FromBigInt(new JsBigInt(current));
+                    }
+
+                    int currentNumber = (int)ReadAtomicValue(view).ToNumber();
+                    int nextNumber = currentNumber ^ (int)operand.ToNumber();
+                    WriteAtomicValue(view, FenValue.FromNumber(nextNumber));
+                    return FenValue.FromNumber(currentNumber);
                 }
             })));
 
             atomics.Set("load", FenValue.FromFunction(new FenFunction("load", (args, thisVal) =>
             {
-                try
+                var view = ValidateAtomicView(args, 2, waitable: false);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, isInt32) = ValidateAtomic(args, 2);
-                    lock (buf)
-                    {
-                        int offset = idx * 4;
-                        return FenValue.FromNumber(BitConverter.ToInt32(buf, offset));
-                    }
-                }
-                catch
-                {
-                    return FenValue.FromNumber(0);
+                    return ReadAtomicValue(view);
                 }
             })));
 
             atomics.Set("store", FenValue.FromFunction(new FenFunction("store", (args, thisVal) =>
             {
-                try
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var operand = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, isInt32) = ValidateAtomic(args, 3);
-                    int val = (int)args[2].ToNumber();
-                    lock (buf)
-                    {
-                        int offset = idx * 4;
-                        var bytes = BitConverter.GetBytes(val);
-                        Array.Copy(bytes, 0, buf, offset, 4);
-                        return FenValue.FromNumber(val);
-                    }
-                }
-                catch
-                {
-                    return FenValue.FromNumber(0);
+                    WriteAtomicValue(view, operand);
+                    return operand;
                 }
             })));
 
             // Atomics.wait(typedArray, index, value[, timeout]) Ã¢â‚¬â€ blocks until notified or timeout
             atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal) =>
             {
-                // In a single-threaded runtime, we cannot actually block
-                // Return "not-equal" immediately (spec-compliant for non-equal value check)
-                // Real implementation would block thread until Atomics.notify() is called
-                try
+                var view = ValidateAtomicView(args, 3, waitable: true);
+                var expected = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, _) = ValidateAtomic(args, 3);
-                    int expected = (int)args[2].ToNumber();
-                    int offset = idx * 4;
-                    int current = BitConverter.ToInt32(buf, offset);
-
-                    // If current value doesn't match expected, return "not-equal"
-                    if (current != expected)
+                    var current = ReadAtomicValue(view);
+                    if (!AtomicValuesEqual(current, expected))
+                    {
                         return FenValue.FromString("not-equal");
+                    }
+                }
 
-                    // In multi-threaded environment, this would block
-                    // Single-threaded: return "timed-out" (timeout of 0ms)
+                double timeout = NormalizeWaitTimeout(args);
+                if (timeout <= 0)
+                {
                     return FenValue.FromString("timed-out");
                 }
-                catch
+
+                using var completion = new ManualResetEventSlim(false);
+                var waiter = new AtomicWaiter
                 {
-                    return FenValue.FromString("not-equal");
+                    Buffer = view.BufferData,
+                    ByteOffset = view.ByteOffset,
+                    Runtime = this,
+                    Completion = completion
+                };
+
+                lock (s_atomicsWaitersLock)
+                {
+                    s_atomicsWaiters.Add(waiter);
                 }
+
+                bool signaled;
+                if (double.IsPositiveInfinity(timeout))
+                {
+                    completion.Wait();
+                    signaled = true;
+                }
+                else
+                {
+                    signaled = completion.Wait(TimeSpan.FromMilliseconds(timeout));
+                }
+
+                if (!signaled)
+                {
+                    SettleAtomicWaiter(waiter, FenValue.FromString("timed-out"));
+                }
+
+                return waiter.Outcome.IsUndefined ? FenValue.FromString("timed-out") : waiter.Outcome;
             })));
 
             // ES2024: Atomics.waitAsync(typedArray, index, value[, timeout]) Ã¢â‚¬â€ async version of wait
             atomics.Set("waitAsync", FenValue.FromFunction(new FenFunction("waitAsync", (args, thisVal) =>
             {
-                var (buf, idx, _) = ValidateAtomic(args, 3);
-                int expected = (int)args[2].ToNumber();
-                int offset = idx * 4;
-                int current = BitConverter.ToInt32(buf, offset);
-                var result = new FenObject();
-                result.Set("async", FenValue.FromBoolean(false));
-                result.Set("value", FenValue.FromString(current == expected ? "timed-out" : "not-equal"));
-                return FenValue.FromObject(result);
+                var view = ValidateAtomicView(args, 3, waitable: true);
+                var expected = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
+                {
+                    var current = ReadAtomicValue(view);
+                    if (!AtomicValuesEqual(current, expected))
+                    {
+                        return FenValue.FromObject(CreateWaitResult(false, FenValue.FromString("not-equal")));
+                    }
+                }
+
+                double timeout = NormalizeWaitTimeout(args);
+                if (timeout <= 0)
+                {
+                    return FenValue.FromObject(CreateWaitResult(false, FenValue.FromString("timed-out")));
+                }
+
+                var pending = CreatePendingPromise();
+                var waiter = new AtomicWaiter
+                {
+                    Buffer = view.BufferData,
+                    ByteOffset = view.ByteOffset,
+                    Runtime = this,
+                    Resolve = pending.Resolve
+                };
+
+                if (!double.IsPositiveInfinity(timeout))
+                {
+                    var timeoutSource = new CancellationTokenSource();
+                    waiter.TimeoutSource = timeoutSource;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(timeout), timeoutSource.Token).ConfigureAwait(false);
+                            SettleAtomicWaiter(waiter, FenValue.FromString("timed-out"));
+                        }
+                        catch (OperationCanceledException)
+                        {
+                        }
+                    });
+                }
+
+                lock (s_atomicsWaitersLock)
+                {
+                    s_atomicsWaiters.Add(waiter);
+                }
+
+                return FenValue.FromObject(CreateWaitResult(true, FenValue.FromObject(pending.Promise)));
             })));
 
             // Atomics.notify(typedArray, index[, count]) Ã¢â‚¬â€ wake waiting agents
             atomics.Set("notify", FenValue.FromFunction(new FenFunction("notify", (args, thisVal) =>
-                FenValue.FromNumber(0)))); // No agents waiting in single-threaded engine
+            {
+                var view = ValidateAtomicView(args, 2, waitable: true);
+                int count = int.MaxValue;
+                if (args.Length > 2 && !args[2].IsUndefined)
+                {
+                    double rawCount = args[2].ToNumber();
+                    if (double.IsNaN(rawCount))
+                    {
+                        count = 0;
+                    }
+                    else if (double.IsPositiveInfinity(rawCount))
+                    {
+                        count = int.MaxValue;
+                    }
+                    else
+                    {
+                        double integerCount = rawCount < 0 ? Math.Ceiling(rawCount) : Math.Floor(rawCount);
+                        count = integerCount <= 0 ? 0 : (int)Math.Min(int.MaxValue, integerCount);
+                    }
+                }
+
+                if (count == 0)
+                {
+                    return FenValue.FromNumber(0);
+                }
+
+                List<AtomicWaiter> waitersToWake;
+                lock (s_atomicsWaitersLock)
+                {
+                    waitersToWake = s_atomicsWaiters
+                        .Where(waiter => !waiter.Settled &&
+                                         ReferenceEquals(waiter.Buffer, view.BufferData) &&
+                                         waiter.ByteOffset == view.ByteOffset)
+                        .Take(count)
+                        .ToList();
+                }
+
+                foreach (var waiter in waitersToWake)
+                {
+                    SettleAtomicWaiter(waiter, FenValue.FromString("ok"));
+                }
+
+                return FenValue.FromNumber(waitersToWake.Count);
+            })));
 
             // Atomics.compareExchange(typedArray, index, expectedValue, replacementValue)
             atomics.Set("compareExchange", FenValue.FromFunction(new FenFunction("compareExchange", (args, thisVal) =>
             {
-                try
+                var view = ValidateAtomicView(args, 4, waitable: false);
+                var expected = CoerceAtomicOperand(view, args[2]);
+                var replacement = CoerceAtomicOperand(view, args[3]);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, _) = ValidateAtomic(args, 4);
-                    int expected = (int)args[2].ToNumber();
-                    int replacement = (int)args[3].ToNumber();
-                    lock (buf)
+                    var current = ReadAtomicValue(view);
+                    if (AtomicValuesEqual(current, expected))
                     {
-                        int offset = idx * 4;
-                        int current = BitConverter.ToInt32(buf, offset);
-                        if (current == expected)
-                        {
-                            var bytes = BitConverter.GetBytes(replacement);
-                            Array.Copy(bytes, 0, buf, offset, 4);
-                        }
-
-                        return FenValue.FromNumber(current);
+                        WriteAtomicValue(view, replacement);
                     }
-                }
-                catch
-                {
-                    return FenValue.FromNumber(0);
+
+                    return current;
                 }
             })));
 
             // Atomics.exchange(typedArray, index, value)
             atomics.Set("exchange", FenValue.FromFunction(new FenFunction("exchange", (args, thisVal) =>
             {
-                try
+                var view = ValidateAtomicView(args, 3, waitable: false);
+                var replacement = CoerceAtomicOperand(view, args[2]);
+                lock (view.BufferData)
                 {
-                    var (buf, idx, _) = ValidateAtomic(args, 3);
-                    int val = (int)args[2].ToNumber();
-                    lock (buf)
-                    {
-                        int offset = idx * 4;
-                        int current = BitConverter.ToInt32(buf, offset);
-                        var bytes = BitConverter.GetBytes(val);
-                        Array.Copy(bytes, 0, buf, offset, 4);
-                        return FenValue.FromNumber(current);
-                    }
-                }
-                catch
-                {
-                    return FenValue.FromNumber(0);
+                    var current = ReadAtomicValue(view);
+                    WriteAtomicValue(view, replacement);
+                    return current;
                 }
             })));
 
@@ -13592,25 +13724,10 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("WebAssembly", FenValue.FromObject(webAssembly));
 
-            // ============================================
-            // Temporal API stub - throws TypeError for all uses (not yet implemented)
-            // ECMA-262 proposal-temporal: https://tc39.es/proposal-temporal/
-            // ============================================
-            var temporalObj = new FenObject();
-            Action<string> RegisterTemporalStub = (name) => {
-                var stub = new FenFunction(name, (args, thisVal) => {
-                    throw new FenTypeError($"TypeError: Temporal.{name} is not implemented");
-                });
-                stub.IsConstructor = true;
-                temporalObj.Set(name, FenValue.FromFunction(stub));
-            };
-            foreach (var name in new[] { "PlainDate", "PlainTime", "PlainDateTime", "ZonedDateTime",
-                "Instant", "Duration", "PlainYearMonth", "PlainMonthDay", "Calendar", "TimeZone", "Now" })
-            {
-                RegisterTemporalStub(name);
-            }
-            SetGlobal("Temporal", FenValue.FromObject(temporalObj));
-            window.Set("Temporal", FenValue.FromObject(temporalObj));
+            // Temporal API: intentionally NOT exposed.
+            // ECMA-262 proposal-temporal is not implemented. Exposing throw-only stubs creates
+            // false compatibility signals for feature-detection code that checks `typeof Temporal !== 'undefined'`.
+            // The surface will be registered once a production-grade implementation is available.
 
             // ============================================
             // TIER-2: GeneratorFunction (Prototype)
@@ -13628,10 +13745,11 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("GeneratorFunction", generatorFunction);
 
 
-            // ============================================
-            // MAP - Full Implementation
-            // ============================================
-            SetGlobal("Map", FenValue.FromFunction(new FenFunction("Map", (args, thisVal) =>
+            // Map and Set — full JsMap/JsSet implementations are registered earlier via
+            // JsMap(_context) and JsSet(_context) constructors at initialization.
+            // Do NOT re-register plain-FenObject-based Map/Set here — they would overwrite
+            // the proper typed implementations and break structuredClone, instanceof, etc.
+            _ = FenValue.FromFunction(new FenFunction("Map", (args, thisVal) =>
             {
                 var map = new FenObject();
                 var storage = new Dictionary<string, (FenValue key, FenValue value)>();
@@ -13817,12 +13935,12 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 return FenValue.FromObject(map);
-            })));
+            }));
 
             // ============================================
-            // SET - Full Implementation
+            // SET - Dead code (JsSet registered earlier)
             // ============================================
-            SetGlobal("Set", FenValue.FromFunction(new FenFunction("Set", (args, thisVal) =>
+            _ = FenValue.FromFunction(new FenFunction("Set", (args, thisVal) =>
             {
                 var set = new FenObject();
                 var storage = new Dictionary<string, FenValue>();
@@ -14181,7 +14299,7 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 return FenValue.FromObject(set);
-            })));
+            }));
 
             // ============================================
             // WEAKMAP - Implementation (uses object hash codes)
@@ -14270,7 +14388,18 @@ namespace FenBrowser.FenEngine.Core
 
             // ArrayBuffer - Binary data container (ECMA-262 §25.1)
             var arrayBufferProto = new FenObject();
-            arrayBufferProto.Set("byteLength", FenValue.Undefined); // instance getter, placeholder
+            // ECMA-262 §25.1.4.1: get ArrayBuffer.prototype.byteLength — accessor property
+            arrayBufferProto.DefineOwnProperty("byteLength", new PropertyDescriptor
+            {
+                Getter = new FenFunction("get byteLength", (args, thisVal) =>
+                {
+                    if (thisVal.IsObject && thisVal.AsObject() is JsArrayBuffer ab)
+                        return FenValue.FromNumber(ab.Data.Length);
+                    return FenValue.FromNumber(0);
+                }),
+                Enumerable = false,
+                Configurable = true
+            });
             arrayBufferProto.Set("slice", FenValue.FromFunction(new FenFunction("slice", (args, thisVal) =>
             {
                 if (thisVal.IsObject && thisVal.AsObject() is JsArrayBuffer ab)
@@ -15021,9 +15150,9 @@ namespace FenBrowser.FenEngine.Core
             if (value.IsString) return JsonSerializer.Serialize(value.ToString());
             if (value.IsNumber) return value.ToString();
             if (value.IsBoolean) return value.ToBoolean().ToString().ToLower();
-            if (value == null) return "null";
-            if (value.IsUndefined)
-                return "undefined"; // JSON.stringify(undefined) is undefined, but for now string representation
+            if (value == null || value.IsNull) return "null";
+            // ECMA-262 §25.5.2: undefined/function/symbol → null (caller handles context)
+            if (value.IsUndefined || value.IsFunction || value.IsSymbol) return null;
 
             if (value.IsObject)
             {
@@ -16115,8 +16244,21 @@ namespace FenBrowser.FenEngine.Core
                     try
                     {
                         var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
-                        var bytecodeResult = vm.Execute(compiledBlock, _globalEnv);
+                        var limits = (_context as ExecutionContext)?.Limits;
+                        var bytecodeResult = limits != null
+                            ? vm.Execute(compiledBlock, _globalEnv, cancellationToken, limits)
+                            : cancellationToken.CanBeCanceled
+                                ? vm.Execute(compiledBlock, _globalEnv, cancellationToken)
+                                : vm.Execute(compiledBlock, _globalEnv);
                         return bytecodeResult;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw; // Let cancellation propagate cleanly to the test runner
+                    }
+                    catch (FenResourceError)
+                    {
+                        throw; // Let resource limit errors propagate (instruction count / memory cap exceeded)
                     }
                     catch (Exception vmEx)
                     {
@@ -16136,6 +16278,14 @@ namespace FenBrowser.FenEngine.Core
                         _context.StrictMode = previousStrictMode;
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // Let cancellation propagate cleanly to the test runner
+            }
+            catch (FenResourceError)
+            {
+                throw; // Let resource limit errors propagate (instruction count / memory cap exceeded)
             }
             catch (Exception ex)
             {
@@ -17029,287 +17179,8 @@ namespace FenBrowser.FenEngine.Core
         #region IndexedDB API Helpers
 
         /// <summary>
-        /// Creates the indexedDB global object (IDBFactory)
-        /// </summary>
-        private FenObject CreateIndexedDB()
-        {
-            var idb = new FenObject();
-            var origin = GetCurrentOrigin();
-
-            // open(name, version) - Opens a database, returns IDBOpenDBRequest
-            idb.Set("open", FenValue.FromFunction(new FenFunction("open", (args, thisVal) =>
-            {
-                var dbName = args.Length > 0 ? args[0].ToString() : "default";
-                var version = args.Length > 1 ? (int)args[1].ToNumber() : 1;
-
-                // Create request object
-                var request = new FenObject();
-                request.Set("readyState", FenValue.FromString("pending"));
-                request.Set("onsuccess", FenValue.Null);
-                request.Set("onerror", FenValue.Null);
-                request.Set("onupgradeneeded", FenValue.Null);
-
-                // Simulate async database opening
-                _ = RunDetachedAsync(async () =>
-                {
-                    await Task.Delay(10); // Small delay to mimic async
-
-                    var openResult = await _storageBackend.OpenDatabase(origin, dbName, version);
-                    bool isNew = openResult.UpgradeNeeded;
-
-                    var db = CreateIDBDatabase(dbName, version);
-                    request.Set("result", (FenValue)db);
-                    request.Set("readyState", FenValue.FromString("done"));
-
-                    // Fire onupgradeneeded for new databases
-                    if (isNew)
-                    {
-                        var onupgrade = request.Get("onupgradeneeded");
-                        if (onupgrade.IsFunction)
-                        {
-                            var cb = onupgrade.AsFunction();
-                            if (cb.IsNative && cb.NativeImplementation != null)
-                            {
-                                var evt = new FenObject();
-                                evt.Set("target", FenValue.FromObject(request));
-                                evt.Set("oldVersion", FenValue.FromNumber(openResult.OldVersion));
-                                evt.Set("newVersion", FenValue.FromNumber(openResult.NewVersion));
-                                cb.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) },
-                                    FenValue.Undefined);
-                            }
-                        }
-                    }
-
-                    // Fire onsuccess
-                    var onsuccess = request.Get("onsuccess");
-                    if (onsuccess.IsFunction)
-                    {
-                        var cb = onsuccess.AsFunction();
-                        if (cb.IsNative && cb.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            cb.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            // deleteDatabase(name) - Deletes a database
-            idb.Set("deleteDatabase", FenValue.FromFunction(new FenFunction("deleteDatabase", (args, thisVal) =>
-            {
-                var dbName = args.Length > 0 ? args[0].ToString() : "";
-                _ = _storageBackend.DeleteDatabase(origin, dbName);
-
-                var request = new FenObject();
-                request.Set("readyState", FenValue.FromString("done"));
-                return FenValue.FromObject(request);
-            })));
-
-            return idb;
-        }
-
-        /// <summary>
-        /// Creates an IDBDatabase object
-        /// </summary>
-        private IValue CreateIDBDatabase(string name, int version)
-        {
-            var db = new FenObject();
-            db.Set("name", FenValue.FromString(name));
-            db.Set("version", FenValue.FromNumber(version));
-
-            // createObjectStore(name, options) - Creates an object store
-            db.Set("createObjectStore", FenValue.FromFunction(new FenFunction("createObjectStore", (args, thisVal) =>
-            {
-                var storeName = args.Length > 0 ? args[0].ToString() : "default";
-                _ = _storageBackend.CreateObjectStore(GetCurrentOrigin(), name, storeName, new ObjectStoreOptions());
-                return (FenValue)CreateIDBObjectStore(name, storeName);
-            })));
-
-            // transaction(storeNames, mode) - Creates a transaction
-            db.Set("transaction", FenValue.FromFunction(new FenFunction("transaction", (args, thisVal) =>
-            {
-                var storeName = args.Length > 0 ? args[0].ToString() : "";
-                var mode = args.Length > 1 ? args[1].ToString() : "readonly";
-
-                var tx = new FenObject();
-                tx.Set("mode", FenValue.FromString(mode));
-
-                tx.Set("objectStore", FenValue.FromFunction(new FenFunction("objectStore", (storeArgs, storeThis) =>
-                {
-                    var sn = storeArgs.Length > 0 ? storeArgs[0].ToString() : storeName;
-                    return (FenValue)CreateIDBObjectStore(name, sn);
-                })));
-
-                return FenValue.FromObject(tx);
-            })));
-
-            // close() - Closes the database
-            db.Set("close",
-                FenValue.FromFunction(new FenFunction("close", (args, thisVal) => { return FenValue.Undefined; })));
-
-            return FenValue.FromObject(db);
-        }
-
-        /// <summary>
-        /// Creates an IDBObjectStore object with CRUD operations
-        /// </summary>
-        private FenValue CreateIDBObjectStore(string dbName, string storeName)
-        {
-            var store = new FenObject();
-            store.Set("name", FenValue.FromString(storeName));
-            var origin = GetCurrentOrigin();
-
-            // add(value, key) - Adds a value
-            store.Set("add", FenValue.FromFunction(new FenFunction("add", (args, thisVal) =>
-            {
-                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    await _storageBackend.Add(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
-                });
-
-                var request = new FenObject();
-                request.Set("result", FenValue.FromString(key));
-                request.Set("onsuccess", FenValue.Null);
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    await Task.Delay(1);
-                    var cb = request.Get("onsuccess");
-                    if (cb.IsFunction)
-                    {
-                        var fn = cb.AsFunction();
-                        if (fn.IsNative && fn.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            // get(key) - Gets a value
-            store.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
-            {
-                var key = args.Length > 0 ? args[0].ToString() : "";
-                var request = new FenObject();
-                request.Set("onsuccess", FenValue.Null);
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    var result = await _storageBackend.Get(origin, dbName, storeName, key);
-                    request.Set("result", StorageUtils.FromSerializable(result));
-
-                    await Task.Delay(1);
-                    var cb = request.Get("onsuccess");
-                    if (cb.IsFunction)
-                    {
-                        var fn = cb.AsFunction();
-                        if (fn.IsNative && fn.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            // put(value, key) - Updates or adds a value
-            store.Set("put", FenValue.FromFunction(new FenFunction("put", (args, thisVal) =>
-            {
-                var value = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var key = args.Length > 1 ? args[1].ToString() : Guid.NewGuid().ToString();
-
-                var request = new FenObject();
-                request.Set("result", FenValue.FromString(key));
-                request.Set("onsuccess", FenValue.Null);
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    await _storageBackend.Put(origin, dbName, storeName, key, StorageUtils.ToSerializable(value));
-
-                    var cb = request.Get("onsuccess");
-                    if (cb.IsFunction)
-                    {
-                        var fn = cb.AsFunction();
-                        if (fn.IsNative && fn.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            // delete(key) - Deletes a value
-            store.Set("delete", FenValue.FromFunction(new FenFunction("delete", (args, thisVal) =>
-            {
-                var key = args.Length > 0 ? args[0].ToString() : "";
-                var request = new FenObject();
-                request.Set("onsuccess", FenValue.Null);
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    await _storageBackend.Delete(origin, dbName, storeName, key);
-
-                    var cb = request.Get("onsuccess");
-                    if (cb.IsFunction)
-                    {
-                        var fn = cb.AsFunction();
-                        if (fn.IsNative && fn.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            // clear() - Clears all values
-            store.Set("clear", FenValue.FromFunction(new FenFunction("clear", (args, thisVal) =>
-            {
-                var request = new FenObject();
-                request.Set("onsuccess", FenValue.Null);
-
-                _ = RunDetachedAsync(async () =>
-                {
-                    await _storageBackend.Clear(origin, dbName, storeName);
-
-                    var cb = request.Get("onsuccess");
-                    if (cb.IsFunction)
-                    {
-                        var fn = cb.AsFunction();
-                        if (fn.IsNative && fn.NativeImplementation != null)
-                        {
-                            var evt = new FenObject();
-                            evt.Set("target", FenValue.FromObject(request));
-                            fn.NativeImplementation(new FenValue[] { FenValue.FromObject(evt) }, FenValue.Undefined);
-                        }
-                    }
-                });
-
-                return FenValue.FromObject(request);
-            })));
-
-            return FenValue.FromObject(store);
-        }
+        // Dead code removed: CreateIndexedDB(), CreateIDBDatabase(), CreateIDBObjectStore()
+        // IndexedDB is now fully handled by IndexedDBService (registered via IndexedDBService.Register).
 
         #endregion
 
@@ -17346,11 +17217,15 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromObject(promise);
             });
 
+            var promiseProto = new FenObject { InternalClass = "Promise" };
+            promiseCtor.Set("prototype", FenValue.FromObject(promiseProto));
+            promiseProto.Set("constructor", FenValue.FromFunction(promiseCtor));
+
             // Promise.prototype[@@toStringTag] = "Promise"
             var promiseProtoVal = promiseCtor.Get("prototype", null);
-            if (promiseProtoVal.IsObject && promiseProtoVal.AsObject() is FenObject promiseProto)
+            if (promiseProtoVal.IsObject && promiseProtoVal.AsObject() is FenObject promisePrototypeObject)
             {
-                promiseProto.SetBuiltin(JsSymbol.ToStringTag.ToPropertyKey(), FenValue.FromString("Promise"));
+                promisePrototypeObject.SetBuiltin(JsSymbol.ToStringTag.ToPropertyKey(), FenValue.FromString("Promise"));
             }
             promiseCtor.Set("resolve", FenValue.FromFunction(new FenFunction("resolve", (args, thisVal) =>
             {
@@ -18499,8 +18374,10 @@ namespace FenBrowser.FenEngine.Core
         private string ConvertToJsonStringWithReplacer(FenValue value, FenFunction replacer, string[] replacerArray,
             int spaces, string indent, HashSet<object> seen = null)
         {
-            if (value == null || value.IsUndefined) return "undefined";
-            if (value == null) return "null";
+            // ECMA-262 §25.5.2.5 SerializeJSONProperty: undefined, functions, and symbols → null return
+            // (caller converts null to "null" in arrays, or omits in objects)
+            if (value == null || value.IsUndefined || value.IsFunction || value.IsSymbol) return null;
+            if (value.IsNull) return "null";
 
             // Apply replacer function
             if (replacer != null)

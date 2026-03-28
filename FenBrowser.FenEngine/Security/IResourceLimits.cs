@@ -11,13 +11,19 @@ namespace FenBrowser.FenEngine.Security
         // Execution limits
         int MaxCallStackDepth { get; }
         TimeSpan MaxExecutionTime { get; }
-        
+
+        /// <summary>
+        /// Maximum number of bytecode instructions a single script execution may retire.
+        /// Checked every CANCEL_CHECK_INTERVAL (4096) instructions — zero per-instruction overhead.
+        /// </summary>
+        long MaxInstructionCount { get; }
+
         // Memory limits
         long MaxTotalMemory { get; }
         int MaxStringLength { get; }
         int MaxArrayLength { get; }
         int MaxObjectProperties { get; }
-        
+
         // Property access limits
         int MaxPropertyChainDepth { get; }
         
@@ -60,6 +66,7 @@ namespace FenBrowser.FenEngine.Security
     {
         public int MaxCallStackDepth => 100;
         public TimeSpan MaxExecutionTime => TimeSpan.FromSeconds(5);
+        public long MaxInstructionCount => 100_000_000; // 100M instructions
         public long MaxTotalMemory => 50 * 1024 * 1024; // 50MB
         public int MaxStringLength => 1_000_000; // 1MB strings
         public int MaxArrayLength => 100_000;
@@ -92,6 +99,7 @@ namespace FenBrowser.FenEngine.Security
     {
         public int MaxCallStackDepth => 50;
         public TimeSpan MaxExecutionTime => TimeSpan.FromSeconds(1);
+        public long MaxInstructionCount => 10_000_000; // 10M instructions
         public long MaxTotalMemory => 10 * 1024 * 1024; // 10MB
         public int MaxStringLength => 100_000;
         public int MaxArrayLength => 10_000;
