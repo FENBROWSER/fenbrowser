@@ -5456,3 +5456,29 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - The runtime no longer mixes browser semantics with permissive convenience fallbacks in core module resolution, global binding lookup, or parser entry points.
 - Verification:
   - `dotnet test FenBrowser.Tests --filter "ModuleLoaderTests|JavaScriptEngineCleanupTests|ProductionHardeningBatch2Tests" --no-restore`: pass (`47/47`).
+
+## 2.175 Promise/Fetch Canonicalization and Test262 Auto-Isolated Execution (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Removed the legacy in-file promise helpers (`CreateExecutorPromise(...)`, `CreatePromise(...)`, `CreateResolvedPromise(...)`, `CreateRejectedPromiseValue(...)`) instead of keeping them alive beside `JsPromise`.
+  - `Promise.withResolvers()` now captures a real capability record through `CreatePromiseCapability()`.
+  - `crypto.subtle.digest()` now resolves and rejects through `JsPromise` directly.
+  - Runtime `fetch` now registers through `FetchApi.Register(_context, request => SendNetworkRequestAsync(request))`, so the standalone runtime and browser host share the same canonical fetch path.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Removed the extra fetch registration after runtime bootstrap; the host now configures the network handler without replacing the runtime surface.
+- `FenBrowser.Test262/Program.cs`
+  - Added `ShouldUseIsolatedWorkers(...)` and routed both `run_chunk` and `run_category` through the persistent isolated-worker pool once a batch crosses `AutoParallelThreshold`.
+  - `--isolate-process` remains the explicit override for tiny crash-safe repros.
+- `FenBrowser.Test262/README.md`
+  - Documented the new auto-threshold isolated-worker behavior.
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
+  - Added regression coverage proving the legacy promise/fetch helpers are gone from `FenRuntime`, `Promise.withResolvers()` returns a real `JsPromise`, `crypto.subtle.digest()` returns a real promise-backed `ArrayBuffer`, and runtime `fetch()` resolves through the canonical path.
+- Why this mattered:
+  - This tranche closes `JS_ENGINE_FINAL.md` findings `#1`, `#2`, `#3`, `#4`, and `#27`.
+  - The engine no longer exposes different promise/fetch semantics depending on whether code runs in raw runtime bootstrap or the browser-integrated host.
+  - The Test262 CLI is now production-usable for larger evidence runs without manually forcing isolated mode on every invocation.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore`: pass.
+  - `dotnet test FenBrowser.Tests --filter "ProductionHardeningBatch3Tests|FetchApiTests|PromiseConformanceTests|Test262RunnerTests" --no-restore -v q`: pass (`32/32`).
+  - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj --no-restore`: pass.
+  - `dotnet run --project .\FenBrowser.Test262\FenBrowser.Test262.csproj --no-build -- run_category built-ins/Array --root <synthetic-fixture> --max 20 --timeout 1000`: pass with auto-isolated worker activation (`20/20`).

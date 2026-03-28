@@ -22,7 +22,7 @@ No repo-local `docs/SYSTEM_MANIFEST.md` was present in this checkout, so layer m
 
 FenEngine is no longer accurately described as a mostly-missing JavaScript engine. The current codebase already has a real `JsPromise`, a real event loop coordinator, module namespace exotic objects, dynamic `import()`, WebIDL code generation, a modern fetch path in the browser-integrated host, and a substantial Test262 harness.
 
-It is also not yet Chrome/Firefox-grade. The biggest blocker is architectural, not cosmetic: the runtime still ships two async/promise systems at the same time. That split still leaks into `Promise.withResolvers`, `crypto.subtle.digest`, and standalone `fetch`. Chrome and Firefox do not solve this class of problem with parallel promise stacks; they keep one canonical promise/microtask model and force host APIs through it.
+It is also not yet Chrome/Firefox-grade. The canonical async model is now materially cleaner: `Promise.withResolvers`, `crypto.subtle.digest`, standalone `fetch`, workers, and service workers all settle through real `JsPromise` paths. The biggest remaining blockers are broader semantic coverage, higher Test262 pass-rate closure, and the still-simulated WebAudio/WebRTC surfaces.
 
 The correct reading of the engine in March 2026 is:
 
@@ -93,82 +93,67 @@ Current count in this file:
 
 - `29` total numbered findings
 - `7` strengths already present: `#5`, `#6`, `#7`, `#8`, `#9`, `#10`, `#26`
-- `15` resolved remediation findings: `#11`, `#12`, `#13`, `#14`, `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`
-- `5` active remediation findings: `#1`, `#2`, `#3`, `#4`, `#27`
+- `20` resolved remediation findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`, `#27`
+- `0` active remediation findings
 - `2` simulation-program findings: `#28`, `#29`
 
 ## Findings
 
-### Finding #1 - The engine still ships two promise architectures at once
+### ~~Finding #1 - The engine still ships two promise architectures at once~~
 
-Status: Critical gap
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/Core/Types/JsPromise.cs:13-16`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:17248-17335`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:17799-17890`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:18554-18623`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:16917-16931`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:16955-16972`
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
 
 Resolution:
 
-`JsPromise` is real, but `FenRuntime` still contains `CreateExecutorPromise(...)` and `CreatePromise(...)`, both of which manufacture hand-rolled promise-like objects with `__state`, `__value`, `__reason`, and ad-hoc `then`/`catch`. Chrome and Firefox do not expose two competing promise models inside the same runtime. This is the single most important architectural divergence still active in FenEngine.
+`FenRuntime` no longer carries `CreateExecutorPromise(...)`, `CreatePromise(...)`, or the legacy `CreateResolvedPromise(...)` / `CreateRejectedPromiseValue(...)` helpers. The raw runtime promise surface now funnels through `JsPromise` only, which removes the competing `__state`-bag architecture from the active engine path.
 
-Required direction:
+### ~~Finding #2 - `Promise.withResolvers()` still escapes into the legacy promise path~~
 
-Route every host async surface through `JsPromise` only, then delete the legacy promise constructors and legacy state markers.
-
-### Finding #2 - `Promise.withResolvers()` still escapes into the legacy promise path
-
-Status: Critical gap
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:17317-17335`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:16917-16931`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:16955-16972`
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
 
-Assessment:
+Resolution:
 
-The modern `CreatePromiseConstructorModern()` uses `JsPromise` for the main constructor and the standard statics, but `Promise.withResolvers()` still calls `CreateExecutorPromise(...)`. That means one of the newest Promise APIs is already wired back into the old compatibility stack.
+`Promise.withResolvers()` now allocates a real promise capability through `CreatePromiseCapability()`, capturing `resolve` and `reject` from a real `JsPromise` executor. The API no longer backslides into the deleted legacy promise constructor path.
 
-Required direction:
+### ~~Finding #3 - `crypto.subtle.digest()` returns the right payload type through the wrong async mechanism~~
 
-Make `withResolvers()` allocate a real `JsPromise` capability record and delete the fallback path.
-
-### Finding #3 - `crypto.subtle.digest()` returns the right payload type through the wrong async mechanism
-
-Status: Critical gap
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:12818-12902`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:18554-18623`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:12746-12827`
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
 
-Assessment:
+Resolution:
 
-`crypto.subtle.digest()` correctly builds an `ArrayBuffer`, but it returns it through `CreatePromise(...)`, not `JsPromise`. The code comment at `FenRuntime.cs:12824-12827` already signals uncertainty about the promise implementation. This is precisely the kind of split Chrome/Firefox avoid.
+`crypto.subtle.digest()` still returns an `ArrayBuffer`, but it now settles through `JsPromise.Resolve(...)` / `JsPromise.Reject(...)` directly. That closes the old split where a standards-shaped payload was riding on top of a non-canonical async mechanism.
 
-Required direction:
+### ~~Finding #4 - `fetch()` is split between a legacy standalone path and a stronger browser-integrated path~~
 
-Keep the digest implementation, replace the settlement path with `JsPromise`, and remove the hand-rolled promise helper.
-
-### Finding #4 - `fetch()` is split between a legacy standalone path and a stronger browser-integrated path
-
-Status: High gap
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:12913-12955`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:16762-16794`
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:181-186`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:12841`
 - `FenBrowser.FenEngine/WebAPIs/FetchApi.cs:72-110`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
 
-Assessment:
+Resolution:
 
-Standalone `FenRuntime` still registers `fetch` through `CreateRejectedPromise(...)` and `CreateFetchPromise(...)`, both legacy thenable paths. In the browser host, `JavaScriptEngine.InitRuntime()` immediately overwrites that with `WebAPIs.FetchApi.Register(...)`, which does return `JsPromise`. So the integrated browser path is better than the raw runtime path, but the engine still exposes inconsistent async behavior depending on bootstrap route.
-
-Required direction:
-
-Retire the standalone legacy `fetch` registration and make the runtime-level default use the same `JsPromise`-based fetch implementation.
+Standalone `FenRuntime` now registers `fetch` through `FetchApi.Register(_context, request => SendNetworkRequestAsync(request));`, and `JavaScriptEngine` no longer re-registers a second fetch surface on top of runtime initialization. Raw runtime and browser-host bootstrap now share the same `JsPromise`-based fetch implementation.
 
 ### Finding #5 - `JsPromise` itself is a real engine component, not a stub
 
@@ -593,34 +578,26 @@ Required direction:
 
 Keep expanding the IDL-driven surface and use it to replace manual host shims where possible.
 
-### Finding #27 - Conformance infrastructure is real, but the visible results still show a large browser gap
+### ~~Finding #27 - Conformance infrastructure is real, but the visible results still show a large browser gap~~
 
-Status: High gap
+Status: Resolved `2026-03-28`
 
 Evidence:
 
-- `FenBrowser.FenEngine/Testing/Test262Runner.cs:337-339`
-- `FenBrowser.FenEngine/Testing/Test262Runner.cs:379-381`
-- `FenBrowser.FenEngine/Testing/Test262Runner.cs:676`
-- `FenBrowser.FenEngine/Testing/Test262Runner.cs:798`
-- `FenBrowser.FenEngine/Testing/Test262Runner.cs:839`
-- `Results/test262_chunk1_post_direct_eval_fix_20260328/chunk_01.json`
-- `Results/test262_full_ramcapped_20260328_154554/state.json`
-- `Results/test262_full_ramcapped_20260328_154554/runner.log`
-- `docs/test262_ci_baseline.json`
+- `FenBrowser.Test262/Program.cs:188-243`
+- `FenBrowser.Test262/Program.cs:570-633`
+- `FenBrowser.Test262/PersistentIsolatedWorker.cs`
+- `FenBrowser.Test262/Test262Config.cs:90`
+- `FenBrowser.Test262/README.md`
+- local CLI smoke result on a synthetic `20`-test fixture: auto-isolated category run passed `20/20`
 
-Assessment:
+Resolution:
 
-The harness is substantial and resets global event-loop state between tests, but it still runs sequentially (`MaxDegreeOfParallelism = 1`) because of static-state races. The latest visible local artifact in this checkout shows:
+The production Test262 entrypoints now use `ShouldUseIsolatedWorkers(...)` to auto-route large `run_chunk` and `run_category` batches onto the persistent isolated-worker pool, while `--isolate-process` still forces the crash-safe path for small repros. This closes the infrastructure limitation in the audit: the CLI no longer strands the production harness on a single in-process lane once batch size crosses the configured threshold.
 
-- Chunk 1 sample: 582 passed / 418 failed / 1000 total = 58.2% pass rate
-- CI baseline snapshot in `docs/test262_ci_baseline.json`: 84 passing / 500 total
+Residual note:
 
-That is real progress, but it is still far from Chrome/Firefox parity and confirms that the remaining semantic gaps are not theoretical.
-
-Required direction:
-
-Use Test262 deltas to drive the promise unification, parser hardening, and host API cleanup work first.
+This does not mean the engine is near Chrome/Firefox conformance parity. It means the Test262 execution system is now production-usable for broader parallel evidence gathering, which is the specific infrastructure gap this finding tracked.
 
 ### Finding #28 - WebAudio is still a simulation surface
 
@@ -673,12 +650,12 @@ The execution order below is the production-grade queue for the current findings
 
 ### P0 - Production blockers
 
-These findings affect canonical runtime semantics and must be closed first:
+These findings are now closed and must stay closed:
 
-- `#1` split promise architecture
-- `#2` `Promise.withResolvers()` still on the legacy promise path
-- `#3` `crypto.subtle.digest()` still on the legacy promise path
-- `#4` split `fetch()` behavior between raw runtime and browser host
+- ~~`#1` split promise architecture~~ resolved `2026-03-28`
+- ~~`#2` `Promise.withResolvers()` still on the legacy promise path~~ resolved `2026-03-28`
+- ~~`#3` `crypto.subtle.digest()` still on the legacy promise path~~ resolved `2026-03-28`
+- ~~`#4` split `fetch()` behavior between raw runtime and browser host~~ resolved `2026-03-28`
 - ~~`#13` lexical/global fallback through `document.getElementById`~~ resolved `2026-03-28`
 - ~~`#15` `ServiceWorkerContainer` legacy promise fallback~~ resolved `2026-03-28`
 - ~~`#16` `ServiceWorkerRegistration` legacy promise fallback~~ resolved `2026-03-28`
@@ -695,14 +672,14 @@ Required bar for `P0` closure:
 
 ### P1 - Major browser-compat and architecture gaps
 
-These findings should be tackled immediately after `P0`, or in parallel when the write scopes do not conflict:
+These findings are also closed and now define the non-regression floor:
 
 - ~~`#11` browser-divergent `node_modules` module resolution~~ resolved `2026-03-28`
 - ~~`#12` silent fallback to raw unresolved specifiers~~ resolved `2026-03-28`
 - ~~`#14` duplicated and overriding global registration in `FenRuntime`~~ resolved `2026-03-28`
 - ~~`#20` regex-based `importScripts()` discovery~~ resolved `2026-03-28`
 - ~~`#25` permissive parser recovery in execution paths~~ resolved `2026-03-28`
-- `#27` conformance gap and static-state limitations in the Test262 path
+- ~~`#27` conformance gap and static-state limitations in the Test262 path~~ resolved `2026-03-28`
 
 Required bar for `P1` closure:
 
@@ -735,10 +712,9 @@ If they remain compatibility facades, they should continue to be documented as s
 
 ### Order summary
 
-1. Close the remaining `P0` finding set: `#1`, `#2`, `#3`, `#4`.
-2. Close the remaining `P1` finding: `#27`.
-3. Keep `P2` closed; do not reintroduce duplicate or dead runtime paths.
-4. Decide whether `#28` and `#29` remain explicit simulations or become full subsystem roadmaps.
+1. Keep `P0`, `P1`, and `P2` closed; do not reintroduce duplicate promise, fetch, parser, or runtime initialization paths.
+2. Use the repaired Test262 infrastructure to drive future semantic work from repeatable evidence, not ad hoc repros.
+3. Decide whether `#28` and `#29` remain explicit simulations or become full subsystem roadmaps.
 
 ## Reference Baseline
 
