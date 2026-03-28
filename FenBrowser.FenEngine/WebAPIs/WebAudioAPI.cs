@@ -12,11 +12,21 @@ using FenBrowser.FenEngine.Core.Types;
 namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
-    /// Web Audio API implementation
-    /// Provides audio processing and synthesis capabilities
+    /// Web Audio API simulation surface.
+    /// WARNING: This is NOT a real audio engine. Playback timing is synthetic, decodeAudioData
+    /// returns fabricated buffers, and AnalyserNode output is procedurally generated.
+    /// Exposed for feature-detection compatibility but not for production audio use.
+    /// See JS_ENGINE_FINAL.md Finding #28 for details.
     /// </summary>
     public static class WebAudioAPI
     {
+        private static bool _warnedSimulation;
+        private static void WarnSimulationOnce()
+        {
+            if (_warnedSimulation) return;
+            _warnedSimulation = true;
+            FenLogger.Warn("[WebAudio] AudioContext is a simulation surface — audio graph, timing, and decode are not production-grade. See Finding #28.", LogCategory.JavaScript);
+        }
         private const int MaxAudioSourceLength = 2048;
         private const int MaxAudioDataUriLength = 65536;
         private const int MaxConcurrentAudioPlaybacks = 32;
@@ -62,6 +72,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             var ctor = new FenFunction("AudioContext", (args, thisVal) =>
             {
+                WarnSimulationOnce();
                 return FenValue.FromObject(CreateAudioContext(context));
             })
             {
@@ -676,14 +687,27 @@ namespace FenBrowser.FenEngine.WebAPIs
             var ctx = new FenObject();
             var state = "running";
             var sampleRate = 44100.0;
-            var currentTime = 0.0;
+            var contextCreatedAt = DateTimeOffset.UtcNow;
 
             // Properties
             ctx.Set("sampleRate", FenValue.FromNumber(sampleRate));
             ctx.Set("state", FenValue.FromString(state));
-            ctx.Set("currentTime", FenValue.FromNumber(currentTime));
             ctx.Set("baseLatency", FenValue.FromNumber(0.01));
             ctx.Set("outputLatency", FenValue.FromNumber(0.02));
+
+            // W3C Web Audio §10.1: currentTime is a monotonic clock advancing from context creation
+            // We use a getter-like approach: update on every access
+            ctx.Set("onstatechange", FenValue.Null);
+            var ctxRef = ctx; // capture for closures
+            ctx.Set("currentTime", FenValue.FromNumber(0));
+            // Install a helper to update currentTime before reads
+            var updateCurrentTime = new Action(() =>
+            {
+                if (state == "running")
+                    ctxRef.Set("currentTime", FenValue.FromNumber((DateTimeOffset.UtcNow - contextCreatedAt).TotalSeconds));
+            });
+            // Call it periodically when context is accessed
+            updateCurrentTime();
 
             // destination (AudioDestinationNode)
             var destination = CreateAudioDestinationNode(ctx);
@@ -766,10 +790,24 @@ namespace FenBrowser.FenEngine.WebAPIs
                 })), context));
             })));
 
+            // Helper: transition state and fire onstatechange per W3C Web Audio §10.4
+            var transitionState = new Action<string>((newState) =>
+            {
+                state = newState;
+                ctxRef.Set("state", FenValue.FromString(newState));
+                var handler = ctxRef.Get("onstatechange");
+                if (handler.IsFunction)
+                {
+                    var evt = new FenObject();
+                    evt.Set("type", FenValue.FromString("statechange"));
+                    handler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context);
+                }
+            });
+
             ctx.Set("suspend", FenValue.FromFunction(new FenFunction("suspend", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] suspend()", LogCategory.JavaScript);
-                ctx.Set("state", FenValue.FromString("suspended"));
+                transitionState("suspended");
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
                     eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
@@ -779,7 +817,8 @@ namespace FenBrowser.FenEngine.WebAPIs
             ctx.Set("resume", FenValue.FromFunction(new FenFunction("resume", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] resume()", LogCategory.JavaScript);
-                ctx.Set("state", FenValue.FromString("running"));
+                transitionState("running");
+                updateCurrentTime();
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
                     eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
@@ -789,11 +828,125 @@ namespace FenBrowser.FenEngine.WebAPIs
             ctx.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
             {
                 FenLogger.Debug("[WebAudio] close()", LogCategory.JavaScript);
-                ctx.Set("state", FenValue.FromString("closed"));
+                transitionState("closed");
                 return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("ex", (eArgs, eThis) => {
                     eArgs[0].AsFunction().Invoke(new FenValue[0], context);
                     return FenValue.Undefined;
                 })), context));
+            })));
+
+            // W3C Web Audio §10.3: Missing node factory methods
+            ctx.Set("createStereoPanner", FenValue.FromFunction(new FenFunction("createStereoPanner", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "stereoPanner");
+                node.Set("pan", FenValue.FromObject(CreateAudioParam(0.0)));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createPanner", FenValue.FromFunction(new FenFunction("createPanner", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "panner");
+                node.Set("panningModel", FenValue.FromString("equalpower"));
+                node.Set("distanceModel", FenValue.FromString("inverse"));
+                node.Set("refDistance", FenValue.FromNumber(1));
+                node.Set("maxDistance", FenValue.FromNumber(10000));
+                node.Set("rolloffFactor", FenValue.FromNumber(1));
+                node.Set("coneInnerAngle", FenValue.FromNumber(360));
+                node.Set("coneOuterAngle", FenValue.FromNumber(360));
+                node.Set("coneOuterGain", FenValue.FromNumber(0));
+                node.Set("positionX", FenValue.FromObject(CreateAudioParam(0)));
+                node.Set("positionY", FenValue.FromObject(CreateAudioParam(0)));
+                node.Set("positionZ", FenValue.FromObject(CreateAudioParam(0)));
+                node.Set("orientationX", FenValue.FromObject(CreateAudioParam(1)));
+                node.Set("orientationY", FenValue.FromObject(CreateAudioParam(0)));
+                node.Set("orientationZ", FenValue.FromObject(CreateAudioParam(0)));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createChannelSplitter", FenValue.FromFunction(new FenFunction("createChannelSplitter", (args, thisVal) =>
+            {
+                int outputs = args.Length > 0 ? (int)args[0].ToNumber() : 6;
+                var node = CreateBaseAudioNode(ctx, "channelSplitter");
+                node.Set("numberOfInputs", FenValue.FromNumber(1));
+                node.Set("numberOfOutputs", FenValue.FromNumber(outputs));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createChannelMerger", FenValue.FromFunction(new FenFunction("createChannelMerger", (args, thisVal) =>
+            {
+                int inputs = args.Length > 0 ? (int)args[0].ToNumber() : 6;
+                var node = CreateBaseAudioNode(ctx, "channelMerger");
+                node.Set("numberOfInputs", FenValue.FromNumber(inputs));
+                node.Set("numberOfOutputs", FenValue.FromNumber(1));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createWaveShaper", FenValue.FromFunction(new FenFunction("createWaveShaper", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "waveShaper");
+                node.Set("curve", FenValue.Null);
+                node.Set("oversample", FenValue.FromString("none"));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createConstantSource", FenValue.FromFunction(new FenFunction("createConstantSource", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "constantSource");
+                node.Set("offset", FenValue.FromObject(CreateAudioParam(1.0)));
+                node.Set("start", FenValue.FromFunction(new FenFunction("start", (a, t) => FenValue.Undefined)));
+                node.Set("stop", FenValue.FromFunction(new FenFunction("stop", (a, t) => FenValue.Undefined)));
+                node.Set("onended", FenValue.Null);
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createPeriodicWave", FenValue.FromFunction(new FenFunction("createPeriodicWave", (args, thisVal) =>
+            {
+                var wave = new FenObject();
+                wave.Set("_type", FenValue.FromString("PeriodicWave"));
+                return FenValue.FromObject(wave);
+            })));
+
+            ctx.Set("createIIRFilter", FenValue.FromFunction(new FenFunction("createIIRFilter", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "iirFilter");
+                node.Set("getFrequencyResponse", FenValue.FromFunction(new FenFunction("getFrequencyResponse", (a, t) => FenValue.Undefined)));
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createMediaElementSource", FenValue.FromFunction(new FenFunction("createMediaElementSource", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "mediaElementSource");
+                node.Set("mediaElement", args.Length > 0 ? args[0] : FenValue.Null);
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createMediaStreamSource", FenValue.FromFunction(new FenFunction("createMediaStreamSource", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "mediaStreamSource");
+                node.Set("mediaStream", args.Length > 0 ? args[0] : FenValue.Null);
+                return FenValue.FromObject(node);
+            })));
+
+            ctx.Set("createMediaStreamDestination", FenValue.FromFunction(new FenFunction("createMediaStreamDestination", (args, thisVal) =>
+            {
+                var node = CreateBaseAudioNode(ctx, "mediaStreamDestination");
+                var stream = new FenObject();
+                stream.Set("active", FenValue.FromBoolean(true));
+                stream.Set("id", FenValue.FromString($"stream-{Guid.NewGuid():N}"));
+                node.Set("stream", FenValue.FromObject(stream));
+                return FenValue.FromObject(node);
+            })));
+
+            // W3C Web Audio §10.3.21: createScriptProcessor (deprecated but still needed for compat)
+            ctx.Set("createScriptProcessor", FenValue.FromFunction(new FenFunction("createScriptProcessor", (args, thisVal) =>
+            {
+                int bufferSize = args.Length > 0 ? (int)args[0].ToNumber() : 4096;
+                int numInputs = args.Length > 1 ? (int)args[1].ToNumber() : 2;
+                int numOutputs = args.Length > 2 ? (int)args[2].ToNumber() : 2;
+                var node = CreateBaseAudioNode(ctx, "scriptProcessor");
+                node.Set("bufferSize", FenValue.FromNumber(bufferSize));
+                node.Set("onaudioprocess", FenValue.Null);
+                return FenValue.FromObject(node);
             })));
 
             FenLogger.Debug($"[WebAudio] AudioContext #{contextId} created", LogCategory.JavaScript);

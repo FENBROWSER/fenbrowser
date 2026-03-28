@@ -8,16 +8,25 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
     /// Helper that creates a synchronously-resolved thenable FenObject.
-    /// Works without an IExecutionContext â€” suitable for static API factories.
+    /// Works without an IExecutionContext â€" suitable for static API factories.
     /// JS code can do .then(cb) and cb fires synchronously on the first .then() call.
     /// </summary>
     public static class ResolvedThenable
     {
+        /// <summary>Creates a pre-resolved promise with real JsPromise when context is available.</summary>
+        public static FenObject Resolved(FenValue value, IExecutionContext context)
+        {
+            if (context != null)
+                return Core.Types.JsPromise.Resolve(value, context);
+            return Resolved(value);
+        }
+
         /// <summary>Creates a pre-resolved thenable with the given value.</summary>
         public static FenObject Resolved(FenValue value)
         {
@@ -26,6 +35,14 @@ namespace FenBrowser.FenEngine.WebAPIs
             p.Set("__result", value);
             AttachThenCatch(p);
             return p;
+        }
+
+        /// <summary>Creates a pre-rejected promise with real JsPromise when context is available.</summary>
+        public static FenObject Rejected(string reason, IExecutionContext context)
+        {
+            if (context != null)
+                return Core.Types.JsPromise.Reject(FenValue.FromString(reason), context);
+            return Rejected(reason);
         }
 
         /// <summary>Creates a pre-rejected thenable with the given reason string.</summary>
@@ -362,7 +379,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     TryInvokeNotificationHandler(args[0], new[] { FenValue.FromString(resolvedPermission) }, execContext, "Notification.requestPermission.callback");
                 }
 
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(resolvedPermission)));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(resolvedPermission), execContext));
             })));
 
             RegisterConstructor(ctor);
@@ -849,38 +866,38 @@ namespace FenBrowser.FenEngine.WebAPIs
             _onFullscreenChange = handler;
         }
         
-        public static FenObject CreateDocumentFullscreenMethods()
+        public static FenObject CreateDocumentFullscreenMethods(IExecutionContext context = null)
         {
             var methods = new FenObject();
-            
+
             methods.Set("fullscreenElement", _isFullscreen ? FenValue.FromString("[element]") : FenValue.Null);
             methods.Set("fullscreenEnabled", FenValue.FromBoolean(true));
-            
+
             methods.Set("exitFullscreen", FenValue.FromFunction(new FenFunction("exitFullscreen",
                 (args, thisVal) =>
             {
                 _isFullscreen = false;
                 _onFullscreenChange?.Invoke(false);
-                // Spec: returns Promise<void>
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
+                // Spec: returns Promise<void> — Fullscreen API §4.9
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
-            
+
             return methods;
         }
-        
-        public static FenObject CreateElementFullscreenMethod()
+
+        public static FenObject CreateElementFullscreenMethod(IExecutionContext context = null)
         {
             var method = new FenObject();
-            
+
             method.Set("requestFullscreen", FenValue.FromFunction(new FenFunction("requestFullscreen",
                 (args, thisVal) =>
             {
                 _isFullscreen = true;
                 _onFullscreenChange?.Invoke(true);
-                // Spec: returns Promise<void>
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
+                // Spec: returns Promise<void> — Fullscreen API §4.9
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
-            
+
             return method;
         }
     }
@@ -890,11 +907,12 @@ namespace FenBrowser.FenEngine.WebAPIs
     /// </summary>
     public static class ClipboardAPI
     {
-        public static FenObject CreateClipboardObject()
+        public static FenObject CreateClipboardObject(IExecutionContext context = null)
         {
             var clipboard = new FenObject();
-            
+
             // Spec: all clipboard methods return Promise<void|string|ClipboardItem[]>
+            // Clipboard API §2.2-2.5
             clipboard.Set("writeText", FenValue.FromFunction(new FenFunction("writeText",
                 (args, thisVal) =>
             {
@@ -903,30 +921,30 @@ namespace FenBrowser.FenEngine.WebAPIs
                     string text = args[0].ToString();
                     FenLogger.Debug($"[Clipboard] writeText: {text?.Substring(0, Math.Min(50, text?.Length ?? 0))}", LogCategory.JavaScript);
                 }
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
 
             clipboard.Set("readText", FenValue.FromFunction(new FenFunction("readText",
                 (args, thisVal) =>
             {
-                // Returns Promise<string> â€” empty for privacy
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString("")));
+                // Returns Promise<string> — empty for privacy
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(""), context));
             })));
 
             clipboard.Set("write", FenValue.FromFunction(new FenFunction("write",
                 (args, thisVal) =>
             {
                 // Returns Promise<void>
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
 
             clipboard.Set("read", FenValue.FromFunction(new FenFunction("read",
                 (args, thisVal) =>
             {
-                // Returns Promise<ClipboardItem[]> â€” empty for privacy
+                // Returns Promise<ClipboardItem[]> — empty for privacy
                 var arr = new FenObject();
                 arr.Set("length", FenValue.FromNumber(0));
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(arr)));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(arr), context));
             })));
             
             return clipboard;
@@ -940,7 +958,7 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         private const long IndexedDbQuotaBytes = 50L * 1024 * 1024;
 
-        public static FenObject CreateStorageManagerObject(Func<string> originProvider, Func<string> sessionScopeProvider)
+        public static FenObject CreateStorageManagerObject(Func<string> originProvider, Func<string> sessionScopeProvider, IExecutionContext context = null)
         {
             var storage = new FenObject();
 
@@ -962,17 +980,20 @@ namespace FenBrowser.FenEngine.WebAPIs
                 estimate.Set("quota", FenValue.FromNumber((StorageApi.QuotaBytes * 2) + IndexedDbQuotaBytes));
                 estimate.Set("usageDetails", FenValue.FromObject(usageDetails));
 
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(estimate)));
+                // Storage API §4.2 — returns Promise<StorageEstimate>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(estimate), context));
             })));
 
             storage.Set("persisted", FenValue.FromFunction(new FenFunction("persisted", (args, thisVal) =>
             {
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false)));
+                // Storage API §4.3 — returns Promise<boolean>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), context));
             })));
 
             storage.Set("persist", FenValue.FromFunction(new FenFunction("persist", (args, thisVal) =>
             {
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false)));
+                // Storage API §4.4 — returns Promise<boolean>
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), context));
             })));
 
             return storage;
@@ -1007,19 +1028,19 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (args.Length == 0 || args[0].IsUndefined || args[0].IsNull)
                 {
-                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: navigator.share requires share data"));
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: navigator.share requires share data", execContext));
                 }
 
                 if (!TryNormalizeShareData(args[0], execContext, out var payload, out var error))
                 {
-                    return FenValue.FromObject(ResolvedThenable.Rejected(error ?? "TypeError: Invalid share data"));
+                    return FenValue.FromObject(ResolvedThenable.Rejected(error ?? "TypeError: Invalid share data", execContext));
                 }
 
                 FenLogger.Debug(
                     $"[WebShare] share title='{payload.Title}' textLen={payload.Text.Length} url='{payload.Url}'",
                     LogCategory.JavaScript);
 
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, execContext));
             })));
 
             return share;

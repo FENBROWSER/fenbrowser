@@ -12,11 +12,22 @@ using FenBrowser.FenEngine.Core.Interfaces;
 namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
-    /// WebRTC API implementation
-    /// Provides peer-to-peer communication capabilities
+    /// WebRTC API simulation surface.
+    /// WARNING: This is NOT a real transport/media implementation. SDP is synthetic,
+    /// ICE negotiation is simulated, data channels are delay-opened, and media tracks
+    /// are empty. Exposed for feature-detection compatibility only.
+    /// See JS_ENGINE_FINAL.md Finding #29 for details.
     /// </summary>
     public static class WebRTCAPI
     {
+        private static bool _warnedSimulation;
+        private static void WarnSimulationOnce()
+        {
+            if (_warnedSimulation) return;
+            _warnedSimulation = true;
+            FenLogger.Warn("[WebRTC] RTCPeerConnection is a simulation surface — SDP, ICE, data channels, and media tracks are not production-grade. See Finding #29.", LogCategory.JavaScript);
+        }
+
         private const int MaxIceServers = 8;
         private const int MaxIceUrlsPerServer = 8;
         private const int MaxIceUrlLength = 512;
@@ -51,6 +62,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             var execContext = EnsureExecutionContext(context);
             var constructor = new FenFunction("RTCPeerConnection", (args, thisVal) =>
             {
+                WarnSimulationOnce();
                 var config = args.Length > 0 && args[0].IsObject ? args[0].AsObject() : null;
                 if (!TryNormalizeRtcConfiguration(config, out var normalizedConfig, out var validationError))
                 {
@@ -332,8 +344,12 @@ namespace FenBrowser.FenEngine.WebAPIs
                     pc.Set("localDescription", args[0]);
                     pc.Set("currentLocalDescription", args[0]);
                     pc.Set("signalingState", FenValue.FromString("have-local-offer"));
+                    Dispatch("signalingstatechange");
+
+                    // W3C WebRTC §4.4.2: Setting local description triggers ICE gathering
+                    SimulateIceGathering(pc, Dispatch, execContext);
                 }
-                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) =>
                 {
                     eArgs[0].AsFunction().Invoke(new FenValue[0], execContext);
                     return FenValue.Undefined;
@@ -349,8 +365,9 @@ namespace FenBrowser.FenEngine.WebAPIs
                     pc.Set("remoteDescription", args[0]);
                     pc.Set("currentRemoteDescription", args[0]);
                     pc.Set("signalingState", FenValue.FromString("stable"));
+                    Dispatch("signalingstatechange");
                 }
-                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) => 
+                return FenValue.FromObject(new FenBrowser.FenEngine.Core.Types.JsPromise(FenValue.FromFunction(new FenFunction("exec", (eArgs, eThis) =>
                 {
                     eArgs[0].AsFunction().Invoke(new FenValue[0], execContext);
                     return FenValue.Undefined;
@@ -490,6 +507,57 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.FromObject(CreateResolvedPromise(FenValue.FromObject(stats), execContext));
             })));
 
+            // W3C WebRTC §4.4.14: restartIce()
+            pc.Set("restartIce", FenValue.FromFunction(new FenFunction("restartIce", (args, thisVal) =>
+            {
+                FenLogger.Debug("[WebRTC] restartIce()", LogCategory.JavaScript);
+                if (!isClosed)
+                {
+                    SetPcState("iceGatheringState", "new", "icegatheringstatechange");
+                    SetPcState("iceConnectionState", "new", "iceconnectionstatechange");
+                    Dispatch("negotiationneeded");
+                }
+                return FenValue.Undefined;
+            })));
+
+            // W3C WebRTC §4.4.15: addTransceiver()
+            pc.Set("addTransceiver", FenValue.FromFunction(new FenFunction("addTransceiver", (args, thisVal) =>
+            {
+                if (isClosed) throw new InvalidOperationException("RTCPeerConnection is closed");
+                var kind = args.Length > 0 ? args[0].ToString() : "audio";
+                var transceiver = new FenObject();
+                transceiver.Set("mid", FenValue.Null);
+                transceiver.Set("direction", FenValue.FromString("sendrecv"));
+                transceiver.Set("currentDirection", FenValue.Null);
+                transceiver.Set("stopped", FenValue.FromBoolean(false));
+
+                var sender = new FenObject();
+                sender.Set("track", FenValue.Null);
+                sender.Set("dtmf", FenValue.Null);
+                transceiver.Set("sender", FenValue.FromObject(sender));
+
+                var receiver = new FenObject();
+                receiver.Set("track", FenValue.Null);
+                transceiver.Set("receiver", FenValue.FromObject(receiver));
+
+                transceiver.Set("stop", FenValue.FromFunction(new FenFunction("stop", (a, t) =>
+                {
+                    transceiver.Set("stopped", FenValue.FromBoolean(true));
+                    transceiver.Set("direction", FenValue.FromString("stopped"));
+                    return FenValue.Undefined;
+                })));
+
+                lock (stateLock)
+                {
+                    transceivers.Add(transceiver);
+                    senders.Add(sender);
+                    receivers.Add(receiver);
+                }
+
+                Dispatch("negotiationneeded");
+                return FenValue.FromObject(transceiver);
+            })));
+
             // close()
             pc.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
             {
@@ -519,6 +587,57 @@ namespace FenBrowser.FenEngine.WebAPIs
             })));
 
             return pc;
+        }
+
+        /// <summary>
+        /// W3C WebRTC §4.4.2: Simulates ICE candidate gathering after setLocalDescription.
+        /// Fires onicecandidate with a synthetic host candidate, then null (gathering complete).
+        /// </summary>
+        private static void SimulateIceGathering(FenObject pc, Action<string> dispatch, IExecutionContext context)
+        {
+            pc.Set("iceGatheringState", FenValue.FromString("gathering"));
+            dispatch("icegatheringstatechange");
+
+            // Schedule candidate event asynchronously per spec
+            _ = RunDetachedAsync(async () =>
+            {
+                await Task.Delay(10).ConfigureAwait(false);
+
+                // Synthetic host candidate
+                var candidate = new FenObject();
+                candidate.Set("candidate", FenValue.FromString($"candidate:1 1 UDP 2130706431 127.0.0.1 {50000 + (_connectionIdCounter % 1000)} typ host"));
+                candidate.Set("sdpMid", FenValue.FromString("0"));
+                candidate.Set("sdpMLineIndex", FenValue.FromNumber(0));
+                candidate.Set("usernameFragment", FenValue.FromString("fen"));
+
+                var evt = new FenObject();
+                evt.Set("type", FenValue.FromString("icecandidate"));
+                evt.Set("candidate", FenValue.FromObject(candidate));
+
+                context.ScheduleCallback(() =>
+                {
+                    var handler = pc.Get("onicecandidate");
+                    if (handler.IsFunction)
+                        handler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context);
+                }, 0);
+
+                await Task.Delay(10).ConfigureAwait(false);
+
+                // Null candidate = gathering complete
+                var endEvt = new FenObject();
+                endEvt.Set("type", FenValue.FromString("icecandidate"));
+                endEvt.Set("candidate", FenValue.Null);
+
+                context.ScheduleCallback(() =>
+                {
+                    var handler = pc.Get("onicecandidate");
+                    if (handler.IsFunction)
+                        handler.AsFunction().Invoke(new[] { FenValue.FromObject(endEvt) }, context);
+
+                    pc.Set("iceGatheringState", FenValue.FromString("complete"));
+                    dispatch("icegatheringstatechange");
+                }, 0);
+            });
         }
 
         private static FenObject CreateRTCDataChannel(string label, int id, IObject options, IExecutionContext context)

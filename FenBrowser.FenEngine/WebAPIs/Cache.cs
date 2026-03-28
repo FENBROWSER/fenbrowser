@@ -21,6 +21,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly IStorageBackend _storage;
         private readonly Task _initializeTask;
         private volatile bool _invalidated;
+        private readonly IExecutionContext _context;
 
         private const string StoreName = "cache_entries";
         private const int MaxCacheUrlLength = 2048;
@@ -28,11 +29,12 @@ namespace FenBrowser.FenEngine.WebAPIs
         private const int MaxCachedBodyLength = 1_048_576;
         private const int MaxHeaderCount = 64;
 
-        public Cache(string origin, string cacheName, IStorageBackend storage)
+        public Cache(string origin, string cacheName, IStorageBackend storage, IExecutionContext context = null)
         {
             _origin = origin;
             _cacheName = cacheName;
             _storage = storage;
+            _context = context;
 
             InitializeInterface();
             _initializeTask = InitializeStorage();
@@ -537,6 +539,37 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
+            // When a real IExecutionContext is available, use spec-compliant JsPromise
+            // which integrates with the microtask queue for correct promise job ordering.
+            if (_context != null)
+            {
+                FenValue capturedResolve = FenValue.Undefined;
+                FenValue capturedReject = FenValue.Undefined;
+                var executor = new FenFunction("executor", (args, thisVal) =>
+                {
+                    capturedResolve = args.Length > 0 ? args[0] : FenValue.Undefined;
+                    capturedReject = args.Length > 1 ? args[1] : FenValue.Undefined;
+                    return FenValue.Undefined;
+                });
+                var jsPromise = new Core.Types.JsPromise(FenValue.FromFunction(executor), _context);
+                _ = RunDetachedAsync(async () =>
+                {
+                    try
+                    {
+                        var value = await valueFactory().ConfigureAwait(false);
+                        if (capturedResolve.IsFunction)
+                            capturedResolve.AsFunction().Invoke(new[] { value }, _context);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (capturedReject.IsFunction)
+                            capturedReject.AsFunction().Invoke(new[] { FenValue.FromString(ex.Message) }, _context);
+                    }
+                });
+                return jsPromise;
+            }
+
+            // Fallback: hand-rolled promise for standalone/test contexts without IExecutionContext
             var promise = new FenObject();
             var gate = new object();
             var state = "pending";
