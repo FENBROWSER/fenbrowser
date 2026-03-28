@@ -846,50 +846,11 @@ namespace FenBrowser.FenEngine.Scripting
             InstallWimbCapabilities(winObj);
             InstallClipboardJsStub(winObj);
             
-            // Mirror selected global constructors onto window for runtime compatibility.
-            var audioGlobal = _fenRuntime.GetGlobal("Audio");
-            if (audioGlobal is FenValue audioGlobalValue && audioGlobalValue.IsFunction)
-            {
-                winObj.Set("Audio", audioGlobalValue);
-            }
-
-            var audioContextGlobal = _fenRuntime.GetGlobal("AudioContext");
-            if (audioContextGlobal is FenValue audioContextGlobalValue && audioContextGlobalValue.IsFunction)
-            {
-                winObj.Set("AudioContext", audioContextGlobalValue);
-            }
-
-            var webkitAudioContextGlobal = _fenRuntime.GetGlobal("webkitAudioContext");
-            if (webkitAudioContextGlobal is FenValue webkitAudioContextGlobalValue && webkitAudioContextGlobalValue.IsFunction)
-            {
-                winObj.Set("webkitAudioContext", webkitAudioContextGlobalValue);
-            }
-
             var notificationGlobal = _fenRuntime.GetGlobal("Notification");
             if (notificationGlobal is FenValue notificationGlobalValue &&
                 (notificationGlobalValue.IsFunction || notificationGlobalValue.IsObject))
             {
                 winObj.Set("Notification", notificationGlobalValue);
-            }
-            var rtcPeerConnectionGlobal = _fenRuntime.GetGlobal("RTCPeerConnection");
-            if (rtcPeerConnectionGlobal is FenValue rtcPeerConnectionGlobalValue &&
-                (rtcPeerConnectionGlobalValue.IsFunction || rtcPeerConnectionGlobalValue.IsObject))
-            {
-                winObj.Set("RTCPeerConnection", rtcPeerConnectionGlobalValue);
-            }
-
-            var webkitRtcPeerConnectionGlobal = _fenRuntime.GetGlobal("webkitRTCPeerConnection");
-            if (webkitRtcPeerConnectionGlobal is FenValue webkitRtcPeerConnectionGlobalValue &&
-                (webkitRtcPeerConnectionGlobalValue.IsFunction || webkitRtcPeerConnectionGlobalValue.IsObject))
-            {
-                winObj.Set("webkitRTCPeerConnection", webkitRtcPeerConnectionGlobalValue);
-            }
-
-            var mediaStreamGlobal = _fenRuntime.GetGlobal("MediaStream");
-            if (mediaStreamGlobal is FenValue mediaStreamGlobalValue &&
-                (mediaStreamGlobalValue.IsFunction || mediaStreamGlobalValue.IsObject))
-            {
-                winObj.Set("MediaStream", mediaStreamGlobalValue);
             }
 
             var intersectionObserverGlobal = _fenRuntime.GetGlobal("IntersectionObserver");
@@ -1435,40 +1396,6 @@ namespace FenBrowser.FenEngine.Scripting
             
             // Clipboard API - navigator.clipboard
             navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject(_fenRuntime.Context)));
-            // Web Audio API - Audio constructors
-            var audioContextCtor = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context) as FenFunction;
-            if (audioContextCtor != null)
-            {
-                _fenRuntime.SetGlobal("AudioContext", FenValue.FromFunction(audioContextCtor));
-                _fenRuntime.SetGlobal("webkitAudioContext", FenValue.FromFunction(audioContextCtor));
-            }
-
-            var audioCtor = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioConstructor(_fenRuntime.Context);
-            _fenRuntime.SetGlobal("Audio", FenValue.FromFunction(audioCtor));
-            
-            // WebRTC API - RTCPeerConnection / MediaStream constructors
-            var rtcPeerConnectionCtor = FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateRTCPeerConnectionConstructor(_fenRuntime.Context);
-            if (rtcPeerConnectionCtor is FenFunction rtcPeerConnectionFn)
-            {
-                _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromFunction(rtcPeerConnectionFn));
-                _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromFunction(rtcPeerConnectionFn));
-            }
-            else
-            {
-                _fenRuntime.SetGlobal("RTCPeerConnection", FenValue.FromObject(rtcPeerConnectionCtor));
-                _fenRuntime.SetGlobal("webkitRTCPeerConnection", FenValue.FromObject(rtcPeerConnectionCtor));
-            }
-
-            var mediaStreamCtor = FenBrowser.FenEngine.WebAPIs.WebRTCAPI.CreateMediaStreamConstructor();
-            if (mediaStreamCtor is FenFunction mediaStreamFn)
-            {
-                _fenRuntime.SetGlobal("MediaStream", FenValue.FromFunction(mediaStreamFn));
-            }
-            else
-            {
-                _fenRuntime.SetGlobal("MediaStream", FenValue.FromObject(mediaStreamCtor));
-            }
-
             // Observer APIs - IntersectionObserver / ResizeObserver constructors
             var intersectionObserverCtor = FenBrowser.FenEngine.WebAPIs.IntersectionObserverAPI.CreateConstructor();
             if (intersectionObserverCtor is FenFunction intersectionObserverFn)
