@@ -208,6 +208,7 @@ namespace FenBrowser.Host
             _devTools.RegisterPanel(new FenBrowser.DevTools.Panels.ElementsPanel());
             _devTools.RegisterPanel(new FenBrowser.DevTools.Panels.ConsolePanel());
             _devTools.RegisterPanel(new FenBrowser.DevTools.Panels.NetworkPanel());
+            _devTools.RegisterPanel(new FenBrowser.DevTools.Panels.SourcesPanel());
             
             TabManager.Instance.ActiveTabChanged += SetupDevToolsForTab;
             _devTools.Invalidated += () => _root?.Invalidate();
@@ -256,6 +257,9 @@ namespace FenBrowser.Host
         private void SetupDevToolsForTab(BrowserTab tab)
         {
             if (tab == null) return;
+
+            _devToolsHost?.Dispose();
+            _devToolsHost = null;
             
             _devToolsServer.Reset();
             
@@ -584,12 +588,14 @@ namespace FenBrowser.Host
              {
                  cap.OnMouseUp(x,y,b);
                  InputManager.Instance.ReleaseCapture();
+                 CursorManager.ApplyPendingCursor(m);
                  return;
              }
              
              if (b == MouseButton.Left) _isDragging = false;
              
              _root?.HitTestDeep(x,y)?.OnMouseUp(x,y,b);
+             CursorManager.ApplyPendingCursor(m);
         }
 
         private void OnMouseMove(IMouse m, System.Numerics.Vector2 pos)
