@@ -2120,16 +2120,16 @@ namespace FenBrowser.FenEngine.Core
             var exp = new CallExpression { Token = _curToken, Function = function };
             exp.Arguments = ParseCallArguments();
 
-            if (_inClassFieldInitializer &&
-                function is Identifier identifier &&
+            if (function is Identifier identifier &&
                 string.Equals(identifier.Value, "eval", StringComparison.Ordinal))
             {
+                bool allowNewTarget = _inClassFieldInitializer || _functionDepth > 0;
                 return new DirectEvalExpression
                 {
                     Token = exp.Token,
                     Source = exp.Arguments.Count > 0 ? exp.Arguments[0] : new UndefinedLiteral(),
-                    AllowNewTarget = true,
-                    ForceUndefinedNewTarget = true,
+                    AllowNewTarget = allowNewTarget,
+                    ForceUndefinedNewTarget = _inClassFieldInitializer,
                     AllowSuperProperty = _classHasHeritageStack.Count > 0 && _classHasHeritageStack.Peek()
                 };
             }
