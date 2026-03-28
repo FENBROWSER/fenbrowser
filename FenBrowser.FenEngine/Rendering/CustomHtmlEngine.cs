@@ -1628,7 +1628,6 @@ namespace FenBrowser.FenEngine.Rendering
              };
 
              js.CookieBridge = scope => _jsCookieJar;
-             js.UseMiniPrattEngine = true;
              js.RequestRender = ScheduleRepaintFromJs;
 
              if (fetchExternalCssAsync != null)

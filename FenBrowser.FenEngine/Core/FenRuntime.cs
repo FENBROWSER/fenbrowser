@@ -19,7 +19,7 @@ using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 using FenBrowser.FenEngine.Storage;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.FenEngine.Errors;
-
+using FenBrowser.FenEngine.Compatibility;
 namespace FenBrowser.FenEngine.Core
 {
     /// <summary>
@@ -4418,6 +4418,7 @@ namespace FenBrowser.FenEngine.Core
             // Intl API
             try
             {
+                HostApiSurfaceCatalog.TraceUsage("Intl");
                 SetGlobal("Intl", FenValue.FromObject(JsIntl.CreateIntlObject(_context)));
             }
             catch (Exception ex)
@@ -6756,6 +6757,7 @@ namespace FenBrowser.FenEngine.Core
             window.SetPrototype(eventTargetPrototype);
 
             // window.open (popup gate + same-window fallback)
+            HostApiSurfaceCatalog.TraceUsage("window.open");
             var windowOpenFunc = FenValue.FromFunction(new FenFunction("open", (FenValue[] args, FenValue thisVal) =>
             {
                 if (BrowserSettings.Instance.BlockPopups)
@@ -9588,7 +9590,8 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("getComputedStyle", getComputedStyleFn);
             window.Set("getComputedStyle", getComputedStyleFn);
 
-            // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ matchMedia Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+            // matchMedia
+            HostApiSurfaceCatalog.TraceUsage("window.matchMedia");
             var matchMediaFn = FenValue.FromFunction(new FenFunction("matchMedia", (args, thisVal) =>
             {
                 var query = args.Length > 0 ? args[0].ToString() : "";
@@ -9638,7 +9641,8 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("matchMedia", matchMediaFn);
             window.Set("matchMedia", matchMediaFn);
 
-            // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ requestIdleCallback / cancelIdleCallback Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+            // requestIdleCallback / cancelIdleCallback
+            HostApiSurfaceCatalog.TraceUsage("window.requestIdleCallback");
             SetGlobal("requestIdleCallback", FenValue.FromFunction(new FenFunction("requestIdleCallback",
                 (args, thisVal) =>
                 {
