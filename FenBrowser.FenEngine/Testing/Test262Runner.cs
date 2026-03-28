@@ -14,10 +14,12 @@ using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Diagnostics;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Security;
 
@@ -58,6 +60,228 @@ namespace FenBrowser.FenEngine.Testing
             public bool IsOnlyStrict { get; set; }
             public bool IsNoStrict { get; set; }
             public bool IsModule { get; set; }
+            public bool IsRaw { get; set; }
+        }
+
+        private sealed class Test262AgentController : IDisposable
+        {
+            private readonly Test262Runner _owner;
+            private readonly ConcurrentQueue<string> _reports = new ConcurrentQueue<string>();
+            private readonly SemaphoreSlim _reportSignal = new SemaphoreSlim(0);
+            private readonly List<Test262AgentWorker> _workers = new List<Test262AgentWorker>();
+            private readonly object _workersLock = new object();
+            private bool _disposed;
+
+            public Test262AgentController(Test262Runner owner)
+            {
+                _owner = owner;
+            }
+
+            public void StartWorker(string source, Action<string> consoleSink)
+            {
+                var worker = new Test262AgentWorker(_owner, this, source, consoleSink);
+                lock (_workersLock)
+                {
+                    _workers.Add(worker);
+                }
+
+                worker.Start();
+            }
+
+            public void Broadcast(JsArrayBuffer sharedBuffer)
+            {
+                if (sharedBuffer == null)
+                {
+                    return;
+                }
+
+                Test262AgentWorker[] workers;
+                lock (_workersLock)
+                {
+                    workers = _workers.ToArray();
+                }
+
+                foreach (var worker in workers)
+                {
+                    worker.EnqueueBroadcast(sharedBuffer);
+                }
+            }
+
+            public void Report(FenValue value)
+            {
+                _reports.Enqueue(value.ToString());
+                _reportSignal.Release();
+            }
+
+            public string TryGetReport()
+            {
+                if (!_reportSignal.Wait(0))
+                {
+                    return null;
+                }
+
+                return _reports.TryDequeue(out var report) ? report : null;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+
+                Test262AgentWorker[] workers;
+                lock (_workersLock)
+                {
+                    workers = _workers.ToArray();
+                    _workers.Clear();
+                }
+
+                foreach (var worker in workers)
+                {
+                    worker.Dispose();
+                }
+
+                _reportSignal.Dispose();
+            }
+        }
+
+        private sealed class Test262AgentWorker : IDisposable
+        {
+            private readonly Test262Runner _owner;
+            private readonly Test262AgentController _controller;
+            private readonly string _source;
+            private readonly Action<string> _consoleSink;
+            private readonly BlockingCollection<JsArrayBuffer> _broadcasts = new BlockingCollection<JsArrayBuffer>();
+            private readonly CancellationTokenSource _shutdown = new CancellationTokenSource();
+            private volatile FenFunction _receiveBroadcast;
+            private volatile bool _leaving;
+            private Task _workerTask;
+
+            public Test262AgentWorker(Test262Runner owner, Test262AgentController controller, string source, Action<string> consoleSink)
+            {
+                _owner = owner;
+                _controller = controller;
+                _source = source ?? string.Empty;
+                _consoleSink = consoleSink;
+            }
+
+            public void Start()
+            {
+                _workerTask = RunBackgroundAsync(RunAsync, _shutdown.Token);
+            }
+
+            public void RegisterReceiveBroadcast(FenFunction callback)
+            {
+                _receiveBroadcast = callback;
+            }
+
+            public void EnqueueBroadcast(JsArrayBuffer sharedBuffer)
+            {
+                if (_leaving || _broadcasts.IsAddingCompleted)
+                {
+                    return;
+                }
+
+                try
+                {
+                    _broadcasts.Add(sharedBuffer);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+
+            public void Report(FenValue value)
+            {
+                _controller.Report(value);
+            }
+
+            public void Leave()
+            {
+                _leaving = true;
+                _broadcasts.CompleteAdding();
+            }
+
+            private Task RunAsync()
+            {
+                var runtime = new FenRuntime();
+                if (runtime.Context != null)
+                {
+                    runtime.Context.Permissions.Grant(JsPermissions.Eval);
+                }
+
+                runtime.OnConsoleMessage = _consoleSink;
+                _owner.InstallConsoleBindings(runtime);
+                runtime.SetGlobal("$262", FenValue.FromObject(_owner.CreateHost262(runtime, _controller, this)));
+
+                try
+                {
+                    runtime.ExecuteSimple(_source, "test262-agent.js", allowReturn: true);
+
+                    while (!_leaving && !_shutdown.IsCancellationRequested)
+                    {
+                        if (_receiveBroadcast == null)
+                        {
+                            break;
+                        }
+
+                        JsArrayBuffer buffer;
+                        try
+                        {
+                            buffer = _broadcasts.Take(_shutdown.Token);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            break;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+
+                        var callback = _receiveBroadcast;
+                        if (callback == null)
+                        {
+                            continue;
+                        }
+
+                        runtime.RunWithRealmActivation(() =>
+                        {
+                            callback.Invoke(new[] { FenValue.FromObject(buffer) }, runtime.Context, FenValue.Undefined);
+                            EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _controller.Report(FenValue.FromString("AgentError:" + ex.Message));
+                }
+                finally
+                {
+                    Leave();
+                }
+
+                return Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
+                Leave();
+                _shutdown.Cancel();
+                try
+                {
+                    _workerTask?.Wait(TimeSpan.FromSeconds(1));
+                }
+                catch
+                {
+                }
+
+                _shutdown.Dispose();
+                _broadcasts.Dispose();
+            }
         }
         
         public Test262Runner(string test262RootPath, int timeoutMs = 10000)
@@ -173,6 +397,7 @@ namespace FenBrowser.FenEngine.Testing
         {
             var result = new TestResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            Test262AgentController agentController = null;
 
             try
             {
@@ -262,6 +487,7 @@ namespace FenBrowser.FenEngine.Testing
                 // We recreate the runtime for each test to ensure isolation
                 // In the future for perf we might reuse it but clean the global scope
                 var runtime = new FenBrowser.FenEngine.Core.FenRuntime();
+                agentController = new Test262AgentController(this);
                 TaskCompletionSource<string> asyncSignal = null;
                 if (metadata.IsAsync)
                 {
@@ -296,41 +522,44 @@ namespace FenBrowser.FenEngine.Testing
                 }
 
                 InstallConsoleBindings(runtime);
-                runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime)));
-                
-                // 2. Load Harness Files
-                // Default harness files required by most tests
-                var harnessPath = Path.Combine(_test262RootPath, "harness");
-                var assertJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "assert.js"));
-                var staJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "sta.js"));
-                if (metadata.IsAsync && !metadata.Includes.Any(x => string.Equals(x, "doneprintHandle.js", StringComparison.Ordinal)))
-                {
-                    metadata.Includes.Add("doneprintHandle.js");
-                }
+                runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime, agentController)));
                 
                 var preludeBuilder = new StringBuilder();
-                if (metadata.IsOnlyStrict)
+                if (!metadata.IsRaw)
                 {
-                    preludeBuilder.Append("\"use strict\";\n");
-                }
-                preludeBuilder.Append(assertJs);
-                preludeBuilder.Append("\n;\n");
-                preludeBuilder.Append(staJs);
-                preludeBuilder.Append("\n;\n");
-
-                // 3. Load Includes
-                foreach (var include in metadata.Includes)
-                {
-                    var includePath = Path.Combine(harnessPath, include);
-                    if (File.Exists(includePath))
+                    // 2. Load Harness Files
+                    // Default harness files required by most tests.
+                    var harnessPath = Path.Combine(_test262RootPath, "harness");
+                    var assertJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "assert.js"));
+                    var staJs = await File.ReadAllTextAsync(Path.Combine(harnessPath, "sta.js"));
+                    if (metadata.IsAsync && !metadata.Includes.Any(x => string.Equals(x, "doneprintHandle.js", StringComparison.Ordinal)))
                     {
-                        var incContent = await File.ReadAllTextAsync(includePath);
-                        preludeBuilder.Append(incContent);
-                        preludeBuilder.Append("\n;\n");
+                        metadata.Includes.Add("doneprintHandle.js");
                     }
-                    else
+
+                    if (metadata.IsOnlyStrict)
                     {
-                        FenLogger.Warn($"[Test262] Missing include: {include}", LogCategory.General);
+                        preludeBuilder.Append("\"use strict\";\n");
+                    }
+                    preludeBuilder.Append(assertJs);
+                    preludeBuilder.Append("\n;\n");
+                    preludeBuilder.Append(staJs);
+                    preludeBuilder.Append("\n;\n");
+
+                    // 3. Load Includes
+                    foreach (var include in metadata.Includes)
+                    {
+                        var includePath = Path.Combine(harnessPath, include);
+                        if (File.Exists(includePath))
+                        {
+                            var incContent = await File.ReadAllTextAsync(includePath);
+                            preludeBuilder.Append(incContent);
+                            preludeBuilder.Append("\n;\n");
+                        }
+                        else
+                        {
+                            FenLogger.Warn($"[Test262] Missing include: {include}", LogCategory.General);
+                        }
                     }
                 }
 
@@ -375,7 +604,7 @@ namespace FenBrowser.FenEngine.Testing
                                 if (preludeResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error)
                                     return preludeResult;
                             }
-                            runtime.Context.ModuleLoader.LoadModuleSrc(content, testFile);
+                            runtime.Context.ModuleLoader.LoadModuleSrc(content, resolvedTestFile);
                             return FenValue.Undefined;
                         }, token);
                     }
@@ -405,8 +634,27 @@ namespace FenBrowser.FenEngine.Testing
                     if (completedTask == executionTask && !cts.IsCancellationRequested)
                     {
                         // Task completed within timeout
-                        // Re-throw if the task itself faulted (unlikely due to try/catch inside ExecuteSimple but possible)
-                        var resultValue = await executionTask; 
+                        FenBrowser.FenEngine.Core.Interfaces.IValue resultValue = null;
+                        bool cancelledDuringAwait = false;
+                        try
+                        {
+                            resultValue = await executionTask;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            cancelledDuringAwait = true;
+                        }
+                        if (cancelledDuringAwait)
+                        {
+                            cts.Cancel();
+                            result.Passed = false;
+                            result.Actual = "Timeout";
+                            result.Error = $"Test cancelled/timed out after {_timeoutMs}ms";
+                            try { EventLoopCoordinator.ResetInstance(); } catch { }
+                            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                            GC.WaitForPendingFinalizers();
+                            return result;
+                        }
                         
                         // IMPORTANT: FenRuntime.ExecuteSimple returns FenValue.FromError on failure, NOT an exception.
                         // We must check if resultValue.Type is Error.
@@ -534,10 +782,14 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     if (metadata.Negative)
                     {
-                        // TODO: Strictly check error type/message if possible
-                        result.Passed = true;
+                        var matches = ExceptionMatchesNegativeExpectation(ex, metadata);
+                        result.Passed = matches;
                         result.Expected = $"Error ({metadata.NegativeType})";
                         result.Actual = $"Error: {ex.Message}";
+                        if (!matches)
+                        {
+                            result.Error = $"Expected {metadata.NegativeType} but got {GetExceptionTypeDisplayName(ex)}: {ex.Message}";
+                        }
                     }
                     else
                     {
@@ -557,6 +809,8 @@ namespace FenBrowser.FenEngine.Testing
             
             sw.Stop();
             result.Duration = sw.Elapsed;
+
+            agentController?.Dispose();
 
             // CRITICAL: Reset singleton EventLoop between tests to prevent memory accumulation
             try { EventLoopCoordinator.ResetInstance(); } catch (Exception ex) { Console.WriteLine($"[Test262Runner] EventLoop reset failed after test run: {ex.Message}"); }
@@ -591,8 +845,103 @@ namespace FenBrowser.FenEngine.Testing
             })));
         }
 
-        private FenObject CreateHost262(FenRuntime runtime)
+        private FenObject CreateHost262(FenRuntime runtime, Test262AgentController agentController = null, Test262AgentWorker agentWorker = null)
         {
+            static bool TryReadAgentCounter(FenValue typedArrayValue, int index, out FenValue current)
+            {
+                current = FenValue.Undefined;
+                if (!typedArrayValue.IsObject)
+                {
+                    return false;
+                }
+
+                if (typedArrayValue.AsObject() is JsInt32Array int32Array)
+                {
+                    if (index < 0 || index >= int32Array.Length)
+                    {
+                        return false;
+                    }
+
+                    current = FenValue.FromNumber(int32Array.GetIndex(index));
+                    return true;
+                }
+
+                if (typedArrayValue.AsObject() is JsBigInt64Array bigInt64Array)
+                {
+                    if (index < 0 || index >= bigInt64Array.Length)
+                    {
+                        return false;
+                    }
+
+                    current = bigInt64Array.GetBigIntIndex(index);
+                    return true;
+                }
+
+                return false;
+            }
+
+            static bool AgentCounterEquals(FenValue current, FenValue expected)
+            {
+                if (current.IsBigInt || expected.IsBigInt)
+                {
+                    return current.IsBigInt &&
+                           expected.IsBigInt &&
+                           current.AsBigInt().Value == expected.AsBigInt().Value;
+                }
+
+                return current.ToNumber().Equals(expected.ToNumber());
+            }
+
+            FenValue CreateResolvedAgentPromise(FenValue value)
+            {
+                return FenValue.FromObject(JsPromise.Resolve(value, runtime.Context));
+            }
+
+            FenValue CreatePendingAgentPromise(Action<FenFunction, FenFunction> beginAsync)
+            {
+                FenFunction resolve = null;
+                FenFunction reject = null;
+                var promise = new JsPromise(
+                    FenValue.FromFunction(new FenFunction("executor", (promiseArgs, promiseThis) =>
+                    {
+                        resolve = promiseArgs.Length > 0 && promiseArgs[0].IsFunction ? promiseArgs[0].AsFunction() : null;
+                        reject = promiseArgs.Length > 1 && promiseArgs[1].IsFunction ? promiseArgs[1].AsFunction() : null;
+                        return FenValue.Undefined;
+                    })),
+                    runtime.Context);
+
+                beginAsync(resolve, reject);
+                return FenValue.FromObject(promise);
+            }
+
+            void ResolveAgentPromise(FenFunction resolve, FenValue value)
+            {
+                if (resolve == null)
+                {
+                    return;
+                }
+
+                runtime.RunWithRealmActivation(() =>
+                {
+                    resolve.Invoke(new[] { value }, runtime.Context, FenValue.Undefined);
+                    EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                });
+            }
+
+            void RejectAgentPromise(FenFunction reject, string message)
+            {
+                if (reject == null)
+                {
+                    return;
+                }
+
+                runtime.RunWithRealmActivation(() =>
+                {
+                    reject.Invoke(new[] { FenValue.FromString(message) }, runtime.Context, FenValue.Undefined);
+                    EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+                });
+            }
+
             var host262 = new FenObject();
             host262.Set("IsHTMLDDA", FenValue.FromObject(new Test262HtmlDdaObject()));
             host262.Set("detachArrayBuffer", FenValue.FromFunction(new FenFunction("detachArrayBuffer", (args, thisVal) =>
@@ -618,7 +967,7 @@ namespace FenBrowser.FenEngine.Testing
             host262.Set("createRealm", FenValue.FromFunction(new FenFunction("createRealm", (args, thisVal) =>
             {
                 var childRuntime = new FenRuntime();
-                ConfigureChildRealm(childRuntime, runtime.OnConsoleMessage);
+                ConfigureChildRealm(childRuntime, runtime.OnConsoleMessage, agentController);
 
                 var realmObject = new FenObject();
                 realmObject.Set("global", FenValue.FromObject(new Test262GlobalProxyObject(childRuntime)));
@@ -629,11 +978,254 @@ namespace FenBrowser.FenEngine.Testing
 
                 return FenValue.FromObject(realmObject);
             })));
+            host262.Set("gc", FenValue.FromFunction(new FenFunction("gc", (args, thisVal) =>
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                return FenValue.Undefined;
+            })));
+
+            if (agentController != null)
+            {
+                var agent = new FenObject();
+                var timeouts = new FenObject();
+                timeouts.Set("yield", FenValue.FromNumber(100));
+                timeouts.Set("small", FenValue.FromNumber(200));
+                timeouts.Set("long", FenValue.FromNumber(1000));
+                timeouts.Set("huge", FenValue.FromNumber(10000));
+                agent.Set("timeouts", FenValue.FromObject(timeouts));
+
+                agent.Set("start", FenValue.FromFunction(new FenFunction("start", (args, thisVal) =>
+                {
+                    if (args.Length == 0)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.start requires source text");
+                    }
+
+                    agentController.StartWorker(args[0].ToString(), runtime.OnConsoleMessage);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("broadcast", FenValue.FromFunction(new FenFunction("broadcast", (args, thisVal) =>
+                {
+                    if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not JsArrayBuffer sharedBuffer)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.broadcast expects a SharedArrayBuffer");
+                    }
+
+                    agentController.Broadcast(sharedBuffer);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("getReport", FenValue.FromFunction(new FenFunction("getReport", (args, thisVal) =>
+                {
+                    var report = agentController.TryGetReport();
+                    return report == null ? FenValue.Null : FenValue.FromString(report);
+                })));
+
+                agent.Set("sleep", FenValue.FromFunction(new FenFunction("sleep", (args, thisVal) =>
+                {
+                    int delay = args.Length > 0 ? Math.Max(0, (int)args[0].ToNumber()) : 0;
+                    Thread.Sleep(delay);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("tryYield", FenValue.FromFunction(new FenFunction("tryYield", (args, thisVal) =>
+                {
+                    Thread.Sleep(100);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("trySleep", FenValue.FromFunction(new FenFunction("trySleep", (args, thisVal) =>
+                {
+                    int delay = args.Length > 0 ? Math.Max(0, (int)args[0].ToNumber()) : 0;
+                    Thread.Sleep(delay);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("monotonicNow", FenValue.FromFunction(new FenFunction("monotonicNow", (args, thisVal) =>
+                {
+                    double milliseconds = Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
+                    return FenValue.FromNumber(milliseconds);
+                })));
+
+                agent.Set("waitUntil", FenValue.FromFunction(new FenFunction("waitUntil", (args, thisVal) =>
+                {
+                    if (args.Length < 3)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.waitUntil requires typedArray, index, and expected");
+                    }
+
+                    int index = (int)args[1].ToNumber();
+                    var expected = args[2];
+                    var spin = new SpinWait();
+                    while (true)
+                    {
+                        if (!TryReadAgentCounter(args[0], index, out var current))
+                        {
+                            throw new FenTypeError("TypeError: $262.agent.waitUntil expects an Int32Array or BigInt64Array");
+                        }
+
+                        if (AgentCounterEquals(current, expected))
+                        {
+                            return current;
+                        }
+
+                        if (spin.Count > 100)
+                        {
+                            Thread.Sleep(1);
+                        }
+                        else
+                        {
+                            spin.SpinOnce();
+                        }
+                    }
+                })));
+
+                agent.Set("safeBroadcast", FenValue.FromFunction(new FenFunction("safeBroadcast", (args, thisVal) =>
+                {
+                    if (args.Length == 0 || !args[0].IsObject ||
+                        args[0].AsObject() is not JsTypedArray typedArray ||
+                        typedArray.Buffer == null ||
+                        !typedArray.Buffer.IsShared ||
+                        (typedArray is not JsInt32Array && typedArray is not JsBigInt64Array))
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.safeBroadcast expects a shared Int32Array or BigInt64Array");
+                    }
+
+                    agentController.Broadcast(typedArray.Buffer);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("safeBroadcastAsync", FenValue.FromFunction(new FenFunction("safeBroadcastAsync", (args, thisVal) =>
+                {
+                    if (args.Length < 3 || !args[0].IsObject ||
+                        args[0].AsObject() is not JsTypedArray typedArray ||
+                        typedArray.Buffer == null ||
+                        !typedArray.Buffer.IsShared ||
+                        (typedArray is not JsInt32Array && typedArray is not JsBigInt64Array))
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.safeBroadcastAsync expects a shared Int32Array or BigInt64Array plus index and expected value");
+                    }
+
+                    int index = (int)args[1].ToNumber();
+                    var expected = args[2];
+                    agentController.Broadcast(typedArray.Buffer);
+
+                    return CreatePendingAgentPromise((resolve, reject) =>
+                    {
+                        _ = RunBackgroundAsync(async () =>
+                        {
+                            try
+                            {
+                                var spin = new SpinWait();
+                                while (true)
+                                {
+                                    if (!TryReadAgentCounter(args[0], index, out var current))
+                                    {
+                                        throw new FenTypeError("TypeError: $262.agent.safeBroadcastAsync expects an Int32Array or BigInt64Array");
+                                    }
+
+                                    if (AgentCounterEquals(current, expected))
+                                    {
+                                        Thread.Sleep(100);
+                                        ResolveAgentPromise(resolve, current);
+                                        return;
+                                    }
+
+                                    if (spin.Count > 100)
+                                    {
+                                        await Task.Delay(1).ConfigureAwait(false);
+                                    }
+                                    else
+                                    {
+                                        spin.SpinOnce();
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                RejectAgentPromise(reject, ex.Message);
+                            }
+                        });
+                    });
+                })));
+
+                agent.Set("receiveBroadcast", FenValue.FromFunction(new FenFunction("receiveBroadcast", (args, thisVal) =>
+                {
+                    if (agentWorker == null)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.receiveBroadcast is only available inside agent workers");
+                    }
+
+                    if (args.Length == 0 || !args[0].IsFunction)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.receiveBroadcast requires a callback");
+                    }
+
+                    agentWorker.RegisterReceiveBroadcast(args[0].AsFunction());
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("report", FenValue.FromFunction(new FenFunction("report", (args, thisVal) =>
+                {
+                    if (agentWorker == null)
+                    {
+                        throw new FenTypeError("TypeError: $262.agent.report is only available inside agent workers");
+                    }
+
+                    agentWorker.Report(args.Length > 0 ? args[0] : FenValue.Undefined);
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("leaving", FenValue.FromFunction(new FenFunction("leaving", (args, thisVal) =>
+                {
+                    agentWorker?.Leave();
+                    return FenValue.Undefined;
+                })));
+
+                agent.Set("getReportAsync", FenValue.FromFunction(new FenFunction("getReportAsync", (args, thisVal) =>
+                {
+                    var report = agentController.TryGetReport();
+                    if (report != null)
+                    {
+                        return CreateResolvedAgentPromise(FenValue.FromString(report));
+                    }
+
+                    return CreatePendingAgentPromise((resolve, reject) =>
+                    {
+                        _ = RunBackgroundAsync(async () =>
+                        {
+                            try
+                            {
+                                while (true)
+                                {
+                                    var next = agentController.TryGetReport();
+                                    if (next != null)
+                                    {
+                                        ResolveAgentPromise(resolve, FenValue.FromString(next));
+                                        return;
+                                    }
+
+                                    await Task.Delay(1).ConfigureAwait(false);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                RejectAgentPromise(reject, ex.Message);
+                            }
+                        });
+                    });
+                })));
+
+                host262.Set("agent", FenValue.FromObject(agent));
+            }
 
             return host262;
         }
 
-        private void ConfigureChildRealm(FenRuntime runtime, Action<string> consoleSink)
+        private void ConfigureChildRealm(FenRuntime runtime, Action<string> consoleSink, Test262AgentController agentController = null)
         {
             if (runtime.Context != null)
             {
@@ -642,7 +1234,7 @@ namespace FenBrowser.FenEngine.Testing
 
             runtime.OnConsoleMessage = consoleSink;
             InstallConsoleBindings(runtime);
-            runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime)));
+            runtime.SetGlobal("$262", FenValue.FromObject(CreateHost262(runtime, agentController)));
         }
 
         private static FenValue GetRealmGlobal(FenRuntime runtime)
@@ -959,6 +1551,10 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     meta.IsModule = true;
                 }
+                else if (string.Equals(flag, "raw", StringComparison.Ordinal))
+                {
+                    meta.IsRaw = true;
+                }
             }
             
             // Check for async
@@ -1030,6 +1626,62 @@ namespace FenBrowser.FenEngine.Testing
             }
 
             return noComment.Trim().Trim('"', '\'');
+        }
+
+        private static bool ExceptionMatchesNegativeExpectation(Exception exception, TestMetadata metadata)
+        {
+            if (exception == null || metadata == null || !metadata.Negative)
+            {
+                return false;
+            }
+
+            if (string.Equals(metadata.NegativePhase, "parse", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(metadata.NegativeType))
+            {
+                return true;
+            }
+
+            var expected = metadata.NegativeType.Trim();
+            var actualType = GetExceptionTypeDisplayName(exception);
+            if (actualType.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            var message = exception.Message ?? string.Empty;
+            if (message.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            if (exception.InnerException != null)
+            {
+                return ExceptionMatchesNegativeExpectation(exception.InnerException, metadata);
+            }
+
+            return false;
+        }
+
+        private static string GetExceptionTypeDisplayName(Exception exception)
+        {
+            if (exception == null)
+            {
+                return string.Empty;
+            }
+
+            var typeName = exception.GetType().Name;
+            if (typeName.StartsWith("Fen", StringComparison.Ordinal) &&
+                typeName.EndsWith("Error", StringComparison.Ordinal) &&
+                typeName.Length > "Fen".Length + "Error".Length)
+            {
+                return typeName.Substring("Fen".Length);
+            }
+
+            return typeName;
         }
 
         

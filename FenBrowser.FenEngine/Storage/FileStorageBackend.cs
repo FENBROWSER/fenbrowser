@@ -415,12 +415,28 @@ namespace FenBrowser.FenEngine.Storage
             }
         }
 
+        /// <summary>
+        /// Atomic write with fsync: write to temp file, flush to disk, then rename.
+        /// Prevents corruption on crash per IDB §5.1 durability requirements.
+        /// </summary>
         private async Task SaveDatabaseState(string path, DatabaseState state)
         {
             try
             {
                 var json = JsonSerializer.Serialize(state, _jsonOptions);
-                await File.WriteAllTextAsync(path, json);
+                var tempPath = path + ".tmp";
+
+                // Write to temp file with explicit flush to disk
+                using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
+                {
+                    using var writer = new StreamWriter(fs);
+                    await writer.WriteAsync(json);
+                    await writer.FlushAsync();
+                    fs.Flush(flushToDisk: true); // fsync — ensures data hits persistent storage
+                }
+
+                // Atomic rename: on NTFS/ext4 this is atomic at the directory-entry level
+                File.Move(tempPath, path, overwrite: true);
             }
             catch (Exception ex)
             {
