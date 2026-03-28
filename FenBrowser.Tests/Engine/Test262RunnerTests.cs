@@ -238,6 +238,37 @@ assert.sameValue(report, "ok");
         }
 
         [Fact]
+        public async Task RunSingleTestAsync_InferredFunctionName_DoesNotShadowOuterLexicalBinding()
+        {
+            using var fixture = CreateFixture();
+
+            string testFile = fixture.WriteTest("inferred-function-name-shadowing.js", """
+/*---
+description: inferred function names must not create inner bindings that shadow outer lexical names
+---*/
+var holder = {
+  getReport: function() {
+    return "ok";
+  }
+};
+
+let getReport = holder.getReport.bind(holder);
+holder.getReport = function() {
+  return getReport();
+};
+
+if (holder.getReport() !== "ok") {
+  throw new Error("wrong result");
+}
+""");
+
+            var runner = new Test262Runner(fixture.RootPath, timeoutMs: 5_000);
+            var result = await runner.RunSingleTestAsync(testFile);
+
+            Assert.True(result.Passed, result.Error);
+        }
+
+        [Fact]
         public async Task RunSingleTestAsync_AtomicsHelper_LoadsWithoutStackOverflow()
         {
             using var fixture = CreateFixture(assertJs: CreateBasicAssertHarness());
@@ -250,6 +281,42 @@ includes: [atomicsHelper.js]
 assert.sameValue(typeof $262.agent.safeBroadcast, "function");
 assert.sameValue(typeof $262.agent.waitUntil, "function");
 assert.sameValue(typeof $262.agent.getReportAsync, "function");
+""");
+
+            var runner = new Test262Runner(fixture.RootPath, timeoutMs: 5_000);
+            var result = await runner.RunSingleTestAsync(testFile);
+
+            Assert.True(result.Passed, result.Error);
+        }
+
+        [Fact]
+        public async Task RunSingleTestAsync_AtomicsHelper_GetReportWrapper_DoesNotSelfRecurse()
+        {
+            using var fixture = CreateFixture(assertJs: CreateBasicAssertHarness());
+
+            string testFile = fixture.WriteTest("atomics-helper-getreport.js", """
+/*---
+description: atomics helper getReport wrapper must resolve worker reports without self-recursing
+includes: [atomicsHelper.js]
+---*/
+const WAIT_INDEX = 0;
+const RUNNING = 1;
+const i32a = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2));
+
+$262.agent.start(`
+  $262.agent.receiveBroadcast(function(sab) {
+    const view = new Int32Array(sab);
+    Atomics.add(view, ${RUNNING}, 1);
+    $262.agent.report(Atomics.wait(view, ${WAIT_INDEX}, 0, $262.agent.timeouts.long));
+    $262.agent.leaving();
+  });
+`);
+
+$262.agent.safeBroadcast(i32a);
+$262.agent.waitUntil(i32a, RUNNING, 1);
+$262.agent.tryYield();
+assert.sameValue(Atomics.notify(i32a, WAIT_INDEX, 1), 1);
+assert.sameValue($262.agent.getReport(), "ok");
 """);
 
             var runner = new Test262Runner(fixture.RootPath, timeoutMs: 5_000);

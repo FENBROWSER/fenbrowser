@@ -15,7 +15,10 @@ This folder contains FenBrowser's local Test262 CLI runner. The vendored upstrea
 - Treat [`../test262`](../test262) as a vendored upstream dependency. Do not put local repro files there.
 - Put local debug scripts in [`../scratch`](../scratch), repo root temp files, or xUnit coverage under [`../FenBrowser.Tests`](../FenBrowser.Tests).
 - Keep run outputs in [`../Results`](../Results). Do not mix JSON and logs into the project folders.
-- Use external worker fan-out for parallelism. The in-process runner stays effectively sequential to avoid runtime global-state races.
+- The in-process runner stays effectively sequential to avoid runtime global-state races.
+- `run_chunk --isolate-process` now uses isolated microchunk workers instead of spawning one child process per test. Workers pull bounded microchunks from a shared queue, and the runner only oversplits larger chunks where the extra load balancing is worth the additional startup cost.
+- Those isolated workers are now persistent for the lifetime of the chunk. The parent sends work over stdin/stdout JSON messages, and only recycles a worker when it crosses a memory threshold or a bounded batch-count limit.
+- When a chunk or category reaches `AutoParallelThreshold` tests, the CLI now auto-selects that persistent isolated-worker path even without `--isolate-process`. Keep using `--isolate-process` when you want to force crash-safe isolation for tiny repro batches.
 
 ## Prerequisites
 
@@ -87,6 +90,12 @@ Crash-safe logical chunk:
 dotnet run --project .\FenBrowser.Test262\FenBrowser.Test262.csproj -c Release -- run_chunk 1 --root test262 --chunk-size 1000 --isolate-process --format json --output .\Results\chunk1_isolated.json
 ```
 
+Tune isolated worker fan-out:
+
+```powershell
+dotnet run --project .\FenBrowser.Test262\FenBrowser.Test262.csproj -c Release -- run_chunk 1 --root test262 --chunk-size 1000 --isolate-process --workers 8 --format json --output .\Results\chunk1_isolated.json
+```
+
 ## Canonical Parallel Workflow
 
 For the current team workflow, one logical chunk means `1000` tests. To run logical chunk `1` split across `20` workers, use the parallel helper instead of the full-suite watchdog:
@@ -101,6 +110,8 @@ That helper:
 - Launches `20` `dotnet run ... run_chunk` workers in parallel
 - Stores one JSON result and two logs per worker under a timestamped [`../Results`](../Results) folder
 - Writes an aggregate `summary.json` and `summary.md`
+
+When you only need one logical chunk and still want crash-safe execution, prefer the built-in `run_chunk --isolate-process` path first. Use the PowerShell helper when you want outer orchestration across many logical chunks or separate log folders per worker.
 
 Example with per-test process isolation:
 

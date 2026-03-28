@@ -109,13 +109,36 @@ namespace FenBrowser.FenEngine.Testing
 
             public void Report(FenValue value)
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
                 _reports.Enqueue(value.ToString());
-                _reportSignal.Release();
+                try
+                {
+                    _reportSignal.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
 
             public string TryGetReport()
             {
-                if (!_reportSignal.Wait(0))
+                if (_disposed)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    if (!_reportSignal.Wait(0))
+                    {
+                        return null;
+                    }
+                }
+                catch (ObjectDisposedException)
                 {
                     return null;
                 }
