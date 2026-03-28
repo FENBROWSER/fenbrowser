@@ -203,5 +203,30 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("sync2", arr.Get("1").ToString());
             Assert.Equal("micro1", arr.Get("2").ToString());
         }
+
+        [Fact]
+        public void Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var resolved = Promise.resolve(1);
+                var chained = resolved.then(function(v) { return v + 1; });
+                var rejected = Promise.reject('boom').catch(function(reason) { return reason; });
+
+                var resolveUsesPromiseProto = Object.getPrototypeOf(resolved) === Promise.prototype;
+                var resolveIsPromise = resolved instanceof Promise;
+                var chainUsesPromiseProto = Object.getPrototypeOf(chained) === Promise.prototype;
+                var chainIsPromise = chained instanceof Promise;
+                var catchUsesPromiseProto = Object.getPrototypeOf(rejected) === Promise.prototype;
+                var catchIsPromise = rejected instanceof Promise;
+            ");
+
+            Assert.True(rt.GetGlobal("resolveUsesPromiseProto").ToBoolean());
+            Assert.True(rt.GetGlobal("resolveIsPromise").ToBoolean());
+            Assert.True(rt.GetGlobal("chainUsesPromiseProto").ToBoolean());
+            Assert.True(rt.GetGlobal("chainIsPromise").ToBoolean());
+            Assert.True(rt.GetGlobal("catchUsesPromiseProto").ToBoolean());
+            Assert.True(rt.GetGlobal("catchIsPromise").ToBoolean());
+        }
     }
 }
