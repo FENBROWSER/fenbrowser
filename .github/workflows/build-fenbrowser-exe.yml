@@ -52,3 +52,68 @@ jobs:
           name: fenbrowser-win-x64
           path: artifacts/fenbrowser-win-x64
           if-no-files-found: error
+
+  unit-tests:
+    runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build WebIdlGen prerequisite
+        run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
+
+      - name: Build Tests project
+        run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
+
+      - name: Run unit tests
+        run: dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/
+          if-no-files-found: ignore
+
+  test262-regression:
+    runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build WebIdlGen prerequisite
+        run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
+
+      - name: Build Test262 runner
+        run: dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release
+
+      - name: Run Test262 CI regression subset
+        shell: pwsh
+        run: ./scripts/ci/run-test262-ci.ps1
+
+      - name: Upload Test262 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262-results
+          path: test262-ci-results.json
+          if-no-files-found: ignore
