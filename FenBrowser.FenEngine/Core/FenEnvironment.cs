@@ -39,10 +39,6 @@ namespace FenBrowser.FenEngine.Core
             set => _strictMode = value;
         }
         private bool _strictMode;
-        [ThreadStatic]
-        private static int _legacyGlobalLookupDepth;
-        private const int MaxLegacyGlobalLookupDepth = 16;
-
         public FenEnvironment(FenEnvironment outer = null, bool isLexicalScope = false)
         {
             _store = new Dictionary<string, FenValue>();
@@ -90,11 +86,6 @@ namespace FenBrowser.FenEngine.Core
             if (Outer != null)
             {
                 return Outer.Get(name);
-            }
-
-            if (TryResolveLegacyGlobalFromWindow(name, out var legacyGlobal))
-            {
-                return legacyGlobal;
             }
 
             return FenValue.Undefined;
@@ -309,7 +300,7 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            return TryResolveLegacyGlobalFromWindow(name, out _);
+            return false;
         }
 
         public IDictionary<string, FenValue> InspectVariables()
@@ -359,58 +350,6 @@ namespace FenBrowser.FenEngine.Core
             return env ?? this;
         }
 
-        private bool TryResolveLegacyGlobalFromWindow(string name, out FenValue value)
-        {
-            value = FenValue.Undefined;
-            if (string.IsNullOrEmpty(name))
-            {
-                return false;
-            }
-
-            if (++_legacyGlobalLookupDepth > MaxLegacyGlobalLookupDepth)
-            {
-                _legacyGlobalLookupDepth--;
-                return false;
-            }
-
-            try
-            {
-                FenValue docVal = FenValue.Undefined;
-                IObject docObj = null;
-
-                // Resolve only direct global document binding here; avoid re-entering window named-property plumbing.
-                if (TryGetBindingFromChain("document", out var directDocVal) && directDocVal.IsObject)
-                {
-                    docVal = directDocVal;
-                    docObj = directDocVal.AsObject();
-                }
-
-                if (docObj == null)
-                {
-                    return false;
-                }
-
-                // Legacy named access: id-backed global variables (e.g., <iframe id="iframe"> => window.iframe).
-                var getById = docObj.Get("getElementById");
-                if (!getById.IsFunction)
-                {
-                    return false;
-                }
-
-                var found = getById.AsFunction().Invoke(new[] { FenValue.FromString(name) }, null, docVal);
-                if (!found.IsNull && !found.IsUndefined)
-                {
-                    value = found;
-                    return true;
-                }
-
-                return false;
-            }
-            finally
-            {
-                _legacyGlobalLookupDepth--;
-            }
-        }
         private bool TryGetBindingFromChain(string name, out FenValue value)
         {
             for (var env = this; env != null; env = env.Outer)

@@ -20,6 +20,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly Func<Uri, bool> _uriPolicy;
         private readonly Dictionary<string, string> _importMap = new Dictionary<string, string>(StringComparer.Ordinal);
         public bool ThrowOnEvaluationError { get; set; }
+        public bool EnableNodeModulesResolution { get; set; }
 
         public ModuleLoader(
             FenEnvironment globalEnv,
@@ -77,6 +78,11 @@ namespace FenBrowser.FenEngine.Core
         {
             try 
             {
+                if (string.IsNullOrWhiteSpace(specifier))
+                {
+                    throw CreateUnresolvedModuleSpecifierError(specifier, referrer);
+                }
+
                 Uri baseUri = null;
                 if (!string.IsNullOrEmpty(referrer))
                 {
@@ -102,6 +108,30 @@ namespace FenBrowser.FenEngine.Core
                     return mapResolved;
                 }
 
+                if (IsBareSpecifier(specifier))
+                {
+                    if (EnableNodeModulesResolution)
+                    {
+                        string resolvedPath = ResolveNodeModules(specifier, baseUri);
+                        if (!string.IsNullOrEmpty(resolvedPath))
+                        {
+                            return new Uri(resolvedPath).AbsoluteUri;
+                        }
+                    }
+
+                    throw CreateUnresolvedModuleSpecifierError(specifier, referrer);
+                }
+
+                if (Uri.TryCreate(specifier, UriKind.Absolute, out var absolute))
+                {
+                    if (IsDisallowedModuleUri(absolute, baseUri))
+                    {
+                        throw new UnauthorizedAccessException($"Module resolution blocked: {absolute}");
+                    }
+
+                    return NormalizeResolvedModuleUri(specifier, absolute).AbsoluteUri;
+                }
+
                 if (Uri.TryCreate(baseUri, specifier, out var resolved))
                 {
                     var normalized = NormalizeResolvedModuleUri(specifier, resolved);
@@ -112,28 +142,56 @@ namespace FenBrowser.FenEngine.Core
                     return normalized.AbsoluteUri;
                 }
 
-                // Handle bare module specifiers (e.g., "react", "lodash")
-                // Look for node_modules resolution
-                if (!specifier.StartsWith(".") && !specifier.StartsWith("/") && !specifier.Contains("://"))
-                {
-                    string resolvedPath = ResolveNodeModules(specifier, baseUri);
-                    if (!string.IsNullOrEmpty(resolvedPath))
-                    {
-                        return new Uri(resolvedPath).AbsoluteUri;
-                    }
-                }
-
-                return specifier; // Fallback
+                throw CreateUnresolvedModuleSpecifierError(specifier, referrer);
             }
             catch (UnauthorizedAccessException)
             {
                 throw;
             }
+            catch (FenTypeError)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ModuleLoader] Resolve fallback for '{specifier}' (referrer: '{referrer}'): {ex.Message}", LogCategory.JavaScript);
-                return specifier;
+                FenLogger.Warn($"[ModuleLoader] Resolve failure for '{specifier}' (referrer: '{referrer}'): {ex.Message}", LogCategory.JavaScript);
+                throw CreateUnresolvedModuleSpecifierError(specifier, referrer, ex);
             }
+        }
+
+        private static bool IsBareSpecifier(string specifier)
+        {
+            if (string.IsNullOrWhiteSpace(specifier))
+            {
+                return false;
+            }
+
+            if (specifier.StartsWith("./", StringComparison.Ordinal) ||
+                specifier.StartsWith("../", StringComparison.Ordinal) ||
+                specifier.StartsWith("/", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (Uri.TryCreate(specifier, UriKind.Absolute, out _))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static FenTypeError CreateUnresolvedModuleSpecifierError(string specifier, string referrer, Exception inner = null)
+        {
+            var message = $"TypeError: Failed to resolve module specifier '{specifier}'";
+            if (!string.IsNullOrWhiteSpace(referrer))
+            {
+                message += $" from '{referrer}'";
+            }
+
+            return inner == null
+                ? new FenTypeError(message)
+                : new FenTypeError($"{message}: {inner.Message}");
         }
 
         private bool TryResolveImportMap(Uri baseUri, string specifier, out string resolved)
@@ -354,7 +412,7 @@ namespace FenBrowser.FenEngine.Core
             if (code  == null) throw new InvalidOperationException($"Empty code for module: {path}");
 
             var lexer = new Lexer(code);
-            var parser = new Parser(lexer, isModule: true);
+            var parser = new Parser(lexer, isModule: true, allowRecovery: false);
             var program = parser.ParseProgram();
 
             if (parser.Errors.Count > 0)
@@ -418,7 +476,7 @@ namespace FenBrowser.FenEngine.Core
             if (_cache.TryGetValue(pseudoPath, out var cached)) return cached;
 
             var lexer = new Lexer(code);
-            var parser = new Parser(lexer, isModule: true);
+            var parser = new Parser(lexer, isModule: true, allowRecovery: false);
             var program = parser.ParseProgram();
 
             if (parser.Errors.Count > 0)

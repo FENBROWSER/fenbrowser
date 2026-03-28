@@ -9669,20 +9669,8 @@ namespace FenBrowser.FenEngine.Core
             window.Set("requestIdleCallback", (FenValue)GetGlobal("requestIdleCallback"));
             window.Set("cancelIdleCallback", (FenValue)GetGlobal("cancelIdleCallback"));
 
-            // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ queueMicrotask at global scope Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-            SetGlobal("queueMicrotask", FenValue.FromFunction(new FenFunction("queueMicrotask", (args, thisVal) =>
-            {
-                if (args.Length > 0 && args[0].IsFunction)
-                {
-                    var cb = args[0].AsFunction();
-                    EventLoop.EventLoopCoordinator.Instance.ScheduleMicrotask(() =>
-                    {
-                        cb?.Invoke(Array.Empty<FenValue>(), _context);
-                    });
-                }
-
-                return FenValue.Undefined;
-            })));
+            // Mirror the canonical queueMicrotask binding onto window without re-registering it.
+            window.Set("queueMicrotask", (FenValue)GetGlobal("queueMicrotask"));
 
             // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ btoa / atob Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
             SetGlobal("btoa", FenValue.FromFunction(new FenFunction("btoa", (args, thisVal) =>
@@ -11057,7 +11045,7 @@ namespace FenBrowser.FenEngine.Core
                 if (existingIntl.IsUndefined || existingIntl.IsNull || !existingIntl.IsObject)
                 {
                     intlFallback = new FenObject();
-                    SetGlobal("Intl", FenValue.FromObject(intlFallback));
+                    _globalEnv.Set("Intl", FenValue.FromObject(intlFallback));
                 }
                 else
                 {
@@ -11129,57 +11117,9 @@ namespace FenBrowser.FenEngine.Core
             // ArrayBuffer, TypedArray, and DataView are registered with full JsArrayBuffer/JsTypedArray
             // implementations in the typed-arrays section below (§14265+). No placeholder needed here.
 
-            // Promise - Updated Full Spec Implementation (Phase 1)
-            var promiseCtor = new FenFunction("Promise", (FenValue[] args, FenValue thisVal) =>
-            {
-                if (args.Length == 0 || !args[0].IsFunction)
-                    throw new FenTypeError("TypeError: Promise resolver undefined is not a function");
-                return FenValue.FromObject(new JsPromise(args[0], _context));
-            });
-            var promiseObj = FenValue.FromFunction(promiseCtor);
-            var promiseStatics = promiseObj.AsObject();
-            promiseStatics.Set("resolve", FenValue.FromFunction(new FenFunction("resolve",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.Resolve(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
-            promiseStatics.Set("reject", FenValue.FromFunction(new FenFunction("reject",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.Reject(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
-            promiseStatics.Set("all", FenValue.FromFunction(new FenFunction("all",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.All(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
-            promiseStatics.Set("race", FenValue.FromFunction(new FenFunction("race",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.Race(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
-            promiseStatics.Set("allSettled", FenValue.FromFunction(new FenFunction("allSettled",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.AllSettled(args.Length > 0 ? args[0] : FenValue.Undefined,
-                        _context)))));
-            promiseStatics.Set("any", FenValue.FromFunction(new FenFunction("any",
-                (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromObject(JsPromise.Any(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
-            SetGlobal("Promise", promiseObj);
+            // Canonical Promise registration.
+            SetGlobal("Promise", FenValue.FromFunction(CreatePromiseConstructorModern()));
 
-            // queueMicrotask
-            SetGlobal("queueMicrotask", FenValue.FromFunction(new FenFunction("queueMicrotask",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    if (args.Length > 0 && args[0].IsFunction)
-                    {
-                        var callback = args[0].AsFunction();
-                        Core.EventLoop.EventLoopCoordinator.Instance.ScheduleMicrotask(() =>
-                        {
-                            try
-                            {
-                                callback.Invoke(new FenValue[0], _context);
-                            }
-                            catch
-                            {
-                            }
-                        });
-                    }
-
-                    return FenValue.Undefined;
-                })));
 
 
             // ES6 URL and URLSearchParams - Part of Web API but essential for modern JS
@@ -11998,8 +11938,7 @@ namespace FenBrowser.FenEngine.Core
             /* [PERF-REMOVED] */
             SetGlobal("JSON", FenValue.FromObject(json));
 
-            // Intl (Phase 2)
-            SetGlobal("Intl", FenValue.FromObject(JsIntl.CreateIntlObject(_context)));
+            // Intl is registered once through the canonical earlier path.
 
 
             /* [PERF-REMOVED] */
@@ -12656,10 +12595,7 @@ namespace FenBrowser.FenEngine.Core
             promiseStatic.Set("reject", FenValue.FromFunction(new FenFunction("reject", (args, thisVal) =>
                 FenValue.FromObject(JsPromise.Reject(args.Length > 0 ? args[0] : FenValue.Undefined, _context)))));
 
-            if (!GetGlobal("Promise").IsObject && !GetGlobal("Promise").IsFunction)
-            {
-                SetGlobal("Promise", FenValue.FromObject(promiseStatic));
-            }
+            // Promise is registered once through the canonical earlier path.
 
             // Delegate to the instance methods on JsWeakMap/JsWeakSet which use FenTypeError.
             void PopulateWeakMapFromConstructorArg(JsWeakMap weakMap, FenValue iterable)
@@ -12916,8 +12852,7 @@ namespace FenBrowser.FenEngine.Core
             IndexedDBService.RegisterIDBKeyRange(idbKeyRangeObj);
             SetGlobal("IDBKeyRange", idbKeyRangeObj.Get("IDBKeyRange"));
 
-            // Promise - Full Promise implementation with static methods
-            SetGlobal("Promise", FenValue.FromFunction(CreatePromiseConstructorModern()));
+            // Promise is already registered through the canonical earlier path.
 
             // ============================================
             // TIER-2: WeakRef / FinalizationRegistry
