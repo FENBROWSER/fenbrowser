@@ -226,6 +226,28 @@ namespace FenBrowser.Tests.DOM
         }
 
         [Fact]
+        public void DispatchEvent_OnHandlerTimeout_DoesNotEscape()
+        {
+            var target = new Element("button");
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext(
+                new PermissionManager(JsPermissions.StandardWeb),
+                new TinyResourceLimits());
+            var wrappedTarget = DomWrapperFactory.Wrap(target, context).AsObject();
+
+            wrappedTarget.Set("onmousemove", FenValue.FromFunction(new FenFunction("onmousemove", (args, thisVal) =>
+            {
+                Thread.Sleep(30);
+                context.CheckExecutionTimeLimit();
+                return FenValue.Undefined;
+            })), context);
+
+            var evtDispatch = new DomEvent("mousemove", bubbles: true, cancelable: false);
+            var ex = Record.Exception(() => FenEngineEventTarget.DispatchEvent(target, evtDispatch, context));
+
+            Assert.Null(ex);
+        }
+
+        [Fact]
         public void DisabledControls_DispatchEvent_And_Click_RuntimeSemantics()
         {
             var runtime = new FenRuntimeCore();
@@ -355,6 +377,7 @@ namespace FenBrowser.Tests.DOM
         {
             public int MaxCallStackDepth => 100;
             public TimeSpan MaxExecutionTime => TimeSpan.FromMilliseconds(10);
+            public long MaxInstructionCount => 100_000_000;
             public long MaxTotalMemory => 50 * 1024 * 1024;
             public int MaxStringLength => 1_000_000;
             public int MaxArrayLength => 100_000;
