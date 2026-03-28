@@ -93,8 +93,8 @@ Current count in this file:
 
 - `29` total numbered findings
 - `7` strengths already present: `#5`, `#6`, `#7`, `#8`, `#9`, `#10`, `#26`
-- `5` resolved remediation findings: `#15`, `#16`, `#17`, `#18`, `#19`
-- `15` active remediation findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#20`, `#21`, `#22`, `#23`, `#24`, `#25`, `#27`
+- `10` resolved remediation findings: `#15`, `#16`, `#17`, `#18`, `#19`, `#20`, `#21`, `#22`, `#23`, `#24`
+- `10` active remediation findings: `#1`, `#2`, `#3`, `#4`, `#11`, `#12`, `#13`, `#14`, `#25`, `#27`
 - `2` simulation-program findings: `#28`, `#29`
 
 ## Findings
@@ -451,106 +451,108 @@ Verification:
 - `FenBrowser.Tests/Workers/ServiceWorkerLifecycleTests.cs:196`
 - `dotnet test FenBrowser.Tests --filter ServiceWorkerLifecycleTests --no-restore`
 
-### Finding #20 - Worker script prefetching still discovers `importScripts()` through regex scanning
+### ~~Finding #20 - Worker script prefetching still discovers `importScripts()` through regex scanning~~
 
-Status: High gap
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:44-49`
-- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:475-483`
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:391`
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:401`
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:428`
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs:437`
 
-Assessment:
+Resolution:
 
-`WorkerRuntime` uses `ImportScriptsCallRegex` and `ImportScriptsLiteralUrlRegex` to discover dependency URLs. This is a practical bootstrap shortcut, but it is not parser-driven or browser-grade. It will miss dynamic patterns and can mis-handle comments, strings, or edge-case syntax.
+`WorkerRuntime` no longer scans source text to discover `importScripts()` dependencies. Bootstrap loading now caches only the entry script, and `importScripts()` synchronously resolves and fetches the requested URL at execution time with cache reuse. That removes the regex path entirely, fixes dynamic specifiers, and avoids comment/string false positives.
 
-Required direction:
+Verification:
 
-Move worker script dependency discovery to the parser/runtime pipeline instead of regex extraction.
+- `FenBrowser.Tests/Workers/WorkerTests.cs:369`
+- `FenBrowser.Tests/Workers/WorkerTests.cs:416`
+- `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
-### Finding #21 - `JavaScriptEngine` still carries an apparently dead compatibility layer
+### ~~Finding #21 - `JavaScriptEngine` still carries an apparently dead compatibility layer~~
 
-Status: High debt
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:2438-2447`
-- Search result: `HandlePhase123Builtins(` appears only at `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:2439`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:2361`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:2438`
 
-Assessment:
+Resolution:
 
-`HandlePhase123Builtins(...)` is still present, but the audit found no call sites in the engine source outside its definition. That makes it compatibility residue, not a live architectural path. Keeping dead execution layers around a browser engine is risky because they preserve outdated assumptions.
+The dead `HandlePhase123Builtins(...)` compatibility layer was removed from `JavaScriptEngine`. The live engine path now moves directly from the `TryRunInline(...)` helpers into the real runtime/history helpers and `Evaluate(...)`, with a cleanup guard test ensuring the retired handler does not return.
 
-Required direction:
+Verification:
 
-Either remove it or reconnect it intentionally with tests. Dead compatibility code should not survive by inertia.
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs:11`
+- `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
-### Finding #22 - `UseMiniPrattEngine` is configuration residue, not a real runtime mode
+### ~~Finding #22 - `UseMiniPrattEngine` is configuration residue, not a real runtime mode~~
 
-Status: High debt
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:1581`
-- Search results:
-  - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:1581`
-  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs:1631`
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs:1630`
 
-Assessment:
+Resolution:
 
-The flag still exists and gets set, but the audit did not find an actual second execution pipeline behind it. This is a maintenance liability because it suggests a capability boundary that no longer clearly exists.
+`UseMiniPrattEngine` was removed from `JavaScriptEngine`, and the last remaining setter was deleted from `CustomHtmlEngine`. The engine no longer advertises a second parser/runtime mode that does not actually exist.
 
-Required direction:
+Verification:
 
-Either implement a real alternate engine mode or delete the flag.
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs:20`
+- `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
-### Finding #23 - `RunInline()` is only a wrapper over `Evaluate()`
+### ~~Finding #23 - `RunInline()` is only a wrapper over `Evaluate()`~~
 
-Status: Medium debt
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs:18-45`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Methods.cs:23`
+- `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs:12`
+- `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs:21`
 
-Assessment:
+Resolution:
 
-`RunInline()` logs, checks sandbox state, and then delegates straight to `Evaluate(code)`. That is acceptable if it is the intended design, but it means any notion of a separate lightweight inline execution path is stale.
+`RunInline()` is now explicitly documented as the canonical inline-script entry point that intentionally routes through `Evaluate(...)`, and the dead `JavaScriptRuntime` wrapper was deleted. That keeps one authoritative execution path while preserving a stable inline-script entry point for host code.
 
-Required direction:
+Verification:
 
-Document this as the intended path or remove leftover abstractions that imply a different engine.
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs:29`
+- `FenBrowser.Tests/Engine/JsRuntimeAbstractionTests.cs:25`
+- `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
-### Finding #24 - Several host/browser APIs are still approximations or mocks
+### ~~Finding #24 - Several host/browser APIs are still approximations or mocks~~
 
-Status: High gap
+Status: Resolved on `2026-03-28`
 
-Evidence:
+Implementation:
 
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:1419-1423`
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4711-4712`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:6813-6830`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:9647-9671`
-- `FenBrowser.FenEngine/Core/FenRuntime.cs:9697-9713`
-- `FenBrowser.FenEngine/Core/Types/JsIntl.cs:378-379`
-- `FenBrowser.FenEngine/Core/Types/JsIntl.cs:662-673`
-- `FenBrowser.FenEngine/Core/Types/JsIntl.cs:1216-1225`
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs:9`
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs:16`
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs:44`
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs:84`
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs:97`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:1425`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4325`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:4477`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:6816`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:9650`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs:9701`
 
-Assessment:
+Resolution:
 
-Examples found in the current tree:
+Approximate host surfaces are now explicitly classified in `HostApiSurfaceCatalog`. `navigator.userAgentData`, `crypto.subtle`, `window.open`, `window.matchMedia`, and `window.requestIdleCallback` are marked as compatibility shims, while `Intl` is marked as a production implementation with parity notes. The active implementations now trace through that catalog so the classification is part of the runtime rather than a loose audit note.
 
-- `navigator.userAgentData` is a simplified mock.
-- Nested `JavaScriptEngine.JsCrypto` still exposes `subtle` as a minimal mock object.
-- `window.open` still returns a same-window fallback.
-- `matchMedia` is hard-coded around fixed assumptions.
-- `requestIdleCallback` returns a synthetic 50 ms `timeRemaining()`.
-- `Intl` has explicit simplifications in date-part fallback, CLDR category coverage, and grapheme segmentation.
+Verification:
 
-These are acceptable compatibility layers for now, but they must not be mistaken for browser-grade implementations.
-
-Required direction:
-
-Classify each of these surfaces explicitly as either compatibility shim, simulation, or production implementation, then prioritize replacements accordingly.
+- `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs:39`
+- `dotnet test FenBrowser.Tests --filter "WorkerTests|JsRuntimeAbstractionTests|JavaScriptEngineCleanupTests" --no-restore`
 
 ### Finding #25 - The parser still favors permissive recovery over strict browser execution semantics
 
@@ -696,7 +698,7 @@ These findings should be tackled immediately after `P0`, or in parallel when the
 - `#11` browser-divergent `node_modules` module resolution
 - `#12` silent fallback to raw unresolved specifiers
 - `#14` duplicated and overriding global registration in `FenRuntime`
-- `#20` regex-based `importScripts()` discovery
+- ~~`#20` regex-based `importScripts()` discovery~~ resolved `2026-03-28`
 - `#25` permissive parser recovery in execution paths
 - `#27` conformance gap and static-state limitations in the Test262 path
 
@@ -708,12 +710,12 @@ Required bar for `P1` closure:
 
 ### P2 - Cleanup, host hardening, and residue removal
 
-These findings still matter, but they come after semantic/runtime unification:
+These findings still matter, but the current tranche closed the cleanup work that was already clearly ready:
 
-- `#21` dead compatibility layer in `JavaScriptEngine`
-- `#22` `UseMiniPrattEngine` residue
-- `#23` stale `RunInline()` abstraction
-- `#24` host API approximations and mocks
+- ~~`#21` dead compatibility layer in `JavaScriptEngine`~~ resolved `2026-03-28`
+- ~~`#22` `UseMiniPrattEngine` residue~~ resolved `2026-03-28`
+- ~~`#23` stale `RunInline()` abstraction~~ resolved `2026-03-28`
+- ~~`#24` host API approximations and mocks~~ resolved `2026-03-28`
 
 Required bar for `P2` closure:
 
