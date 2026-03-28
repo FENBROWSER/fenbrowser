@@ -714,14 +714,106 @@ namespace FenBrowser.FenEngine.Scripting
         
         public ImageData getImageData(int sx, int sy, int sw, int sh)
         {
+            // WHATWG Canvas §4.12.5.1.15: read pixel data from the backing bitmap
+            if (sw <= 0 || sh <= 0)
+                throw new FenBrowser.FenEngine.Errors.FenInternalError("IndexSizeError: width/height must be positive");
+
             var data = new ImageData(sw, sh);
-            // Would need to read from bitmap synchronously - complex with Avalonia's threading
+            EnsureSurface();
+            if (_bitmap == null) return data;
+
+            // Read pixels from the bitmap in RGBA order
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    int bx = sx + x;
+                    int by = sy + y;
+                    int dstIdx = (y * sw + x) * 4;
+
+                    if (bx >= 0 && bx < _bitmap.Width && by >= 0 && by < _bitmap.Height)
+                    {
+                        var pixel = _bitmap.GetPixel(bx, by);
+                        // SKColor is ARGB; ImageData expects RGBA with un-premultiplied alpha
+                        byte a = pixel.Alpha;
+                        if (a == 0)
+                        {
+                            data.Data[dstIdx] = 0;
+                            data.Data[dstIdx + 1] = 0;
+                            data.Data[dstIdx + 2] = 0;
+                            data.Data[dstIdx + 3] = 0;
+                        }
+                        else
+                        {
+                            // Un-premultiply alpha (bitmap uses premul)
+                            data.Data[dstIdx] = (byte)Math.Min(255, pixel.Red * 255 / a);
+                            data.Data[dstIdx + 1] = (byte)Math.Min(255, pixel.Green * 255 / a);
+                            data.Data[dstIdx + 2] = (byte)Math.Min(255, pixel.Blue * 255 / a);
+                            data.Data[dstIdx + 3] = a;
+                        }
+                    }
+                    // Out-of-bounds pixels remain transparent black (zero-initialized)
+                }
+            }
+
             return data;
         }
-        
+
         public void putImageData(IObject imageData, int dx, int dy)
         {
-            // Would need to write to bitmap
+            // WHATWG Canvas §4.12.5.1.16: write pixel data to the backing bitmap
+            EnsureSurface();
+            if (_bitmap == null || imageData == null) return;
+
+            var widthVal = imageData.Get("width");
+            var heightVal = imageData.Get("height");
+            var dataVal = imageData.Get("data");
+            if (!widthVal.IsNumber || !heightVal.IsNumber) return;
+
+            int sw = (int)widthVal.ToNumber();
+            int sh = (int)heightVal.ToNumber();
+
+            // Extract pixel bytes — either from ImageData.Data directly or from a JS array
+            byte[] pixelData = null;
+            if (imageData is ImageData imgData)
+            {
+                pixelData = imgData.Data;
+            }
+            else if (dataVal.IsObject)
+            {
+                var dataObj = dataVal.AsObject();
+                var lenVal = dataObj.Get("length");
+                if (lenVal.IsNumber)
+                {
+                    int len = (int)lenVal.ToNumber();
+                    pixelData = new byte[len];
+                    for (int i = 0; i < len; i++)
+                        pixelData[i] = (byte)dataObj.Get(i.ToString()).ToNumber();
+                }
+            }
+
+            if (pixelData == null) return;
+
+            // Write pixels to the bitmap (RGBA → premultiplied ARGB for SKBitmap)
+            for (int y = 0; y < sh; y++)
+            {
+                for (int x = 0; x < sw; x++)
+                {
+                    int bx = dx + x;
+                    int by = dy + y;
+                    int srcIdx = (y * sw + x) * 4;
+
+                    if (bx >= 0 && bx < _bitmap.Width && by >= 0 && by < _bitmap.Height &&
+                        srcIdx + 3 < pixelData.Length)
+                    {
+                        byte r = pixelData[srcIdx];
+                        byte g = pixelData[srcIdx + 1];
+                        byte b = pixelData[srcIdx + 2];
+                        byte a = pixelData[srcIdx + 3];
+                        _bitmap.SetPixel(bx, by, new SKColor(r, g, b, a));
+                    }
+                }
+            }
         }
         
         public ImageData createImageData(int sw, int sh)

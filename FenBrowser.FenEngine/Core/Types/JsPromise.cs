@@ -103,6 +103,7 @@ namespace FenBrowser.FenEngine.Core.Types
         {
             _context = context;
             InitPrototype();
+            ApplyRealmPromisePrototype();
 
             if (executor != null && executor.IsFunction)
             {
@@ -127,6 +128,7 @@ namespace FenBrowser.FenEngine.Core.Types
         {
             _context = context;
             InitPrototype();
+            ApplyRealmPromisePrototype();
         }
 
         private void InitPrototype()
@@ -140,6 +142,24 @@ namespace FenBrowser.FenEngine.Core.Types
             
             // Tag identifying this as a Promise
             Set("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) => FenValue.FromString("[object Promise]"))));
+        }
+
+        private void ApplyRealmPromisePrototype()
+        {
+            if (_context?.Environment != null)
+            {
+                IObject promisePrototype = null;
+                var promiseCtor = _context.Environment.Get("Promise");
+                if (promiseCtor.IsObject || promiseCtor.IsFunction)
+                {
+                    promisePrototype = promiseCtor.AsObject()?.Get("prototype", _context).AsObject();
+                }
+
+                if (promisePrototype != null && !ReferenceEquals(promisePrototype, this))
+                {
+                    SetPrototype(promisePrototype);
+                }
+            }
         }
 
         // --- Core Logic ---

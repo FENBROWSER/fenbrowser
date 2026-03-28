@@ -6,6 +6,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
@@ -361,15 +362,18 @@ namespace FenBrowser.FenEngine.Core
                 throw new FenSyntaxError($"Module parse error in '{path}': {string.Join(", ", parser.Errors)}");
             }
 
-            // Pre-cache an export object before evaluation so cyclic module graphs can resolve.
-            var exportObj = new FenObject();
-            _cache[path] = exportObj;
+            // Pre-cache a placeholder export object before evaluation so cyclic module graphs
+            // can resolve partial bindings during linking (ECMA-262 §16.2.1.5.2 InnerModuleLinking).
+            // This placeholder will be replaced by the final ModuleNamespaceObject after evaluation.
+            var placeholderObj = new FenObject();
+            _cache[path] = placeholderObj;
 
             try
             {
                 // Create module environment
                 var moduleEnv = new FenEnvironment(_globalEnv);
-                moduleEnv.AttachLiveModuleExports(exportObj);
+                // Attach placeholder for SyncLiveModuleExport during evaluation
+                moduleEnv.AttachLiveModuleExports(placeholderObj);
 
                 // Set current module path for nested imports
                 var previousModulePath = _context.CurrentModulePath;
@@ -378,6 +382,7 @@ namespace FenBrowser.FenEngine.Core
                 try
                 {
                     PrepareModuleImports(program, moduleEnv, path);
+                    DeclareModuleTDZBindings(program, moduleEnv);
                     ExecuteModuleBytecode(program, moduleEnv);
                 }
                 finally
@@ -386,10 +391,21 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                FinalizeModuleExports(program, moduleEnv, exportObj);
-                exportObj.Freeze();
+                // Build the final ModuleNamespaceObject with live accessor bindings
+                // (ECMA-262 §10.4.6 Module Namespace Exotic Objects)
+                var exportBindings = CollectExportBindings(program, moduleEnv);
+                var namespaceObj = new ModuleNamespaceObject(moduleEnv, exportBindings);
 
-                return exportObj;
+                // Apply export * aggregation with live star bindings
+                ApplyExportStarAggregationsLive(program, moduleEnv, namespaceObj, exportBindings.Keys);
+
+                // Finalize: make non-extensible (ECMA-262 §10.4.6)
+                namespaceObj.SealNamespace();
+
+                // Replace placeholder in cache with the real namespace object
+                _cache[path] = namespaceObj;
+
+                return namespaceObj;
             }
             catch
             {
@@ -410,15 +426,15 @@ namespace FenBrowser.FenEngine.Core
                 throw new FenSyntaxError($"Module parse error in '{pseudoPath}': {string.Join(", ", parser.Errors)}");
             }
 
-            // Pre-cache an export object before evaluation so cyclic module graphs can resolve.
-            var exportObj = new FenObject();
-            _cache[pseudoPath] = exportObj;
+            // Pre-cache placeholder for cyclic module graph resolution
+            var placeholderObj = new FenObject();
+            _cache[pseudoPath] = placeholderObj;
 
             try
             {
                 // Create module environment
                 var moduleEnv = new FenEnvironment(_globalEnv);
-                moduleEnv.AttachLiveModuleExports(exportObj);
+                moduleEnv.AttachLiveModuleExports(placeholderObj);
 
                 // Set current module path for nested imports
                 var previousModulePath = _context.CurrentModulePath;
@@ -427,6 +443,7 @@ namespace FenBrowser.FenEngine.Core
                 try
                 {
                     PrepareModuleImports(program, moduleEnv, pseudoPath);
+                    DeclareModuleTDZBindings(program, moduleEnv);
                     ExecuteModuleBytecode(program, moduleEnv);
                 }
                 finally
@@ -435,10 +452,20 @@ namespace FenBrowser.FenEngine.Core
                     _context.CurrentModulePath = previousModulePath;
                 }
 
-                FinalizeModuleExports(program, moduleEnv, exportObj);
-                exportObj.Freeze();
+                // Build the final ModuleNamespaceObject with live accessor bindings
+                var exportBindings = CollectExportBindings(program, moduleEnv);
+                var namespaceObj = new ModuleNamespaceObject(moduleEnv, exportBindings);
 
-                return exportObj;
+                // Apply export * aggregation with live star bindings
+                ApplyExportStarAggregationsLive(program, moduleEnv, namespaceObj, exportBindings.Keys);
+
+                // Finalize: make non-extensible
+                namespaceObj.SealNamespace();
+
+                // Replace placeholder in cache
+                _cache[pseudoPath] = namespaceObj;
+
+                return namespaceObj;
             }
             catch
             {
@@ -458,7 +485,29 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (statement is ImportDeclaration importDecl)
                 {
-                    BindModuleNamespace(importDecl.Source, modulePath, moduleEnv);
+                    var namespaceObj = BindModuleNamespace(importDecl.Source, modulePath, moduleEnv);
+
+                    // ECMA-262 §9.1.1.5.5 CreateImportBinding:
+                    // Create indirect bindings so imported names read live from the namespace.
+                    if (namespaceObj != null && importDecl.Specifiers != null)
+                    {
+                        foreach (var spec in importDecl.Specifiers)
+                        {
+                            var localName = spec?.Local?.Value;
+                            if (string.IsNullOrEmpty(localName))
+                                continue;
+
+                            if (string.Equals(spec.Imported?.Value, "*", StringComparison.Ordinal))
+                            {
+                                // import * as ns — the namespace binding is already set via __fen_module_ prefix.
+                                // No indirect binding needed; the bytecode reads the whole object.
+                                continue;
+                            }
+
+                            var importedName = spec?.Imported?.Value ?? "default";
+                            moduleEnv.CreateImportBinding(localName, namespaceObj, importedName);
+                        }
+                    }
                     continue;
                 }
 
@@ -469,16 +518,17 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private void BindModuleNamespace(string source, string modulePath, FenEnvironment moduleEnv)
+        private IObject BindModuleNamespace(string source, string modulePath, FenEnvironment moduleEnv)
         {
             if (string.IsNullOrEmpty(source) || moduleEnv == null)
             {
-                return;
+                return null;
             }
 
             string resolvedPath = Resolve(source, modulePath ?? string.Empty);
             var exports = LoadModule(resolvedPath);
             moduleEnv.Set(GetModuleBindingName(source), FenValue.FromObject(exports));
+            return exports;
         }
 
         private void ExecuteModuleBytecode(Program program, FenEnvironment moduleEnv)
@@ -495,41 +545,136 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
-        private static void FinalizeModuleExports(Program program, FenEnvironment moduleEnv, FenObject exportObj)
+        /// <summary>
+        /// ECMA-262 §16.2.1.6.4: Declare TDZ bindings for let/const exported variables
+        /// before module evaluation. This ensures that cyclic imports accessing
+        /// not-yet-initialized bindings throw ReferenceError instead of returning undefined.
+        /// Function declarations and var are hoisted and do not participate in TDZ.
+        /// </summary>
+        private static void DeclareModuleTDZBindings(Program program, FenEnvironment moduleEnv)
         {
-            if (moduleEnv == null || exportObj == null)
-            {
+            if (program?.Statements == null || moduleEnv == null)
                 return;
+
+            foreach (var statement in program.Statements)
+            {
+                if (statement is not ExportDeclaration exportDecl)
+                    continue;
+
+                if (exportDecl.Declaration is LetStatement letStmt &&
+                    (letStmt.Kind == DeclarationKind.Let || letStmt.Kind == DeclarationKind.Const))
+                {
+                    var name = letStmt.Name?.Value;
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        moduleEnv.DeclareTDZ(name);
+                    }
+                }
+                else if (exportDecl.Declaration is ClassStatement classStmt)
+                {
+                    // Class declarations also have TDZ semantics (like let)
+                    var name = classStmt.Name?.Value;
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        moduleEnv.DeclareTDZ(name);
+                    }
+                }
+                // Function declarations are hoisted — no TDZ
+                // var declarations are hoisted — no TDZ
+                // export default expr uses __fen_export_default — no TDZ needed
+            }
+        }
+
+        /// <summary>
+        /// Collects the mapping from exported name → source variable name in the environment.
+        /// Uses AST declarations to determine the local binding for each export,
+        /// falling back to __fen_export_ prefixed names (ECMA-262 §16.2.3).
+        /// </summary>
+        private static Dictionary<string, string> CollectExportBindings(Program program, FenEnvironment moduleEnv)
+        {
+            var bindings = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            if (moduleEnv == null)
+                return bindings;
+
+            // First pass: use AST to determine local source variable for each export
+            if (program?.Statements != null)
+            {
+                foreach (var statement in program.Statements)
+                {
+                    if (statement is not ExportDeclaration exportDecl)
+                        continue;
+
+                    // export default expr → export name "default", binding via __fen_export_default
+                    if (exportDecl.DefaultExpression != null)
+                    {
+                        bindings["default"] = "__fen_export_default";
+                        continue;
+                    }
+
+                    // export const/let/var/function/class name → local name is the declaration name
+                    if (exportDecl.Declaration != null)
+                    {
+                        string localName = null;
+                        if (exportDecl.Declaration is LetStatement letStmt)
+                            localName = letStmt.Name?.Value;
+                        else if (exportDecl.Declaration is ClassStatement classStmt)
+                            localName = classStmt.Name?.Value;
+                        else if (exportDecl.Declaration is FunctionDeclarationStatement funcStmt)
+                            localName = funcStmt.Function?.Name;
+
+                        if (!string.IsNullOrEmpty(localName))
+                            bindings[localName] = localName;
+
+                        continue;
+                    }
+
+                    // export { x, y as z } — no source means local re-export
+                    if (exportDecl.Specifiers != null && string.IsNullOrEmpty(exportDecl.Source))
+                    {
+                        foreach (var spec in exportDecl.Specifiers)
+                        {
+                            var local = spec?.Local?.Value;
+                            var exported = spec?.Exported?.Value ?? local;
+                            if (!string.IsNullOrEmpty(local) && !string.IsNullOrEmpty(exported))
+                                bindings[exported] = local;
+                        }
+                    }
+                    // export { x } from '...' and export * from '...' are handled separately
+                    // (star aggregation or re-export via namespace)
+                }
             }
 
+            // Second pass: pick up any __fen_export_ bindings that weren't found via AST
+            // (covers edge cases where bytecode creates export bindings not visible in AST)
             const string exportPrefix = "__fen_export_";
-            var explicitExportNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kvp in moduleEnv.InspectVariables())
             {
                 if (!kvp.Key.StartsWith(exportPrefix, StringComparison.Ordinal))
-                {
                     continue;
-                }
 
                 var exportName = kvp.Key.Substring(exportPrefix.Length);
-                explicitExportNames.Add(exportName);
-                exportObj.Set(exportName, kvp.Value);
+                if (!bindings.ContainsKey(exportName))
+                    bindings[exportName] = kvp.Key;
             }
 
-            ApplyExportStarAggregations(program, moduleEnv, exportObj, explicitExportNames);
+            return bindings;
         }
 
-        private static void ApplyExportStarAggregations(
+        /// <summary>
+        /// Applies export * aggregation using live accessor bindings on the namespace object.
+        /// ECMA-262 §16.2.1.7.2 GetExportedNames + §16.2.1.7.3 ResolveExport.
+        /// </summary>
+        private void ApplyExportStarAggregationsLive(
             Program program,
             FenEnvironment moduleEnv,
-            FenObject exportObj,
-            ISet<string> explicitExportNames)
+            ModuleNamespaceObject namespaceObj,
+            ICollection<string> explicitExportNames)
         {
-            if (program?.Statements == null || moduleEnv == null || exportObj == null)
-            {
+            if (program?.Statements == null || moduleEnv == null || namespaceObj == null)
                 return;
-            }
 
+            var explicitSet = new HashSet<string>(explicitExportNames, StringComparer.Ordinal);
             var ambiguousNames = new HashSet<string>(StringComparer.Ordinal);
             var starExportOwners = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -538,47 +683,41 @@ namespace FenBrowser.FenEngine.Core
                 if (statement is not ExportDeclaration exportDeclaration ||
                     string.IsNullOrEmpty(exportDeclaration.Source) ||
                     exportDeclaration.Specifiers == null)
-                {
                     continue;
-                }
 
                 foreach (var specifier in exportDeclaration.Specifiers)
                 {
                     if (!IsExportStarAggregation(specifier))
-                    {
                         continue;
-                    }
 
                     var moduleBindingName = GetModuleBindingName(exportDeclaration.Source);
                     var namespaceValue = moduleEnv.Get(moduleBindingName);
                     if (!namespaceValue.IsObject)
-                    {
                         continue;
-                    }
 
-                    var namespaceObject = namespaceValue.AsObject();
-                    foreach (var exportedName in namespaceObject.Keys())
+                    var sourceNamespace = namespaceValue.AsObject();
+                    foreach (var exportedName in sourceNamespace.Keys())
                     {
                         if (string.IsNullOrEmpty(exportedName) ||
                             string.Equals(exportedName, "default", StringComparison.Ordinal) ||
-                            explicitExportNames.Contains(exportedName) ||
+                            // ECMA-262 §10.4.6: @@toStringTag is an internal property, skip
+                            exportedName.StartsWith("Symbol(", StringComparison.Ordinal) ||
+                            explicitSet.Contains(exportedName) ||
                             ambiguousNames.Contains(exportedName))
-                        {
                             continue;
-                        }
 
                         if (starExportOwners.TryGetValue(exportedName, out var existingOwner))
                         {
                             if (!string.Equals(existingOwner, exportDeclaration.Source, StringComparison.Ordinal))
                             {
-                                exportObj.Delete(exportedName);
+                                namespaceObj.RemoveStarBinding(exportedName);
                                 ambiguousNames.Add(exportedName);
                             }
-
                             continue;
                         }
 
-                        exportObj.Set(exportedName, namespaceObject.Get(exportedName));
+                        // Install a live accessor that reads through the source namespace
+                        namespaceObj.InstallStarBinding(exportedName, sourceNamespace, exportedName);
                         starExportOwners[exportedName] = exportDeclaration.Source;
                     }
                 }

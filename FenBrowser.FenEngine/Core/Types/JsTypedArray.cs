@@ -11,15 +11,35 @@ namespace FenBrowser.FenEngine.Core.Types
     {
         public byte[] Data { get; private set; }
         private bool _detached = false;
+        public bool IsShared { get; }
         // ECMA-262 §9.4.5.7: IsDetachedBuffer
         public bool IsDetached => _detached;
 
-        public JsArrayBuffer(int length)
+        /// <summary>
+        /// ECMA-262 §25.1.2.1: DetachArrayBuffer — neuters this buffer.
+        /// Used by structured clone transfer algorithm (WHATWG HTML §2.7.3).
+        /// </summary>
+        public void Detach()
         {
+            if (IsShared)
+                throw new FenTypeError("TypeError: Cannot detach a SharedArrayBuffer");
+            if (_detached) return;
+            _detached = true;
+            Data = Array.Empty<byte>();
+            Set("byteLength", FenValue.FromNumber(0));
+            Set("detached", FenValue.FromBoolean(true));
+        }
+
+        public JsArrayBuffer(int length, bool isShared = false)
+        {
+            IsShared = isShared;
             Data = new byte[length];
             Set("byteLength", FenValue.FromNumber(length));
             Set("detached", FenValue.FromBoolean(false));
+            Set(JsSymbol.ToStringTag.ToPropertyKey(), FenValue.FromString(IsShared ? "SharedArrayBuffer" : "ArrayBuffer"));
             Set("slice", FenValue.FromFunction(new FenFunction("slice", Slice)));
+            if (!IsShared)
+            {
             // ES2024: transfer([newByteLength]) — detaches this buffer, returns new one with the data
             Set("transfer", FenValue.FromFunction(new FenFunction("transfer", (args, thisVal) =>
             {
@@ -47,6 +67,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 Set("detached", FenValue.FromBoolean(true));
                 return FenValue.FromObject(newBuf);
             })));
+            }
         }
 
         private FenValue Slice(FenValue[] args, FenValue thisVal)
@@ -62,7 +83,7 @@ namespace FenBrowser.FenEngine.Core.Types
             if (end < begin) end = begin;
 
             var newLen = end - begin;
-            var newBuf = new JsArrayBuffer(newLen);
+            var newBuf = new JsArrayBuffer(newLen, IsShared);
             Array.Copy(Data, begin, newBuf.Data, 0, newLen);
             return FenValue.FromObject(newBuf);
         }

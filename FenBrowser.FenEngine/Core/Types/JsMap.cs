@@ -35,6 +35,12 @@ namespace FenBrowser.FenEngine.Core.Types
         private readonly Dictionary<IValue, IValue> _storage = new Dictionary<IValue, IValue>(new JsValueEqualityComparer());
         private readonly IExecutionContext _context;
 
+        /// <summary>
+        /// Internal read-only accessor for StructuredClone (HTML §2.7.4) to iterate Map entries
+        /// without exposing mutable storage. ECMA-262 §24.1.3.5 [[MapData]] internal slot.
+        /// </summary>
+        internal IReadOnlyDictionary<IValue, IValue> InternalStorage => _storage;
+
         public JsMap(IExecutionContext context)
         {
             _context = context;

@@ -19,6 +19,12 @@ namespace FenBrowser.FenEngine.Core
         private readonly bool _isLexicalScope;
         private FenObject _liveModuleExports;
         private IDictionary<string, int> _fastSlotByName;
+        /// <summary>
+        /// Import bindings: maps local variable name → (namespace object, export name).
+        /// ECMA-262 §9.1.1.5: Module Environment Records have indirect import bindings
+        /// that delegate reads to the source module's namespace.
+        /// </summary>
+        private Dictionary<string, (IObject Namespace, string ExportName)> _importBindings;
         public FenValue[] FastStore; // NEW: Exposed for JIT direct access
         public FenEnvironment Outer { get; set; }
 
@@ -70,6 +76,12 @@ namespace FenBrowser.FenEngine.Core
                 throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
             }
 
+            // ECMA-262 §9.1.1.5: Module import bindings are indirect — read through namespace
+            if (_importBindings != null && _importBindings.TryGetValue(name, out var binding))
+            {
+                return binding.Namespace.Get(binding.ExportName);
+            }
+
             if (_store.TryGetValue(name, out var value))
             {
                 return value;
@@ -94,6 +106,9 @@ namespace FenBrowser.FenEngine.Core
             {
                 return true;
             }
+
+            if (_importBindings != null && _importBindings.ContainsKey(name))
+                return true;
 
             return _store.ContainsKey(name) || _tdz.Contains(name);
         }
@@ -123,6 +138,13 @@ namespace FenBrowser.FenEngine.Core
             {
                 // ECMA-262 §9.1.1.1: Accessing a TDZ binding must throw ReferenceError
                 throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
+            }
+
+            // ECMA-262 §9.1.1.5: Indirect import bindings
+            if (_importBindings != null && _importBindings.TryGetValue(name, out var binding))
+            {
+                value = binding.Namespace.Get(binding.ExportName);
+                return true;
             }
 
             return _store.TryGetValue(name, out value);
@@ -298,6 +320,21 @@ namespace FenBrowser.FenEngine.Core
         public void AttachLiveModuleExports(FenObject exportObject)
         {
             _liveModuleExports = exportObject;
+        }
+
+        /// <summary>
+        /// Creates an indirect import binding (ECMA-262 §9.1.1.5.5 CreateImportBinding).
+        /// The local name will read through the given namespace object on every access.
+        /// </summary>
+        public void CreateImportBinding(string localName, IObject namespaceObj, string exportName)
+        {
+            if (string.IsNullOrEmpty(localName) || namespaceObj == null)
+                return;
+
+            if (_importBindings == null)
+                _importBindings = new Dictionary<string, (IObject, string)>(StringComparer.Ordinal);
+
+            _importBindings[localName] = (namespaceObj, exportName ?? localName);
         }
 
         public FenEnvironment GetDeclarationEnvironment()
