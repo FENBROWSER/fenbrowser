@@ -72,6 +72,19 @@ public sealed class Test262Config
     public int WorkerCount { get; set; } = 20;
 
     /// <summary>
+    /// Conservative per-worker memory budget used to cap isolated worker fan-out.
+    /// This is intentionally higher than the observed steady-state footprint so
+    /// the parent runner stays comfortably below the configured RAM ceiling.
+    /// </summary>
+    public int EstimatedIsolatedWorkerMemoryMB { get; set; } = 384;
+
+    /// <summary>
+    /// Maximum number of microchunks a persistent isolated worker should serve
+    /// before the parent recycles it proactively.
+    /// </summary>
+    public int WorkerRecycleBatchCount { get; set; } = 8;
+
+    /// <summary>
     /// Automatically enable isolated multi-worker execution once a batch exceeds this size.
     /// </summary>
     public int AutoParallelThreshold { get; set; } = 20;

@@ -8,19 +8,27 @@
 //
 // USAGE:
 //   FenBrowser.Test262 get_chunk_count [--root <path>]
-//   FenBrowser.Test262 run_chunk <N> [--root <path>] [--format md|json|tap] [--isolate-process]
+//   FenBrowser.Test262 run_chunk <N> [--root <path>] [--format md|json|tap] [--isolate-process] [--workers <N>]
 //   FenBrowser.Test262 run_category <name> [--max <N>] [--root <path>]
 //   FenBrowser.Test262 run_single <path> [--root <path>]
+//   FenBrowser.Test262 run_manifest <path> [--root <path>] [--output <path>]
 //   FenBrowser.Test262 summary [--root <path>]
 // =============================================================================
 
 using System.Diagnostics;
+using System.Text.Json;
 using FenBrowser.FenEngine.Testing;
 
 namespace FenBrowser.Test262;
 
 public static class Program
 {
+    private static readonly JsonSerializerOptions WorkerJsonOptions = new JsonSerializerOptions
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     public static async Task<int> Main(string[] args)
     {
         if (args.Length == 0)
@@ -62,6 +70,10 @@ public static class Program
                     if (int.TryParse(args[++i], out int maxMemoryMb) && maxMemoryMb > 0)
                         config.MaxMemoryMB = maxMemoryMb;
                     break;
+                case "--workers" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int workers) && workers > 0)
+                        config.WorkerCount = workers;
+                    break;
                 case "--verbose" or "-v":
                     config.Verbose = true;
                     break;
@@ -96,6 +108,8 @@ public static class Program
                 "run_chunk" => await RunChunkAsync(config, args),
                 "run_category" => await RunCategoryAsync(config, args),
                 "run_single" => await RunSingleAsync(config, args),
+                "run_manifest" => await RunManifestAsync(config, args),
+                "run_worker" => await PersistentIsolatedWorkerHost.RunAsync(config),
                 "summary" => RunSummary(config),
                 "--help" or "-h" or "help" => PrintUsage(),
                 _ => PrintUsage()
@@ -171,8 +185,15 @@ public static class Program
         var sw = Stopwatch.StartNew();
         int completed = 0;
 
+        bool useIsolatedWorkers = ShouldUseIsolatedWorkers(config, chunkTests.Count);
+        if (useIsolatedWorkers && !config.IsolateProcess)
+        {
+            Console.WriteLine(
+                $"[Test262] Auto-enabled isolated workers for chunk {chunkNumber} ({chunkTests.Count} tests >= threshold {config.AutoParallelThreshold}).");
+        }
+
         IReadOnlyList<Test262Runner.TestResult> results;
-        if (config.IsolateProcess)
+        if (useIsolatedWorkers)
         {
             results = await RunChunkIsolatedAsync(config, chunkTests, (name, count) =>
             {
@@ -210,23 +231,111 @@ public static class Program
 
         return failed > 0 ? 1 : 0;
     }
+
+    private static bool ShouldUseIsolatedWorkers(Test262Config config, int testCount)
+    {
+        if (config.IsolateProcess)
+            return true;
+
+        if (config.AutoParallelThreshold <= 0)
+            return false;
+
+        return testCount >= config.AutoParallelThreshold;
+    }
+
     private static async Task<IReadOnlyList<Test262Runner.TestResult>> RunChunkIsolatedAsync(
         Test262Config config,
         IReadOnlyList<string> chunkTests,
         Action<string, int>? onProgress)
     {
-        var results = new List<Test262Runner.TestResult>(chunkTests.Count);
         string runnerDll = typeof(Program).Assembly.Location;
+        int workerCount = GetEffectiveIsolatedWorkerCount(config, chunkTests.Count);
+        string tempRoot = Path.Combine(Path.GetTempPath(), "FenBrowser.Test262", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var workerClients = Enumerable.Range(0, workerCount)
+            .Select(index => new PersistentIsolatedWorkerClient(config, runnerDll, index))
+            .ToArray();
 
-        for (int i = 0; i < chunkTests.Count; i++)
+        try
         {
-            string testFile = chunkTests[i];
-            var result = await RunSingleIsolatedAsync(config, runnerDll, testFile);
-            results.Add(result);
-            onProgress?.Invoke(Path.GetFileName(testFile), i + 1);
-        }
+            var batches = PartitionTests(chunkTests, workerCount);
+            var testOrder = chunkTests
+                .Select((testFile, index) => new { testFile, index })
+                .ToDictionary(x => x.testFile, x => x.index, StringComparer.OrdinalIgnoreCase);
 
-        return results;
+            int completed = 0;
+            int nextBatchIndex = -1;
+            var workerTasks = Enumerable.Range(0, workerCount).Select(async _ =>
+            {
+                var localResults = new List<Test262Runner.TestResult>();
+
+                while (true)
+                {
+                    int batchIndex = Interlocked.Increment(ref nextBatchIndex);
+                    if (batchIndex >= batches.Count)
+                        break;
+
+                    var client = workerClients[_];
+                    IReadOnlyList<Test262Runner.TestResult> batchResults;
+                    try
+                    {
+                        var workerResult = await client.RunBatchAsync(
+                            batches[batchIndex],
+                            GetPersistentWorkerBatchTimeout(config, batches[batchIndex].Count));
+                        batchResults = workerResult.Results;
+
+                        if (workerResult.RecycleSuggested || client.ShouldRecycle())
+                        {
+                            await client.RecycleAsync();
+                        }
+                    }
+                    catch
+                    {
+                        batchResults = await RunManifestBatchIsolatedAsync(
+                            config,
+                            runnerDll,
+                            batches[batchIndex],
+                            batchIndex,
+                            tempRoot,
+                            null);
+                        await client.RecycleAsync();
+                    }
+
+                    foreach (var result in batchResults)
+                    {
+                        int current = Interlocked.Increment(ref completed);
+                        onProgress?.Invoke(Path.GetFileName(result.TestFile), current);
+                    }
+
+                    localResults.AddRange(batchResults);
+                }
+
+                return (IReadOnlyList<Test262Runner.TestResult>)localResults;
+            }).ToArray();
+
+            var workerResults = await Task.WhenAll(workerTasks);
+            return workerResults
+                .SelectMany(resultSet => resultSet)
+                .OrderBy(result => testOrder.TryGetValue(result.TestFile, out int index) ? index : int.MaxValue)
+                .ToList();
+        }
+        finally
+        {
+            foreach (var workerClient in workerClients)
+            {
+                await workerClient.DisposeAsync();
+            }
+
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                    Directory.Delete(tempRoot, recursive: true);
+            }
+            catch
+            {
+                // Temporary worker artifacts are best-effort cleanup.
+            }
+        }
     }
 
     private static async Task<Test262Runner.TestResult> RunSingleIsolatedAsync(
@@ -313,6 +422,148 @@ public static class Program
         return result;
     }
 
+    private static async Task<IReadOnlyList<Test262Runner.TestResult>> RunManifestBatchIsolatedAsync(
+        Test262Config config,
+        string runnerDll,
+        IReadOnlyList<string> batchTests,
+        int batchIndex,
+        string tempRoot,
+        Action<string, int>? onProgress)
+    {
+        string manifestPath = Path.Combine(tempRoot, $"worker_{batchIndex:D2}.manifest.txt");
+        string outputPath = Path.Combine(tempRoot, $"worker_{batchIndex:D2}.json");
+        string stdoutPath = Path.Combine(tempRoot, $"worker_{batchIndex:D2}.out.log");
+        string stderrPath = Path.Combine(tempRoot, $"worker_{batchIndex:D2}.err.log");
+
+        await File.WriteAllLinesAsync(manifestPath, batchTests);
+
+        long timeoutMs = Math.Min(
+            (long)config.PerTestTimeoutMs * Math.Max(1, batchTests.Count) + 30_000L,
+            int.MaxValue);
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = $"\"{runnerDll}\" run_manifest \"{manifestPath}\" --root \"{config.Test262RootPath}\" --timeout {config.PerTestTimeoutMs} --max-memory-mb {config.MaxMemoryMB} --output \"{outputPath}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var proc = new Process { StartInfo = psi };
+            proc.Start();
+
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            bool exited = await Task.Run(() => proc.WaitForExit((int)timeoutMs));
+            if (!exited)
+            {
+                try { proc.Kill(true); } catch { }
+                throw new TimeoutException($"Worker batch {batchIndex} timed out after {timeoutMs}ms.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            if (TryReadManifestResults(outputPath, out var manifestResults) &&
+                manifestResults.Count == batchTests.Count)
+            {
+                onProgress?.Invoke(Path.GetFileName(batchTests[^1]), batchTests.Count);
+                return manifestResults;
+            }
+
+            Console.Error.WriteLine(
+                $"[Test262] Worker batch {batchIndex} returned invalid output. ExitCode={proc.ExitCode}. StdOut={stdout.Trim()} StdErr={stderr.Trim()}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Test262] Worker batch {batchIndex} failed: {ex.Message}. Falling back to per-test isolation.");
+        }
+
+        var fallbackResults = new List<Test262Runner.TestResult>(batchTests.Count);
+        foreach (string testFile in batchTests)
+        {
+            var result = await RunSingleIsolatedAsync(config, runnerDll, testFile);
+            fallbackResults.Add(result);
+            onProgress?.Invoke(Path.GetFileName(testFile), 1);
+        }
+
+        return fallbackResults;
+    }
+
+    private static int GetEffectiveIsolatedWorkerCount(Test262Config config, int testCount)
+    {
+        if (testCount <= 1)
+            return 1;
+
+        int memoryBound = Math.Max(1, config.MaxMemoryMB / Math.Max(1, config.EstimatedIsolatedWorkerMemoryMB));
+        return Math.Max(1, Math.Min(testCount, Math.Min(config.WorkerCount, memoryBound)));
+    }
+
+    private static List<IReadOnlyList<string>> PartitionTests(IReadOnlyList<string> testFiles, int batchCount)
+    {
+        int averageTestsPerWorker = (int)Math.Ceiling((double)testFiles.Count / Math.Max(1, batchCount));
+        int batchMultiplier = averageTestsPerWorker >= 100 ? 2 : 1;
+        int actualBatchCount = Math.Max(1, Math.Min(testFiles.Count, Math.Max(batchCount, batchCount * batchMultiplier)));
+        var batches = new List<IReadOnlyList<string>>(actualBatchCount);
+
+        for (int batchIndex = 0; batchIndex < actualBatchCount; batchIndex++)
+        {
+            int start = batchIndex * testFiles.Count / actualBatchCount;
+            int end = (batchIndex + 1) * testFiles.Count / actualBatchCount;
+            if (end <= start)
+                continue;
+
+            batches.Add(testFiles.Skip(start).Take(end - start).ToList());
+        }
+
+        return batches;
+    }
+
+    private static TimeSpan GetPersistentWorkerBatchTimeout(Test262Config config, int testCount)
+    {
+        long timeoutMs = Math.Min(
+            (long)config.PerTestTimeoutMs * Math.Max(1, testCount) + 30_000L,
+            int.MaxValue);
+        return TimeSpan.FromMilliseconds(timeoutMs);
+    }
+
+    private static bool TryReadManifestResults(string outputPath, out IReadOnlyList<Test262Runner.TestResult> results)
+    {
+        results = Array.Empty<Test262Runner.TestResult>();
+        if (!File.Exists(outputPath))
+            return false;
+
+        try
+        {
+            var envelope = JsonSerializer.Deserialize<WorkerManifestEnvelope>(File.ReadAllText(outputPath), WorkerJsonOptions);
+            if (envelope?.Results == null)
+                return false;
+
+            results = envelope.Results.Select(item => new Test262Runner.TestResult
+            {
+                TestFile = item.TestFile,
+                Passed = item.Passed,
+                Expected = item.Expected ?? string.Empty,
+                Actual = item.Actual ?? string.Empty,
+                Error = item.Error ?? string.Empty,
+                Duration = TimeSpan.FromMilliseconds(item.DurationMs),
+                Metadata = new Test262Runner.TestMetadata
+                {
+                    Features = item.Features ?? new List<string>()
+                }
+            }).ToList();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Run all tests in a specific category.
     /// </summary>
@@ -339,18 +590,52 @@ public static class Program
         var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
         runner.MemoryThresholdBytes = config.MaxMemoryMB * 1_000_000L;
 
+        var categoryTests = runner.DiscoverTests(category)
+            .Take(maxTests)
+            .ToList();
+
+        if (categoryTests.Count == 0)
+        {
+            Console.Error.WriteLine($"[ERROR] No discoverable tests found for category: {category}");
+            return 1;
+        }
+
+        bool useIsolatedWorkers = ShouldUseIsolatedWorkers(config, categoryTests.Count);
+
         Console.WriteLine($"[Test262] Running category: {category}");
+        if (useIsolatedWorkers && !config.IsolateProcess)
+        {
+            Console.WriteLine(
+                $"[Test262] Auto-enabled isolated workers for category '{category}' ({categoryTests.Count} tests >= threshold {config.AutoParallelThreshold}).");
+        }
+
         var sw = Stopwatch.StartNew();
 
-        var results = await runner.RunCategoryAsync(category, (name, count) =>
+        IReadOnlyList<Test262Runner.TestResult> results;
+        if (useIsolatedWorkers)
         {
-            if (config.Verbose || count % 50 == 0)
-                Console.Write($"\r  [{count}] {name}    ");
-        }, maxTests);
+            results = await RunChunkIsolatedAsync(config, categoryTests, (name, count) =>
+            {
+                if (config.Verbose || count % 50 == 0)
+                    Console.Write($"\r  [{count}/{categoryTests.Count}] {name}    ");
+            });
+        }
+        else
+        {
+            results = await runner.RunSpecificTestsAsync(categoryTests, (name, count) =>
+            {
+                if (config.Verbose || count % 50 == 0)
+                    Console.Write($"\r  [{count}/{categoryTests.Count}] {name}    ");
+            });
+        }
 
         sw.Stop();
         Console.WriteLine();
-        Console.WriteLine(runner.GenerateSummary());
+
+        int passed = results.Count(r => r.Passed);
+        int failed = results.Count - passed;
+        double passRate = results.Count > 0 ? (double)passed / results.Count * 100 : 0;
+        Console.WriteLine($"Total: {results.Count} | Pass: {passed} | Fail: {failed} ({passRate:F1}%)");
 
         var output = ResultsExporter.Export(results, config.Format, totalDuration: sw.Elapsed);
         WriteOutput(output, config);
@@ -404,6 +689,60 @@ public static class Program
     }
 
     /// <summary>
+    /// Run a manifest file of explicit tests.
+    /// Intended for isolated microchunk workers spawned by run_chunk.
+    /// </summary>
+    private static async Task<int> RunManifestAsync(Test262Config config, string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: run_manifest <manifest-path>");
+            return 1;
+        }
+
+        string manifestPath = args[1];
+        if (!Path.IsPathRooted(manifestPath))
+            manifestPath = Path.GetFullPath(manifestPath);
+
+        if (!File.Exists(manifestPath))
+        {
+            Console.Error.WriteLine($"[ERROR] Manifest file not found: {manifestPath}");
+            return 1;
+        }
+
+        var testFiles = (await File.ReadAllLinesAsync(manifestPath))
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line.Trim())
+            .ToList();
+
+        if (testFiles.Count == 0)
+        {
+            Console.Error.WriteLine("[ERROR] Manifest did not contain any test files.");
+            return 1;
+        }
+
+        var runner = new Test262Runner(config.Test262RootPath, config.PerTestTimeoutMs);
+        runner.MemoryThresholdBytes = config.MaxMemoryMB * 1_000_000L;
+
+        var sw = Stopwatch.StartNew();
+        var results = await runner.RunSpecificTestsAsync(testFiles);
+        sw.Stop();
+
+        if (!string.IsNullOrEmpty(config.OutputPath))
+        {
+            var dir = Path.GetDirectoryName(config.OutputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(config.OutputPath, SerializeManifestResults(results));
+            Console.WriteLine($"[Test262] Results saved to {config.OutputPath}");
+        }
+
+        Console.WriteLine($"{(long)sw.Elapsed.TotalMilliseconds}ms | Pass: {results.Count(r => r.Passed)} | Fail: {results.Count(r => !r.Passed)}");
+        return results.Any(r => !r.Passed) ? 1 : 0;
+    }
+
+    /// <summary>
     /// Print summary info about the test262 suite.
     /// </summary>
     private static int RunSummary(Test262Config config)
@@ -454,7 +793,7 @@ public static class Program
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            // Clear content first — each run overwrites the previous results
+            // Clear content first â€” each run overwrites the previous results
             File.WriteAllText(config.OutputPath, content);
             Console.WriteLine($"[Test262] Results saved to {config.OutputPath}");
         }
@@ -478,7 +817,7 @@ public static class Program
         }
         catch
         {
-            /* Ignore — not critical */
+            /* Ignore â€” not critical */
         }
 
         return 0;
@@ -522,6 +861,7 @@ COMMANDS:
   run_chunk <N>                Run chunk N (1-indexed, 1000 tests per chunk)
   run_category <name>          Run a category (e.g., language/expressions)
   run_single <path>            Run a single .js test file
+  run_manifest <path>          Run a manifest file of explicit test paths
   summary                      Show test suite summary with categories
   help                         Show this help message
 
@@ -532,8 +872,9 @@ OPTIONS:
   --timeout <ms>               Per-test timeout (default: 10000)
   --chunk-size <N>             Tests per chunk (default: 1000)
   --max-memory-mb <N>         Per-runner managed heap cap in MB (default: 10000)
+  --workers <N>                Max isolated worker processes (default: 20)
   --verbose|-v                 Verbose output
-  --isolate-process            Run each test in child process (crash-safe)
+  --isolate-process            Run isolated microchunk workers (crash-safe)
 
 ENVIRONMENT:
   TEST262_ROOT                 Alternative to --root flag
@@ -546,8 +887,40 @@ EXAMPLES:
 ");
         return 0;
     }
+
+    private static string SerializeManifestResults(IReadOnlyList<Test262Runner.TestResult> results)
+    {
+        var envelope = new WorkerManifestEnvelope
+        {
+            Results = results.Select(result => new WorkerManifestResult
+            {
+                TestFile = result.TestFile,
+                Passed = result.Passed,
+                Expected = result.Expected,
+                Actual = result.Actual,
+                Error = result.Error,
+                DurationMs = (long)result.Duration.TotalMilliseconds,
+                Features = result.Metadata?.Features ?? new List<string>()
+            }).ToList()
+        };
+
+        return JsonSerializer.Serialize(envelope, WorkerJsonOptions);
+    }
+
+    private sealed class WorkerManifestEnvelope
+    {
+        public List<WorkerManifestResult> Results { get; set; } = new();
+    }
+
+    private sealed class WorkerManifestResult
+    {
+        public string TestFile { get; set; } = string.Empty;
+        public bool Passed { get; set; }
+        public string? Expected { get; set; }
+        public string? Actual { get; set; }
+        public string? Error { get; set; }
+        public long DurationMs { get; set; }
+        public List<string>? Features { get; set; }
+    }
 }
-
-
-
 
