@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -41,13 +40,6 @@ namespace FenBrowser.FenEngine.Workers
         private bool _isDisposed;
         private FenRuntime _runtime;
         private WorkerGlobalScope _globalScope;
-        private const int MaxImportScriptsPrefetchDepth = 32;
-        private static readonly Regex ImportScriptsCallRegex = new(
-            @"\bimportScripts\s*\((?<args>[^)]*)\)",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
-        private static readonly Regex ImportScriptsLiteralUrlRegex = new(
-            "['\"](?<url>[^'\"]+)['\"]",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         /// <summary>
         /// Event fired when the worker sends a message to the main thread
@@ -406,7 +398,7 @@ namespace FenBrowser.FenEngine.Workers
                 throw new InvalidOperationException("Worker script fetcher is not configured");
 
             var rootScript = await fetcher(_resolvedScriptUri).ConfigureAwait(false);
-            await PrefetchImportScriptsGraphAsync(_resolvedScriptUri, rootScript, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ConfigureAwait(false);
+            CachePrefetchedScript(_resolvedScriptUri, rootScript);
             return rootScript;
         }
 
@@ -433,14 +425,31 @@ namespace FenBrowser.FenEngine.Workers
                 if (_scriptUriAllowed != null && !_scriptUriAllowed(target))
                     throw new UnauthorizedAccessException($"importScripts blocked by policy: {target}");
 
-                if (!TryGetPrefetchedScript(target, out var content))
-                    throw new InvalidOperationException($"importScripts target was not prefetched: {target}");
-
+                var content = GetOrLoadImportScript(target);
                 if (string.IsNullOrWhiteSpace(content))
                     continue;
 
                 _runtime.ExecuteSimple(content);
                 FenLogger.Debug($"[WorkerRuntime] importScripts executed: {target}", LogCategory.JavaScript);
+            }
+        }
+
+        private string GetOrLoadImportScript(Uri target)
+        {
+            if (TryGetPrefetchedScript(target, out var cached))
+                return cached;
+
+            try
+            {
+                var content = _scriptFetcher(target).ConfigureAwait(false).GetAwaiter().GetResult();
+                if (!string.IsNullOrWhiteSpace(content))
+                    CachePrefetchedScript(target, content);
+
+                return content;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to load importScripts target: {target}", ex);
             }
         }
 
@@ -464,61 +473,6 @@ namespace FenBrowser.FenEngine.Workers
             lock (_prefetchedScriptCacheLock)
             {
                 return _prefetchedScriptCache.TryGetValue(target.AbsoluteUri, out content);
-            }
-        }
-
-        private IEnumerable<string> ExtractImportScriptsSpecifiers(string source)
-        {
-            if (string.IsNullOrWhiteSpace(source))
-                yield break;
-
-            foreach (Match call in ImportScriptsCallRegex.Matches(source))
-            {
-                var args = call.Groups["args"]?.Value;
-                if (string.IsNullOrWhiteSpace(args))
-                    continue;
-
-                foreach (Match url in ImportScriptsLiteralUrlRegex.Matches(args))
-                {
-                    var value = url.Groups["url"]?.Value;
-                    if (!string.IsNullOrWhiteSpace(value))
-                        yield return value.Trim();
-                }
-            }
-        }
-
-        private async Task PrefetchImportScriptsGraphAsync(Uri ownerScriptUri, string source, HashSet<string> visited, int depth = 0)
-        {
-            if (ownerScriptUri == null || string.IsNullOrWhiteSpace(source) || _scriptFetcher == null || visited == null)
-                return;
-
-            if (depth > MaxImportScriptsPrefetchDepth)
-            {
-                FenLogger.Warn($"[WorkerRuntime] importScripts prefetch depth limit reached: {ownerScriptUri}", LogCategory.JavaScript);
-                return;
-            }
-
-            foreach (var specifier in ExtractImportScriptsSpecifiers(source))
-            {
-                if (!Uri.TryCreate(ownerScriptUri, specifier, out var target))
-                    continue;
-
-                target = ResolveImportScriptUri(target.AbsoluteUri);
-                if (target == null)
-                    continue;
-
-                if (!visited.Add(target.AbsoluteUri))
-                    continue;
-
-                if (_scriptUriAllowed != null && !_scriptUriAllowed(target))
-                    continue;
-
-                var content = await _scriptFetcher(target).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(content))
-                    continue;
-
-                CachePrefetchedScript(target, content);
-                await PrefetchImportScriptsGraphAsync(target, content, visited, depth + 1).ConfigureAwait(false);
             }
         }
 

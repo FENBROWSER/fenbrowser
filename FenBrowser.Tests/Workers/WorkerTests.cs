@@ -366,6 +366,120 @@ namespace FenBrowser.Tests.Workers
         }
 
         [Fact]
+        public void WorkerRuntime_ImportScripts_ResolvesDynamicSpecifierAtRuntime()
+        {
+            var messageEvent = new ManualResetEventSlim(false);
+            object payload = null;
+
+            string Fetcher(Uri uri)
+            {
+                if (uri.AbsoluteUri.EndsWith("/main.js", StringComparison.OrdinalIgnoreCase))
+                    return "const part = 'dep'; importScripts(part + '.js');";
+                if (uri.AbsoluteUri.EndsWith("/dep.js", StringComparison.OrdinalIgnoreCase))
+                    return "postMessage('dynamic-importScripts-ok');";
+                return string.Empty;
+            }
+
+            var runtime = new WorkerRuntime(
+                "https://example.com/main.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                uri => Task.FromResult(Fetcher(uri)),
+                _ => true);
+
+            try
+            {
+                runtime.OnMessage += data =>
+                {
+                    payload = data;
+                    messageEvent.Set();
+                };
+
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!messageEvent.IsSet && DateTime.UtcNow < deadline)
+                {
+                    EventLoopCoordinator.Instance.ProcessNextTask();
+                    Thread.Sleep(10);
+                }
+
+                Assert.True(messageEvent.IsSet, "Expected dynamic importScripts target to load at runtime.");
+                Assert.Equal("dynamic-importScripts-ok", payload?.ToString());
+            }
+            finally
+            {
+                runtime.Terminate();
+                runtime.Dispose();
+            }
+        }
+
+        [Fact]
+        public void WorkerRuntime_ImportScripts_DoesNotFetchFalsePositivesFromCommentsOrStrings()
+        {
+            var messageEvent = new ManualResetEventSlim(false);
+            object payload = null;
+            var fetched = new List<string>();
+
+            string Fetcher(Uri uri)
+            {
+                fetched.Add(uri.AbsoluteUri);
+
+                if (uri.AbsoluteUri.EndsWith("/main.js", StringComparison.OrdinalIgnoreCase))
+                {
+                    return @"
+                        // importScripts('comment-only.js');
+                        const banner = ""importScripts('string-only.js')"";
+                        importScripts('dep.js');
+                    ";
+                }
+
+                if (uri.AbsoluteUri.EndsWith("/dep.js", StringComparison.OrdinalIgnoreCase))
+                    return "postMessage('real-dependency-only');";
+
+                if (uri.AbsoluteUri.EndsWith("/comment-only.js", StringComparison.OrdinalIgnoreCase) ||
+                    uri.AbsoluteUri.EndsWith("/string-only.js", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("False-positive importScripts fetch should not occur.");
+                }
+
+                return string.Empty;
+            }
+
+            var runtime = new WorkerRuntime(
+                "https://example.com/main.js",
+                "https://example.com",
+                new InMemoryStorageBackend(),
+                uri => Task.FromResult(Fetcher(uri)),
+                _ => true);
+
+            try
+            {
+                runtime.OnMessage += data =>
+                {
+                    payload = data;
+                    messageEvent.Set();
+                };
+
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                while (!messageEvent.IsSet && DateTime.UtcNow < deadline)
+                {
+                    EventLoopCoordinator.Instance.ProcessNextTask();
+                    Thread.Sleep(10);
+                }
+
+                Assert.True(messageEvent.IsSet, "Expected real importScripts dependency to execute.");
+                Assert.Equal("real-dependency-only", payload?.ToString());
+                Assert.DoesNotContain("https://example.com/comment-only.js", fetched);
+                Assert.DoesNotContain("https://example.com/string-only.js", fetched);
+                Assert.Contains("https://example.com/dep.js", fetched);
+            }
+            finally
+            {
+                runtime.Terminate();
+                runtime.Dispose();
+            }
+        }
+
+        [Fact]
         public void WorkerGlobalScope_HasRequiredProperties()
         {
             var runtime = new WorkerRuntime("test.js", "https://example.com");
