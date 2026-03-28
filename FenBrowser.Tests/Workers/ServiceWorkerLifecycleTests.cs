@@ -2,6 +2,8 @@ using System;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Storage;
 using FenBrowser.FenEngine.Workers;
 using FenBrowser.FenEngine.WebAPIs;
 using Xunit;
@@ -134,18 +136,97 @@ namespace FenBrowser.Tests.Workers
             var registeredAfter = await evt.WaitForRespondWithRegistrationAsync(TimeSpan.FromMilliseconds(20));
             Assert.True(registeredAfter);
         }
-        
-        private FenValue CreatePromise(FenValue result)
+
+        [Fact]
+        public void ServiceWorkerContainer_WithoutContext_UsesRealReadyPromise()
         {
-            var p = new FenObject();
-            p.Set("__state", FenValue.FromString("fulfilled"));
-            p.Set("__result", result);
-            p.Set("then", FenValue.FromFunction(new FenFunction("then", (a,t) => 
+            var container = new ServiceWorkerContainer("https://example.com");
+            var ready = container.Get("ready");
+
+            Assert.True(ready.IsObject);
+            Assert.IsType<JsPromise>(ready.AsObject());
+        }
+
+        [Fact]
+        public void ServiceWorkerRegistration_WithoutContext_ReturnsRealPromises()
+        {
+            var registration = new ServiceWorkerRegistration("https://example.com/app/");
+
+            var updateResult = registration.Get("update").AsFunction().Invoke(Array.Empty<FenValue>(), null);
+            var unregisterResult = registration.Get("unregister").AsFunction().Invoke(Array.Empty<FenValue>(), null);
+
+            Assert.IsType<JsPromise>(updateResult.AsObject());
+            Assert.IsType<JsPromise>(unregisterResult.AsObject());
+        }
+
+        [Fact]
+        public void ServiceWorkerClients_WithoutContext_ReturnsRealPromises()
+        {
+            var clients = new ServiceWorkerClients("https://example.com/");
+
+            var claimResult = clients.Get("claim").AsFunction().Invoke(Array.Empty<FenValue>(), null);
+            var matchAllResult = clients.Get("matchAll").AsFunction().Invoke(Array.Empty<FenValue>(), null);
+            var openWindowResult = clients.Get("openWindow").AsFunction().Invoke(
+                new[] { FenValue.FromString("/dashboard") }, null);
+
+            Assert.IsType<JsPromise>(claimResult.AsObject());
+            Assert.IsType<JsPromise>(matchAllResult.AsObject());
+            Assert.IsType<JsPromise>(openWindowResult.AsObject());
+        }
+
+        [Fact]
+        public void ServiceWorkerGlobalScope_SkipWaiting_ReturnsRealPromise()
+        {
+            using var runtime = new WorkerRuntime(
+                "https://example.com/sw.js",
+                "https://example.com/",
+                new InMemoryStorageBackend(),
+                scriptFetcher: _ => Task.FromResult(string.Empty),
+                isServiceWorker: true);
+
+            var scope = new ServiceWorkerGlobalScope(runtime, "https://example.com/", string.Empty, new InMemoryStorageBackend());
+            var result = scope.Get("skipWaiting").AsFunction().Invoke(Array.Empty<FenValue>(), null);
+
+            Assert.IsType<JsPromise>(result.AsObject());
+
+            runtime.Terminate();
+        }
+
+        [Fact]
+        public async Task FetchEvent_DoesNotTreat_LegacyStateBag_AsSettledPromise()
+        {
+            var mockContext = new FenExecutionContext(null);
+            var req = new FenObject();
+            req.Set("url", FenValue.FromString("https://example.com/api/data"));
+            var evt = new FetchEvent("fetch", req, mockContext);
+
+            var legacyBag = new FenObject();
+            legacyBag.Set("__state", FenValue.FromString("fulfilled"));
+            legacyBag.Set("__result", FenValue.FromString("legacy"));
+
+            evt.Get("respondWith").AsFunction().Invoke(new[] { FenValue.FromObject(legacyBag) }, null);
+            var settled = await evt.WaitForRespondWithSettlementAsync(TimeSpan.FromMilliseconds(50));
+
+            Assert.False(settled.IsHandled);
+        }
+        
+        private FenValue CreatePromise(FenValue result, IExecutionContext context = null)
+        {
+            FenValue capturedResolve = FenValue.Undefined;
+            var executor = new FenFunction("executor", (args, thisVal) =>
             {
-                if(a.Length>0) a[0].AsFunction().Invoke(new FenValue[]{result}, null);
-               return FenValue.Undefined;
-            })));
-            return FenValue.FromObject(p);
+                capturedResolve = args.Length > 0 ? args[0] : FenValue.Undefined;
+                return FenValue.Undefined;
+            });
+
+            var promise = new JsPromise(FenValue.FromFunction(executor), context);
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(10);
+                capturedResolve.AsFunction().Invoke(new[] { result }, context);
+            });
+
+            return FenValue.FromObject(promise);
         }
     }
 }
