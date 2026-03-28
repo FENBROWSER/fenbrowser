@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Storage;
 
 namespace FenBrowser.FenEngine.WebAPIs
@@ -18,13 +19,15 @@ namespace FenBrowser.FenEngine.WebAPIs
         private readonly Dictionary<string, Cache> _openCaches = new(StringComparer.Ordinal);
         private readonly HashSet<string> _knownCacheNames = new(StringComparer.Ordinal);
         private readonly object _cacheGate = new object();
+        private readonly IExecutionContext _context;
 
         private const int MaxCacheNameLength = 128;
 
-        public CacheStorage(Func<string> originProvider, IStorageBackend storageBackend)
+        public CacheStorage(Func<string> originProvider, IStorageBackend storageBackend, IExecutionContext context = null)
         {
             _originProvider = originProvider;
             _storageBackend = storageBackend;
+            _context = context;
 
             Set("open", FenValue.FromFunction(new FenFunction("open", Open)));
             Set("has", FenValue.FromFunction(new FenFunction("has", Has)));
@@ -177,7 +180,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (!_openCaches.TryGetValue(cacheName, out var cache))
                 {
-                    cache = new Cache(_originProvider(), cacheName, _storageBackend);
+                    cache = new Cache(_originProvider(), cacheName, _storageBackend, _context);
                     _openCaches[cacheName] = cache;
                 }
 
@@ -254,6 +257,36 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private FenObject CreatePromise(Func<Task<FenValue>> valueFactory)
         {
+            // When a real IExecutionContext is available, use spec-compliant JsPromise
+            if (_context != null)
+            {
+                FenValue capturedResolve = FenValue.Undefined;
+                FenValue capturedReject = FenValue.Undefined;
+                var executor = new FenFunction("executor", (args, thisVal) =>
+                {
+                    capturedResolve = args.Length > 0 ? args[0] : FenValue.Undefined;
+                    capturedReject = args.Length > 1 ? args[1] : FenValue.Undefined;
+                    return FenValue.Undefined;
+                });
+                var jsPromise = new Core.Types.JsPromise(FenValue.FromFunction(executor), _context);
+                _ = RunDetachedAsync(async () =>
+                {
+                    try
+                    {
+                        var value = await valueFactory().ConfigureAwait(false);
+                        if (capturedResolve.IsFunction)
+                            capturedResolve.AsFunction().Invoke(new[] { value }, _context);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (capturedReject.IsFunction)
+                            capturedReject.AsFunction().Invoke(new[] { FenValue.FromString(ex.Message) }, _context);
+                    }
+                });
+                return jsPromise;
+            }
+
+            // Fallback: hand-rolled promise for standalone/test contexts without IExecutionContext
             var promise = new FenObject();
             var gate = new object();
             var state = "pending";
