@@ -320,118 +320,124 @@ public class BrowserIntegration
     {
         var coordinator = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
         coordinator.OnWorkEnqueued += () => _wakeEvent.Set();
-        
+
         while (_running)
         {
-            // 1. Process Input Events (Host -> Engine)
-            while (_eventQueue.TryDequeue(out var action))
-            {
-                try { action(); }
-                catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
-            }
+            // Each iteration is one frame tick with a 16.6ms budget (60fps target)
+            var deadline = new FenBrowser.Core.Deadlines.FrameDeadline(16.6, "Frame");
+
+            // Stage 1: Drain host → engine input events
+            DrainEventQueue();
 
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {
                 _wakeEvent.WaitOne(100);
                 continue;
             }
-            
-            // 2. Pump JS Event Loop (Tasks & Microtasks)
-            // Execute one slice of work per frame tick to keep UI responsive
-            bool loopsToRun = true;
-            int sliceCount = 0;
-            while (loopsToRun && sliceCount < 50) // Cap to avoid starving render
-            {
-                try 
-                {
-                    if (!coordinator.ProcessNextTask()) 
-                    {
-                        loopsToRun = false;
-                    }
-                    else
-                    {
-                        sliceCount++;
-                    }
-                }
-                catch (Exception ex) 
-                { 
-                    FenLogger.Error($"[EngineLoop] Coordinator error: {ex}", LogCategory.JavaScript);
-                    loopsToRun = false; 
-                }
-            }
-            
+
+            // Stage 2: Pump JS event loop (budget-gated: reserve 8ms for render)
+            int sliceCount = PumpJSEventLoop(deadline, coordinator);
+
+            // Stage 3: Style sync + Layout + Paint + Present
+            bool rendered = SyncAndRender(deadline, coordinator);
+
+            // Stage 4: Adaptive wait
+            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceCount > 0;
+            int waitMs;
+            if (_needsRepaint) waitMs = 16;
+            else if (sliceCount > 0) waitMs = 1;
+            else if (hasWork) waitMs = 0;
+            else waitMs = -1; // Block until woken
+
+            _wakeEvent.WaitOne(waitMs);
+        }
+    }
+
+    /// <summary>
+    /// Stage 1: Drain queued host→engine input events (mouse, keyboard, resize).
+    /// </summary>
+    private void DrainEventQueue()
+    {
+        while (_eventQueue.TryDequeue(out var action))
+        {
+            try { action(); }
+            catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
+        }
+    }
+
+    /// <summary>
+    /// Stage 2: Pump JS tasks/microtasks, budget-gated to leave time for rendering.
+    /// Returns the number of tasks processed.
+    /// </summary>
+    private int PumpJSEventLoop(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
+    {
+        int sliceCount = 0;
+        // Reserve 8ms of the frame budget for render stages
+        while (!deadline.IsExpired && deadline.Remaining.TotalMilliseconds > 8.0)
+        {
             try
             {
-                // 3. Perform Layout & Record Frame if needed
-                if ((_needsRepaint || coordinator.CurrentPhase == FenBrowser.Core.Engine.EnginePhase.Layout) && _lastViewportSize.Width > 0)
-                {
-                    FenLogger.Info($"[EngineLoop] Repainting. Viewport: {_lastViewportSize}", LogCategory.General);
-                    // Sync latest state from browser host
-                    _root = _browser.GetDomRoot();
-                    _styles = _browser.ComputedStyles;
-
-                    // Debug: Log synced state
-                    FenLogger.Info($"[EngineLoop] After sync: Root={(_root != null ? _root.TagName : "NULL")}, Styles={(_styles != null ? _styles.Count.ToString() : "NULL")}", LogCategory.Rendering);
-                    Console.WriteLine($"[DBG-EL] Root={(_root != null ? _root.TagName : "NULL")}, Styles={((_styles != null) ? _styles.Count.ToString() : "NULL")}, VP={_lastViewportSize}");
-                    
-                    // PERF: Skip RecordFrame while CSS cascade hasn't produced any styles yet.
-                    // Running layout on an unstyled DOM wastes CPU and delays the first styled paint.
-                    // Instead, wait for up to 60 seconds; after that fall through to show a blank.
-                    if (!_hasFirstStyledRender && _root != null)
-                    {
-                        _styles = _browser.ComputedStyles;
-
-                        if (_styles == null || _styles.Count == 0)
-                        {
-                            var elapsed = DateTime.Now - _lastNavigationTime;
-                            if (elapsed.TotalMilliseconds < 60000)
-                            {
-                                // CSS still loading — skip this frame entirely; wake again in 100ms
-                                FenLogger.Debug($"[EngineLoop] Waiting for CSS styles ({elapsed.TotalMilliseconds:F0}ms)", LogCategory.Rendering);
-                                _wakeEvent.WaitOne(100);
-                                continue;
-                            }
-                            else
-                            {
-                                FenLogger.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
-                            }
-                        }
-                    }
-                    if (_root != null && _root.ComputedStyle != null)
-                    {
-                        _hasFirstStyledRender = true;
-                    }
-
-                    Console.WriteLine($"[DBG-EL] Calling RecordFrame. VP={_lastViewportSize}, Root={(_root?.TagName ?? "NULL")}, Styles={(_styles?.Count.ToString() ?? "NULL")}");
-                    lock (_rendererLock)
-                    {
-                        RecordFrame(_lastViewportSize);
-                    }
-                    Console.WriteLine($"[DBG-EL] RecordFrame done. HasFrame={HasCommittedFrame()}");
-                }
+                if (!coordinator.ProcessNextTask())
+                    break;
+                sliceCount++;
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
+                FenLogger.Error($"[EngineLoop] Coordinator error: {ex}", LogCategory.JavaScript);
+                break;
             }
-            
-            // 3b. Debug: If we have needsRepaint but viewport is 0, log it
-            if (_needsRepaint && _lastViewportSize.Width <= 0)
+        }
+        return sliceCount;
+    }
+
+    /// <summary>
+    /// Stage 3: Sync DOM/styles from browser host, gate on CSS readiness, then render.
+    /// Returns true if a frame was recorded.
+    /// </summary>
+    private bool SyncAndRender(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
+    {
+        try
+        {
+            if ((!_needsRepaint && coordinator.CurrentPhase != FenBrowser.Core.Engine.EnginePhase.Layout) || _lastViewportSize.Width <= 0)
             {
-                Console.WriteLine("[DBG-EL] WARNING: _needsRepaint=true but _lastViewportSize.Width=0!");
+                if (_needsRepaint && _lastViewportSize.Width <= 0)
+                    Console.WriteLine("[DBG-EL] WARNING: _needsRepaint=true but _lastViewportSize.Width=0!");
+                return false;
             }
-            // 4. Adaptive Wait (CPU Optimization)
-            // If needs repaint (animations/scroll), poll fast (16ms).
-            // If idle, wait indefinitely until an event wakes us.
-            // NEW: If coordinator has work, don't sleep!
-            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceCount > 0;
-            int timeoutKey = hasWork ? 0 : -1; // 0 = Yield, -1 = Wait
-            
-            // Limit invalidation speed slightly if just painting (16ms cap approx)
-            if (_needsRepaint) timeoutKey = 16;
-            else if (sliceCount > 0) timeoutKey = 1; // Yield briefly for JS
-            
-            _wakeEvent.WaitOne(timeoutKey);
+
+            // Sync latest state from browser host
+            _root = _browser.GetDomRoot();
+            _styles = _browser.ComputedStyles;
+
+            // Gate: wait for CSS before first styled render
+            if (!_hasFirstStyledRender && _root != null)
+            {
+                bool hasStyles = _root.ComputedStyle != null || (_styles != null && _styles.Count > 0);
+                if (!hasStyles)
+                {
+                    var elapsed = DateTime.Now - _lastNavigationTime;
+                    if (elapsed.TotalMilliseconds < 60000)
+                    {
+                        _needsRepaint = false;
+                        _wakeEvent.WaitOne(250);
+                        return false;
+                    }
+                    FenLogger.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
+                }
+            }
+            if (_root != null && _root.ComputedStyle != null)
+                _hasFirstStyledRender = true;
+
+            lock (_rendererLock)
+            {
+                RecordFrame(_lastViewportSize);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
+            return false;
         }
     }
     
@@ -708,16 +714,18 @@ public class BrowserIntegration
             FenLogger.Info("[BrowserIntegration] Recording structural frame (no styles yet)", LogCategory.Rendering);
         }
         
-        // === DOM → Layout → Frame transition begins ===
+        // === DOM → Layout → Paint → Present pipeline ===
+        // Note: SkiaDomRenderer.Render() manages its own PipelineContext frame scope internally,
+        // so we don't wrap with scoped stages here to avoid nested frame conflicts.
         FenLogger.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
-        
+
         try
         {
             var viewport = new SKRect(0, 0, viewportSize.Width, viewportSize.Height);
-            
+
             // Start recording
             var canvas = _recorder.BeginRecording(viewport);
-            
+
             // Adjust for scroll
             var scrolledViewport = new SKRect(
                 viewport.Left,
@@ -725,10 +733,10 @@ public class BrowserIntegration
                 viewport.Right,
                 viewport.Bottom + _scrollY
             );
-            
+
             canvas.Save();
             canvas.Translate(0, -_scrollY);
-            
+
             _renderer.Render(
                 _root,
                 canvas,
@@ -738,8 +746,7 @@ public class BrowserIntegration
                 (contentSize, overlays) =>
                 {
                     _contentHeight = contentSize.Height;
-                    
-                    // Manually render input overlays (text/placeholders) on top of the DOM
+
                     if (overlays != null)
                     {
                         foreach (var overlay in overlays)
@@ -750,30 +757,27 @@ public class BrowserIntegration
                 },
                 viewportSize
             );
-            
-            // (Debug overlay removed)
-            
+
             // Draw highlight overlay
             if (_highlightedElement != null)
             {
                 DrawHighlight(canvas, _highlightedElement);
             }
-            
+
             canvas.Restore();
-            
+
             // Finish recording and swap buffers
             var newFrame = _recorder.EndRecording();
-            
+
             lock (_frameLock)
             {
                 _currentFrame?.Dispose();
                 _currentFrame = newFrame;
             }
-            
+
             FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering);
 
             _needsRepaint = false;
-            // Signal the Compositor only after a fresh frame is committed.
             NeedsRepaint?.Invoke();
         }
         catch (Exception ex)
