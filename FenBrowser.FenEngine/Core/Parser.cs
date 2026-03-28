@@ -59,6 +59,7 @@ namespace FenBrowser.FenEngine.Core
         private readonly bool _allowNewTargetOutsideFunction = false;
         private readonly bool _allowSuperOutsideClass = false;
         private readonly bool _allowSuperInClassFieldInitializer = false;
+        private readonly bool _allowRecovery = true;
 
         private readonly Dictionary<TokenType, Func<Expression>> _prefixParseFns;
         private readonly Dictionary<TokenType, Func<Expression, Expression>> _infixParseFns;
@@ -128,7 +129,8 @@ namespace FenBrowser.FenEngine.Core
             bool initialStrictMode = false,
             bool allowNewTargetOutsideFunction = false,
             bool allowSuperOutsideClass = false,
-            bool allowSuperInClassFieldInitializer = false)
+            bool allowSuperInClassFieldInitializer = false,
+            bool allowRecovery = true)
         {
             _lexer = lexer;
             _isModule = isModule;
@@ -138,6 +140,7 @@ namespace FenBrowser.FenEngine.Core
             _allowNewTargetOutsideFunction = allowNewTargetOutsideFunction;
             _allowSuperOutsideClass = allowSuperOutsideClass;
             _allowSuperInClassFieldInitializer = allowSuperInClassFieldInitializer;
+            _allowRecovery = allowRecovery;
             _prefixParseFns = new Dictionary<TokenType, Func<Expression>>();
             _infixParseFns = new Dictionary<TokenType, Func<Expression, Expression>>();
 
@@ -174,9 +177,6 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.Slash, ParseRegexLiteral);        // /pattern/flags
             RegisterPrefix(TokenType.Regex, ParseRegexToken);          // Already lexed regex
             RegisterPrefix(TokenType.Semicolon, ParseEmptyExpression); // Empty expression (;)
-            RegisterPrefix(TokenType.Colon, ParseEmptyExpression);     // Recovery for labeled statements
-            RegisterPrefix(TokenType.Comma, ParseEmptyExpression);     // Recovery for trailing commas
-            RegisterPrefix(TokenType.RBrace, ParseEmptyExpression);    // Recovery for empty blocks
             RegisterPrefix(TokenType.Yield, ParseYieldExpression);     // yield and yield*
             RegisterPrefix(TokenType.Await, ParseAwaitExpression);     // await ...
             RegisterPrefix(TokenType.Async, ParseAsyncPrefix);         // async ...
@@ -184,20 +184,12 @@ namespace FenBrowser.FenEngine.Core
             RegisterPrefix(TokenType.From, ParseIdentifier);           // contextual keyword from identifier reference
             RegisterPrefix(TokenType.Of, ParseIdentifier);             // contextual keyword of identifier reference
             RegisterPrefix(TokenType.Let, ParseIdentifier);            // contextual keyword let identifier reference
-            RegisterPrefix(TokenType.RParen, ParseEmptyExpression);    // Recovery for empty parens
-            RegisterPrefix(TokenType.RBracket, ParseEmptyExpression);  // Recovery for empty brackets
             RegisterPrefix(TokenType.PrivateIdentifier, ParsePrivateIdentifier); // #field (private class fields)
-            RegisterPrefix(TokenType.Else, ParseEmptyExpression);      // Recovery for else without if
-            RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
-            RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
             RegisterPrefix(TokenType.Plus, ParsePrefixExpression);     // +x (unary plus)
-            RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *
             RegisterPrefix(TokenType.BitwiseNot, ParseBitwiseNotExpression);  // ~x
             RegisterPrefix(TokenType.Ellipsis, ParseSpreadExpression); // ...expr (spread in arrays, objects, etc.)
             RegisterPrefix(TokenType.Default, ParseDefaultExpression); // default (in export default or switch case recovery)
             RegisterPrefix(TokenType.Import, ParseImportExpression);   // import.meta or import(...)
-            RegisterPrefix(TokenType.Catch, ParseEmptyExpression);     // Recovery for catch keyword in expression context
-            RegisterPrefix(TokenType.Case, ParseEmptyExpression);      // Recovery for case keyword in expression context
             
             // ES2021 Logical Assignment
             RegisterInfix(TokenType.OrAssign, ParseLogicalAssignmentExpression);
@@ -207,9 +199,23 @@ namespace FenBrowser.FenEngine.Core
             // ES2020 Nullish Coalescing
             RegisterInfix(TokenType.NullishCoalescing, ParseNullishCoalescingExpression);
             
-            RegisterPrefix(TokenType.Assign, ParseEmptyExpression);    // Recovery for bare = in expression context
             RegisterPrefix(TokenType.Throw, ParseThrowExpression);     // throw as expression (for throw new Error pattern)
-            RegisterPrefix(TokenType.Arrow, ParseEmptyExpression);     // Recovery for bare => in expression context
+            if (_allowRecovery)
+            {
+                RegisterPrefix(TokenType.Colon, ParseEmptyExpression);     // Recovery for labeled statements
+                RegisterPrefix(TokenType.Comma, ParseEmptyExpression);     // Recovery for trailing commas
+                RegisterPrefix(TokenType.RBrace, ParseEmptyExpression);    // Recovery for empty blocks
+                RegisterPrefix(TokenType.RParen, ParseEmptyExpression);    // Recovery for empty parens
+                RegisterPrefix(TokenType.RBracket, ParseEmptyExpression);  // Recovery for empty brackets
+                RegisterPrefix(TokenType.Else, ParseEmptyExpression);      // Recovery for else without if
+                RegisterPrefix(TokenType.Dot, ParseEmptyExpression);       // Recovery for leading dots
+                RegisterPrefix(TokenType.Lt, ParseEmptyExpression);        // Recovery for bare < (like in HTML)
+                RegisterPrefix(TokenType.Asterisk, ParseEmptyExpression);  // Recovery for bare *
+                RegisterPrefix(TokenType.Catch, ParseEmptyExpression);     // Recovery for catch keyword in expression context
+                RegisterPrefix(TokenType.Case, ParseEmptyExpression);      // Recovery for case keyword in expression context
+                RegisterPrefix(TokenType.Assign, ParseEmptyExpression);    // Recovery for bare = in expression context
+                RegisterPrefix(TokenType.Arrow, ParseEmptyExpression);     // Recovery for bare => in expression context
+            }
 
 
 
@@ -1188,6 +1194,11 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen))
             {
+                if (!_allowRecovery)
+                {
+                    return null;
+                }
+
                 // Recovery: skip to RParen or statement boundary
                 while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
                        !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
@@ -1410,6 +1421,10 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 funcLit.Parameters = ParseFunctionParameters();
+                if (funcLit.Parameters == null && !_allowRecovery)
+                {
+                    return null;
+                }
 
                 if (!ExpectPeek(TokenType.LBrace))
                 {
@@ -1689,6 +1704,10 @@ namespace FenBrowser.FenEngine.Core
                     }
 
                     lit.Parameters = ParseFunctionParameters();
+                    if (lit.Parameters == null && !_allowRecovery)
+                    {
+                        return null;
+                    }
                     bool fnParamsSimple = _lastParsedParamsIsSimple;
                     bool fnParamsDuplicate = _lastParsedParamsHasDuplicateNames;
                     bool fnTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
@@ -2012,6 +2031,11 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
+            if (!_allowRecovery)
+            {
+                _errors.Add($"SyntaxError: Invalid parameter pattern starting with '{_curToken.Literal}'");
+            }
+
             // Recovery: skip unexpected token
             return;
         }
@@ -2203,14 +2227,17 @@ namespace FenBrowser.FenEngine.Core
             // Console.WriteLine($"[DEBUG] ParseCallArguments Loop End. Cur={_curToken.Type}, Peek={_peekToken.Type}");
             if (!ExpectPeek(TokenType.RParen))
             {
-                // Console.WriteLine($"[DEBUG-FAIL] ParseCallArguments ExpectPeek(RParen) failed! Cur={_curToken.Type}, Peek={_peekToken.Type}");
-                // Recovery: skip to RParen or statement boundary
-                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
-                       !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+                if (_allowRecovery)
                 {
-                    NextToken();
+                    // Console.WriteLine($"[DEBUG-FAIL] ParseCallArguments ExpectPeek(RParen) failed! Cur={_curToken.Type}, Peek={_peekToken.Type}");
+                    // Recovery: skip to RParen or statement boundary
+                    while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
+                           !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                    }
                 }
-                return args; // Return partial args
+                return args;
             }
 
             return args;
@@ -3077,13 +3104,15 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(end))
             {
-                // Recovery: try to skip to end token instead of returning null
-                while (!CurTokenIs(end) && !CurTokenIs(TokenType.Eof) && 
-                       !CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.RBrace))
+                if (_allowRecovery)
                 {
-                    NextToken();
+                    // Recovery: try to skip to end token instead of returning null
+                    while (!CurTokenIs(end) && !CurTokenIs(TokenType.Eof) && 
+                           !CurTokenIs(TokenType.Semicolon) && !CurTokenIs(TokenType.RBrace))
+                    {
+                        NextToken();
+                    }
                 }
-                // Return partial list instead of null to allow parsing to continue
                 return list;
             }
 
@@ -4305,6 +4334,10 @@ namespace FenBrowser.FenEngine.Core
                 if (!ExpectPeek(TokenType.LParen)) return null;
                 
                 funcLit.Parameters = ParseFunctionParameters();
+                if (funcLit.Parameters == null && !_allowRecovery)
+                {
+                    return null;
+                }
                 
                 if (!ExpectPeek(TokenType.LBrace)) return null;
                 
@@ -5625,6 +5658,12 @@ namespace FenBrowser.FenEngine.Core
             // For unrecognized patterns, create a placeholder to allow parsing to continue
             if (expr is Expression)
             {
+                if (!_allowRecovery)
+                {
+                    _errors.Add($"SyntaxError: Invalid parameter pattern '{expr}'");
+                    return;
+                }
+
                 var placeholder = new Identifier(expr.Token, $"__unknown_{parameters.Count}");
                 parameters.Add(placeholder);
             }
