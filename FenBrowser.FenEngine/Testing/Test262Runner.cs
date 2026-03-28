@@ -453,7 +453,11 @@ namespace FenBrowser.FenEngine.Testing
                 {
                     var parseSource = metadata.IsOnlyStrict ? "\"use strict\";\n" + content : content;
                     var parseLexer = new Lexer(parseSource);
-                    var parseParser = new Parser(parseLexer, isModule: isModuleGoal, allowReturnOutsideFunction: true);
+                    var parseParser = new Parser(
+                        parseLexer,
+                        isModule: isModuleGoal,
+                        allowReturnOutsideFunction: true,
+                        allowRecovery: false);
                     parseParser.ParseProgram();
 
                     if (parseParser.Errors.Count > 0)
