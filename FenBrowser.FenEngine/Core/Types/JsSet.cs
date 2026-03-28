@@ -32,6 +32,12 @@ namespace FenBrowser.FenEngine.Core.Types
         private readonly HashSet<FenValue> _storage = new HashSet<FenValue>(new JsValueEqualityComparer());
         private readonly IExecutionContext _context;
 
+        /// <summary>
+        /// Internal read-only accessor for StructuredClone (HTML §2.7.4) to iterate Set entries
+        /// without exposing mutable storage. ECMA-262 §24.2.3.1 [[SetData]] internal slot.
+        /// </summary>
+        internal IReadOnlyCollection<FenValue> InternalStorage => _storage;
+
         public JsSet(IExecutionContext context)
         {
             _context = context;

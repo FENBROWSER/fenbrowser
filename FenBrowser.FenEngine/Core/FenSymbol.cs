@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
 using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType;
 
 namespace FenBrowser.FenEngine.Core
@@ -72,26 +73,26 @@ namespace FenBrowser.FenEngine.Core
             return null;
         }
 
-        // IValue implementation
-        public JsValueType Type => JsValueType.Object; // Symbols are treated as objects for now
+        // IValue implementation — ECMA-262 §6.1.5: Symbol is a primitive type
+        public JsValueType Type => JsValueType.Symbol;
         public bool IsUndefined => false;
         public bool IsNull => false;
         public bool IsBoolean => false;
         public bool IsNumber => false;
         public bool IsString => false;
-        public bool IsObject => true; // Symbol appears as object in typeof for certain cases
+        public bool IsObject => false;
         public bool IsFunction => false;
 
         public bool ToBoolean() => true; // Symbols are truthy
-        public double ToNumber() => double.NaN;
-        public IObject ToObject() => null; // Symbols can't be converted to object directly
+        public double ToNumber() => throw new Errors.FenTypeError("TypeError: Cannot convert a Symbol value to a number");
+        public IObject ToObject() => null;
         public FenFunction AsFunction() => null;
         public IObject AsObject() => null;
 
         FenValue IValue.ToPrimitive(IExecutionContext context, string preferredType)
         {
-            // Symbol is already a primitive
-            return FenValue.FromString(ToString());
+            // ECMA-262 §7.1.1: Symbol is already a primitive — return itself, not a string coercion
+            return FenValue.FromSymbol(new Types.JsSymbol(Description));
         }
 
         public bool StrictEquals(IValue other)

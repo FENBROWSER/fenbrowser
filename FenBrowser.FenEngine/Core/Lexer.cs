@@ -1956,6 +1956,26 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
+        /// <summary>
+        /// Re-scan from the position of a Slash token as a regex literal.
+        /// Called by the parser when it determines a '/' in prefix position is a regex, not division.
+        /// Returns the regex token (pattern, flags) and advances the lexer past the regex.
+        /// </summary>
+        public Token RescanSlashAsRegex(Token slashToken)
+        {
+            // Reset lexer position to the slash token's position
+            _position = slashToken.Position;
+            _readPosition = _position + 1;
+            _ch = _input[_position];
+
+            bool regexValid;
+            string regex = ReadRegexLiteral(out regexValid);
+            var token = new Token(regexValid ? TokenType.Regex : TokenType.Illegal, regex, slashToken.Line, slashToken.Column);
+            token.Position = slashToken.Position;
+            _prevToken = token;
+            return token;
+        }
+
         public string GetCodeContext(int line, int column = -1, int contextLines = 2)
         {
             try

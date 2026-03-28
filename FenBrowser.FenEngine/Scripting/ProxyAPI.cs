@@ -46,8 +46,24 @@ namespace FenBrowser.FenEngine.Scripting
             if (target.IsFunction)
             {
                 var targetFunc = target.AsFunction();
+                var funcHandlerObj = handler.AsObject();
                 var proxyFunc = new FenFunction(targetFunc?.Name ?? "ProxyFunc", (pArgs, pThis) =>
                 {
+                    // ECMA-262 §10.5.12 [[Call]]: check for apply trap
+                    var applyTrap = funcHandlerObj?.Get("apply");
+                    if (applyTrap.HasValue && applyTrap.Value.IsFunction)
+                    {
+                        var argsArray = FenObject.CreateArray();
+                        for (int i = 0; i < pArgs.Length; i++)
+                        {
+                            argsArray.Set(i.ToString(), pArgs[i]);
+                        }
+                        argsArray.Set("length", FenValue.FromNumber(pArgs.Length));
+                        return applyTrap.Value.AsFunction().Invoke(
+                            new[] { target, pThis, FenValue.FromObject(argsArray) },
+                            null, FenValue.FromObject(funcHandlerObj));
+                    }
+                    // Default: forward to target function
                     return targetFunc.Invoke(pArgs, null, pThis);
                 })
                 {
@@ -99,9 +115,60 @@ namespace FenBrowser.FenEngine.Scripting
             var setTrap = handlerObj.Get("set");
             var hasTrap = handlerObj.Get("has");
 
-            if (getTrap.IsFunction) proxyObj.SetDirect("__proxyGet__", getTrap);
-            if (setTrap.IsFunction) proxyObj.SetDirect("__proxySet__", setTrap);
-            if (hasTrap.IsFunction) proxyObj.SetDirect("__proxyHas__", hasTrap);
+            // ECMA-262 §10.5: When a trap is present, use it; otherwise create a default
+            // forwarding trap that transparently delegates to the target object.
+            if (getTrap.IsFunction)
+            {
+                proxyObj.SetDirect("__proxyGet__", getTrap);
+            }
+            else
+            {
+                // Default get: forward to target
+                var defaultGet = new FenFunction("[[DefaultGet]]", (trapArgs, trapThis) =>
+                {
+                    var prop = trapArgs.Length > 1 ? trapArgs[1] : FenValue.Undefined;
+                    if (targetObj != null)
+                        return targetObj.Get(prop.ToString());
+                    return FenValue.Undefined;
+                });
+                proxyObj.SetDirect("__proxyGet__", FenValue.FromFunction(defaultGet));
+            }
+
+            if (setTrap.IsFunction)
+            {
+                proxyObj.SetDirect("__proxySet__", setTrap);
+            }
+            else
+            {
+                // Default set: forward to target
+                var defaultSet = new FenFunction("[[DefaultSet]]", (trapArgs, trapThis) =>
+                {
+                    var prop = trapArgs.Length > 1 ? trapArgs[1] : FenValue.Undefined;
+                    var val = trapArgs.Length > 2 ? trapArgs[2] : FenValue.Undefined;
+                    if (targetObj != null)
+                        targetObj.Set(prop.ToString(), val);
+                    return FenValue.FromBoolean(true);
+                });
+                proxyObj.SetDirect("__proxySet__", FenValue.FromFunction(defaultSet));
+            }
+
+            if (hasTrap.IsFunction)
+            {
+                proxyObj.SetDirect("__proxyHas__", hasTrap);
+            }
+            else
+            {
+                // Default has: forward to target
+                var defaultHas = new FenFunction("[[DefaultHas]]", (trapArgs, trapThis) =>
+                {
+                    var prop = trapArgs.Length > 1 ? trapArgs[1] : FenValue.Undefined;
+                    if (targetObj != null)
+                        return FenValue.FromBoolean(targetObj.Has(prop.ToString()));
+                    return FenValue.FromBoolean(false);
+                });
+                proxyObj.SetDirect("__proxyHas__", FenValue.FromFunction(defaultHas));
+            }
+
             proxyObj.SetDirect("__isProxy__", FenValue.FromBoolean(true));
 
             return FenValue.FromObject(proxyObj);

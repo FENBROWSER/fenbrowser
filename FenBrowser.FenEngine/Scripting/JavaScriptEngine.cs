@@ -1384,7 +1384,8 @@ namespace FenBrowser.FenEngine.Scripting
             navObj.Set("canShare", shareObj.Get("canShare"));
             navObj.Set("storage", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.StorageManagerAPI.CreateStorageManagerObject(
                 () => OriginKey(_ctx?.BaseUri),
-                () => FenBrowser.FenEngine.WebAPIs.StorageApi.BuildSessionScope(_sessionStoragePartitionId, OriginKey(_ctx?.BaseUri)))));
+                () => FenBrowser.FenEngine.WebAPIs.StorageApi.BuildSessionScope(_sessionStoragePartitionId, OriginKey(_ctx?.BaseUri)),
+                _fenRuntime.Context)));
             
             // Basic navigator properties for detection
             navObj.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, ctx) => FenValue.FromBoolean(false))));
@@ -1435,10 +1436,10 @@ namespace FenBrowser.FenEngine.Scripting
             // Service Workers API - navigator.serviceWorker
             // Service Workers API - navigator.serviceWorker
             var swOrigin = OriginKey(_ctx?.BaseUri);
-            navObj.Set("serviceWorker", FenValue.FromObject(new FenBrowser.FenEngine.Workers.ServiceWorkerContainer(swOrigin)));
+            navObj.Set("serviceWorker", FenValue.FromObject(new FenBrowser.FenEngine.Workers.ServiceWorkerContainer(swOrigin, _fenRuntime.Context)));
             
             // Clipboard API - navigator.clipboard
-            navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject()));
+            navObj.Set("clipboard", FenValue.FromObject(FenBrowser.FenEngine.WebAPIs.ClipboardAPI.CreateClipboardObject(_fenRuntime.Context)));
             // Web Audio API - Audio constructors
             var audioContextCtor = FenBrowser.FenEngine.WebAPIs.WebAudioAPI.CreateAudioContextConstructor(_fenRuntime.Context) as FenFunction;
             if (audioContextCtor != null)
@@ -4190,6 +4191,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         catch (Exception ex)
                         {
                             FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            // WHATWG HTML 4.12.1.1: network fetch error fires error on element
+                            DispatchEvent(el, "error");
                         }
                                     }
                                 }
@@ -4246,6 +4249,8 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                     {
                                         DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
                                         FenLogger.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
+                                        // WHATWG HTML 4.12.1.1: SRI mismatch fires error event
+                                        DispatchEvent(el, "error");
                                         continue;
                                     }
                                     DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
@@ -4258,7 +4263,14 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                         if (scriptResult is FenValue scriptFenValue &&
                                             (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
                                         {
-                                            Console.WriteLine($"[ScriptRunError] {srcInfo}: {scriptFenValue}");
+                                            FenLogger.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
+                                            // WHATWG HTML 4.12.1.1: script execution error fires error on element
+                                            DispatchEvent(el, "error");
+                                        }
+                                        else
+                                        {
+                                            // WHATWG HTML 4.12.1.1: successful execution fires load event
+                                            DispatchEvent(el, "load");
                                         }
 
                                         if (!string.IsNullOrEmpty(srcInfo) &&
@@ -4268,11 +4280,16 @@ var mST = System.Text.RegularExpressions.Regex.Match(line, @"^\s*setTimeout\s*\(
                                             LogXBootstrapState($"after-script:{srcInfo}", baseUri);
                                         }
                                     }
+                                    catch (Exception ex)
+                                    {
+                                        FenLogger.Warn($"[StaticScript] Exec failed: {ex.Message}", LogCategory.JavaScript);
+                                        // WHATWG HTML 4.12.1.1: uncaught error fires error on element
+                                        DispatchEvent(el, "error");
+                                    }
                                     finally
                                     {
                                         SetCurrentScriptValue(previousCurrentScript.IsUndefined ? FenValue.Null : previousCurrentScript);
                                     }
-                                    /* [PERF-REMOVED] */
                                 }
                                 else
                                 {

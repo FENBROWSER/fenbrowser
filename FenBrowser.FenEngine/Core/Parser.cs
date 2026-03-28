@@ -5731,30 +5731,40 @@ namespace FenBrowser.FenEngine.Core
         }
 
         // Parse regex literal when starting with /
-        // This is called when we see a Slash token in prefix position
+        // Called when a Slash token appears in prefix position — the lexer didn't recognize it
+        // as regex (context-dependent), so we re-scan from the slash position.
         private Expression ParseRegexLiteral()
         {
-            // Verify if we actully enter here
-            // Console.WriteLine("[Parser] ENTERING ParseRegexLiteral (Slash prefix)");
-            // At this point _curToken is Slash
-            // We need to read ahead to find the closing /
-            // This is a simplified implementation - real regex parsing is complex
-            
-            var startToken = _curToken;
-            var pattern = new System.Text.StringBuilder();
+            var slashToken = _curToken;
+
+            // Re-scan the source from the slash position as a regex literal
+            var regexToken = _lexer.RescanSlashAsRegex(slashToken);
+
+            // Parse the /pattern/flags from the token literal
+            var literal = regexToken.Literal;
+            var pattern = "";
             var flags = "";
-            
-            // Read the pattern until we find closing /
-            // Note: This accesses internal lexer state which isn't ideal
-            // For now, just return a placeholder regex
-            // In production, the lexer would need context awareness
-            
-            return new RegexLiteral 
-            { 
-                Token = startToken, 
-                Pattern = ".*",  // Placeholder 
-                Flags = "" 
-            };
+
+            if (literal.StartsWith("/") && literal.Length > 1)
+            {
+                var lastSlash = literal.LastIndexOf('/');
+                if (lastSlash > 0)
+                {
+                    pattern = literal.Substring(1, lastSlash - 1);
+                    flags = literal.Substring(lastSlash + 1);
+                }
+            }
+
+            if (regexToken.Type == TokenType.Illegal)
+            {
+                throw new Errors.FenSyntaxError($"SyntaxError: Invalid regular expression: /{pattern}/{flags}");
+            }
+
+            // Advance the parser's token stream past the regex
+            // The lexer is now positioned after the regex, so the next NextToken() will pick up correctly
+            _peekToken = _lexer.NextToken();
+
+            return new RegexLiteral { Token = slashToken, Pattern = pattern, Flags = flags };
         }
 
         // Parse already-lexed regex token

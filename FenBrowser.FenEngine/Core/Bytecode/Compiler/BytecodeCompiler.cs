@@ -1311,7 +1311,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else
             {
-                throw new FenSyntaxError($"Compiler: Node type {node.GetType().Name} not supported in Bytecode Phase.");
+                // ECMA-262: Emit a runtime error rather than crashing the compiler.
+                // This allows the rest of the program to compile while the unsupported node
+                // produces a clear error only if/when it actually executes.
+                int errIdx = AddConstant(FenValue.FromString($"SyntaxError: Unsupported syntax ({node.GetType().Name}) encountered during compilation."));
+                Emit(OpCode.LoadConst);
+                EmitInt32(errIdx);
+                Emit(OpCode.Throw);
             }
             }
             finally
