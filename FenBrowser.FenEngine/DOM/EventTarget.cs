@@ -641,19 +641,27 @@ namespace FenBrowser.FenEngine.DOM
                 return;
             }
 
-            var onHandler = targetObj.Get("on" + evt.Type, context);
-            if (!onHandler.IsFunction)
+            try
             {
-                return;
-            }
+                var onHandler = targetObj.Get("on" + evt.Type, context);
+                if (!onHandler.IsFunction)
+                {
+                    return;
+                }
 
-            var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
-            if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
+                if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                {
+                    evt.PreventDefault();
+                }
+
+                ApplyLegacyEventFlags(evt);
+            }
+            catch (Exception ex)
             {
-                evt.PreventDefault();
+                FenLogger.Error($"[EventTarget] Error in handler property for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                TryReportErrorToWindow(evt.Target, context, ex);
             }
-
-            ApplyLegacyEventFlags(evt);
         }
 
         private static void ApplyLegacyEventFlags(DomEvent evt)
