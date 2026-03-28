@@ -137,6 +137,42 @@ assert.throws(TypeError, function() {
         }
 
         [Fact]
+        public async Task RunSingleTestAsync_AnnexB_DirectEvalFunctionBlockDecl_InitBinding_Passes()
+        {
+            var runner = new Test262Runner(GetTest262Root(), timeoutMs: 20_000);
+            string testFile = Path.Combine(
+                GetTest262Root(),
+                "test",
+                "annexB",
+                "language",
+                "eval-code",
+                "direct",
+                "func-block-decl-eval-func-init.js");
+
+            var result = await runner.RunSingleTestAsync(testFile);
+
+            Assert.True(result.Passed, result.Error);
+        }
+
+        [Fact]
+        public async Task RunSingleTestAsync_AnnexB_DirectEvalFunctionBlockDecl_SkipEarlyError_Passes()
+        {
+            var runner = new Test262Runner(GetTest262Root(), timeoutMs: 20_000);
+            string testFile = Path.Combine(
+                GetTest262Root(),
+                "test",
+                "annexB",
+                "language",
+                "eval-code",
+                "direct",
+                "func-block-decl-eval-func-skip-early-err.js");
+
+            var result = await runner.RunSingleTestAsync(testFile);
+
+            Assert.True(result.Passed, result.Error);
+        }
+
+        [Fact]
         public async Task RunSingleTestAsync_RegExpLegacyAccessor_LeftContext_CrossRealmConstructor_Passes()
         {
             var runner = new Test262Runner(GetTest262Root(), timeoutMs: 20_000);
@@ -188,6 +224,12 @@ assert.throws(TypeError, function() {
 
         private static string GetTest262Root()
         {
+            string envRoot = Environment.GetEnvironmentVariable("TEST262_ROOT");
+            if (!string.IsNullOrWhiteSpace(envRoot) && Directory.Exists(envRoot))
+            {
+                return envRoot;
+            }
+
             string root = FindRepositoryRoot();
             string test262Root = Path.Combine(root, "test262");
             if (!Directory.Exists(test262Root))

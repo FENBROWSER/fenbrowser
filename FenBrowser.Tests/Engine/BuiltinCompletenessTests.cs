@@ -352,6 +352,34 @@ namespace FenBrowser.Tests.Engine
             Assert.Contains("f", block.AnnexBBlockFunctionNames);
         }
 
+        [Fact]
+        public void Debug_AnnexB_EvalCompiler_MarksMixedProgramBlockFunctionForHoist()
+        {
+            var lexer = new Lexer("init = f; f = 123; changed = f; { function f() {} }");
+            var parser = new Parser(lexer);
+            var program = parser.ParseProgram();
+            Assert.Empty(parser.Errors);
+            Assert.Contains(program.Statements, statement => statement is BlockStatement);
+
+            var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval: true);
+            var block = compiler.Compile(program);
+
+            Assert.NotNull(block.AnnexBBlockFunctionNames);
+            Assert.Contains("f", block.AnnexBBlockFunctionNames);
+        }
+
+        [Fact]
+        public void Debug_Parser_RecognizesGeneralDirectEval()
+        {
+            var lexer = new Lexer("eval('var x = 1;');");
+            var parser = new Parser(lexer);
+            var program = parser.ParseProgram();
+            Assert.Empty(parser.Errors);
+
+            var expression = Assert.IsType<ExpressionStatement>(Assert.Single(program.Statements));
+            Assert.IsType<DirectEvalExpression>(expression.Expression);
+        }
+
         // ==================== NUMBER STATIC TESTS ====================
 
         [Fact]
