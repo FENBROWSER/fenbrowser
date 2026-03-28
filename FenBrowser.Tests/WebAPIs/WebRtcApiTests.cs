@@ -1,10 +1,8 @@
 using System;
 using System.Reflection;
+using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
-using FenBrowser.FenEngine.Core.Interfaces;
-using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Scripting;
-using FenBrowser.FenEngine.WebAPIs;
 using Xunit;
 
 namespace FenBrowser.Tests.WebAPIs
@@ -13,91 +11,64 @@ namespace FenBrowser.Tests.WebAPIs
     public class WebRtcApiTests
     {
         [Fact]
-        public void RTCPeerConnectionConstructor_IsConstructor_AndCreatesInstance()
-        {
-            var context = CreateTestContext();
-            var constructorObject = WebRTCAPI.CreateRTCPeerConnectionConstructor(context);
-
-            var constructor = Assert.IsType<FenFunction>(constructorObject);
-            Assert.True(constructor.IsConstructor);
-
-            var instance = constructor.Invoke(Array.Empty<FenValue>(), context);
-            Assert.True(instance.IsObject);
-
-            var pc = instance.AsObject();
-            Assert.True(pc.Get("createOffer").IsFunction);
-            Assert.True(pc.Get("createAnswer").IsFunction);
-            Assert.True(pc.Get("addEventListener").IsFunction);
-            Assert.True(pc.Get("getConfiguration").IsFunction);
-        }
-
-        [Fact]
-        public void RTCPeerConnectionConstructor_RejectsUnsupportedIceScheme()
-        {
-            var context = CreateTestContext();
-            var constructor = Assert.IsType<FenFunction>(WebRTCAPI.CreateRTCPeerConnectionConstructor(context));
-
-            var config = new FenObject();
-            var iceServers = new FenObject();
-            var server = new FenObject();
-            server.Set("urls", FenValue.FromString("http://example.com/stun"));
-            iceServers.Set("0", FenValue.FromObject(server));
-            iceServers.Set("length", FenValue.FromNumber(1));
-            config.Set("iceServers", FenValue.FromObject(iceServers));
-
-            var ex = Assert.Throws<InvalidOperationException>(() =>
-                constructor.Invoke(new[] { FenValue.FromObject(config) }, context));
-
-            Assert.Contains("ICE URL scheme", ex.Message, StringComparison.OrdinalIgnoreCase);
-        }
-
-        [Fact]
-        public void MediaStreamConstructor_IsConstructor_AndCreatesStream()
-        {
-            var constructorObject = WebRTCAPI.CreateMediaStreamConstructor();
-            var constructor = Assert.IsType<FenFunction>(constructorObject);
-
-            Assert.True(constructor.IsConstructor);
-
-            var streamValue = constructor.Invoke(Array.Empty<FenValue>(), (IExecutionContext)null);
-            Assert.True(streamValue.IsObject);
-
-            var stream = streamValue.AsObject();
-            Assert.True(stream.Get("getTracks").IsFunction);
-            Assert.True(stream.Get("clone").IsFunction);
-            Assert.True(stream.Get("active").IsBoolean);
-        }
-
-        [Fact]
-        public void JavaScriptEngine_ExposesWebRtcConstructors_OnGlobalAndWindow()
+        public void JavaScriptEngine_DoesNotExpose_WebRtc_Simulation_Constructors()
         {
             var engine = new JavaScriptEngine(CreateHost());
             engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
 
+            var runtime = GetRuntime(engine);
+            var window = Assert.IsAssignableFrom<FenObject>(runtime.GetGlobal("window").AsObject());
+
+            Assert.True(runtime.GetGlobal("RTCPeerConnection").IsUndefined);
+            Assert.True(runtime.GetGlobal("webkitRTCPeerConnection").IsUndefined);
+            Assert.True(runtime.GetGlobal("MediaStream").IsUndefined);
+
+            Assert.True(window.Get("RTCPeerConnection").IsUndefined);
+            Assert.True(window.Get("webkitRTCPeerConnection").IsUndefined);
+            Assert.True(window.Get("MediaStream").IsUndefined);
+
+            engine.Evaluate("""
+                var __webrtcSurfaceAbsent =
+                    (typeof RTCPeerConnection === 'undefined') &&
+                    (typeof webkitRTCPeerConnection === 'undefined') &&
+                    (typeof MediaStream === 'undefined') &&
+                    (typeof window.RTCPeerConnection === 'undefined') &&
+                    (typeof window.webkitRTCPeerConnection === 'undefined') &&
+                    (typeof window.MediaStream === 'undefined');
+                """);
+
+            Assert.True(runtime.GetGlobal("__webrtcSurfaceAbsent").ToBoolean());
+        }
+
+        [Fact]
+        public void JavaScriptEngine_Source_DoesNotRegister_WebRtc_Simulation_Surface()
+        {
+            var source = System.IO.File.ReadAllText(GetJavaScriptEngineSourcePath());
+
+            Assert.DoesNotContain("WebRTCAPI", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"RTCPeerConnection\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"webkitRTCPeerConnection\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"MediaStream\"", source, StringComparison.Ordinal);
+        }
+
+        private static FenRuntime GetRuntime(JavaScriptEngine engine)
+        {
             var runtimeField = typeof(JavaScriptEngine).GetField("_fenRuntime", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(runtimeField);
 
             var runtime = runtimeField.GetValue(engine) as FenRuntime;
             Assert.NotNull(runtime);
-
-            var rtcCtor = runtime.GetGlobal("RTCPeerConnection");
-            var mediaStreamCtor = runtime.GetGlobal("MediaStream");
-            Assert.True(rtcCtor.IsFunction);
-            Assert.True(mediaStreamCtor.IsFunction);
-
-            var window = runtime.GetGlobal("window");
-            Assert.True(window.IsObject);
-            Assert.True(window.AsObject().Get("RTCPeerConnection").IsFunction);
-            Assert.True(window.AsObject().Get("webkitRTCPeerConnection").IsFunction);
-            Assert.True(window.AsObject().Get("MediaStream").IsFunction);
-
-            engine.Evaluate("var __webrtcCtorOk = (typeof RTCPeerConnection === 'function') && (typeof MediaStream === 'function') && (typeof window.RTCPeerConnection === 'function');");
-            Assert.True(runtime.GetGlobal("__webrtcCtorOk").ToBoolean());
+            return runtime;
         }
 
-        private static FenBrowser.FenEngine.Core.ExecutionContext CreateTestContext()
+        private static string GetJavaScriptEngineSourcePath()
         {
-            return new FenBrowser.FenEngine.Core.ExecutionContext(new PermissionManager(JsPermissions.StandardWeb));
+            return System.IO.Path.GetFullPath(System.IO.Path.Combine(
+                AppContext.BaseDirectory,
+                "..", "..", "..", "..",
+                "FenBrowser.FenEngine",
+                "Scripting",
+                "JavaScriptEngine.cs"));
         }
 
         private static JsHostAdapter CreateHost()

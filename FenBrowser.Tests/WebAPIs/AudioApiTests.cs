@@ -1,13 +1,10 @@
 using System;
 using System.Reflection;
-using FenBrowser.Core;
 using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
-using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Scripting;
-using FenBrowser.FenEngine.WebAPIs;
 using Xunit;
 
 namespace FenBrowser.Tests.WebAPIs
@@ -28,124 +25,64 @@ namespace FenBrowser.Tests.WebAPIs
         }
 
         [Fact]
-        public void AudioConstructor_IsConstructor_AndCreatesInstance()
-        {
-            var context = CreateTestContext();
-            var constructor = WebAudioAPI.CreateAudioConstructor(context);
-
-            Assert.True(constructor.IsConstructor);
-
-            var instance = constructor.Invoke(new[] { FenValue.FromString("https://example.com/media.mp3") }, context);
-            Assert.True(instance.IsObject);
-
-            var audio = instance.AsObject();
-            Assert.True(audio.Get("play").IsFunction);
-            Assert.True(audio.Get("pause").IsFunction);
-            Assert.True(audio.Get("canPlayType").IsFunction);
-            Assert.Equal("https://example.com/media.mp3", audio.Get("src").AsString());
-        }
-
-        [Fact]
-        public void Audio_CanPlayType_ReturnsExpectedMatrix()
-        {
-            var context = CreateTestContext();
-            var audio = WebAudioAPI.CreateAudio(context);
-            var canPlayType = audio.Get("canPlayType").AsFunction();
-
-            var probably = canPlayType.Invoke(new[] { FenValue.FromString("audio/mpeg") }, context).AsString();
-            var maybe = canPlayType.Invoke(new[] { FenValue.FromString("audio/ogg; codecs=vorbis") }, context).AsString();
-            var notSupported = canPlayType.Invoke(new[] { FenValue.FromString("video/mp4") }, context).AsString();
-
-            Assert.Equal("probably", probably);
-            Assert.Equal("maybe", maybe);
-            Assert.Equal(string.Empty, notSupported);
-        }
-
-        [Fact]
-        public void Audio_Play_RejectsInvalidScheme()
-        {
-            var context = CreateTestContext();
-            var audio = WebAudioAPI.CreateAudio(context, "file:///etc/passwd");
-
-            var playResult = audio.Get("play").AsFunction().Invoke(Array.Empty<FenValue>(), context);
-            Assert.True(playResult.IsObject);
-
-            var rejected = false;
-            var rejectionMessage = string.Empty;
-
-            var onFulfilled = FenValue.FromFunction(new FenFunction("onFulfilled", (args, thisVal) =>
-            {
-                return FenValue.Undefined;
-            }));
-            var onRejected = FenValue.FromFunction(new FenFunction("onRejected", (args, thisVal) =>
-            {
-                rejected = true;
-                if (args.Length > 0 && args[0].IsObject)
-                {
-                    rejectionMessage = args[0].AsObject()?.Get("message").AsString() ?? string.Empty;
-                }
-                else if (args.Length > 0)
-                {
-                    rejectionMessage = args[0].AsString();
-                }
-
-                return FenValue.Undefined;
-            }));
-
-            playResult.AsObject().Get("then").AsFunction().Invoke(new[] { onFulfilled, onRejected }, context);
-            DrainEventLoop();
-
-            Assert.True(rejected);
-            Assert.Contains("not allowed", rejectionMessage, StringComparison.OrdinalIgnoreCase);
-        }
-
-        [Fact]
-        public void JavaScriptEngine_ExposesAudio_OnGlobalAndWindow()
+        public void JavaScriptEngine_DoesNotExpose_WebAudioOrAudio_Simulation_Constructors()
         {
             var engine = new JavaScriptEngine(CreateHost());
             engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
 
+            var runtime = GetRuntime(engine);
+            var window = Assert.IsAssignableFrom<FenObject>(runtime.GetGlobal("window").AsObject());
+
+            Assert.True(runtime.GetGlobal("Audio").IsUndefined);
+            Assert.True(runtime.GetGlobal("AudioContext").IsUndefined);
+            Assert.True(runtime.GetGlobal("webkitAudioContext").IsUndefined);
+
+            Assert.True(window.Get("Audio").IsUndefined);
+            Assert.True(window.Get("AudioContext").IsUndefined);
+            Assert.True(window.Get("webkitAudioContext").IsUndefined);
+
+            engine.Evaluate("""
+                var __audioSurfaceAbsent =
+                    (typeof Audio === 'undefined') &&
+                    (typeof AudioContext === 'undefined') &&
+                    (typeof webkitAudioContext === 'undefined') &&
+                    (typeof window.Audio === 'undefined') &&
+                    (typeof window.AudioContext === 'undefined') &&
+                    (typeof window.webkitAudioContext === 'undefined');
+                """);
+
+            Assert.True(runtime.GetGlobal("__audioSurfaceAbsent").ToBoolean());
+        }
+
+        [Fact]
+        public void JavaScriptEngine_Source_DoesNotRegister_WebAudio_Simulation_Surface()
+        {
+            var source = System.IO.File.ReadAllText(GetJavaScriptEngineSourcePath());
+
+            Assert.DoesNotContain("WebAudioAPI", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"Audio\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"AudioContext\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetGlobal(\"webkitAudioContext\"", source, StringComparison.Ordinal);
+        }
+
+        private static FenRuntime GetRuntime(JavaScriptEngine engine)
+        {
             var runtimeField = typeof(JavaScriptEngine).GetField("_fenRuntime", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(runtimeField);
 
             var runtime = runtimeField.GetValue(engine) as FenRuntime;
             Assert.NotNull(runtime);
-
-            var audioCtor = runtime.GetGlobal("Audio");
-            Assert.True(audioCtor.IsFunction);
-
-            var window = runtime.GetGlobal("window");
-            Assert.True(window.IsObject);
-            Assert.True(window.AsObject().Get("Audio").IsFunction);
-
-            engine.Evaluate("var __audioCtorOk = (typeof Audio === 'function') && (typeof window.Audio === 'function');");
-            Assert.True(runtime.GetGlobal("__audioCtorOk").ToBoolean());
+            return runtime;
         }
 
-        private static FenBrowser.FenEngine.Core.ExecutionContext CreateTestContext()
+        private static string GetJavaScriptEngineSourcePath()
         {
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(new PermissionManager(JsPermissions.StandardWeb));
-            context.ScheduleCallback = (action, delay) =>
-            {
-                if (action == null)
-                {
-                    return;
-                }
-
-                EventLoopCoordinator.Instance.ScheduleTask(action, TaskSource.Timer, "AudioApiTests.ScheduleCallback");
-            };
-
-            context.ScheduleMicrotask = action =>
-            {
-                if (action == null)
-                {
-                    return;
-                }
-
-                EventLoopCoordinator.Instance.ScheduleMicrotask(action);
-            };
-
-            return context;
+            return System.IO.Path.GetFullPath(System.IO.Path.Combine(
+                AppContext.BaseDirectory,
+                "..", "..", "..", "..",
+                "FenBrowser.FenEngine",
+                "Scripting",
+                "JavaScriptEngine.cs"));
         }
 
         private static JsHostAdapter CreateHost()
@@ -156,20 +93,5 @@ namespace FenBrowser.Tests.WebAPIs
                 status: _ => { },
                 log: _ => { });
         }
-
-        private static void DrainEventLoop()
-        {
-            for (var i = 0; i < 64; i++)
-            {
-                EventLoopCoordinator.Instance.ProcessNextTask();
-                EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
-
-                if (EventLoopCoordinator.Instance.TaskCount == 0 && EventLoopCoordinator.Instance.MicrotaskCount == 0)
-                {
-                    break;
-                }
-            }
-        }
     }
 }
-
