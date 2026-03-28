@@ -332,12 +332,14 @@ namespace FenBrowser.FenEngine.Workers
         }
 
         /// <summary>
-        /// Dispatch a message event to the worker's onmessage handler
+        /// Dispatch a message event to the worker's onmessage handler.
+        /// Per HTML §2.7.1, message data is StructuredClone'd before delivery.
         /// </summary>
         public void DispatchMessage(object data)
         {
+            var clonedData = StructuredClone.Clone(data);
             var evt = new FenObject();
-            evt.Set("data", ConvertToFenValue(data));
+            evt.Set("data", ConvertToFenValue(clonedData));
             evt.Set("type", FenValue.FromString("message"));
             evt.Set("origin", FenValue.FromString(_origin));
             DispatchEventToHandlers("message", FenValue.FromObject(evt));
@@ -354,7 +356,7 @@ namespace FenBrowser.FenEngine.Workers
             DispatchEventToHandlers("error", FenValue.FromObject(evt));
         }
 
-        protected void DispatchEventToHandlers(string eventType, FenValue eventObject)
+        internal void DispatchEventToHandlers(string eventType, FenValue eventObject)
         {
             if (string.IsNullOrWhiteSpace(eventType))
             {

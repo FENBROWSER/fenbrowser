@@ -372,8 +372,24 @@ namespace FenBrowser.FenEngine.Workers
         }
 
         /// <summary>
-        /// Placeholder for invoking the worker's onmessage handler
-        /// In a real implementation, this would call into the JS engine
+        /// Dispatch a named event to the worker's global scope event handlers.
+        /// Used by ServiceWorkerManager for lifecycle events (install, activate, fetch).
+        /// </summary>
+        internal void DispatchGlobalEvent(string eventType, FenValue eventObject)
+        {
+            if (_globalScope is ServiceWorkerGlobalScope swScope)
+            {
+                swScope.DispatchExtendableEvent(eventType, eventObject);
+            }
+            else
+            {
+                _globalScope?.DispatchEventToHandlers(eventType, eventObject);
+            }
+        }
+
+        /// <summary>
+        /// Dispatches a message event to the worker's global scope onmessage handler.
+        /// Routes through WorkerGlobalScope.DispatchMessage which invokes registered JS handlers.
         /// </summary>
         private void InvokeOnMessage(WorkerMessageEvent evt)
         {
