@@ -5,6 +5,8 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Platform;
 using FenBrowser.Core.Security.Sandbox;
+using FenBrowser.Host.ProcessIsolation.Gpu;
+using FenBrowser.Host.ProcessIsolation.Utility;
 
 namespace FenBrowser.Host.ProcessIsolation.Targets
 {
@@ -12,11 +14,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
     {
         private readonly int _parentPid = Environment.ProcessId;
         private readonly TargetProcessKind _targetKind;
-        private readonly string _profileName;
-        private readonly string _capabilitySet;
-        private readonly string _launchArgument;
-        private readonly string _timeoutEnvKey;
-        private readonly string _allowUnsandboxedEnvKey;
+        private readonly TargetProcessContract _contract;
         private readonly OsSandboxProfile _sandboxProfile;
         private readonly TimeSpan _readyTimeout;
         private TargetProcessSession _session;
@@ -26,28 +24,15 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public TargetChildProcessHost(TargetProcessKind targetKind)
         {
             _targetKind = targetKind;
-
-            switch (targetKind)
+            _contract = targetKind switch
             {
-                case TargetProcessKind.Gpu:
-                    _profileName = "gpu_process";
-                    _capabilitySet = "gpu,shared-memory,compositor";
-                    _launchArgument = "--gpu-child";
-                    _timeoutEnvKey = "FEN_GPU_READY_TIMEOUT_MS";
-                    _allowUnsandboxedEnvKey = "FEN_GPU_ALLOW_UNSANDBOXED";
-                    _sandboxProfile = OsSandboxProfile.GpuProcess;
-                    break;
-                default:
-                    _profileName = "utility_process";
-                    _capabilitySet = "utility,shared-memory";
-                    _launchArgument = "--utility-child";
-                    _timeoutEnvKey = "FEN_UTILITY_READY_TIMEOUT_MS";
-                    _allowUnsandboxedEnvKey = "FEN_UTILITY_ALLOW_UNSANDBOXED";
-                    _sandboxProfile = OsSandboxProfile.UtilityProcess;
-                    break;
-            }
-
-            _readyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv(_timeoutEnvKey, 5000));
+                TargetProcessKind.Gpu => GpuProcessIpc.Contract,
+                _ => UtilityProcessIpc.Contract
+            };
+            _sandboxProfile = targetKind == TargetProcessKind.Gpu
+                ? OsSandboxProfile.GpuProcess
+                : OsSandboxProfile.UtilityProcess;
+            _readyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv(_contract.ReadyTimeoutEnvKey, 5000));
         }
 
         public TargetProcessSession Session => _session;
@@ -60,9 +45,16 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             }
 
             var allowUnsandboxedFallback = string.Equals(
-                Environment.GetEnvironmentVariable(_allowUnsandboxedEnvKey),
+                Environment.GetEnvironmentVariable(_contract.AllowUnsandboxedEnvKey),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
+            using var launchScope = FenLogger.BeginScope(
+                component: $"{_targetKind}ProcessLauncher",
+                data: new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["targetKind"] = _targetKind.ToString(),
+                    ["allowUnsandboxedFallback"] = allowUnsandboxedFallback
+                });
 
             var exePath = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(exePath))
@@ -85,7 +77,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = _launchArgument,
+                    Arguments = _contract.LaunchArgument,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
@@ -95,40 +87,24 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 startInfo.Environment["FEN_TARGET_PIPE_NAME"] = pipeName;
                 startInfo.Environment["FEN_TARGET_AUTH_TOKEN"] = authToken;
                 startInfo.Environment["FEN_TARGET_KIND"] = _targetKind.ToString().ToLowerInvariant();
-                startInfo.Environment["FEN_TARGET_SANDBOX_PROFILE"] = _profileName;
-                startInfo.Environment["FEN_TARGET_CAPABILITIES"] = _capabilitySet;
-
-                if (_targetKind == TargetProcessKind.Gpu)
-                {
-                    startInfo.Environment["FEN_GPU_CHILD"] = "1";
-                }
-                else
-                {
-                    startInfo.Environment["FEN_UTILITY_CHILD"] = "1";
-                }
+                startInfo.Environment["FEN_TARGET_SANDBOX_PROFILE"] = _contract.ProfileName;
+                startInfo.Environment["FEN_TARGET_CAPABILITIES"] = _contract.CapabilitySet;
+                startInfo.Environment[_contract.ChildEnvironmentFlag] = "1";
 
                 var sandboxFactory = PlatformLayerFactory.GetInstance().CreateSandboxFactory();
-                if (!allowUnsandboxedFallback && !sandboxFactory.IsSandboxingSupported)
+                if (!SandboxLaunchPolicy.TryAcquire(
+                    $"{_targetKind} child",
+                    sandboxFactory,
+                    _sandboxProfile,
+                    allowUnsandboxedFallback,
+                    _contract.AllowUnsandboxedEnvKey,
+                    out var sandbox))
                 {
-                    FenLogger.Error(
-                        $"[{_targetKind}Process] Refusing child launch: no supported OS sandbox factory is available on this host. Set {_allowUnsandboxedEnvKey}=1 to override.",
-                        LogCategory.General);
                     session.Dispose();
                     return false;
                 }
-
-                var sandbox = sandboxFactory.Create(_sandboxProfile);
-                if (sandbox is NullSandbox && !allowUnsandboxedFallback)
-                {
-                    FenLogger.Error(
-                        $"[{_targetKind}Process] Refusing child launch: sandbox resolved to NullSandbox. Set {_allowUnsandboxedEnvKey}=1 to override.",
-                        LogCategory.General);
-                    sandbox.Dispose();
-                    session.Dispose();
-                    return false;
-                }
-
-                sandbox.ApplyToProcessStartInfo(startInfo);
+                
+                sandbox?.ApplyToProcessStartInfo(startInfo);
 
                 Process child;
                 if (sandbox.RequiresCustomSpawn)
@@ -146,9 +122,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
                 if (child == null)
                 {
-                    sandbox.Dispose();
+                    sandbox?.Dispose();
                     session.Dispose();
-                    FenLogger.Error($"[{_targetKind}Process] Failed to spawn child process.", LogCategory.General);
+                    FenLogger.Error($"[{_targetKind}Process] Failed to spawn child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
@@ -158,9 +134,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 {
                     FenLogger.Error(
                         $"[{_targetKind}Process] Child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
-                        LogCategory.General);
+                        LogCategory.ProcessIsolation);
                     try { child.Kill(entireProcessTree: true); } catch { }
-                    sandbox.Dispose();
+                    sandbox?.Dispose();
                     session.Dispose();
                     return false;
                 }
@@ -170,14 +146,14 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 _session = session;
 
                 FenLogger.Info(
-                    $"[{_targetKind}Process] Child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox.ProfileName}).",
-                    LogCategory.General);
+                    $"[{_targetKind}Process] Child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
+                    LogCategory.ProcessIsolation);
                 return true;
             }
             catch (Exception ex)
             {
                 session.Dispose();
-                FenLogger.Error($"[{_targetKind}Process] Failed to start child: {ex.Message}", LogCategory.General);
+                FenLogger.Error($"[{_targetKind}Process] Failed to start child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
             }
         }
