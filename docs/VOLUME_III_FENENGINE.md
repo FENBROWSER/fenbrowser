@@ -5704,3 +5704,14 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Callable proxies that come back as object-valued wrappers are not actually callable to the rest of the engine, which breaks construction and any downstream `IsFunction` checks.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Reflect_Construct_And_Proxy_DefaultForwarding_Work_With_RuntimeBuiltins|FullyQualifiedName~RegExp_LegacyAccessor_ReflectGet_OnSelf_ReturnsEmptyString|FullyQualifiedName~ExecuteSimple_ForOfConstClosure_PassedThroughHelper_PreservesCapturedValue|FullyQualifiedName~ExecuteSimple_ForOfConstClosure_AssignedBeforeHelper_PreservesCapturedValue|FullyQualifiedName~ExecuteSimple_ImplicitGlobalAssignment_IsVisibleThroughRuntimeLookup"`: pass.
+
+## 2.187 Bytecode Regression Alignment For Declaration Slots And Hardened Eval (2026-03-29)
+
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Updated the local-slot opcode regression so `var x = ...` expects `StoreLocalDeclaration` rather than `StoreLocal`, matching the bytecode compiler's declaration-vs-assignment split.
+  - The class-field direct-eval regressions now explicitly grant `JsPermissions.Eval` before executing `eval(...)` inside field initializers, which keeps the tests aligned with the locked-down runtime policy while still proving that bytecode direct eval supports class-field `new.target` and derived `super.x` semantics once eval is allowed.
+- Why this mattered:
+  - The engine was already behaving correctly: local `var` initializers lower through the declaration opcode path, and class-field direct eval is intentionally blocked unless the runtime grants eval permission.
+  - Leaving the old assertions in place made the bytecode conformance sweep look broken even though the failures were stale expectations, not runtime regressions.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.BuiltinCompletenessTests|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests" --no-restore`: pass.
