@@ -392,4 +392,25 @@ Net effect:
 - Verification:
   - `dotnet build FenBrowser.DevTools/FenBrowser.DevTools.csproj -nologo` completed successfully on `2026-03-29`.
 
+### 5.15 Protocol Contract Hardening (2026-03-29)
+
+- `FenBrowser.DevTools/Core/Protocol/ProtocolMessage.cs`
+  - Protocol JSON parsing now treats malformed payloads as parse failures instead of surfacing serializer exceptions into transport flow.
+
+- `FenBrowser.DevTools/Core/Protocol/MessageRouter.cs`
+  - Duplicate domain registration is now rejected explicitly.
+  - Event subscription is now idempotent.
+  - Protocol failure codes now distinguish:
+    - invalid request (`-32600`)
+    - method/domain not found (`-32601`)
+    - internal handler failure (`-32603`)
+    - malformed JSON parse failure (`-32700`)
+
+- `FenBrowser.DevTools/Instrumentation/DomInstrumenter.cs`
+  - The DOM instrumenter now detaches its global mutation subscription on disposal instead of leaking a permanent static-event listener across host/controller lifetimes.
+  - Mutation callback signatures now align with the nullable DOM mutation event contract, and attribute-change forwarding now guards absent attribute names.
+
+- `FenBrowser.Tests/DevTools/MessageRouterTests.cs`
+  - Added regressions proving malformed JSON is returned as a protocol parse error and that duplicate domain registration is rejected.
+
 _End of Volume V_

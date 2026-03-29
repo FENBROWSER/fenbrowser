@@ -343,7 +343,7 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Paint/Compositing tranche PC-2 damage-region consumption (2026-02-20):
   - Added `DamageRasterizationPolicy` gate for safe partial-raster usage (base-frame required + bounded damage area/region count).
   - Added `SkiaRenderer.RenderDamaged(...)` clip-based damage redraw path.
-  - Host recording path now seeds from previous frame before engine render so partial-raster updates can be applied without stale background clears (`FenBrowser.Host/BrowserIntegration.cs`).
+  - Base-frame reuse is a caller contract, not an implicit renderer guarantee: callers must seed a reusable frame before enabling partial-raster updates, and the current host Debug record path still does not auto-seed that frame by default.
 
 ### 3.3 Backend (`SkiaRenderer`)
 
@@ -5780,3 +5780,65 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Verification:
   - `dotnet build FenBrowser.sln -nologo`
   - completed successfully on `2026-03-29` with existing warning debt still present elsewhere in the solution.
+
+## 2.191 P1 Lifecycle And Runtime Contract Hardening (2026-03-29)
+
+- `FenBrowser.FenEngine/Observers/ObserverCoordinator.cs`
+  - Observer callback delivery now enters `JSExecution` through `EngineContext.PushPhase(...)`, so temporary phase switching is explicit, scoped, and automatically restored even when callback execution throws.
+
+- `FenBrowser.FenEngine/Core/EnginePhase.cs`
+  - Compatibility entry paths now bridge older call sites onto the stricter core phase matrix by explicitly ending the current phase before starting a new non-idle phase.
+  - This keeps older engine-facing code working while preventing silent transition drift inside `EngineContext`.
+
+- `FenBrowser.FenEngine/Rendering/BrowserEngine.cs`
+  - BrowserEngine now exposes a stable load-state model:
+    - `Idle`
+    - `Loading`
+    - `Complete`
+    - `Failed`
+    - `Cancelled`
+  - URI-based `LoadAsync(Uri, CancellationToken)` is now the canonical navigation entrypoint.
+  - Failed and cancelled navigations now preserve `LastError`, emit diagnostics, and leave the engine in an explicit terminal state instead of silently collapsing into a generic title fallback.
+
+- Verification
+  - `dotnet build FenBrowser.sln -nologo`: pass on `2026-03-29`.
+  - Focused regression slice covering DOM, engine-phase, UI-dispatch, WebIDL, WebDriver, and DevTools contract paths: pass (`54/54`) on `2026-03-29`.
+  - Required host runtime check on `2026-03-29` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/click_debug.log`
+  - Runtime caveat:
+    - the screenshot surface is still effectively all-white (`1920x927`, sampled non-white count `0/4512`) while `dom_dump.txt` contains the full Google DOM tree.
+    - `logs/raw_source_*.html` was still not emitted.
+    - This means the diagnostics surface is partially restored, but first-frame/rendering correctness and raw-source logging are still open production issues.
+
+## 2.192 P1 Render Watchdog Presentation Correctness (2026-03-30)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - The render watchdog no longer treats correctness as disposable on first/full frames.
+  - When the pre-raster budget is exceeded and no reusable base frame is available, `SkiaDomRenderer` now forces a full raster instead of clearing to the page background and presenting a blank frame.
+  - When a caller explicitly indicates that a reusable base frame is already seeded on the canvas, the watchdog now preserves that frame rather than clearing over it.
+  - This keeps watchdog behavior aligned with production browser expectations: degrade performance first, not user-visible correctness.
+
+- `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs`
+  - Added coverage proving three watchdog invariants:
+    - watchdog triggering remains observable,
+    - no-base-frame over-budget renders still paint visible content,
+    - reusable base-frame renders preserve the seeded frame instead of blanking it.
+
+- `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs`
+  - The Google snapshot diagnostics test now includes watchdog state in its failure context while continuing to assert visible search-shell raster coverage.
+
+- Verification
+  - `dotnet build FenBrowser.sln -nologo`: pass on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~RenderWatchdogTests"`: pass (`3/3`) on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~GoogleSnapshotDiagnosticsTests.LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage"`: pass (`1/1`) on `2026-03-30`.
+  - Required host runtime check on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `FenBrowser.Host/bin/Debug/net8.0/logs/network_fetch_*.html`
+    - `FenBrowser.Host/bin/Debug/net8.0/logs/fenbrowser_*.log`
+  - Runtime outcome:
+    - the screenshot is no longer blank; the Google page shell, doodle, search chrome, language strip, and footer now paint visibly in the live host path.
+    - the active Debug diagnostics surface still does not emit a fresh `raw_source_*.html` or `engine_source_*.html` artifact, and the structured host log remains minimal.
+    - This closes the blank-frame rendering blocker but leaves runtime diagnostic completeness as an open P1 item.

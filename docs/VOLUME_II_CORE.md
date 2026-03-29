@@ -844,3 +844,48 @@ _End of Volume II_
 - Verification:
   - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -nologo` completed successfully on `2026-03-29`.
 
+## 6.7 P1 DOM, Engine, And WebIDL Contract Hardening (2026-03-29)
+
+- `FenBrowser.Core/Dom/V2/TreeScope.cs`
+- `FenBrowser.Core/Dom/V2/Node.cs`
+- `FenBrowser.Core/Dom/V2/ContainerNode.cs`
+- `FenBrowser.Core/Dom/V2/Document.cs`
+- `FenBrowser.Core/Dom/V2/Element.cs`
+- `FenBrowser.Core/Dom/V2/ShadowRoot.cs`
+- `FenBrowser.Core/Dom/V2/TreeWalker.cs`
+- `FenBrowser.Core/Dom/V2/NodeIterator.cs`
+- `FenBrowser.Core/Dom/V2/Security/AttributeSanitizer.cs`
+- `FenBrowser.Core/DomSerializer.cs`
+  - DOM support surfaces were tightened around real browser invariants instead of permissive helper behavior.
+  - Tree-scope ownership now invalidates and rebuilds ID indexes correctly across subtree removal and reparenting.
+  - `Document.GetElementById(...)` now defers to the active `TreeScope`, which keeps lookup ownership centralized.
+  - `TreeWalker.CurrentNode` now enforces root-boundary membership instead of allowing drift outside the traversal root.
+  - `NodeIterator` now tracks subtree removal and re-anchors reference state rather than silently keeping stale traversal anchors.
+  - `ShadowRoot.ActiveElement` now requires membership in the current shadow tree, and `adoptedStyleSheets` rejects null entries and deduplicates repeated sheets.
+  - `AttributeSanitizer` now logs high-signal sanitization decisions through structured logging.
+  - `DomSerializer` now preserves doctype emission and non-pretty text fidelity, which matters for protocol markup editing and automation source capture.
+
+- `FenBrowser.Core/Engine/EngineContext.cs`
+- `FenBrowser.Core/Engine/EngineInvariants.cs`
+- `FenBrowser.Core/Engine/NavigationSubresourceTracker.cs`
+- `FenBrowser.Core/Engine/PipelineStage.cs`
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/IBrowserEngine.cs`
+- `FenBrowser.Core/INetworkService.cs`
+- `FenBrowser.Core/NetworkConfiguration.cs`
+- `FenBrowser.Core/NetworkService.cs`
+- `FenBrowser.Core/UiThreadHelper.cs`
+  - Engine lifecycle rules are now explicit and shared from one transition matrix instead of duplicated across separate invariant helpers.
+  - `PipelineStage` now exposes ordered transition validation plus stable input/output stage metadata for instrumentation and diagnostics.
+  - `NavigationSubresourceTracker` now exposes immutable pending-load snapshots for navigation-scoped completion logic and tests.
+  - `BrowserSettings` now normalizes and validates user-facing URLs, zoom bounds, font presets, bookmark/startup lists, and log settings before persistence.
+  - `IBrowserEngine` and `INetworkService` now carry URI-based async overloads, cancellation, and explicit load-state contracts rather than string-only permissive APIs.
+  - `NetworkConfiguration` and `NetworkService` now fail fast on invalid configuration and route document/resource fetches through the centralized security policy before issuing requests.
+  - `UiThreadHelper` now uses an explicit dispatcher-adapter contract instead of silent compatibility shims.
+
+- `FenBrowser.Core/WebIDL/WebIdlBindingGenerator.cs`
+- `FenBrowser.WebIdlGen/Program.cs`
+  - WebIDL generation is now deterministic by definition order, output ordering, and manifest hashing.
+  - The generator tool now writes `webidl-bindings-manifest.json`, removes stale generated outputs, supports `--verify`, and reports parse errors with file-relative attribution.
+  - This hardens the binding pipeline from "generated breadth exists" toward "generated ownership is reproducible and auditable".
+

@@ -11,6 +11,40 @@ P0 was implemented on `2026-03-29`.
 The `7` P0 workstreams are now closed in code and synchronized into the volume docs.
 Remaining work in this ledger is P1 and P2 completion, plus warning-debt cleanup discovered during solution builds.
 
+### 2026-03-29 P1 Progress Snapshot
+
+- Advanced `Complete Core DOM support surfaces` with concrete invariants for tree-scope ownership, traversal/root boundaries, shadow-root state, sanitization logging, and serializer fidelity.
+- Advanced `Harden engine contracts and lifecycle invariants` with a shared phase-transition matrix, scoped phase restoration, pipeline metadata validation, navigation pending-load snapshots, normalized `BrowserSettings`, and explicit browser/network async contracts.
+- Advanced `Close WebIDL pipeline end to end` with deterministic generator ordering, manifest hashing, stale-output cleanup, and `--verify` mode in `FenBrowser.WebIdlGen`.
+- Advanced `Complete DevTools` with stricter protocol error handling, duplicate-handler rejection, idempotent event subscription, and disposable DOM mutation instrumentation.
+- Advanced `Complete WebDriver` with stricter capability validation, request-body validation, route normalization, reference-safe script argument/result conversion, and session/timeout hardening.
+- Verification on `2026-03-29`:
+  - `dotnet build FenBrowser.sln -nologo`: pass.
+  - Focused regression slice for DOM/engine/UI-dispatch/WebIDL/WebDriver/DevTools: pass (`54/54`).
+  - Required runtime host cycle emitted `debug_screenshot.png`, `dom_dump.txt`, and `logs/click_debug.log`.
+- Open production blocker discovered during the same runtime cycle:
+  - `debug_screenshot.png` is still effectively blank/white while `dom_dump.txt` contains a populated Google DOM tree.
+  - `logs/raw_source_*.html` still did not emit.
+  - P1 therefore remains in progress; the browser still has rendering/diagnostic closure work before P1 can be called fully complete.
+
+### 2026-03-30 P1 Progress Snapshot
+
+- Closed the blank-first-frame regression in the renderer watchdog path:
+  - if raster is over budget and no reusable base frame exists, fen now forces a full raster instead of presenting a white frame.
+  - if a caller explicitly provides a reusable base frame, fen preserves that seeded frame instead of clearing over it.
+- Strengthened render regression coverage:
+  - `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs` now covers watchdog trigger, forced full-raster fallback without a base frame, and seeded-base-frame preservation.
+  - `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs` now records watchdog state in failure diagnostics while asserting visible raster coverage for the Google search shell.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -nologo`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~RenderWatchdogTests"`: pass (`3/3`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~GoogleSnapshotDiagnosticsTests.LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage"`: pass (`1/1`).
+  - Required runtime host cycle now emits a visibly painted `debug_screenshot.png` with the Google homepage shell, doodle, buttons, language strip, and footer instead of an all-white frame.
+- Remaining P1 diagnostic gap after the render fix:
+  - the debug run still emitted `network_fetch_*.html` but not a fresh `raw_source_*.html` or `engine_source_*.html` artifact in the active Debug log directory.
+  - the active `fenbrowser_*.log` file remained extremely thin, so first-class structured diagnostics are still not fully surfaced on this path.
+  - P1 therefore remains in progress until the runtime diagnostic contract is as reliable as the render path itself.
+
 All work below is guided by the FenBrowser mandate:
 - Security is first-class.
 - Modularity is first-class.
