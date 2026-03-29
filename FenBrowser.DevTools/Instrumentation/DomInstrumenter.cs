@@ -12,13 +12,14 @@ namespace FenBrowser.DevTools.Instrumentation;
 /// <summary>
 /// Bridges raw DOM mutations to the DevTools protocol events.
 /// </summary>
-public class DomInstrumenter
+public class DomInstrumenter : IDisposable
 {
     private readonly DevToolsServer _server;
     private readonly INodeRegistry _registry;
     private readonly object _lock = new();
     private readonly List<Action> _queue = new();
     private bool _flushScheduled = false;
+    private bool _disposed;
 
     public DomInstrumenter(DevToolsServer server)
     {
@@ -29,7 +30,16 @@ public class DomInstrumenter
         Node.OnMutation += HandleMutation;
     }
 
-    private void HandleMutation(Node target, string type, string attrName, string attrNamespace, List<Node> addedNodes, List<Node> removedNodes)
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        Node.OnMutation -= HandleMutation;
+    }
+
+    private void HandleMutation(Node target, string type, string? attrName, string? attrNamespace, List<Node>? addedNodes, List<Node>? removedNodes)
     {
         // Only process if the target node is already registered (observed by DevTools)
         if (!_registry.IsRegistered(target)) return;
@@ -68,7 +78,7 @@ public class DomInstrumenter
                 break;
 
             case "attributes":
-                if (target is Element element)
+                if (target is Element element && !string.IsNullOrEmpty(attrName))
                 {
                     var val = element.GetAttribute(attrName);
                     if (val != null)

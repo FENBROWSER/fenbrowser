@@ -34,8 +34,19 @@ public class MessageRouter
     /// </summary>
     public void RegisterHandler(IProtocolHandler handler)
     {
+        ArgumentNullException.ThrowIfNull(handler);
+        if (string.IsNullOrWhiteSpace(handler.Domain))
+        {
+            throw new ArgumentException("Protocol handlers must declare a domain.", nameof(handler));
+        }
+
         lock (_lock)
         {
+            if (_handlers.ContainsKey(handler.Domain))
+            {
+                throw new InvalidOperationException($"Protocol handler already registered for domain '{handler.Domain}'.");
+            }
+
             _handlers[handler.Domain] = handler;
         }
     }
@@ -45,9 +56,13 @@ public class MessageRouter
     /// </summary>
     public void Subscribe(Action<ProtocolEvent> listener)
     {
+        ArgumentNullException.ThrowIfNull(listener);
         lock (_lock)
         {
-            _eventListeners.Add(listener);
+            if (!_eventListeners.Contains(listener))
+            {
+                _eventListeners.Add(listener);
+            }
         }
     }
     
@@ -92,16 +107,21 @@ public class MessageRouter
     /// </summary>
     public async Task<ProtocolResponse> DispatchAsync(ProtocolRequest request)
     {
+        if (request == null)
+        {
+            return ProtocolResponse.Failure(0, "Request is required", -32600);
+        }
+
         if (string.IsNullOrEmpty(request.Method))
         {
-            return ProtocolResponse.Failure(request.Id, "Method is required");
+            return ProtocolResponse.Failure(request.Id, "Method is required", -32600);
         }
         
         // Parse domain.method
         var parts = request.Method.Split('.', 2);
         if (parts.Length != 2)
         {
-            return ProtocolResponse.Failure(request.Id, $"Invalid method format: {request.Method}");
+            return ProtocolResponse.Failure(request.Id, $"Invalid method format: {request.Method}", -32601);
         }
         
         var domain = parts[0];
@@ -115,7 +135,7 @@ public class MessageRouter
         
         if (handler == null)
         {
-            return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}");
+            return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}", -32601);
         }
         
         try
@@ -124,7 +144,7 @@ public class MessageRouter
         }
         catch (Exception ex)
         {
-            return ProtocolResponse.Failure(request.Id, $"Handler error: {ex.Message}");
+            return ProtocolResponse.Failure(request.Id, $"Handler error: {ex.Message}", -32603);
         }
     }
     
@@ -136,7 +156,7 @@ public class MessageRouter
         var request = ProtocolJson.ParseRequest(requestJson);
         if (request == null)
         {
-            var errorResponse = ProtocolResponse.Failure(0, "Failed to parse request JSON");
+            var errorResponse = ProtocolResponse.Failure(0, "Failed to parse request JSON", -32700);
             return ProtocolJson.Serialize(errorResponse);
         }
         
