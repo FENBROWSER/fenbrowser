@@ -5763,3 +5763,20 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -nologo`
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -nologo`
   - both completed successfully on `2026-03-29`.
+
+## 2.190 Math Builtin Semantics, Well-Known Symbol Helpers, And Reflect.construct Constructor Validation (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Added `SetSymbolProperty(...)` plus well-known symbol-name resolution so runtime builtin initialization can set symbol-backed properties such as `Symbol.toStringTag` without open-coding `JsSymbol` dispatch at each callsite.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `Math.round(...)` now preserves the ECMAScript negative-zero edge in `(-0.5, 0)`.
+  - `Math.pow(...)` now returns `NaN` for the spec-mandated `abs(base) == 1 && exponent is +/-Infinity` and `base == 1 && exponent is NaN` cases instead of inheriting the raw `System.Math.Pow(...)` result.
+  - `Math[@@toStringTag]` is now defined as `"Math"`.
+  - Removed the late duplicate registration block for `cbrt`, `hypot`, and `log2` so the canonical builtin registrations keep their correct constructor/length metadata.
+- `FenBrowser.FenEngine/Scripting/ReflectAPI.cs`
+  - `Reflect.construct(...)` now rejects non-constructor `target` and `newTarget` values with the correct `TypeError` instead of accepting any function-valued object.
+- Why this mattered:
+  - These were observable spec gaps, not internal refactors. They directly affected builtin identity, descriptor shape, constructor checks, and numeric edge-case behavior surfaced by conformance suites.
+- Verification:
+  - `dotnet build FenBrowser.sln -nologo`
+  - completed successfully on `2026-03-29` with existing warning debt still present elsewhere in the solution.

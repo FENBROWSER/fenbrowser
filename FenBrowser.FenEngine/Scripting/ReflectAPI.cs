@@ -116,10 +116,23 @@ namespace FenBrowser.FenEngine.Scripting
                     throw new Errors.FenInternalError("Reflect.construct target must be a constructor");
                 }
 
+                // ECMA-262 §26.1.2: target must be a constructor
+                if (!targetFunction.IsConstructor)
+                {
+                    throw new Errors.FenTypeError("Reflect.construct target must be a constructor");
+                }
+
                 var newTargetValue = args.Length > 2 ? args[2] : args[0];
                 if (!newTargetValue.IsFunction)
                 {
                     throw new Errors.FenInternalError("Reflect.construct newTarget must be a constructor");
+                }
+
+                // ECMA-262 §26.1.2: newTarget must be a constructor
+                var newTargetFunc = newTargetValue.AsFunction();
+                if (newTargetFunc != null && !newTargetFunc.IsConstructor)
+                {
+                    throw new Errors.FenTypeError("Reflect.construct newTarget must be a constructor");
                 }
 
                 var argsList = ReadArgumentsList(args[1]);

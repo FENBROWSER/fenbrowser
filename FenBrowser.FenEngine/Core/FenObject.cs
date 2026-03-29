@@ -1773,6 +1773,33 @@ namespace FenBrowser.FenEngine.Core
         }
 
         /// <summary>
+        /// Defines a property on a well-known symbol by its friendly name (for example "toStringTag").
+        /// This keeps runtime initialization code readable while preserving the canonical symbol store.
+        /// </summary>
+        public bool SetSymbolProperty(
+            string symbolName,
+            FenValue value,
+            bool writable = true,
+            bool enumerable = true,
+            bool configurable = true)
+        {
+            if (!TryResolveWellKnownSymbol(symbolName, out var symbol))
+            {
+                return false;
+            }
+
+            var descriptor = new PropertyDescriptor
+            {
+                Value = value,
+                Writable = writable,
+                Enumerable = enumerable,
+                Configurable = configurable
+            };
+
+            return DefineSymbolProperty(symbol, descriptor);
+        }
+
+        /// <summary>
         /// Enumerate own Symbol-keyed property IDs (for Reflect.ownKeys / ownKeys trap).
         /// </summary>
         public IEnumerable<JsSymbol> GetOwnSymbolKeys()
@@ -1796,6 +1823,77 @@ namespace FenBrowser.FenEngine.Core
 
             stringKey = key.AsString(context);
             return true;
+        }
+
+        private static bool TryResolveWellKnownSymbol(string symbolName, out JsSymbol symbol)
+        {
+            symbol = null;
+            if (string.IsNullOrWhiteSpace(symbolName))
+            {
+                return false;
+            }
+
+            switch (symbolName.Trim())
+            {
+                case "iterator":
+                case "Symbol.iterator":
+                    symbol = JsSymbol.Iterator;
+                    return true;
+                case "toStringTag":
+                case "Symbol.toStringTag":
+                    symbol = JsSymbol.ToStringTag;
+                    return true;
+                case "toPrimitive":
+                case "Symbol.toPrimitive":
+                    symbol = JsSymbol.ToPrimitive;
+                    return true;
+                case "hasInstance":
+                case "Symbol.hasInstance":
+                    symbol = JsSymbol.HasInstance;
+                    return true;
+                case "isConcatSpreadable":
+                case "Symbol.isConcatSpreadable":
+                    symbol = JsSymbol.IsConcatSpreadable;
+                    return true;
+                case "species":
+                case "Symbol.species":
+                    symbol = JsSymbol.Species;
+                    return true;
+                case "match":
+                case "Symbol.match":
+                    symbol = JsSymbol.Match;
+                    return true;
+                case "replace":
+                case "Symbol.replace":
+                    symbol = JsSymbol.Replace;
+                    return true;
+                case "search":
+                case "Symbol.search":
+                    symbol = JsSymbol.Search;
+                    return true;
+                case "split":
+                case "Symbol.split":
+                    symbol = JsSymbol.Split;
+                    return true;
+                case "unscopables":
+                case "Symbol.unscopables":
+                    symbol = JsSymbol.Unscopables;
+                    return true;
+                case "asyncIterator":
+                case "Symbol.asyncIterator":
+                    symbol = JsSymbol.AsyncIterator;
+                    return true;
+                case "dispose":
+                case "Symbol.dispose":
+                    symbol = JsSymbol.Dispose;
+                    return true;
+                case "asyncDispose":
+                case "Symbol.asyncDispose":
+                    symbol = JsSymbol.AsyncDispose;
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         /// <summary>
