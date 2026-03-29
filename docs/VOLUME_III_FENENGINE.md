@@ -5686,4 +5686,21 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - That is exactly the kind of cross-realm state bleed that makes browser engines flaky under concurrent pages, workers, or parallel verification.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Promise_All_ResultUsesArrayPrototype|FullyQualifiedName~Promise_All_ResultKeepsOriginArrayPrototype_AfterAnotherRuntimeBoots|FullyQualifiedName~Promise_Then_CallbackObjectLiteral_KeepsOriginObjectPrototype_AfterAnotherRuntimeBoots|FullyQualifiedName~Array_PrototypeMap_Call_WithStringConstructor_ReturnsMappedArray|FullyQualifiedName~Array_FromAsync_ArrayLikeLengthObserver_CoercesValueOf_AndKeepsArrayPrototype|FullyQualifiedName~ExecuteSimple_BytecodeFirst_PlainObjectsInheritObjectPrototype"`: pass.
-  - Follow-up spot check: the same tranche does not yet close the separate `Reflect.construct` proxy forwarding, RegExp legacy accessor, or for-of closure-capture failures; those remain the next bytecode/builtin semantic gaps.
+- Follow-up spot check: the same tranche does not yet close the separate `Reflect.construct` proxy forwarding, RegExp legacy accessor, or for-of closure-capture failures; those remain the next bytecode/builtin semantic gaps.
+
+## 2.186 Global Object Lookup, Receiver-Correct Reflect.get, And Callable Proxy Values (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `GetGlobal(...)` and `HasVariable(...)` now fall back to the primary global object when the lexical global environment has no binding, which aligns runtime reads with the VM's existing implicit-global write path.
+  - Added a shared `ReflectGetOperation(...)` so both `Reflect` registrations honor the optional `receiver` and route accessor lookups through `GetWithReceiver(...)` instead of bypassing legacy accessor semantics.
+  - Both `Proxy` constructor registrations now return callable proxies as function-valued `FenValue`s rather than plain object-valued wrappers, which unblocks `Reflect.construct(proxy, ...)` default forwarding.
+- `FenBrowser.Tests/Engine/FenRuntimeBytecodeExecutionTests.cs`
+  - Added `ExecuteSimple_ImplicitGlobalAssignment_IsVisibleThroughRuntimeLookup()` to pin the runtime/VM agreement for sloppy-mode implicit globals created by bytecode execution.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - The existing `RegExp_LegacyAccessor_ReflectGet_OnSelf_ReturnsEmptyString` and `Reflect_Construct_And_Proxy_DefaultForwarding_Work_With_RuntimeBuiltins` regressions are now expected to pass against the live runtime implementation.
+- Why this mattered:
+  - The bytecode VM was already materializing undeclared assignments onto the primary global object, but runtime reads only checked lexical bindings, which made correct execution look broken in tests and diagnostics.
+  - The active `Reflect.get` path also discarded its receiver, so Annex B-style accessors behaved differently depending on whether they were called directly or through reflection.
+  - Callable proxies that come back as object-valued wrappers are not actually callable to the rest of the engine, which breaks construction and any downstream `IsFunction` checks.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Reflect_Construct_And_Proxy_DefaultForwarding_Work_With_RuntimeBuiltins|FullyQualifiedName~RegExp_LegacyAccessor_ReflectGet_OnSelf_ReturnsEmptyString|FullyQualifiedName~ExecuteSimple_ForOfConstClosure_PassedThroughHelper_PreservesCapturedValue|FullyQualifiedName~ExecuteSimple_ForOfConstClosure_AssignedBeforeHelper_PreservesCapturedValue|FullyQualifiedName~ExecuteSimple_ImplicitGlobalAssignment_IsVisibleThroughRuntimeLookup"`: pass.
