@@ -5715,3 +5715,19 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Leaving the old assertions in place made the bytecode conformance sweep look broken even though the failures were stale expectations, not runtime regressions.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.BuiltinCompletenessTests|FullyQualifiedName~FenBrowser.Tests.Engine.FenRuntimeBytecodeExecutionTests" --no-restore`: pass.
+
+## 2.188 Real Destructuring Binding Names For Loop Lowering And Global Validation (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - `for...in` and `for...of` lowering now prefers the actual destructuring pattern over the parser's synthetic placeholder identifier when binding each iteration value.
+  - Lexical loop binding-name discovery also now walks the real destructuring pattern first, so TDZ/per-iteration scope setup tracks names like `k` and `v` instead of `_destructured`.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Global script declaration validation now collects top-level destructuring names from `let` declarations plus `for...in` / `for...of` loop headers, rather than recording only the parser placeholder identifier.
+  - Duplicate-name checks therefore now reject conflicts such as `var a; let [a] = ...` and `var a; for (let [a] of ...) {}` with the correct `SyntaxError`.
+- `FenBrowser.Tests/Engine/JsEngineImprovementsTests.cs`
+  - Restored the existing `for...of` array destructuring execution regression and added explicit global duplicate-binding regressions for both top-level destructuring declarations and top-level destructuring loop headers.
+- Why this mattered:
+  - The parser intentionally preserves a synthetic identifier for destructuring declarators, but the compiler and runtime were still consuming that placeholder in a few paths that should have been looking through it.
+  - In practice that meant loop bodies could fail with `ReferenceError` for correctly bound destructuring names, and global duplicate-binding validation could silently miss spec-required errors because it was checking `_destructured` instead of the real bound names.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.ForOf_ArrayDestructuring|FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.GlobalScriptValidation_LetArrayDestructuring_RejectsDuplicateVarBinding|FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.GlobalScriptValidation_ForOfArrayDestructuring_RejectsDuplicateVarBinding" --no-restore`: pass.
