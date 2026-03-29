@@ -871,8 +871,8 @@ namespace FenBrowser.Core.Parsing
              if (token is CharacterToken ct)
              {
                  if (ct.Data == "\0") return true; // Ignore null
-                 // Reconstruct active formatting elements?
-                 // Insert character
+                 // Reconstruct active formatting elements per WHATWG §13.2.6.4.7
+                 ReconstructActiveFormattingElements();
                  InsertCharacter(ct);
                  return true;
              }
@@ -990,9 +990,11 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "b" || st.TagName == "strong" || st.TagName == "em" || st.TagName == "i" || st.TagName == "u" || st.TagName == "s" || st.TagName == "small" || st.TagName == "code")
+                if (st.TagName == "b" || st.TagName == "strong" || st.TagName == "em" || st.TagName == "i" || st.TagName == "u" || st.TagName == "s" || st.TagName == "small" || st.TagName == "code" ||
+                    st.TagName == "nobr" || st.TagName == "big" || st.TagName == "font" || st.TagName == "tt" || st.TagName == "strike")
                 {
-                     // Reconstruct active formatting
+                     // Reconstruct active formatting elements per spec
+                     ReconstructActiveFormattingElements();
                      InsertHtmlElement(st);
                      _activeFormattingElements.Add((Element)CurrentNode);
                      return true;
@@ -1040,8 +1042,9 @@ namespace FenBrowser.Core.Parsing
                 }
                 
                 // (Consolidated into the block above for efficiency and correctness)
-                
-                // Ordinary element
+
+                // Any other start tag: reconstruct active formatting elements, then insert
+                ReconstructActiveFormattingElements();
                 InsertHtmlElement(st);
                 return true;
             }
@@ -1096,16 +1099,11 @@ namespace FenBrowser.Core.Parsing
                      return true;
                 }
                 
-                // Formatting elements (Adoption Agency)
-                if (et.TagName == "a" || et.TagName == "b" || et.TagName == "i" || et.TagName == "strong" || et.TagName == "em")
+                // Formatting elements (Adoption Agency Algorithm)
+                // WHATWG HTML spec §13.2.6.4.7
+                if (IsFormattingElement(et.TagName))
                 {
-                    // Simplified Adoption Agency: Just close if on stack
-                    if (StackHas(et.TagName)) PopUntil(et.TagName);
-                    // Active-formatting markers are stored as null sentinels. Preserve them
-                    // while pruning matching formatting elements so cell/table parsing cannot
-                    // fault when a formatting end tag is reprocessed through "in body".
-                    _activeFormattingElements.RemoveAll(
-                        e => e != null && string.Equals(e.TagName, et.TagName, StringComparison.Ordinal));
+                    RunAdoptionAgencyAlgorithm(et.TagName);
                     return true;
                 }
                 
@@ -2017,6 +2015,356 @@ namespace FenBrowser.Core.Parsing
                     string.Equals(tag, "rp", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(tag, "rt", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(tag, "rtc", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsFormattingElement(string tag)
+        {
+            switch (tag)
+            {
+                case "a": case "b": case "big": case "code": case "em": case "font":
+                case "i": case "nobr": case "s": case "small": case "strike":
+                case "strong": case "tt": case "u":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Reconstruct active formatting elements per WHATWG §13.2.4.3.
+        /// Called before inserting character data and certain start tags.
+        /// </summary>
+        private void ReconstructActiveFormattingElements()
+        {
+            if (_activeFormattingElements.Count == 0) return;
+
+            var last = _activeFormattingElements[_activeFormattingElements.Count - 1];
+            // If last entry is a marker or is on the stack, nothing to do
+            if (last == null) return;
+            if (_openElements.Contains(last)) return;
+
+            // Walk backward to find first entry on stack or marker
+            int i = _activeFormattingElements.Count - 1;
+            while (i > 0)
+            {
+                i--;
+                var entry = _activeFormattingElements[i];
+                if (entry == null || _openElements.Contains(entry))
+                {
+                    i++; // Step forward to first entry needing reconstruction
+                    break;
+                }
+            }
+
+            // Walk forward, creating elements for entries not on the stack
+            for (; i < _activeFormattingElements.Count; i++)
+            {
+                var entry = _activeFormattingElements[i];
+                if (entry == null) continue;
+
+                // Create a new element with same tag and attributes
+                var newElement = new Element(entry.LocalName);
+                foreach (var attr in entry.Attributes)
+                {
+                    newElement.SetAttributeUnsafe(attr.Name, attr.Value);
+                }
+                CurrentNode.AppendChild(newElement);
+                _openElements.Push(newElement);
+                _activeFormattingElements[i] = newElement;
+            }
+        }
+
+        /// <summary>
+        /// Full Adoption Agency Algorithm per WHATWG HTML spec §13.2.6.4.7.
+        /// Handles misnested formatting tags like &lt;b&gt;&lt;i&gt;&lt;/b&gt;&lt;/i&gt;.
+        /// </summary>
+        private void RunAdoptionAgencyAlgorithm(string subject)
+        {
+            // Step 1: If current node is an HTML element whose tag name is subject,
+            // and it is NOT in the active formatting list, pop it and return.
+            var currentEl = CurrentNode as Element;
+            if (currentEl != null &&
+                string.Equals(currentEl.LocalName, subject, StringComparison.OrdinalIgnoreCase) &&
+                !_activeFormattingElements.Contains(currentEl))
+            {
+                SafePopOpenElement();
+                return;
+            }
+
+            // Step 2: Outer loop (max 8 iterations)
+            for (int outerLoop = 0; outerLoop < 8; outerLoop++)
+            {
+                // Step 3: Find formatting element — last in active formatting with subject tag
+                Element formattingElement = null;
+                int formattingIndex = -1;
+                for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
+                {
+                    var entry = _activeFormattingElements[i];
+                    if (entry == null) break; // Stop at marker
+                    if (string.Equals(entry.LocalName, subject, StringComparison.OrdinalIgnoreCase))
+                    {
+                        formattingElement = entry;
+                        formattingIndex = i;
+                        break;
+                    }
+                }
+
+                // Step 4: If no formatting element found, fall through to "any other end tag"
+                if (formattingElement == null)
+                {
+                    if (StackHas(subject))
+                    {
+                        GenerateImpliedEndTags(subject);
+                        PopUntil(subject);
+                    }
+                    return;
+                }
+
+                // Step 5: If formatting element is not on the stack, remove from active formatting, return
+                if (!_openElements.Contains(formattingElement))
+                {
+                    _activeFormattingElements.RemoveAt(formattingIndex);
+                    return;
+                }
+
+                // Step 6: If formatting element is not in scope, return (parse error)
+                if (!ElementIsInScope(formattingElement))
+                {
+                    return;
+                }
+
+                // Step 7-8: Find furthest block
+                // Walk the stack from formatting element toward the top, find first special element
+                Element furthestBlock = null;
+                int formattingStackIndex = -1;
+                var stackArray = _openElements.ToArray(); // Index 0 = top of stack
+
+                for (int i = stackArray.Length - 1; i >= 0; i--)
+                {
+                    if (stackArray[i] == formattingElement)
+                    {
+                        formattingStackIndex = i;
+                        break;
+                    }
+                }
+
+                if (formattingStackIndex < 0)
+                {
+                    _activeFormattingElements.RemoveAt(formattingIndex);
+                    return;
+                }
+
+                // Search from formattingElement toward top of stack (decreasing index)
+                for (int i = formattingStackIndex - 1; i >= 0; i--)
+                {
+                    if (IsSpecialElement(stackArray[i].LocalName))
+                    {
+                        furthestBlock = stackArray[i];
+                        break;
+                    }
+                }
+
+                // Step 9: If no furthest block, pop until formatting element, remove from active formatting
+                if (furthestBlock == null)
+                {
+                    while (_openElements.Count > 0)
+                    {
+                        var popped = SafePopOpenElement();
+                        if (popped == formattingElement) break;
+                    }
+                    _activeFormattingElements.Remove(formattingElement);
+                    return;
+                }
+
+                // Step 10: Common ancestor is the element above formatting element on stack
+                int commonAncestorIndex = formattingStackIndex + 1;
+                Element commonAncestor = commonAncestorIndex < stackArray.Length ? stackArray[commonAncestorIndex] : null;
+                if (commonAncestor == null) commonAncestor = _openElements.Last(); // html element
+
+                // Step 11: Bookmark = formattingIndex in active formatting list
+                int bookmark = formattingIndex;
+
+                // Step 12: Inner loop
+                Element node = furthestBlock;
+                Element lastNode = furthestBlock;
+                int innerLoopCounter = 0;
+
+                // Walk from furthestBlock toward formattingElement on the stack
+                int nodeStackIndex = -1;
+                for (int i = 0; i < stackArray.Length; i++)
+                {
+                    if (stackArray[i] == furthestBlock)
+                    {
+                        nodeStackIndex = i;
+                        break;
+                    }
+                }
+
+                while (true)
+                {
+                    innerLoopCounter++;
+                    // Move to the element one below node on the stack (toward formatting element)
+                    nodeStackIndex++;
+                    if (nodeStackIndex >= stackArray.Length) break;
+                    node = stackArray[nodeStackIndex];
+
+                    if (node == formattingElement) break;
+
+                    // If inner loop counter > 3 and node is in active formatting, remove it
+                    int nodeActiveIndex = _activeFormattingElements.IndexOf(node);
+                    if (innerLoopCounter > 3 && nodeActiveIndex >= 0)
+                    {
+                        _activeFormattingElements.RemoveAt(nodeActiveIndex);
+                        if (nodeActiveIndex < bookmark) bookmark--;
+                        nodeActiveIndex = -1; // Removed
+                    }
+
+                    // If node is not in active formatting list, remove from stack and continue
+                    if (nodeActiveIndex < 0)
+                    {
+                        // Remove from stack — rebuild stack without this node
+                        var newStack = new Stack<Element>();
+                        foreach (var el in _openElements.Reverse())
+                        {
+                            if (el != node) newStack.Push(el);
+                        }
+                        _openElements.Clear();
+                        foreach (var el in newStack.Reverse())
+                        {
+                            _openElements.Push(el);
+                        }
+                        // Refresh stackArray
+                        stackArray = _openElements.ToArray();
+                        nodeStackIndex--; // Adjust since we removed an element
+                        continue;
+                    }
+
+                    // Create replacement element
+                    var replacement = new Element(node.LocalName);
+                    foreach (var attr in node.Attributes)
+                    {
+                        replacement.SetAttributeUnsafe(attr.Name, attr.Value);
+                    }
+
+                    // Replace in active formatting list
+                    _activeFormattingElements[nodeActiveIndex] = replacement;
+
+                    // Replace on stack
+                    var rebuildStack = new Stack<Element>();
+                    foreach (var el in _openElements.Reverse())
+                    {
+                        rebuildStack.Push(el == node ? replacement : el);
+                    }
+                    _openElements.Clear();
+                    foreach (var el in rebuildStack.Reverse())
+                    {
+                        _openElements.Push(el);
+                    }
+                    stackArray = _openElements.ToArray();
+
+                    // If node was the furthest block, update bookmark
+                    if (node == furthestBlock)
+                    {
+                        bookmark = nodeActiveIndex + 1;
+                    }
+
+                    node = replacement;
+
+                    // Reparent: detach lastNode from its parent and append to node
+                    (lastNode.ParentNode as ContainerNode)?.RemoveChild(lastNode);
+                    node.AppendChild(lastNode);
+                    lastNode = node;
+                }
+
+                // Step 13: Insert lastNode at appropriate place
+                // Detach lastNode from its parent
+                (lastNode.ParentNode as ContainerNode)?.RemoveChild(lastNode);
+
+                // If common ancestor is table/tbody/tfoot/thead/tr, foster parent
+                string caTag = commonAncestor.LocalName;
+                if (caTag == "table" || caTag == "tbody" || caTag == "tfoot" || caTag == "thead" || caTag == "tr")
+                {
+                    // Foster parenting: insert before the table in its parent
+                    var tableParent = commonAncestor.ParentNode as ContainerNode;
+                    if (tableParent != null)
+                    {
+                        tableParent.InsertBefore(lastNode, commonAncestor);
+                    }
+                    else
+                    {
+                        commonAncestor.AppendChild(lastNode);
+                    }
+                }
+                else
+                {
+                    commonAncestor.AppendChild(lastNode);
+                }
+
+                // Step 14: Create new element for formatting element
+                var newFormatting = new Element(formattingElement.LocalName);
+                foreach (var attr in formattingElement.Attributes)
+                {
+                    newFormatting.SetAttributeUnsafe(attr.Name, attr.Value);
+                }
+
+                // Step 15: Move children of furthest block to new formatting element
+                while (furthestBlock.FirstChild != null)
+                {
+                    var child = furthestBlock.FirstChild;
+                    furthestBlock.RemoveChild(child);
+                    newFormatting.AppendChild(child);
+                }
+
+                // Step 16: Append new formatting element to furthest block
+                furthestBlock.AppendChild(newFormatting);
+
+                // Step 17: Remove old formatting element from active formatting list,
+                // insert new one at bookmark position
+                _activeFormattingElements.Remove(formattingElement);
+                if (bookmark > _activeFormattingElements.Count) bookmark = _activeFormattingElements.Count;
+                _activeFormattingElements.Insert(bookmark, newFormatting);
+
+                // Step 18: Remove old formatting element from stack,
+                // insert new one after furthest block
+                var finalStack = new Stack<Element>();
+                bool inserted = false;
+                foreach (var el in _openElements.Reverse())
+                {
+                    if (el == formattingElement) continue; // Remove old
+                    finalStack.Push(el);
+                    if (el == furthestBlock && !inserted)
+                    {
+                        finalStack.Push(newFormatting); // Insert after furthest block
+                        inserted = true;
+                    }
+                }
+                _openElements.Clear();
+                foreach (var el in finalStack.Reverse())
+                {
+                    _openElements.Push(el);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Check if an element is "in scope" per WHATWG §13.2.4.2.
+        /// </summary>
+        private bool ElementIsInScope(Element target)
+        {
+            foreach (var el in _openElements)
+            {
+                if (el == target) return true;
+                string tag = el.LocalName;
+                // Scope boundary elements
+                if (tag == "applet" || tag == "caption" || tag == "html" ||
+                    tag == "table" || tag == "td" || tag == "th" ||
+                    tag == "marquee" || tag == "object" || tag == "template" ||
+                    tag == "mi" || tag == "mo" || tag == "mn" || tag == "ms" ||
+                    tag == "mtext" || tag == "annotation-xml" ||
+                    tag == "foreignobject" || tag == "desc" || tag == "title")
+                    return false;
+            }
+            return false;
         }
 
         /// <summary>
