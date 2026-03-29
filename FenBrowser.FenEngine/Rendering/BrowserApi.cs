@@ -192,6 +192,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
         private readonly NavigationManager _navManager;
+        private readonly BrowserHostOptions _options;
         private readonly NavigationLifecycleTracker _navigationLifecycle = new NavigationLifecycleTracker();
         private readonly NavigationSubresourceTracker _navigationSubresources = new NavigationSubresourceTracker();
         private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
@@ -325,9 +326,10 @@ namespace FenBrowser.FenEngine.Rendering
 
         public bool IsPrivate { get; }
 
-        public BrowserHost(bool isPrivate = false)
+        public BrowserHost(bool isPrivate = false, BrowserHostOptions options = null)
         {
             IsPrivate = isPrivate;
+            _options = options ?? BrowserHostOptions.Default;
             _engineLoop = new FenBrowser.FenEngine.Core.EngineLoop(); // Phase 5: Initialize Loop
             _engine.InitHistory(this); // Wire up history bridge
             
@@ -400,10 +402,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Wire up Fetch API (Phase 8)
             _engine.FetchHandler = (req) => 
             {
-                if (!string.IsNullOrEmpty(WPTRootPath))
-                {
-                    req.RequestUri = RemapWptUri(req.RequestUri);
-                }
+                req.RequestUri = MapRuntimeUri(req.RequestUri);
                 return _resources.SendAsync(req, CurrentPolicy);
             };
 
@@ -575,48 +574,13 @@ namespace FenBrowser.FenEngine.Rendering
             };
             _engine.ScriptFetcher = async (u) => 
             {
-                // DEBUG: Log strict fetcher
-                Console.WriteLine($"[ScriptFetcher] Request: {u}");
-
-                if (u.ToString().IndexOf("testharnessreport.js", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (_options.TryGetScriptOverride(u, out var scriptOverride))
                 {
-                    Console.WriteLine("[ScriptFetcher] INJECTING BRIDGE for testharnessreport.js");
-                    return @"
-                        console.log('[Bridge] Injected Bridge Loaded');
-                        console.log('[Bridge] typeof add_result_callback: ' + typeof window.add_result_callback);
-
-                        // Fallback: Testharness looks for these global functions to dispatch events
-                        window.result_callback = function(t) {
-                                console.log('[Bridge] Global Result: ' + t.name + ' ' + t.status);
-                                if (window.testRunner && window.testRunner.reportResult) {
-                                    window.testRunner.reportResult(t.name, t.status === 0, t.message);
-                                }
-                        };
-
-                        window.completion_callback = function(t, s) {
-                                console.log('[Bridge] Global Complete');
-                                if (window.testRunner && window.testRunner.reportHarnessStatus) {
-                                    var statusText = '';
-                                    try { statusText = s && typeof s.status !== 'undefined' ? String(s.status) : ''; } catch(e) {}
-                                    window.testRunner.reportHarnessStatus('complete', statusText);
-                                }
-                                if (window.testRunner && window.testRunner.notifyDone) {
-                                    window.testRunner.notifyDone();
-                                }
-                        };
-
-                        if (window.add_result_callback) {
-                            window.add_result_callback(window.result_callback);
-                        } else { console.log('[Bridge] add_result_callback not found, relying on global hooks'); }
-                        
-                        if (window.add_completion_callback) {
-                            window.add_completion_callback(window.completion_callback);
-                        }
-                    ";
-
+                    TryLogInfo($"[BrowserHost] Using tooling script override for '{u}'.", LogCategory.Navigation);
+                    return scriptOverride;
                 }
 
-                u = RemapWptUri(u);
+                u = MapRuntimeUri(u);
                 var trackedNavigationId = Interlocked.Read(ref _activeRenderNavigationId);
                 if (trackedNavigationId > 0)
                 {
@@ -663,7 +627,7 @@ namespace FenBrowser.FenEngine.Rendering
             ImageLoader.FetchBytesAsync = async (uri) =>
             {
                 if (uri == null) return null;
-                var fetchUri = !string.IsNullOrEmpty(WPTRootPath) ? RemapWptUri(uri) : uri;
+                var fetchUri = MapRuntimeUri(uri);
                 return await _resources.FetchBytesAsync(
                         fetchUri,
                         referer: _current,
@@ -711,53 +675,9 @@ namespace FenBrowser.FenEngine.Rendering
             FontRegistry.FontLoaded += _fontLoadedHandler;
         }
 
-        public static string WPTRootPath { get; set; }
-
-        private Uri RemapWptUri(Uri u)
+        private Uri MapRuntimeUri(Uri uri)
         {
-            if (string.IsNullOrEmpty(WPTRootPath)) return u;
-            if (u.Scheme != "file") return u;
-
-            // Simple heuristic matches common WPT paths
-            // If path looks like /resources/ or /common/ or /images/ but is at drive root C:/resources...
-            // AND the file doesn't exist there...
-            // REMAP it to WPTRootPath.
-
-            if (System.IO.File.Exists(u.LocalPath)) return u;
-
-            string local = u.LocalPath; // e.g. C:\resources\testharness.js
-            string fileName = System.IO.Path.GetFileName(local);
-            string dir = System.IO.Path.GetDirectoryName(local);
-            
-            // We want the part after the drive root. 
-            // e.g. \resources
-            // Use Path.GetPathRoot
-            string root = System.IO.Path.GetPathRoot(local);
-            if (local.StartsWith(root))
-            {
-                string rel = local.Substring(root.Length).TrimStart(System.IO.Path.DirectorySeparatorChar);
-                
-                // Only remap specific WPT folders to avoid accidents
-                if (rel.StartsWith("resources", StringComparison.OrdinalIgnoreCase) || 
-                    rel.StartsWith("common", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith("images", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith("fonts", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith("media", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith("css", StringComparison.OrdinalIgnoreCase))
-                {
-                    string mapped = System.IO.Path.Combine(WPTRootPath, rel);
-                     if (System.IO.File.Exists(mapped))
-                     {
-                         try 
-                         { 
-                             // FenLogger.Debug($"[WPT-Remap] {u} -> {mapped}", LogCategory.Navigation);
-                             return new Uri(mapped);
-                         } 
-                         catch (Exception ex) { TryLogWarn($"[BrowserHost] Failed to remap WPT URI '{u}': {ex.Message}", LogCategory.Navigation); }
-                     }
-                }
-            }
-            return u;
+            return _options.MapRequestUri(uri);
         }
 
         private CertificateInfo _lastCertificate;
@@ -2432,7 +2352,7 @@ pre {{
                 _asyncScriptDone = false;
             }
 
-            // Create a unique callback ID for this execution
+            // Create a unique callback ID for this execution.
             var callbackId = Guid.NewGuid().ToString("N");
             
             // Prepare arguments array with the callback as the last argument
@@ -2442,8 +2362,8 @@ pre {{
             // The callback should store the result in a global variable we can poll
             // Also set up requestAnimationFrame polyfill that works with our polling
             var setupScript = $@"
-                window.__wptrunner_async_result_{callbackId} = null;
-                window.__wptrunner_async_done_{callbackId} = false;
+                window.__fen_async_result_{callbackId} = null;
+                window.__fen_async_done_{callbackId} = false;
                 
                 // Set up rAF queue if not present
                 if (!window.__raf_id) window.__raf_id = 0;
@@ -2539,34 +2459,33 @@ pre {{
             // 4. Replace 'arguments' keyword with '__args' so it works with our wrapper
             processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\barguments\b", "__args");
             
-            // The script wrapper that provides the callback function
-            // Add debug logging to trace WPT script execution
+            // The script wrapper that provides the callback function.
             var wrappedScript = $@"
                 var __args = {jsonArgs};
-                console.log('[WPT] __args before push: ' + __args.length);
+                console.log('[AsyncScript] __args before push: ' + __args.length);
                 var __callback = function(result) {{
-                    console.log('[WPT] Callback called with: ' + JSON.stringify(result));
-                    window.__wptrunner_async_result_{callbackId} = result;
-                    window.__wptrunner_async_done_{callbackId} = true;
+                    console.log('[AsyncScript] Callback called with: ' + JSON.stringify(result));
+                    window.__fen_async_result_{callbackId} = result;
+                    window.__fen_async_done_{callbackId} = true;
                 }};
                 var pushResult = __args.push(__callback);
-                console.log('[WPT] push result: ' + pushResult);
-                console.log('[WPT] __args after push: ' + __args.length);
-                console.log('[WPT] __args[' + (__args.length - 1) + '] type: ' + typeof __args[__args.length - 1]);
+                console.log('[AsyncScript] push result: ' + pushResult);
+                console.log('[AsyncScript] __args after push: ' + __args.length);
+                console.log('[AsyncScript] __args[' + (__args.length - 1) + '] type: ' + typeof __args[__args.length - 1]);
                 
                 // Debug: Log key values before script runs
-                console.log('[WPT] document.readyState: ' + document.readyState);
-                console.log('[WPT] typeof requestAnimationFrame: ' + typeof requestAnimationFrame);
-                console.log('[WPT] typeof Document: ' + typeof Document);
-                console.log('[WPT] __args length: ' + __args.length);
-                console.log('[WPT] __args[0] type: ' + typeof __args[0]);
+                console.log('[AsyncScript] document.readyState: ' + document.readyState);
+                console.log('[AsyncScript] typeof requestAnimationFrame: ' + typeof requestAnimationFrame);
+                console.log('[AsyncScript] typeof Document: ' + typeof Document);
+                console.log('[AsyncScript] __args length: ' + __args.length);
+                console.log('[AsyncScript] __args[0] type: ' + typeof __args[0]);
                 
                 (function() {{
                     {processedScript}
                 }})();
                 
                 // Debug: Log rAF queue after script
-                console.log('[WPT] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
+                console.log('[AsyncScript] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
             ";
             
             TryLogDebug($"[AsyncScript] Executing wrapped script (timeout {timeoutMs}ms)", LogCategory.JavaScript);
@@ -2629,11 +2548,11 @@ pre {{
                 }
                 
                 // Check if the callback was called
-                var doneCheck = _engine.Evaluate($"window.__wptrunner_async_done_{callbackId}");
+                var doneCheck = _engine.Evaluate($"window.__fen_async_done_{callbackId}");
                 if (doneCheck is FenBrowser.FenEngine.Core.FenValue dv && dv.IsBoolean && dv.ToBoolean())
                 {
                     // Get the result
-                    var result = _engine.Evaluate($"window.__wptrunner_async_result_{callbackId}");
+                    var result = _engine.Evaluate($"window.__fen_async_result_{callbackId}");
                     TryLogDebug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript);
                     
                     // Convert FenValue to native object

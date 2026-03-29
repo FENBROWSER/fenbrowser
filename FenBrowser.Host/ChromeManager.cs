@@ -16,8 +16,6 @@ using SkiaSharp;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Rendering;
-using FenBrowser.WebDriver;
-using FenBrowser.WebDriver.Commands;
 using FenBrowser.Host.WebDriver;
 using FenBrowser.Host.ProcessIsolation;
 
@@ -52,9 +50,6 @@ namespace FenBrowser.Host
         private RemoteDebugServer _remoteDebugServer;
         private FenBrowser.DevTools.Instrumentation.DomInstrumenter _domInstrumenter;
         
-        // WebDriver
-        private WebDriverServer _webDriverServer;
-        private FenBrowserDriver _webDriverAdapter;
         private IProcessIsolationCoordinator _processIsolation;
 
         // Track Active Tab
@@ -73,7 +68,6 @@ namespace FenBrowser.Host
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
-            InitializeWebDriver();
             
             // Create Root and Compositor
             _root = new RootWidget(_tabBar, _toolbar, _statusBar, new DevToolsWidget(_devTools));
@@ -216,44 +210,6 @@ namespace FenBrowser.Host
             FenLogger.Info("[ChromeManager] DevTools Initialized", LogCategory.General);
         }
 
-        private void InitializeWebDriver()
-        {
-            // Security hardening: WebDriver is disabled by default for regular browser runs.
-            // Opt-in via environment:
-            //   FEN_WEBDRIVER=1
-            //   FEN_WEBDRIVER_PORT=4444 (optional)
-            bool enableWebDriver = string.Equals(
-                Environment.GetEnvironmentVariable("FEN_WEBDRIVER"),
-                "1",
-                StringComparison.OrdinalIgnoreCase);
-            if (!enableWebDriver)
-            {
-                FenLogger.Info("[ChromeManager] WebDriver disabled by default (set FEN_WEBDRIVER=1 to enable).", LogCategory.General);
-                return;
-            }
-
-            int port = 4444;
-            var envPort = Environment.GetEnvironmentVariable("FEN_WEBDRIVER_PORT");
-            if (!string.IsNullOrWhiteSpace(envPort) &&
-                int.TryParse(envPort, out var parsedPort) &&
-                parsedPort > 0 && parsedPort <= 65535)
-            {
-                port = parsedPort;
-            }
-
-            try
-            {
-                _webDriverServer = new WebDriverServer(port);
-                _webDriverServer.OnLog += msg => FenLogger.Info(msg, LogCategory.General);
-                _webDriverServer.Start();
-                FenLogger.Warn($"[ChromeManager] WebDriver ENABLED on 127.0.0.1:{port}.", LogCategory.General);
-            }
-            catch (Exception ex)
-            {
-                FenLogger.Error($"[ChromeManager] Failed to start WebDriver Server: {ex.Message}", LogCategory.General);
-            }
-        }
-        
         private void SetupDevToolsForTab(BrowserTab tab)
         {
             if (tab == null) return;
@@ -308,13 +264,6 @@ namespace FenBrowser.Host
                 () => tab.Browser.RequestRepaint(),
                 operation => RunOnUiThreadAsync(operation)
             );
-
-            // Update WebDriver focus
-            if (_webDriverServer != null)
-            {
-                _webDriverAdapter = new FenBrowserDriver(tab.Browser);
-                _webDriverServer.SetDriver(_webDriverAdapter);
-            }
 
             _devToolsHost = new DevToolsHostAdapter(tab.Browser, _devToolsServer);
             _devToolsHost.CursorChanged += cursor => CursorManager.UpdateCursorFromDevTools(_mouse, cursor);
@@ -701,7 +650,6 @@ namespace FenBrowser.Host
              // DevToolsServer is not IDisposable
              _processIsolation?.Shutdown();
              ProcessIsolationRuntime.SetCoordinator(null);
-             _webDriverServer?.Dispose();
              _remoteDebugServer?.Dispose();
         }
     }

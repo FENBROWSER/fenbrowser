@@ -23,19 +23,19 @@ public class ProgramStartupModeTests
     }
 
     [Fact]
-    public void ResolveStartupMode_Test262Cli_IsDetected()
+    public void ResolveStartupMode_ToolingCli_NoLongerCreatesDedicatedStartupMode()
     {
         var mode = Program.ResolveStartupMode(new[] { "--test262", "sample.js" }, _ => null);
 
-        Assert.Equal(Program.StartupMode.Test262, mode);
+        Assert.Equal(Program.StartupMode.Browser, mode);
     }
 
     [Fact]
-    public void ResolveStartupMode_WebDriverPortArg_IsDetected()
+    public void ResolveStartupMode_WebDriverPortArg_NoLongerCreatesDedicatedStartupMode()
     {
         var mode = Program.ResolveStartupMode(new[] { "--headless", "--port=4444" }, _ => null);
 
-        Assert.Equal(Program.StartupMode.WebDriver, mode);
+        Assert.Equal(Program.StartupMode.Browser, mode);
     }
 
     [Fact]

@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
+    <ProjectReference Include="..\FenBrowser.Tooling\FenBrowser.Tooling.csproj" />
   </ItemGroup>
 
 </Project>

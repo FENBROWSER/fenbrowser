@@ -90,7 +90,7 @@ public class BrowserIntegration
     public BrowserIntegration(FenBrowser.Host.Tabs.BrowserTab ownerTab = null)
     {
         OwnerTab = ownerTab;
-        _browser = new BrowserHost();
+        _browser = new BrowserHost(options: BrowserIntegrationRuntime.CreateBrowserHostOptions());
         _renderer = new SkiaDomRenderer();
 
         // Inject the actual renderer into BrowserHost so its InputManager
