@@ -5504,3 +5504,98 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.AudioApiTests" -v q: pass (2/2).
   - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.WebRtcApiTests" -v q: pass (2/2).
   - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~JavaScriptEngine_DoesNotExpose_WebAudioSimulationSurfaces|FullyQualifiedName~JavaScriptEngine_DoesNotExpose_WebRtcSimulationSurfaces" -v q: pass (2/2).
+
+## 2.177 Google Bootstrap Compatibility Hardening: Global Window Mirroring And Image Baseline (2026-03-28)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `SetGlobal(...)` now hydrates the primary browser global object when `window` / `globalThis` is established and mirrors later global registrations back onto that object.
+  - Added a concrete `Image` / `HTMLImageElement` constructor baseline that creates detached `<img>` elements instead of throwing `ReferenceError`.
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - Added reflected `src` / `currentSrc` reads and `src` / `width` / `height` writes so image elements expose string URL properties instead of `undefined`.
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Suppressed the startup `_needsRepaint=true but _lastViewportSize.Width=0` warning until the host has actually received a real viewport.
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+  - Added regressions for the Google-style global bootstrap probe (`window.Math === Math` through top-level `this`) and for `new Image(...)` plus `img.src` reflection.
+- Why this mattered:
+  - A real Google homepage load was failing on three concrete compatibility gaps: `Error("b")` from broken global-object probing, `ReferenceError: Image is not defined`, and `img.src.substring(...)` crashes from `undefined` URL reflection.
+  - These changes close the most obvious browser-global mismatches that showed up immediately in production traffic instead of only in synthetic tests.
+
+## 2.178 JavaScript Runtime Profiles, Structured Execution Telemetry, And Eval Policy Hardening (2026-03-29)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptRuntimeProfile.cs`
+  - Added a first-class runtime profile model so the engine can switch policy bundles instead of hardcoding one browser-wide scripting posture.
+  - Introduced the default `Balanced` profile and a locked-down profile that freezes intrinsic prototypes, swaps to sandboxed resource limits, disables dynamic code evaluation, lowers the large-script warning threshold, and can emit structured execution artifacts.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Execution.cs`
+  - Added centralized runtime-script execution so `Evaluate(...)`, inline handlers, script blocks, and page scripts all flow through one instrumentation path.
+  - Structured `JsExecution` log entries now record profile name, source kind, source name, script length, outcome, result type, preview, duration, and allocation data.
+  - Optional root artifacts now append newline-delimited execution traces to `js_execution_trace.jsonl`.
+  - Added profile-aware runtime reconfiguration helpers so permission and resource-limit state are rebuilt coherently when the active profile changes.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Runtime bootstrap now derives permissions and resource limits from the active runtime profile instead of assuming a single permissive execution mode.
+  - Prototype hardening is applied as a profile post-initialization step, and script execution call sites now use the centralized execution pipeline.
+- `FenBrowser.Core/Logging/LogManager.cs`
+  - Added direct structured `LogEntry` submission so high-frequency JavaScript execution telemetry can stay typed instead of flattening into string-only wrappers.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Direct eval now enforces `JsPermissions.Eval` inside the VM, logs policy violations, rejects oversized inputs, and throws `EvalError` instead of silently bypassing the locked-down profile.
+  - VM exception normalization now preserves explicit JS error families embedded in engine exceptions, so `EvalError` and `SecurityError` survive catch-path materialization instead of collapsing to generic `Error`.
+- `FenBrowser.Tests/Engine/JavaScriptRuntimeProfileTests.cs`
+  - Added regression coverage proving the locked-down profile freezes `Object.prototype`, blocks both `eval(...)` and `new Function(...)`, and emits structured execution telemetry when enabled.
+- Why this mattered:
+  - The JavaScript engine needs a policy surface that is explicit, composable, and auditable if FenBrowser is going to become more secure, more modular, and more production-ready.
+  - Logging is now a first-class execution primitive rather than a best-effort side effect, which gives the engine a clearer path for performance diagnostics, security auditing, and spec-gap triage.
+  - The locked-down profile was previously incomplete because direct eval inside bytecode execution could still degrade into a generic `Error`; the VM now enforces the policy at the real execution boundary and preserves the correct JS error family.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore`: pass.
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:BuildProjectReferences=false`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter JavaScriptRuntimeProfileTests --no-build`: pass (`2/2`).
+
+## 2.179 VM Operand-Stack Hardening And Execution-Budget Isolation (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Replaced the raw operand-array field with a VM-owned bounded stack wrapper so existing `_stack[_sp++]` / `_stack[--_sp]` hot-loop sites now fail deterministically instead of falling through to CLR array-bound faults.
+  - Operand-stack overflow now throws `FenResourceError` with `RangeError:` context, which makes deep argument staging and similar stack-heavy bytecode paths catchable inside JavaScript.
+  - Call-frame exhaustion now also reports `RangeError: Maximum call stack size exceeded (...)` instead of the old VM-internal wording.
+  - Execution entry points now route through one internal bootstrap path that resets cancellation state, instruction counters, active resource limits, generator state, and allocation accounting for every execution.
+  - Instruction-count and memory-cap failures now carry explicit `Error:` prefixes so VM exception materialization preserves a clean JS `Error` object instead of stringly, family-less payloads.
+- `FenBrowser.FenEngine/Core/ExecutionContext.cs`
+  - Call-stack limit checks now emit `RangeError:`-prefixed failures, and execution-time budget failures emit `Error:`-prefixed failures so host-imposed limits remain JS-visible and consistent across exception materialization paths.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Broadened thrown-error family preservation so prefixed runtime errors such as `Error:`, `TypeError:`, `RangeError:`, `ReferenceError:`, `SyntaxError:`, `EvalError:`, `URIError:`, and `SecurityError:` retain their intended JS constructor family when crossing runtime/native boundaries.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Replaced the placeholder stack-overflow test with a real recursive-bytecode regression that asserts a catchable `RangeError`.
+  - Added an operand-stack overflow regression using a huge bytecode call-site argument list, proving VM operand exhaustion is catchable in-script.
+  - Added a VM-execution isolation regression proving a constrained instruction-budget run does not leak its resource limits into the next execution on the same VM instance.
+- Why this mattered:
+  - The VM still had a serious crash-discipline gap: deep operand staging could rely on CLR array bounds instead of engine-owned failure semantics, which is exactly the kind of host-level fault surface the security review called out.
+  - Resource-limit state also lived too long across VM executions, which made it possible for one constrained run to poison later executions on the same machine state.
+  - This tranche closes those mechanics without rewriting the opcode loop, so the engine gets a safer boundary now while leaving room for later hot-path optimization work.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore`: pass.
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:BuildProjectReferences=false`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_StackOverflowProtection_ShouldNotCrashHost|FullyQualifiedName~Bytecode_OperandStackOverflow_IsCatchableRangeError|FullyQualifiedName~Bytecode_InstructionLimit_DoesNotLeakAcrossExecutions|FullyQualifiedName~JavaScriptRuntimeProfileTests" --no-build`: pass (`5/5`).
+  - Broader `BytecodeExecutionTests` recheck still shows unrelated open failures (including a missing local `test262/harness/assert.js` path and existing bytecode conformance gaps), so this tranche was validated with focused regressions instead of a clean full-class pass.
+
+## 2.180 Bytecode Uncaught-Exception Boundary Compatibility Recovery (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/JsThrownValueException.cs`
+  - Added a shared thrown-value extraction helper and a boundary-exception factory so the VM, runtime, DOM, and tests recover JS payloads through one transport path instead of each reflecting ad hoc exception shapes.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Restored exact `System.Exception` behavior for uncaught top-level JS exceptions while still attaching the original `FenValue` payload to host-visible exception data.
+  - Normalized the VM catch boundary so uncaught JS errors thrown from bytecode, native built-ins, and internal rethrow paths no longer leak the VM-private `JsUncaughtException` type.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Runtime bytecode execution now recovers thrown JS payloads from either the old property-based VM shape or the new host-boundary exception data without losing JS-visible error objects.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - JS exception unwrapping no longer depends on the old VM-private exception class name and now understands the new host-boundary shape.
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+  - DOM event error reporting now reads the same shared thrown-value transport used by the VM and runtime.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Restored exact-type compatibility expectations for uncaught top-level `TypeError` cases.
+  - Added a regression proving the new top-level host exception still preserves the original thrown JS object.
+- Why this mattered:
+  - The prior VM hardening tranche improved internal JS error transport, but it also changed the public uncaught boundary from plain host exceptions to a VM-private exception type, which broke direct bytecode compatibility tests and any host code that depended on the historic contract.
+  - This recovery keeps the stronger thrown-value preservation model while restoring the outer boundary shape already expected by the host and test layers.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore`: pass.
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:BuildProjectReferences=false`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_BigIntAddition_MixedWithNumber_ShouldThrowTypeError|FullyQualifiedName~Bytecode_WithStatement_WithUndefinedTarget_ShouldThrowTypeError|FullyQualifiedName~Bytecode_UncaughtTopLevelBoundary_PreservesThrownObject|FullyQualifiedName~Bytecode_StackOverflowProtection_ShouldNotCrashHost|FullyQualifiedName~Bytecode_OperandStackOverflow_IsCatchableRangeError|FullyQualifiedName~Bytecode_InstructionLimit_DoesNotLeakAcrossExecutions|FullyQualifiedName~JavaScriptRuntimeProfileTests" --no-build`: pass (`8/8`).
+  - Broader `BytecodeExecutionTests` plus `JavaScriptRuntimeProfileTests` recheck now leaves four unrelated failures: the missing local `test262/harness/assert.js` fixture, two class/static-field paths that still resolve `Object` incorrectly in the bare bytecode environment, and the pre-existing async `new TypeError(...)` rejection mismatch where the constructor is not available in that same environment.
