@@ -264,6 +264,64 @@ namespace FenBrowser.FenEngine.Core
             return _activeRuntime;
         }
 
+        /// <summary>
+        /// Create a fresh local scope whose outer chain is backed by a fully initialized
+        /// runtime realm. This is the safe default for standalone bytecode execution that
+        /// still needs standard globals such as Object, Error, and TypeError.
+        /// </summary>
+        public static FenEnvironment CreateStandaloneIntrinsicScope()
+        {
+            var runtime = new FenRuntime();
+            return new FenEnvironment(runtime.GlobalEnv);
+        }
+
+        /// <summary>
+        /// Attach a fully initialized runtime realm to the outermost environment in an
+        /// existing scope chain when it does not already expose the core intrinsics used by
+        /// bytecode lowering and standard constructor paths.
+        /// </summary>
+        public static FenEnvironment EnsureStandaloneIntrinsics(FenEnvironment environment)
+        {
+            if (environment == null)
+            {
+                return CreateStandaloneIntrinsicScope();
+            }
+
+            if (HasStandaloneIntrinsic(environment, "Object") &&
+                HasStandaloneIntrinsic(environment, "TypeError"))
+            {
+                return environment;
+            }
+
+            var outermost = environment;
+            while (outermost.Outer != null)
+            {
+                outermost = outermost.Outer;
+            }
+
+            var runtime = new FenRuntime();
+            outermost.Outer = runtime.GlobalEnv;
+            return environment;
+        }
+
+        private static bool HasStandaloneIntrinsic(FenEnvironment environment, string name)
+        {
+            if (environment == null || string.IsNullOrEmpty(name))
+            {
+                return false;
+            }
+
+            try
+            {
+                var value = environment.Get(name);
+                return value.IsFunction || value.IsObject;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         internal FenValue CreateThrownErrorValue(ErrorType errorType, string message)
         {
             if (!string.IsNullOrWhiteSpace(message))
