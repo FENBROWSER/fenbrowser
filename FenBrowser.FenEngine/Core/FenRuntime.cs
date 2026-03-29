@@ -10960,7 +10960,9 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.Undefined;
                 })));
 
-                return FenValue.FromObject(proxy);
+                return proxy is FenFunction proxyFn
+                    ? FenValue.FromFunction(proxyFn)
+                    : FenValue.FromObject(proxy);
             })));
 
             // Reflect API is defined later in this file (around line 2550)
@@ -12148,15 +12150,10 @@ namespace FenBrowser.FenEngine.Core
             // Reflect - provides methods for interceptable JavaScript operations
             var reflectObj = new FenObject();
 
-            // Reflect.get(target, propertyKey)
+            // Reflect.get(target, propertyKey[, receiver])
             reflectObj.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
             {
-                if (args.Length < 2 || !args[0].IsObject) return FenValue.Undefined;
-                var target = args[0].AsObject();
-                var result = target is FenObject fenTarget
-                    ? fenTarget.Get(args[1], _context)
-                    : target?.Get(args[1].AsString(_context));
-                return result != null ? (FenValue)result : FenValue.Undefined;
+                return ReflectGetOperation(args);
             })));
             /* [PERF-REMOVED] */
 
@@ -12472,7 +12469,9 @@ namespace FenBrowser.FenEngine.Core
                 if (applyTrap.IsFunction) proxy.SetDirect("__proxyApply__", applyTrap);
                 proxy.SetDirect("__isProxy__", FenValue.FromBoolean(true));
 
-                return FenValue.FromObject(proxy);
+                return proxy is FenFunction proxyFn
+                    ? FenValue.FromFunction(proxyFn)
+                    : FenValue.FromObject(proxy);
             })));
             /* [PERF-REMOVED] */
 
@@ -12693,16 +12692,7 @@ namespace FenBrowser.FenEngine.Core
             // Reflect.get(target, propertyKey[, receiver])
             reflect.Set("get", FenValue.FromFunction(new FenFunction("get", (args, thisVal) =>
             {
-                if (args.Length < 2 || (!args[0].IsObject && !args[0].IsFunction)) return FenValue.Undefined; // Should throw TypeError in strict
-                var target = args[0].AsObject() as FenObject;
-                if (target == null) return FenValue.Undefined;
-
-                var receiver = args.Length > 2 ? args[2] : FenValue.FromObject(target);
-                var key = args[1];
-                var val = key.IsSymbol
-                    ? target.GetWithReceiver(key, receiver, _context)
-                    : target.GetWithReceiver(key.AsString(_context), receiver, _context);
-                return val != null ? (FenValue)val : FenValue.Undefined;
+                return ReflectGetOperation(args);
             })));
 
             // Reflect.set(target, propertyKey, value[, receiver])
@@ -16222,8 +16212,17 @@ namespace FenBrowser.FenEngine.Core
 
         public IValue GetGlobal(string name)
         {
-            var val = _globalEnv.Get(name);
-            return val;
+            if (_globalEnv.HasBinding(name))
+            {
+                return _globalEnv.Get(name);
+            }
+
+            if (TryGetPrimaryGlobalProperty(name, out var propertyValue))
+            {
+                return propertyValue;
+            }
+
+            return FenValue.Undefined;
         }
 
         public void SetVariable(string name, FenValue value)
@@ -16234,6 +16233,47 @@ namespace FenBrowser.FenEngine.Core
         public IValue GetVariable(string name)
         {
             return GetGlobal(name);
+        }
+
+        private bool TryGetPrimaryGlobalProperty(string name, out FenValue value)
+        {
+            value = FenValue.Undefined;
+            if (string.IsNullOrEmpty(name) || !TryGetPrimaryGlobalObject(out var globalObject))
+            {
+                return false;
+            }
+
+            var propertyValue = globalObject.Get(name, _context);
+            if (propertyValue.IsUndefined && !globalObject.Has(name, _context))
+            {
+                return false;
+            }
+
+            value = propertyValue;
+            return true;
+        }
+
+        private FenValue ReflectGetOperation(FenValue[] args)
+        {
+            if (args == null || args.Length < 2 || (!args[0].IsObject && !args[0].IsFunction))
+            {
+                return FenValue.Undefined;
+            }
+
+            var target = args[0].AsObject();
+            if (target == null)
+            {
+                return FenValue.Undefined;
+            }
+
+            var receiver = args.Length > 2 ? args[2] : args[0];
+            var key = args[1];
+            if (key.IsSymbol && target is FenObject fenTarget)
+            {
+                return fenTarget.GetWithReceiver(key, receiver, _context);
+            }
+
+            return target.GetWithReceiver(key.AsString(_context), receiver, _context);
         }
 
         private FenValue ReflectSetOperation(FenValue[] args)
@@ -16326,7 +16366,7 @@ namespace FenBrowser.FenEngine.Core
 
         public bool HasVariable(string name)
         {
-            return _globalEnv.Get(name) != null;
+            return _globalEnv.HasBinding(name) || TryGetPrimaryGlobalProperty(name, out _);
         }
 
         public void SetAlert(Action<string> alertAction)

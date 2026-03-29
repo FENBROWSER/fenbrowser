@@ -122,6 +122,22 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_ImplicitGlobalAssignment_IsVisibleThroughRuntimeLookup()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function writeImplicitGlobal() {
+                    implicitGlobalOut = 42;
+                }
+
+                writeImplicitGlobal();
+            ");
+
+            Assert.True(rt.HasVariable("implicitGlobalOut"));
+            Assert.Equal(42, ((FenValue)rt.GetGlobal("implicitGlobalOut")).AsNumber());
+        }
+
+        [Fact]
         public void ExecuteSimple_ForOfConstClosure_ReturnedFromHelper_CapturesIterationBinding()
         {
             var rt = CreateRuntime();
@@ -351,7 +367,7 @@ namespace FenBrowser.Tests.Engine
                 helperMessage = report.message;
             ");
 
-            Assert.Equal("boolean", ((FenValue)rt.GetGlobal("directCaptureType")).AsString());
+            Assert.Equal("function", ((FenValue)rt.GetGlobal("directCaptureType")).AsString());
             Assert.Equal("boolean", ((FenValue)rt.GetGlobal("directCaptureResultType")).AsString());
             Assert.True(((FenValue)rt.GetGlobal("directCaptureValue")).ToBoolean());
             Assert.Equal("true", ((FenValue)rt.GetGlobal("directCaptureString")).AsString());
