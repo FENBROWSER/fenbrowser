@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly object _moLock = new object();
 
         private bool _layoutDirty = false;
-        private bool _layoutRunThisTick = false;
+        private long _lastRenderTime = 0;
         private Action _renderCallback = null;
         private Action _observerCallback = null;
 
@@ -188,8 +188,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// </summary>
         public bool ProcessNextTask()
         {
-            _layoutRunThisTick = false; // Reset at start of tick
-
             var task = _taskQueue.Dequeue();
             if (task  == null)
             {
@@ -255,21 +253,26 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         }
 
         /// <summary>
-        /// Process rendering update according to spec:
-        /// - Layout (if dirty)
-        /// - Paint
-        /// - Observer evaluation
-        /// - Animation frame callbacks
+        /// Process rendering update per WHATWG HTML §8.1.7.3:
+        /// 1. Run rAF callbacks (JS execution with microtask checkpoints)
+        /// 2. Run ResizeObserver / IntersectionObserver callbacks
+        /// 3. Style recalc → Layout → Paint (if dirty)
         /// </summary>
         public void ProcessRenderingUpdate()
         {
-            // Layout phase - NO JS ALLOWED
+            // Step 1: Check if we have a rendering opportunity (throttle idle work to ~60fps).
+            var now = Environment.TickCount64;
+            bool hasRenderingOpportunity = (now - _lastRenderTime) >= 16 || _layoutDirty;
+            if (!hasRenderingOpportunity)
+                return;
+
+            // Step 2: Run requestAnimationFrame callbacks before rendering.
+            ProcessAnimationFrames();
+
+            // Step 3: Style recalc + layout + paint (if dirty).
             if (_layoutDirty && _renderCallback != null)
             {
-                // STRICT: One layout per tick
-                if (_layoutRunThisTick) return;
-                _layoutRunThisTick = true;
-
+                _lastRenderTime = now;
                 EngineContext.Current.BeginPhase(EnginePhase.Layout);
                 try
                 {
@@ -287,7 +290,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
             }
 
-            // Observer evaluation
+            // Step 4: Run observer callbacks after layout, then checkpoint microtasks.
             if (_observerCallback != null)
             {
                 EngineContext.Current.BeginPhase(EnginePhase.Observers);
@@ -304,12 +307,8 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     EngineContext.Current.EndPhase();
                 }
 
-                // Microtask checkpoint after observers (outside observer phase)
                 PerformMicrotaskCheckpoint();
             }
-
-            // Animation frame callbacks
-            ProcessAnimationFrames();
 
             EnsureIdlePhase();
         }
@@ -414,6 +413,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _mutationObserverCallbacks.Clear();
             }
             _layoutDirty = false;
+            _lastRenderTime = 0;
             FenLogger.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
         }
 
