@@ -7,8 +7,8 @@
 // =============================================================================
 
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Core;
-using FenBrowser.FenEngine.HTML;
 using FenBrowser.FenEngine.WebAPIs;
 
 namespace FenBrowser.Conformance;
@@ -206,9 +206,7 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         var filePath = ResolveTestFilePath(url);
         var html = await File.ReadAllTextAsync(filePath);
 
-        var tokenizer = new HtmlTokenizer(html);
-        var builder = new HtmlTreeBuilder(tokenizer);
-        var document = builder.Build();
+        var document = new HtmlParser(html).Parse();
 
         var runtime = new FenRuntime();
         TestHarnessAPI.Register(runtime);

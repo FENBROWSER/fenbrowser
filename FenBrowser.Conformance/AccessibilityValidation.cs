@@ -1,6 +1,6 @@
 using System.Text.Json;
 using FenBrowser.Core.Accessibility;
-using FenBrowser.FenEngine.HTML;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Conformance;
 
@@ -39,9 +39,7 @@ internal static class AccessibilityValidation
 
     public static int Run(string repoRoot, string? outputPath)
     {
-        var tokenizer = new HtmlTokenizer(DefaultFixtureHtml);
-        var builder = new HtmlTreeBuilder(tokenizer);
-        var document = builder.Build();
+        var document = new HtmlParser(DefaultFixtureHtml).Parse();
         var tree = AccessibilityTree.For(document);
 
         var snapshots = new[]
