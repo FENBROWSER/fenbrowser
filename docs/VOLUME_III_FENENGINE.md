@@ -5615,3 +5615,21 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - FenBrowser's observer system evaluates geometry from completed layout snapshots, so keeping observer delivery after render is required for consistency with `ObserverCoordinator`.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ExecutionSemanticsTests|FullyQualifiedName~EventLoopTests"`: pass.
+
+## 2.182 Function-Name Binding And Empty NodeList DOM Query Compatibility (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Direct bytecode invocation now creates the inner function-name binding only for declarations and explicit named function expressions.
+  - Anonymous functions that merely receive an inferred `.name` from assignment keep the observable name while resolving identifiers through the outer environment, which matches ECMAScript's inferred-name behavior more closely.
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - `document.querySelectorAll()` now returns an empty `NodeListWrapper` when invoked without arguments, matching the engine's existing element-wrapper leniency instead of returning `null`.
+  - Non-empty selector results also now flow through `NodeListWrapper`, so document-level queries expose the same iterable/list surface as element-scoped queries.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added regressions proving anonymous inferred-name function expressions do not manufacture an inner name binding, while explicit named expressions still do.
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+  - Added a focused DOM regression proving no-argument `document.querySelectorAll()` returns an empty list-like wrapper with `length === 0` and `item(0) === null`.
+- Why this mattered:
+  - Inferred function names are supposed to affect metadata, not lexical scope. Creating a binding for every inferred name subtly breaks closure semantics once the outer binding changes.
+  - Returning `null` from document-level `querySelectorAll()` was also inconsistent with the rest of the engine's DOM collection surface and forced callers down an avoidable null-check path.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_AnonymousFunctionExpression_InferredName_DoesNotCreateInnerNameBinding|FullyQualifiedName~Bytecode_NamedFunctionExpression_PreservesInnerNameBinding|FullyQualifiedName~SetDomAsync_DocumentQuerySelectorAll_WithoutSelector_ReturnsEmptyNodeList|FullyQualifiedName~SetDomAsync_GoogleBootstrapCleanup_IteratesNodeListAndRemovesBlockingLinks"`: pass.

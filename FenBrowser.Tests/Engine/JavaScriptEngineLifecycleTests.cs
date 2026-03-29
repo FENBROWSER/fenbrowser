@@ -491,6 +491,21 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDomAsync_DocumentQuerySelectorAll_WithoutSelector_ReturnsEmptyNodeList()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser("<html><body><div></div></body></html>", baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("0", engine.Evaluate("String(document.querySelectorAll().length)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(document.querySelectorAll().item(0) === null)")?.ToString());
+        }
+
+        [Fact]
         public async Task SetDomAsync_GoogleViewTransitionBootstrap_AppendsStyleIntoHead()
         {
             var baseUri = new Uri("https://example.com/index.html");
