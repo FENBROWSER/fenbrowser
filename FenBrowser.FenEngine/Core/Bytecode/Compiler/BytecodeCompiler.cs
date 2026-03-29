@@ -2319,16 +2319,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 EmitLoopBindingTdzDeclarations(loopBindingNames);
             }
 
-            if (forInStmt.Variable != null)
-            {
-                EmitForInOfIdentifierBinding(forInStmt.Variable.Value, forInStmt.BindingKind);
-            }
-            else if (forInStmt.DestructuringPattern != null)
+            if (forInStmt.DestructuringPattern != null)
             {
                 string assignmentSource = NextSyntheticName("forin");
                 EmitStoreVarByName(assignmentSource);
                 Emit(OpCode.Pop); // pop the stored key value
                 EmitForInOfBindingTarget(forInStmt.DestructuringPattern, assignmentSource);
+            }
+            else if (forInStmt.Variable != null)
+            {
+                EmitForInOfIdentifierBinding(forInStmt.Variable.Value, forInStmt.BindingKind);
             }
             else
             {
@@ -2412,16 +2412,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 EmitLoopBindingTdzDeclarations(loopBindingNames);
             }
 
-            if (forOfStmt.Variable != null)
-            {
-                EmitForInOfIdentifierBinding(forOfStmt.Variable.Value, forOfStmt.BindingKind);
-            }
-            else if (forOfStmt.DestructuringPattern != null)
+            if (forOfStmt.DestructuringPattern != null)
             {
                 string assignmentSource = NextSyntheticName("forof");
                 EmitStoreVarByName(assignmentSource);
                 Emit(OpCode.Pop); // pop the stored value
                 EmitForInOfBindingTarget(forOfStmt.DestructuringPattern, assignmentSource);
+            }
+            else if (forOfStmt.Variable != null)
+            {
+                EmitForInOfIdentifierBinding(forOfStmt.Variable.Value, forOfStmt.BindingKind);
             }
             else
             {
@@ -3735,13 +3735,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private static List<string> GetLoopBindingNames(Identifier variable, Expression destructuringPattern)
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
-            if (variable != null && !string.IsNullOrEmpty(variable.Value))
-            {
-                names.Add(variable.Value);
-            }
-            else
+            if (destructuringPattern != null)
             {
                 CollectPatternBindingNames(destructuringPattern, names);
+            }
+            else if (variable != null && !string.IsNullOrEmpty(variable.Value))
+            {
+                names.Add(variable.Value);
             }
 
             return new List<string>(names);

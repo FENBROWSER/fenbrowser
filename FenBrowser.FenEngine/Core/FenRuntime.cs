@@ -16646,15 +16646,8 @@ namespace FenBrowser.FenEngine.Core
             {
                 switch (statement)
                 {
-                    case LetStatement letStatement when letStatement.Name != null && !string.IsNullOrEmpty(letStatement.Name.Value):
-                        if (letStatement.Kind == DeclarationKind.Var)
-                        {
-                            varNames.Add(letStatement.Name.Value);
-                        }
-                        else if (!lexicalNames.Add(letStatement.Name.Value))
-                        {
-                            throw new FenSyntaxError($"SyntaxError: Identifier '{letStatement.Name.Value}' has already been declared");
-                        }
+                    case LetStatement letStatement:
+                        AddTopLevelDeclarationBindingNames(letStatement.Kind, letStatement.Name, letStatement.DestructuringPattern, varNames, lexicalNames);
                         break;
                     case FunctionDeclarationStatement functionDeclaration when !string.IsNullOrEmpty(functionDeclaration.Function?.Name):
                         varNames.Add(functionDeclaration.Function.Name);
@@ -16665,27 +16658,89 @@ namespace FenBrowser.FenEngine.Core
                             throw new FenSyntaxError($"SyntaxError: Identifier '{classStatement.Name.Value}' has already been declared");
                         }
                         break;
-                    case ForInStatement forInStatement when forInStatement.BindingKind.HasValue && forInStatement.Variable != null && !string.IsNullOrEmpty(forInStatement.Variable.Value):
-                        if (forInStatement.BindingKind.Value == DeclarationKind.Var)
-                        {
-                            varNames.Add(forInStatement.Variable.Value);
-                        }
-                        else if (!lexicalNames.Add(forInStatement.Variable.Value))
-                        {
-                            throw new FenSyntaxError($"SyntaxError: Identifier '{forInStatement.Variable.Value}' has already been declared");
-                        }
+                    case ForInStatement forInStatement when forInStatement.BindingKind.HasValue:
+                        AddTopLevelDeclarationBindingNames(forInStatement.BindingKind.Value, forInStatement.Variable, forInStatement.DestructuringPattern, varNames, lexicalNames);
                         break;
-                    case ForOfStatement forOfStatement when forOfStatement.BindingKind.HasValue && forOfStatement.Variable != null && !string.IsNullOrEmpty(forOfStatement.Variable.Value):
-                        if (forOfStatement.BindingKind.Value == DeclarationKind.Var)
-                        {
-                            varNames.Add(forOfStatement.Variable.Value);
-                        }
-                        else if (!lexicalNames.Add(forOfStatement.Variable.Value))
-                        {
-                            throw new FenSyntaxError($"SyntaxError: Identifier '{forOfStatement.Variable.Value}' has already been declared");
-                        }
+                    case ForOfStatement forOfStatement when forOfStatement.BindingKind.HasValue:
+                        AddTopLevelDeclarationBindingNames(forOfStatement.BindingKind.Value, forOfStatement.Variable, forOfStatement.DestructuringPattern, varNames, lexicalNames);
                         break;
                 }
+            }
+        }
+
+        private static void AddTopLevelDeclarationBindingNames(
+            DeclarationKind kind,
+            Identifier variable,
+            Expression destructuringPattern,
+            ISet<string> varNames,
+            ISet<string> lexicalNames)
+        {
+            if (destructuringPattern != null)
+            {
+                AddTopLevelPatternBindingNames(kind, destructuringPattern, varNames, lexicalNames);
+                return;
+            }
+
+            AddTopLevelDeclarationBindingName(kind, variable?.Value, varNames, lexicalNames);
+        }
+
+        private static void AddTopLevelPatternBindingNames(
+            DeclarationKind kind,
+            Expression pattern,
+            ISet<string> varNames,
+            ISet<string> lexicalNames)
+        {
+            if (pattern == null)
+            {
+                return;
+            }
+
+            switch (pattern)
+            {
+                case Identifier identifier:
+                    AddTopLevelDeclarationBindingName(kind, identifier.Value, varNames, lexicalNames);
+                    break;
+                case AssignmentExpression assignmentExpression:
+                    AddTopLevelPatternBindingNames(kind, assignmentExpression.Left, varNames, lexicalNames);
+                    break;
+                case SpreadElement spreadElement:
+                    AddTopLevelPatternBindingNames(kind, spreadElement.Argument, varNames, lexicalNames);
+                    break;
+                case ArrayLiteral arrayLiteral when arrayLiteral.Elements != null:
+                    foreach (var element in arrayLiteral.Elements)
+                    {
+                        AddTopLevelPatternBindingNames(kind, element, varNames, lexicalNames);
+                    }
+                    break;
+                case ObjectLiteral objectLiteral when objectLiteral.Pairs != null:
+                    foreach (var pair in objectLiteral.Pairs)
+                    {
+                        AddTopLevelPatternBindingNames(kind, pair.Value, varNames, lexicalNames);
+                    }
+                    break;
+            }
+        }
+
+        private static void AddTopLevelDeclarationBindingName(
+            DeclarationKind kind,
+            string name,
+            ISet<string> varNames,
+            ISet<string> lexicalNames)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return;
+            }
+
+            if (kind == DeclarationKind.Var)
+            {
+                varNames.Add(name);
+                return;
+            }
+
+            if (!lexicalNames.Add(name))
+            {
+                throw new FenSyntaxError($"SyntaxError: Identifier '{name}' has already been declared");
             }
         }
 

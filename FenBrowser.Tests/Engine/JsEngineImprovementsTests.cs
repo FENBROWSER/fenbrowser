@@ -233,6 +233,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void GlobalScriptValidation_LetArrayDestructuring_RejectsDuplicateVarBinding()
+        {
+            var runtime = CreateRuntime();
+            var result = runtime.ExecuteSimple("var a = 1; let [a] = [2];");
+            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw, result.Type);
+            Assert.Contains("Identifier 'a' has already been declared", result.ToString());
+        }
+
+        [Fact]
+        public void GlobalScriptValidation_ForOfArrayDestructuring_RejectsDuplicateVarBinding()
+        {
+            var runtime = CreateRuntime();
+            var result = runtime.ExecuteSimple("var a = 1; for (let [a] of [[2]]) { }");
+            Assert.Equal(FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw, result.Type);
+            Assert.Contains("Identifier 'a' has already been declared", result.ToString());
+        }
+
+        [Fact]
         public void Parse_ForOf_Destructuring_NoErrors()
         {
             AssertNoParseErrors("for (const [key, value] of entries) { }");
