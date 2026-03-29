@@ -527,9 +527,23 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
                     {
-                        // Fail-safe: avoid expensive raster work when frame budget is already blown.
-                        canvas.Clear(bgColor);
                         LastFrameUsedDamageRasterization = false;
+
+                        if (hasBaseFrame)
+                        {
+                            // Preserve the caller-seeded base frame instead of presenting a blank fallback.
+                            FenLogger.Warn(
+                                "[SkiaDomRenderer] Watchdog budget exceeded before raster; preserving the caller-supplied base frame.",
+                                LogCategory.Performance);
+                        }
+                        else
+                        {
+                            // First/full frames must remain correct even under budget pressure.
+                            FenLogger.Warn(
+                                "[SkiaDomRenderer] Watchdog budget exceeded before raster without a reusable base frame; forcing full raster to avoid blank presentation.",
+                                LogCategory.Performance);
+                            _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                        }
                     }
                     else if (useDamageRasterization)
                     {
