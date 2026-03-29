@@ -14,22 +14,11 @@ using System.Diagnostics;
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
-    /// Adapter class that bridges the old SkiaDomRenderer API to the new clean-slate rendering pipeline.
-    /// 
-    /// This maintains backward compatibility with existing code in Host, UI, and Tests
-    /// while internally delegating to LayoutEngine, NewPaintTreeBuilder, and SkiaRenderer.
-    /// 
-    /// NOTE: This is a transitional class - once all consumers are updated to use
-    /// the new pipeline directly, this class should be removed.
+    /// Production render-frame pipeline built around layout, paint-tree construction,
+    /// damage tracking, compositing stability, and backend rasterization.
     /// </summary>
-    public class SkiaDomRenderer
+    public class SkiaDomRenderer : IRenderFramePipeline
     {
-        /// <summary>
-        /// Feature flag: set to false to bypass new pipeline (for debugging).
-        /// Default: true (new pipeline is active).
-        /// </summary>
-        public static bool UseNewRenderPipeline { get; set; } = true;
-        
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private readonly Interaction.ScrollManager _scrollManager = new Interaction.ScrollManager();
@@ -95,6 +84,36 @@ namespace FenBrowser.FenEngine.Rendering
         /// Main render entry point - performs layout and paint.
         /// </summary>
         private bool _isRendering = false;
+
+        public RenderFrameResult RenderFrame(RenderFrameRequest request)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            Render(
+                request.Root,
+                request.Canvas,
+                request.Styles,
+                request.Viewport,
+                request.BaseUrl,
+                request.OnLayoutUpdated,
+                request.SeparateLayoutViewport,
+                request.HasBaseFrame);
+
+            return new RenderFrameResult
+            {
+                Layout = _lastLayout,
+                PaintTree = _lastPaintTree,
+                DamageRegions = _lastDamageRegions ?? Array.Empty<SKRect>(),
+                Overlays = CurrentOverlays.ToArray(),
+                WatchdogTriggered = LastFrameWatchdogTriggered,
+                WatchdogReason = LastFrameWatchdogReason,
+                UsedDamageRasterization = LastFrameUsedDamageRasterization,
+                DamageAreaRatio = LastDamageAreaRatio
+            };
+        }
 
         public void Render(
             Node root, 
