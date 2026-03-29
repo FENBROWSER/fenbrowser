@@ -5633,3 +5633,20 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Returning `null` from document-level `querySelectorAll()` was also inconsistent with the rest of the engine's DOM collection surface and forced callers down an avoidable null-check path.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_AnonymousFunctionExpression_InferredName_DoesNotCreateInnerNameBinding|FullyQualifiedName~Bytecode_NamedFunctionExpression_PreservesInnerNameBinding|FullyQualifiedName~SetDomAsync_DocumentQuerySelectorAll_WithoutSelector_ReturnsEmptyNodeList|FullyQualifiedName~SetDomAsync_GoogleBootstrapCleanup_IteratesNodeListAndRemovesBlockingLinks"`: pass.
+
+## 2.183 CSS Shorthand Expansion And Shrink-To-Fit Relayout Stabilization (2026-03-29)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - The cascade now expands supported shorthand declarations into longhands after winner selection, covering box shorthands, border, background, flex-flow, overflow, outline, list-style, gap, border-radius, and inset.
+  - Expansion only fills longhands that were not already explicitly declared, so author longhands still override shorthand-derived values at the final computed map.
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Shrink-to-fit re-entry now resets descendant coordinates before the second `LayoutCore(...)` pass, preventing stale offsets from accumulating when auto-width blocks are remeasured at the discovered width.
+- `FenBrowser.Tests/Engine/CascadeModernTests.cs`
+  - Added focused shorthand regressions for `margin`, `overflow`, and `border-radius`, including explicit-longhand override behavior.
+- `FenBrowser.Tests/Layout/BlockFormattingContextRelayoutTests.cs`
+  - Added a relayout regression proving nested block descendants keep stable vertical offsets across the second shrink-to-fit pass.
+- Why this mattered:
+  - The engine was carrying author shorthands through the cascade without normalizing them into the longhands most of the rest of the layout code actually consumes.
+  - The shrink-to-fit path also had a geometry reuse bug where the second pass started from already-offset descendants, which is exactly the kind of compounding layout error that shows up on search-style stacked wrappers.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~CascadeModernTests|FullyQualifiedName~BlockFormattingContextRelayoutTests"`: pass.

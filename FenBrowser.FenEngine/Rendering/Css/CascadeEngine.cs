@@ -191,6 +191,9 @@ namespace FenBrowser.FenEngine.Rendering
                 computed[match.Declaration.Property] = match.Declaration;
             }
 
+            // 4. Expand shorthand properties into longhands
+            ExpandShorthands(computed);
+
             return computed;
         }
 
@@ -322,6 +325,368 @@ namespace FenBrowser.FenEngine.Rendering
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// Expand CSS shorthand properties into their longhand equivalents.
+        /// Only sets longhands that weren't explicitly declared with higher specificity.
+        /// </summary>
+        private static void ExpandShorthands(Dictionary<string, CssDeclaration> computed)
+        {
+            // Process each shorthand → longhand expansion
+            ExpandBoxShorthand(computed, "margin", "margin-top", "margin-right", "margin-bottom", "margin-left");
+            ExpandBoxShorthand(computed, "padding", "padding-top", "padding-right", "padding-bottom", "padding-left");
+            ExpandBorderShorthand(computed);
+            ExpandBackgroundShorthand(computed);
+            ExpandFlexFlowShorthand(computed);
+            ExpandOverflowShorthand(computed);
+            ExpandOutlineShorthand(computed);
+            ExpandListStyleShorthand(computed);
+            ExpandGapShorthand(computed);
+            ExpandBorderRadiusShorthand(computed);
+            ExpandInsetShorthand(computed);
+        }
+
+        /// <summary>
+        /// Expand box model shorthands (margin, padding) using 1-4 value syntax.
+        /// margin: 10px → all four sides 10px
+        /// margin: 10px 20px → top/bottom 10px, left/right 20px
+        /// margin: 10px 20px 30px → top 10px, left/right 20px, bottom 30px
+        /// margin: 10px 20px 30px 40px → top right bottom left
+        /// </summary>
+        private static void ExpandBoxShorthand(Dictionary<string, CssDeclaration> computed,
+            string shorthand, string top, string right, string bottom, string left)
+        {
+            if (!computed.TryGetValue(shorthand, out var decl)) return;
+            var value = decl.Value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+
+            var parts = SplitCssValue(value);
+            string vTop, vRight, vBottom, vLeft;
+
+            switch (parts.Length)
+            {
+                case 1:
+                    vTop = vRight = vBottom = vLeft = parts[0];
+                    break;
+                case 2:
+                    vTop = vBottom = parts[0];
+                    vRight = vLeft = parts[1];
+                    break;
+                case 3:
+                    vTop = parts[0];
+                    vRight = vLeft = parts[1];
+                    vBottom = parts[2];
+                    break;
+                default: // 4+
+                    vTop = parts[0];
+                    vRight = parts[1];
+                    vBottom = parts[2];
+                    vLeft = parts[3];
+                    break;
+            }
+
+            SetIfNotExplicit(computed, top, vTop, decl);
+            SetIfNotExplicit(computed, right, vRight, decl);
+            SetIfNotExplicit(computed, bottom, vBottom, decl);
+            SetIfNotExplicit(computed, left, vLeft, decl);
+        }
+
+        /// <summary>
+        /// Expand border shorthand: border: 1px solid black → border-width, border-style, border-color
+        /// </summary>
+        private static void ExpandBorderShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("border", out var decl)) return;
+            var value = decl.Value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+            if (value == "none" || value == "0")
+            {
+                SetIfNotExplicit(computed, "border-top-width", "0", decl);
+                SetIfNotExplicit(computed, "border-right-width", "0", decl);
+                SetIfNotExplicit(computed, "border-bottom-width", "0", decl);
+                SetIfNotExplicit(computed, "border-left-width", "0", decl);
+                SetIfNotExplicit(computed, "border-top-style", "none", decl);
+                SetIfNotExplicit(computed, "border-right-style", "none", decl);
+                SetIfNotExplicit(computed, "border-bottom-style", "none", decl);
+                SetIfNotExplicit(computed, "border-left-style", "none", decl);
+                return;
+            }
+
+            var parts = SplitCssValue(value);
+            string width = null, style = null, color = null;
+
+            foreach (var p in parts)
+            {
+                if (IsBorderStyle(p)) style = p;
+                else if (IsCssLength(p)) width = p;
+                else color = p;
+            }
+
+            if (width != null)
+            {
+                SetIfNotExplicit(computed, "border-top-width", width, decl);
+                SetIfNotExplicit(computed, "border-right-width", width, decl);
+                SetIfNotExplicit(computed, "border-bottom-width", width, decl);
+                SetIfNotExplicit(computed, "border-left-width", width, decl);
+            }
+            if (style != null)
+            {
+                SetIfNotExplicit(computed, "border-top-style", style, decl);
+                SetIfNotExplicit(computed, "border-right-style", style, decl);
+                SetIfNotExplicit(computed, "border-bottom-style", style, decl);
+                SetIfNotExplicit(computed, "border-left-style", style, decl);
+            }
+            if (color != null)
+            {
+                SetIfNotExplicit(computed, "border-top-color", color, decl);
+                SetIfNotExplicit(computed, "border-right-color", color, decl);
+                SetIfNotExplicit(computed, "border-bottom-color", color, decl);
+                SetIfNotExplicit(computed, "border-left-color", color, decl);
+            }
+
+            // Also expand border-top/right/bottom/left if present
+            foreach (var side in new[] { "border-top", "border-right", "border-bottom", "border-left" })
+            {
+                if (!computed.TryGetValue(side, out var sideDecl)) continue;
+                var sv = sideDecl.Value?.Trim();
+                if (string.IsNullOrEmpty(sv)) continue;
+                var sp = SplitCssValue(sv);
+                string sw = null, ss = null, sc = null;
+                foreach (var p in sp)
+                {
+                    if (IsBorderStyle(p)) ss = p;
+                    else if (IsCssLength(p)) sw = p;
+                    else sc = p;
+                }
+                if (sw != null) SetIfNotExplicit(computed, side + "-width", sw, sideDecl);
+                if (ss != null) SetIfNotExplicit(computed, side + "-style", ss, sideDecl);
+                if (sc != null) SetIfNotExplicit(computed, side + "-color", sc, sideDecl);
+            }
+        }
+
+        private static void ExpandBackgroundShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("background", out var decl)) return;
+            var value = decl.Value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+
+            // Simple cases: single color, none, or transparent
+            if (value == "none" || value == "transparent")
+            {
+                SetIfNotExplicit(computed, "background-color", "transparent", decl);
+                SetIfNotExplicit(computed, "background-image", "none", decl);
+                return;
+            }
+
+            // If it looks like just a color (no url, no gradient keywords)
+            if (!value.Contains("url(") && !value.Contains("gradient("))
+            {
+                // Might be: "red", "#fff", "rgb(...)", etc. possibly with position/repeat
+                var parts = SplitCssValue(value);
+                foreach (var p in parts)
+                {
+                    if (IsBackgroundRepeat(p))
+                        SetIfNotExplicit(computed, "background-repeat", p, decl);
+                    else if (IsBackgroundPosition(p))
+                        SetIfNotExplicit(computed, "background-position", p, decl);
+                    else if (p == "fixed" || p == "scroll" || p == "local")
+                        SetIfNotExplicit(computed, "background-attachment", p, decl);
+                    else
+                        SetIfNotExplicit(computed, "background-color", p, decl);
+                }
+            }
+        }
+
+        private static void ExpandFlexFlowShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("flex-flow", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            foreach (var p in parts)
+            {
+                if (p == "wrap" || p == "nowrap" || p == "wrap-reverse")
+                    SetIfNotExplicit(computed, "flex-wrap", p, decl);
+                else
+                    SetIfNotExplicit(computed, "flex-direction", p, decl);
+            }
+        }
+
+        private static void ExpandOverflowShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("overflow", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            if (parts.Length == 1)
+            {
+                SetIfNotExplicit(computed, "overflow-x", parts[0], decl);
+                SetIfNotExplicit(computed, "overflow-y", parts[0], decl);
+            }
+            else if (parts.Length >= 2)
+            {
+                SetIfNotExplicit(computed, "overflow-x", parts[0], decl);
+                SetIfNotExplicit(computed, "overflow-y", parts[1], decl);
+            }
+        }
+
+        private static void ExpandOutlineShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("outline", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            foreach (var p in parts)
+            {
+                if (IsBorderStyle(p)) SetIfNotExplicit(computed, "outline-style", p, decl);
+                else if (IsCssLength(p)) SetIfNotExplicit(computed, "outline-width", p, decl);
+                else SetIfNotExplicit(computed, "outline-color", p, decl);
+            }
+        }
+
+        private static void ExpandListStyleShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("list-style", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            foreach (var p in parts)
+            {
+                if (p == "inside" || p == "outside")
+                    SetIfNotExplicit(computed, "list-style-position", p, decl);
+                else if (p.StartsWith("url("))
+                    SetIfNotExplicit(computed, "list-style-image", p, decl);
+                else
+                    SetIfNotExplicit(computed, "list-style-type", p, decl);
+            }
+        }
+
+        private static void ExpandGapShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("gap", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            if (parts.Length == 1)
+            {
+                SetIfNotExplicit(computed, "row-gap", parts[0], decl);
+                SetIfNotExplicit(computed, "column-gap", parts[0], decl);
+            }
+            else if (parts.Length >= 2)
+            {
+                SetIfNotExplicit(computed, "row-gap", parts[0], decl);
+                SetIfNotExplicit(computed, "column-gap", parts[1], decl);
+            }
+        }
+
+        private static void ExpandBorderRadiusShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("border-radius", out var decl)) return;
+            var value = decl.Value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+
+            // Handle slash syntax for elliptical: "10px / 5px"
+            // For simplicity, just handle the before-slash part
+            var slashIdx = value.IndexOf('/');
+            var mainPart = slashIdx >= 0 ? value.Substring(0, slashIdx).Trim() : value;
+            var parts = SplitCssValue(mainPart);
+
+            string tl, tr, br, bl;
+            switch (parts.Length)
+            {
+                case 1: tl = tr = br = bl = parts[0]; break;
+                case 2: tl = br = parts[0]; tr = bl = parts[1]; break;
+                case 3: tl = parts[0]; tr = bl = parts[1]; br = parts[2]; break;
+                default: tl = parts[0]; tr = parts[1]; br = parts[2]; bl = parts[3]; break;
+            }
+
+            SetIfNotExplicit(computed, "border-top-left-radius", tl, decl);
+            SetIfNotExplicit(computed, "border-top-right-radius", tr, decl);
+            SetIfNotExplicit(computed, "border-bottom-right-radius", br, decl);
+            SetIfNotExplicit(computed, "border-bottom-left-radius", bl, decl);
+        }
+
+        private static void ExpandInsetShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("inset", out var decl)) return;
+            var parts = SplitCssValue(decl.Value?.Trim() ?? "");
+            string vTop, vRight, vBottom, vLeft;
+            switch (parts.Length)
+            {
+                case 1: vTop = vRight = vBottom = vLeft = parts[0]; break;
+                case 2: vTop = vBottom = parts[0]; vRight = vLeft = parts[1]; break;
+                case 3: vTop = parts[0]; vRight = vLeft = parts[1]; vBottom = parts[2]; break;
+                default: vTop = parts[0]; vRight = parts[1]; vBottom = parts[2]; vLeft = parts[3]; break;
+            }
+            SetIfNotExplicit(computed, "top", vTop, decl);
+            SetIfNotExplicit(computed, "right", vRight, decl);
+            SetIfNotExplicit(computed, "bottom", vBottom, decl);
+            SetIfNotExplicit(computed, "left", vLeft, decl);
+        }
+
+        /// <summary>
+        /// Set a longhand property only if it wasn't explicitly declared (higher specificity wins).
+        /// </summary>
+        private static void SetIfNotExplicit(Dictionary<string, CssDeclaration> computed, string property, string value, CssDeclaration source)
+        {
+            if (computed.ContainsKey(property)) return; // Explicit longhand wins
+            computed[property] = new CssDeclaration
+            {
+                Property = property,
+                Value = value,
+                IsImportant = source.IsImportant
+            };
+        }
+
+        private static string[] SplitCssValue(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return Array.Empty<string>();
+            // Handle function parentheses (don't split inside them)
+            var parts = new List<string>();
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if ((c == ' ' || c == '\t') && depth == 0)
+                {
+                    if (i > start)
+                        parts.Add(value.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (start < value.Length)
+                parts.Add(value.Substring(start));
+            return parts.ToArray();
+        }
+
+        private static bool IsBorderStyle(string value)
+        {
+            switch (value)
+            {
+                case "none": case "hidden": case "dotted": case "dashed": case "solid":
+                case "double": case "groove": case "ridge": case "inset": case "outset":
+                    return true;
+                default: return false;
+            }
+        }
+
+        private static bool IsCssLength(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            if (value == "0") return true;
+            if (value == "thin" || value == "medium" || value == "thick") return true;
+            // Check if it ends with a unit
+            return value.EndsWith("px") || value.EndsWith("em") || value.EndsWith("rem") ||
+                   value.EndsWith("pt") || value.EndsWith("vh") || value.EndsWith("vw") ||
+                   value.EndsWith("%") || value.EndsWith("ch") || value.EndsWith("ex") ||
+                   value.EndsWith("cm") || value.EndsWith("mm") || value.EndsWith("in") ||
+                   value.EndsWith("pc");
+        }
+
+        private static bool IsBackgroundRepeat(string value)
+        {
+            return value == "repeat" || value == "no-repeat" || value == "repeat-x" ||
+                   value == "repeat-y" || value == "space" || value == "round";
+        }
+
+        private static bool IsBackgroundPosition(string value)
+        {
+            return value == "center" || value == "top" || value == "bottom" ||
+                   value == "left" || value == "right";
         }
     }
 

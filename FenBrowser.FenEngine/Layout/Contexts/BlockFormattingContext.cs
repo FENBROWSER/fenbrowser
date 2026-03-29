@@ -376,6 +376,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     Math.Abs(previousWidth - maxWidth) > 0.5f &&
                     blockBox.Children.Count > 0)
                 {
+                    // The first shrink-to-fit probe leaves child subtrees positioned in the
+                    // original pass. Reset local coordinates before re-entering LayoutCore so
+                    // the second pass does not accumulate stale offsets into descendants.
+                    LayoutBoxOps.ResetSubtreeToOrigin(blockBox);
+
                     var relayoutState = state.Clone();
                     relayoutState.AvailableSize = new SKSize(maxWidth, state.AvailableSize.Height);
                     relayoutState.ContainingBlockWidth = maxWidth;
