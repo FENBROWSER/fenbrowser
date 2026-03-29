@@ -3049,7 +3049,8 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void RecordMutation(MutationRecord record)
         {
-            // NEW: Intercept dynamic scripts for WPT
+            // Dynamically inserted scripts must run through the same execution path
+            // as parser-discovered scripts so runtime and tooling stay aligned.
             if (record.AddedNodes != null && record.AddedNodes.Count > 0)
             {
                 foreach (var node in record.AddedNodes)
@@ -3115,7 +3116,7 @@ namespace FenBrowser.FenEngine.Scripting
                         {
                             string content = null;
                             
-                            // Use FetchOverride (set by CustomHtmlEngine/BrowserApi for WPT)
+                            // Use the host/tooling fetch override when provided.
                             if (FetchOverride != null)
                                 content = await FetchOverride(uri);
                             
