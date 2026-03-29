@@ -95,9 +95,7 @@ namespace FenBrowser.FenEngine.Scripting
         private void InitRuntime()
         {
             _ctx = _ctx ?? new JsContext();
-            // Eval is granted by default for browser contexts (eval is valid JS).
-            // CSP enforcement in BrowserApi will revoke it when 'unsafe-eval' is absent from script-src.
-            var permissions = new PermissionManager(JsPermissions.StandardWeb | JsPermissions.Eval);
+            var permissions = CreatePermissionManagerForProfile();
             
             // Wire up the permission handler
             permissions.PermissionRequestedHandler = async (origin, perm) =>
@@ -112,7 +110,9 @@ namespace FenBrowser.FenEngine.Scripting
                 return false; // Default deny if no handler
             };
 
-            var context = new FenBrowser.FenEngine.Core.ExecutionContext(permissions);
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext(
+                permissions,
+                CreateResourceLimitsForProfile());
 
             // Configure layout engine provider
             context.LayoutEngineProvider = () => _host?.GetLayoutEngine();
@@ -178,6 +178,7 @@ namespace FenBrowser.FenEngine.Scripting
             SetupPermissions();
             SetupWindowEvents();
             SetupModernAPIs();
+            ApplyRuntimeProfilePostInitialization();
         }
         
         private static Task RunDetachedAsync(Func<Task> operation)
@@ -2359,48 +2360,14 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
-            // Use FenEngine for evaluation
-            if (_fenRuntime != null)
+            var execution = ExecuteRuntimeScript(script, JavaScriptExecutionKind.Eval, "eval.js");
+            if (execution.Exception != null)
             {
-                try
-                {
-                    var rawResult = _fenRuntime.ExecuteSimple(script);
-                    
-                    // Unwrap ReturnValue wrapper (from return statements)
-                    FenBrowser.FenEngine.Core.FenValue result = (FenBrowser.FenEngine.Core.FenValue)rawResult;
-                    while (result.Type == JsValueType.ReturnValue)
-                    {
-                        result = (FenBrowser.FenEngine.Core.FenValue)result.ToNativeObject();
-                    }
-                    
-                    // Now result is the actual value (FenValue)
-                    if (result is FenBrowser.FenEngine.Core.FenValue fv)
-                    {
-                        if (fv.IsNumber) return fv.ToNumber();
-                        if (fv.IsString) return fv.ToString();
-                        if (fv.IsBoolean) return fv.ToBoolean();
-                        if (fv == null) return null;
-                        if (fv.IsUndefined) return null;
-                        // Return FenValue for objects/arrays so ToNativeObject can convert them
-                        return fv;
-                    }
-                    
-                    // Fallback for non-FenValue IValue types
-                    if (result.IsNumber) return result.ToNumber();
-                    if (result.IsString) return result.ToString();
-                    if (result.IsBoolean) return result.ToBoolean();
-                    if (result == null) return null;
-                    if (result.IsUndefined) return null;
-                    return result;
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Error($"[JS] Evaluate error: {ex.Message}", LogCategory.JavaScript, ex);
-                    return "Error: " + ex.Message;
-                }
+                FenLogger.Error($"[JS] Evaluate error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
+                return "Error: " + execution.Exception.Message;
             }
-            
-            return null;
+
+            return ConvertExecutionResultToHostValue(execution.Value);
         }
 
 
@@ -3791,10 +3758,18 @@ namespace FenBrowser.FenEngine.Scripting
                                     SetCurrentScriptElement(el);
                                     try
                                     {
-                                        var scriptResult = _fenRuntime.ExecuteSimple(code, srcInfo);
-                                        if (scriptResult is FenValue scriptFenValue &&
+                                        var scriptExecution = ExecuteRuntimeScript(
+                                            code,
+                                            JavaScriptExecutionKind.PageScript,
+                                            srcInfo);
+                                        var scriptFenValue = scriptExecution.Value;
+                                        if (scriptExecution.Exception != null ||
                                             (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
                                         {
+                                            var diagnosticPreview = BuildScriptDiagnosticPreview(code);
+                                            DiagnosticPaths.AppendRootText(
+                                                "js_debug.log",
+                                                $"[ScriptRunError] Info={srcInfo}; Error={scriptFenValue}; Preview={diagnosticPreview}\n");
                                             FenLogger.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
                                             // WHATWG HTML 4.12.1.1: script execution error fires error on element
                                             DispatchEvent(el, "error");
@@ -3814,7 +3789,11 @@ namespace FenBrowser.FenEngine.Scripting
                                     }
                                     catch (Exception ex)
                                     {
-                                        FenLogger.Warn($"[StaticScript] Exec failed: {ex.Message}", LogCategory.JavaScript);
+                                        var diagnosticPreview = BuildScriptDiagnosticPreview(code);
+                                        DiagnosticPaths.AppendRootText(
+                                            "js_debug.log",
+                                            $"[StaticScriptError] Info={srcInfo}; Error={ex.GetBaseException().Message}; Preview={diagnosticPreview}\n");
+                                        FenLogger.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
                                         // WHATWG HTML 4.12.1.1: uncaught error fires error on element
                                         DispatchEvent(el, "error");
                                     }
@@ -3913,6 +3892,32 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 executionContext.Reset();
             }
+        }
+
+        private static string BuildScriptDiagnosticPreview(string code, int maxChars = 220)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                return "<empty>";
+            }
+
+            var preview = code
+                .Replace("\r", " ")
+                .Replace("\n", " ")
+                .Replace("\t", " ")
+                .Trim();
+
+            while (preview.Contains("  ", StringComparison.Ordinal))
+            {
+                preview = preview.Replace("  ", " ", StringComparison.Ordinal);
+            }
+
+            if (preview.Length <= maxChars)
+            {
+                return preview;
+            }
+
+            return preview.Substring(0, maxChars) + "...";
         }
 
         private void LogXBootstrapState(string phase, Uri baseUri)
