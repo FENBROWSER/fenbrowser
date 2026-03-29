@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Security;
 using System.Linq;
 
 namespace FenBrowser.Core;
@@ -45,10 +46,29 @@ public class NetworkService : INetworkService
 
     public async Task<Stream> GetStreamAsync(string url)
     {
-        if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {url}", LogCategory.Network);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"Invalid network URL: {url}");
+        }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var decision = BrowserSecurityPolicy.EvaluateNetworkRequest(uri);
+        if (!decision.IsAllowed)
+        {
+            decision.Log();
+            throw new InvalidOperationException(decision.Message);
+        }
+
+        using var logScope = FenLogger.BeginScope(
+            component: "NetworkService",
+            data: new System.Collections.Generic.Dictionary<string, object>
+            {
+                ["url"] = uri.AbsoluteUri
+            });
+
+        if (DebugConfig.LogResourceLoader)
+            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
         
         var response = await _httpClient.SendAsync(request);
@@ -59,10 +79,29 @@ public class NetworkService : INetworkService
 
     public async Task<string> GetStringAsync(string url)
     {
-        if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {url}", LogCategory.Network);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"Invalid network URL: {url}");
+        }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var decision = BrowserSecurityPolicy.EvaluateNetworkRequest(uri);
+        if (!decision.IsAllowed)
+        {
+            decision.Log();
+            throw new InvalidOperationException(decision.Message);
+        }
+
+        using var logScope = FenLogger.BeginScope(
+            component: "NetworkService",
+            data: new System.Collections.Generic.Dictionary<string, object>
+            {
+                ["url"] = uri.AbsoluteUri
+            });
+
+        if (DebugConfig.LogResourceLoader)
+            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
         
         var response = await _httpClient.SendAsync(request);

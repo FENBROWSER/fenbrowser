@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 
 namespace FenBrowser.Core.Logging
 {
@@ -29,8 +30,11 @@ namespace FenBrowser.Core.Logging
         
         private readonly ConcurrentQueue<LogEntry> _memoryBuffer = new ConcurrentQueue<LogEntry>();
         private readonly object _fileLock = new object();
-        private readonly int _maxMemoryEntries = 1000;
+        private int _maxMemoryEntries = 1000;
+        private long _maxLogFileBytes = 10L * 1024L * 1024L;
+        private int _maxArchivedFiles = 10;
         private string _logFilePath;
+        private bool _mirrorStructuredLogs = true;
 
         public static LogManager Instance => _instance.Value;
 
@@ -67,6 +71,10 @@ namespace FenBrowser.Core.Logging
                 _isEnabled = settings.EnableLogging;
                 _enabledCategories = (LogCategory)settings.EnabledCategories;
                 _minimumLevel = (LogLevel)settings.MinimumLevel;
+                Instance._maxMemoryEntries = Math.Max(100, settings.MemoryBufferSize);
+                Instance._maxLogFileBytes = Math.Max(1, settings.MaxLogFileSizeMB) * 1024L * 1024L;
+                Instance._maxArchivedFiles = Math.Max(1, settings.MaxArchivedFiles);
+                Instance._mirrorStructuredLogs = settings.MirrorStructuredLogs;
                 
                 System.Diagnostics.Debug.WriteLine($"[LogManager] Initialized at: {Instance._logFilePath}");
             }
@@ -310,6 +318,8 @@ namespace FenBrowser.Core.Logging
 
         private void WriteToSinks(LogEntry entry)
         {
+            ApplyAmbientContext(entry);
+
             // Memory buffer (for log viewer)
             _memoryBuffer.Enqueue(entry);
             while (_memoryBuffer.Count > _maxMemoryEntries)
@@ -318,10 +328,15 @@ namespace FenBrowser.Core.Logging
             }
 
             // File sink (JSON or text format)
-            if (UseJsonFormat)
-                WriteJsonToFile(entry);
-            else
+            if (!UseJsonFormat)
+            {
                 WriteToFile(entry);
+            }
+
+            if (UseJsonFormat || _mirrorStructuredLogs)
+            {
+                WriteJsonToFile(entry);
+            }
 
             // Log shipping to external service
             if (LogShippingService.Instance.IsEnabled)
@@ -334,22 +349,53 @@ namespace FenBrowser.Core.Logging
             Console.WriteLine(entry.ToString()); // Added for stdout capture
         }
 
+        private static void ApplyAmbientContext(LogEntry entry)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.CorrelationId))
+            {
+                entry.CorrelationId = LogContext.CurrentCorrelationId;
+            }
+
+            if (string.IsNullOrWhiteSpace(entry.Component))
+            {
+                entry.Component = LogContext.CurrentComponent;
+            }
+
+            var scopeData = LogContext.CaptureData();
+            if (scopeData == null || scopeData.Count == 0)
+            {
+                return;
+            }
+
+            entry.Data ??= new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in scopeData)
+            {
+                if (!entry.Data.ContainsKey(pair.Key))
+                {
+                    entry.Data[pair.Key] = pair.Value;
+                }
+            }
+        }
+
         private void WriteJsonToFile(LogEntry entry)
         {
             try
             {
                 lock (_fileLock)
                 {
-                    var jsonPath = _logFilePath?.Replace(".log", ".jsonl") ?? _logFilePath;
-                    File.AppendAllText(jsonPath, entry.ToJson() + Environment.NewLine);
-                    
-                    // Rotate if file gets too large (default 10MB)
-                    var fileInfo = new FileInfo(jsonPath);
-                    if (fileInfo.Exists && fileInfo.Length > 10 * 1024 * 1024)
+                    if (string.IsNullOrWhiteSpace(_logFilePath))
                     {
-                        var archivePath = jsonPath.Replace(".jsonl", $"_{DateTime.Now:HHmmss}.jsonl");
-                        File.Move(jsonPath, archivePath);
+                        return;
                     }
+
+                    var jsonPath = _logFilePath.Replace(".log", ".jsonl");
+                    File.AppendAllText(jsonPath, entry.ToJson() + Environment.NewLine);
+                    RotateFileIfNeeded(jsonPath, ".jsonl");
                 }
             }
             catch
@@ -364,20 +410,59 @@ namespace FenBrowser.Core.Logging
             {
                 lock (_fileLock)
                 {
-                    File.AppendAllText(_logFilePath, entry.ToString() + Environment.NewLine);
-                    
-                    // Rotate if file gets too large (default 10MB)
-                    var fileInfo = new FileInfo(_logFilePath);
-                    if (fileInfo.Exists && fileInfo.Length > 10 * 1024 * 1024)
+                    if (string.IsNullOrWhiteSpace(_logFilePath))
                     {
-                        var archivePath = _logFilePath.Replace(".log", $"_{DateTime.Now:HHmmss}.log");
-                        File.Move(_logFilePath, archivePath);
+                        return;
                     }
+
+                    File.AppendAllText(_logFilePath, entry.ToString() + Environment.NewLine);
+                    RotateFileIfNeeded(_logFilePath, ".log");
                 }
             }
             catch
             {
                 // Never throw from logging
+            }
+        }
+
+        private void RotateFileIfNeeded(string path, string extension)
+        {
+            var fileInfo = new FileInfo(path);
+            if (!fileInfo.Exists || fileInfo.Length < _maxLogFileBytes)
+            {
+                return;
+            }
+
+            var archivePath = Path.Combine(
+                fileInfo.DirectoryName ?? string.Empty,
+                $"{Path.GetFileNameWithoutExtension(path)}_{DateTime.UtcNow:yyyyMMdd_HHmmssfff}{extension}");
+            File.Move(path, archivePath, overwrite: false);
+            TrimArchives(fileInfo.DirectoryName ?? string.Empty, fileInfo.Name, extension);
+        }
+
+        private void TrimArchives(string directory, string activeFileName, string extension)
+        {
+            if (string.IsNullOrWhiteSpace(directory) || _maxArchivedFiles <= 0)
+            {
+                return;
+            }
+
+            var stem = Path.GetFileNameWithoutExtension(activeFileName);
+            var archivedFiles = Directory.EnumerateFiles(directory, $"{stem}_*{extension}")
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.CreationTimeUtc)
+                .ToList();
+
+            foreach (var archivedFile in archivedFiles.Skip(_maxArchivedFiles))
+            {
+                try
+                {
+                    archivedFile.Delete();
+                }
+                catch
+                {
+                    // Ignore cleanup failures.
+                }
             }
         }
 

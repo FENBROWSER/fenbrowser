@@ -116,8 +116,9 @@ public interface IPlatformLayer
     /// </summary>
     /// <remarks>
     /// On Windows this returns a <c>WindowsOsSandboxFactory</c> that produces
-    /// AppContainer + Job Object sandboxes.  On unsupported platforms a factory that
-    /// always returns <see cref="NullSandbox"/> is returned.
+    /// AppContainer + Job Object sandboxes. On POSIX hosts this may return a helper-backed
+    /// sandbox factory. On unsupported platforms a factory that cannot enforce sandboxing
+    /// is returned and callers must explicitly decide whether unsandboxed launch is acceptable.
     /// </remarks>
     /// <returns>An <see cref="IOsSandboxFactory"/> ready for use by the caller.</returns>
     IOsSandboxFactory CreateSandboxFactory();

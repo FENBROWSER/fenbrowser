@@ -6,8 +6,9 @@ namespace FenBrowser.Core.Security.Sandbox;
 /// </summary>
 /// <remarks>
 /// The factory is platform-specific: on Windows it produces
-/// <see cref="Windows.WindowsJobObjectSandbox"/> instances; on unsupported platforms
-/// it produces <see cref="NullSandbox"/> instances.  Callers should always check
+/// <see cref="Windows.WindowsJobObjectSandbox"/> or AppContainer-backed instances; on
+/// POSIX hosts it may produce helper-backed sandboxes or <see cref="NullSandbox"/>
+/// depending on host support. Callers should always check
 /// <see cref="IsSandboxingSupported"/> before trusting that constraints are enforced.
 /// </remarks>
 public interface IOsSandboxFactory
@@ -17,10 +18,9 @@ public interface IOsSandboxFactory
     /// current host.
     /// </summary>
     /// <remarks>
-    /// When <c>false</c>, <see cref="Create"/> returns a <see cref="NullSandbox"/> and
-    /// no OS-level constraints are applied.  This is acceptable for development builds
-    /// running in environments where Job Objects or equivalent primitives are unavailable
-    /// (e.g. nested virtualisation without nested Job Object support).
+    /// When <c>false</c>, callers must treat the resulting launch as unsandboxed unless
+    /// they explicitly reject it. Production launch paths should never silently assume
+    /// that constraints are active when this is <c>false</c>.
     /// </remarks>
     bool IsSandboxingSupported { get; }
 

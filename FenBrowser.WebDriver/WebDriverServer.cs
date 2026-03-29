@@ -17,6 +17,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.WebDriver.Protocol;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Security;
@@ -116,12 +118,23 @@ namespace FenBrowser.WebDriver
         {
             var request = context.Request;
             var response = context.Response;
+            using var logScope = FenLogger.BeginScope(
+                component: "WebDriver",
+                data: new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["remoteEndPoint"] = request.RemoteEndPoint?.ToString() ?? string.Empty,
+                    ["method"] = request.HttpMethod ?? string.Empty,
+                    ["path"] = request.Url?.AbsolutePath ?? string.Empty
+                });
             
             try
             {
                 var origin = request.Headers["Origin"];
                 if (!_originValidator.ValidateOrigin(request.RemoteEndPoint) || !_originValidator.ValidateOriginHeader(origin))
                 {
+                    FenLogger.Warn(
+                        $"[WebDriver] Unauthorized request blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
+                        LogCategory.Security);
                     Log($"Security Alert: Blocked request from unauthorized origin or endpoint. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
                     await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
                     return;
@@ -140,6 +153,9 @@ namespace FenBrowser.WebDriver
                 {
                     if (!ValidatePreflightRequest(request, response))
                     {
+                        FenLogger.Warn(
+                            $"[WebDriver] Invalid preflight blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
+                            LogCategory.Security);
                         Log($"Security Alert: Blocked invalid WebDriver preflight. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
                         await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
                         return;
@@ -223,6 +239,7 @@ namespace FenBrowser.WebDriver
         
         private void Log(string message)
         {
+            FenLogger.Info(message, LogCategory.WebDriver);
             OnLog?.Invoke($"[WebDriver] {message}");
         }
 

@@ -27,7 +27,7 @@ namespace FenBrowser.Core.Platform;
 ///   </item>
 ///   <item>
 ///     <term>Linux / macOS</term>
-///     <description><see cref="PosixPlatformLayer"/> (real shared-memory/process PAL, null sandbox factory)</description>
+///     <description><see cref="PosixPlatformLayer"/> (real shared-memory/process PAL with native helper-backed sandbox factory when available)</description>
 ///   </item>
 /// </list>
 /// </para>
@@ -67,7 +67,7 @@ public static class PlatformLayerFactory
 
 /// <summary>
 /// Placeholder <see cref="IPlatformLayer"/> for platforms that do not yet have a
-/// full implementation (Linux, macOS).  All operations that require platform support
+/// full implementation.  All operations that require platform support
 /// throw <see cref="PlatformNotSupportedException"/>.
 /// </summary>
 internal sealed class UnsupportedPlatformLayer : IPlatformLayer

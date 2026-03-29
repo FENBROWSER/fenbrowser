@@ -1,6 +1,8 @@
 using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -85,14 +87,28 @@ namespace FenBrowser.FenEngine.Rendering
                  return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid URL format" };
             }
 
-            if (string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase) &&
-                !IsFileNavigationAllowed(requestKind))
+            var fileNavigationAllowed = IsFileNavigationAllowed(requestKind);
+            var automationContext = IsAutomationContext();
+            var navigationDecision = BrowserSecurityPolicy.EvaluateTopLevelNavigation(
+                uri,
+                requestKind == NavigationRequestKind.UserInput,
+                automationContext,
+                BrowserSettings.Instance.AllowFileSchemeNavigation,
+                fileNavigationAllowed);
+
+            if (!navigationDecision.IsAllowed)
             {
+                navigationDecision.Log(LogCategory.Security);
                 return new FetchResult
                 {
                     Status = FetchStatus.UnknownError,
-                    ErrorDetail = "file:// navigation blocked by policy"
+                    ErrorDetail = navigationDecision.Message
                 };
+            }
+
+            if (string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase))
+            {
+                navigationDecision.Log(LogCategory.Security, LogLevel.Info);
             }
 
             // Handle images
@@ -170,6 +186,19 @@ namespace FenBrowser.FenEngine.Rendering
                 Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
                 "1",
                 StringComparison.Ordinal);
+        }
+
+        private static bool IsAutomationContext()
+        {
+            var webdriverEnabled = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_WEBDRIVER"),
+                "1",
+                StringComparison.Ordinal);
+            var automationMode = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_AUTOMATION_MODE"),
+                "1",
+                StringComparison.Ordinal);
+            return webdriverEnabled || automationMode;
         }
     }
 }
