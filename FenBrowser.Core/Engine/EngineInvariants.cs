@@ -7,7 +7,7 @@ namespace FenBrowser.Core.Engine
     /// <summary>
     /// Debug-only invariant assertions for engine correctness.
     /// All methods are compiled out in Release builds via [Conditional("DEBUG")].
-    /// Violations cause immediate crash with stack trace in Debug mode.
+    /// Violations fail fast in Debug mode with current engine context attached.
     /// </summary>
     public static class EngineInvariants
     {
@@ -28,13 +28,15 @@ namespace FenBrowser.Core.Engine
                 FailFast($"Core state mutation forbidden during {phase} phase", caller, file, line);
             }
         }
-        
+
         /// <summary>
         /// Assert that layout is side-effect free.
         /// Call this to verify no external state was modified during layout.
         /// </summary>
         [Conditional("DEBUG")]
-        public static void AssertLayoutSideEffectFree(bool condition, string what,
+        public static void AssertLayoutSideEffectFree(
+            bool condition,
+            string what,
             [CallerMemberName] string caller = "",
             [CallerFilePath] string file = "",
             [CallerLineNumber] int line = 0)
@@ -44,38 +46,32 @@ namespace FenBrowser.Core.Engine
                 FailFast($"Layout side-effect detected: {what}", caller, file, line);
             }
         }
-        
+
         /// <summary>
-        /// Assert that phase transitions are linear.
+        /// Assert that phase transitions match the engine's explicit transition matrix.
         /// </summary>
         [Conditional("DEBUG")]
-        public static void AssertLinearPhaseTransition(EnginePhase from, EnginePhase to,
+        public static void AssertLinearPhaseTransition(
+            EnginePhase from,
+            EnginePhase to,
             [CallerMemberName] string caller = "",
             [CallerFilePath] string file = "",
             [CallerLineNumber] int line = 0)
         {
-            // Allow transition to Idle from any phase
-            if (to == EnginePhase.Idle) return;
-            
-            // Allow same phase (re-entry)
-            if (from == to) return;
-            
-            // Allow Idle to Style
-            if (from == EnginePhase.Idle && to == EnginePhase.Style) return;
-            
-            // Allow forward by one
-            if ((int)to == (int)from + 1) return;
-            
-            FailFast($"Invalid phase transition: {from} → {to}", caller, file, line);
+            if (!EngineContext.IsValidTransition(from, to))
+            {
+                FailFast($"Invalid phase transition: {from} -> {to}", caller, file, line);
+            }
         }
-        
+
         /// <summary>
         /// Assert that layout convergence is within iteration limit.
         /// </summary>
-        /// <exception cref="LayoutConvergenceException">Thrown when limit exceeded.</exception>
         [Conditional("DEBUG")]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void AssertConvergenceLimit(int currentPass, int maxPasses,
+        public static void AssertConvergenceLimit(
+            int currentPass,
+            int maxPasses,
             [CallerMemberName] string caller = "",
             [CallerFilePath] string file = "",
             [CallerLineNumber] int line = 0)
@@ -85,7 +81,7 @@ namespace FenBrowser.Core.Engine
                 throw new LayoutConvergenceException(currentPass, maxPasses);
             }
         }
-        
+
         /// <summary>
         /// Assert that Host state is not mutated by Engine.
         /// </summary>
@@ -102,25 +98,27 @@ namespace FenBrowser.Core.Engine
                 FailFast($"Host mutation forbidden during {phase} phase", caller, file, line);
             }
         }
-        
+
         /// <summary>
         /// Assert that UI is not directly mutating Engine state.
         /// </summary>
         [Conditional("DEBUG")]
-        public static void AssertNoUIToEngineMutation(string operation,
+        public static void AssertNoUIToEngineMutation(
+            string operation,
             [CallerMemberName] string caller = "",
             [CallerFilePath] string file = "",
             [CallerLineNumber] int line = 0)
         {
-            // This is called from Engine entry points that should not be called from UI
-            FailFast($"UI → Engine mutation forbidden: {operation}. Use Host as intermediary.", caller, file, line);
+            FailFast($"UI -> Engine mutation forbidden: {operation}. Use Host as intermediary.", caller, file, line);
         }
-        
+
         /// <summary>
         /// Assert a general condition with descriptive message.
         /// </summary>
         [Conditional("DEBUG")]
-        public static void Assert(bool condition, string message,
+        public static void Assert(
+            bool condition,
+            string message,
             [CallerMemberName] string caller = "",
             [CallerFilePath] string file = "",
             [CallerLineNumber] int line = 0)
@@ -130,10 +128,7 @@ namespace FenBrowser.Core.Engine
                 FailFast(message, caller, file, line);
             }
         }
-        
-        /// <summary>
-        /// Fail immediately with full context. Debug-only.
-        /// </summary>
+
         private static void FailFast(string message, string caller, string file, int line)
         {
             var context = EngineContext.Current;
@@ -147,8 +142,7 @@ namespace FenBrowser.Core.Engine
                 Location: {file}:{line} in {caller}
                 ===========================
                 """;
-            
-            // Crash loudly
+
             throw new EngineInvariantException(fullMessage);
         }
     }

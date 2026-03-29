@@ -21,7 +21,20 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public static void EnterPhase(EnginePhase phase)
         {
-            EngineContext.Current.BeginPhase(phase);
+            var context = EngineContext.Current;
+
+            if (phase == context.CurrentPhase)
+            {
+                context.BeginPhase(phase);
+                return;
+            }
+
+            if (context.CurrentPhase != EnginePhase.Idle && phase != EnginePhase.Idle)
+            {
+                context.EndPhase();
+            }
+
+            context.BeginPhase(phase);
         }
 
         /// <summary>

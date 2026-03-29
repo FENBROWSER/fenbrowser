@@ -315,38 +315,28 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string Cookie { get; set; } = "";
 
-        // --- ID Index (O(1) getElementById) ---
-
-        private readonly Dictionary<string, Element> _idIndex =
-            new Dictionary<string, Element>(StringComparer.Ordinal);
-
         /// <summary>
         /// Returns the element with the given ID.
         /// https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
         /// </summary>
         public Element GetElementById(string elementId)
         {
-            if (string.IsNullOrEmpty(elementId))
-                return null;
-
-            _idIndex.TryGetValue(elementId, out var element);
-            return element;
+            return _treeScope?.GetElementById(elementId);
         }
 
         internal void RegisterId(string id, Element element)
         {
-            if (string.IsNullOrEmpty(id) || element == null)
-                return;
-
-            // First element wins (per spec)
-            if (!_idIndex.ContainsKey(id))
-                _idIndex[id] = element;
+            _treeScope?.RegisterId(id, element);
         }
 
-        internal void UnregisterId(string id)
+        internal void UnregisterId(string id, Element element = null)
         {
-            if (!string.IsNullOrEmpty(id))
-                _idIndex.Remove(id);
+            _treeScope?.UnregisterId(id, element);
+        }
+
+        internal void InvalidateIdIndex()
+        {
+            _treeScope?.InvalidateIdIndex();
         }
 
         // --- Collections ---
@@ -522,7 +512,9 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public NodeIterator CreateNodeIterator(Node root, uint whatToShow = 0xFFFFFFFF, NodeFilter filter = null)
         {
-            return new NodeIterator(root, whatToShow, filter);
+            var iterator = new NodeIterator(root, whatToShow, filter);
+            RegisterNodeIterator(iterator);
+            return iterator;
         }
 
         // --- Top Layer (for dialog showModal) ---
@@ -541,6 +533,78 @@ namespace FenBrowser.Core.Dom.V2
         internal void NotifyTreeDirty()
         {
             OnTreeDirty?.Invoke();
+        }
+
+        private readonly object _nodeIteratorLock = new();
+        private readonly List<WeakReference<NodeIterator>> _nodeIterators = new();
+
+        internal void RegisterNodeIterator(NodeIterator iterator)
+        {
+            if (iterator == null)
+                return;
+
+            lock (_nodeIteratorLock)
+            {
+                TrimDeadIterators_NoLock();
+                _nodeIterators.Add(new WeakReference<NodeIterator>(iterator));
+            }
+
+            iterator.Attach(this);
+        }
+
+        internal void UnregisterNodeIterator(NodeIterator iterator)
+        {
+            if (iterator == null)
+                return;
+
+            lock (_nodeIteratorLock)
+            {
+                for (int i = _nodeIterators.Count - 1; i >= 0; i--)
+                {
+                    if (!_nodeIterators[i].TryGetTarget(out var target) || ReferenceEquals(target, iterator))
+                    {
+                        _nodeIterators.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
+        internal void NotifyNodeRemoved(Node node)
+        {
+            if (node == null)
+                return;
+
+            NodeIterator[] iterators;
+            lock (_nodeIteratorLock)
+            {
+                TrimDeadIterators_NoLock();
+                var live = new List<NodeIterator>(_nodeIterators.Count);
+                foreach (var weakRef in _nodeIterators)
+                {
+                    if (weakRef.TryGetTarget(out var iterator))
+                    {
+                        live.Add(iterator);
+                    }
+                }
+
+                iterators = live.ToArray();
+            }
+
+            foreach (var iterator in iterators)
+            {
+                iterator.OnNodeRemoved(node);
+            }
+        }
+
+        private void TrimDeadIterators_NoLock()
+        {
+            for (int i = _nodeIterators.Count - 1; i >= 0; i--)
+            {
+                if (!_nodeIterators[i].TryGetTarget(out _))
+                {
+                    _nodeIterators.RemoveAt(i);
+                }
+            }
         }
 
         // --- Constructor ---

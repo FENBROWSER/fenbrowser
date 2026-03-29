@@ -163,41 +163,35 @@ namespace FenBrowser.FenEngine.Observers
         /// </summary>
         public void ExecutePendingCallbacks(IExecutionContext context)
         {
-            var previousPhase = EnginePhaseManager.CurrentPhase;
-            var switchedToJsExecution = false;
-
-            if (previousPhase == EnginePhase.Measure || previousPhase == EnginePhase.Layout || previousPhase == EnginePhase.Paint)
+            var currentPhase = EngineContext.Current.CurrentPhase;
+            if (currentPhase == EnginePhase.Measure || currentPhase == EnginePhase.Layout || currentPhase == EnginePhase.Paint)
             {
-                EnginePhaseManager.EnterPhase(EnginePhase.JSExecution);
-                switchedToJsExecution = true;
+                using var phaseScope = EngineContext.Current.PushPhase(EnginePhase.JSExecution);
+                ExecutePendingCallbacksCore();
+                return;
             }
 
-            try
-            {
-                List<Action> callbacks;
-                lock (_pendingCallbacks)
-                {
-                    callbacks = new List<Action>(_pendingCallbacks);
-                    _pendingCallbacks.Clear();
-                }
+            ExecutePendingCallbacksCore();
+        }
 
-                foreach (var callback in callbacks)
-                {
-                    try
-                    {
-                        callback();
-                    }
-                    catch
-                    {
-                        // Callback errors should not break the observer system
-                    }
-                }
-            }
-            finally
+        private void ExecutePendingCallbacksCore()
+        {
+            List<Action> callbacks;
+            lock (_pendingCallbacks)
             {
-                if (switchedToJsExecution)
+                callbacks = new List<Action>(_pendingCallbacks);
+                _pendingCallbacks.Clear();
+            }
+
+            foreach (var callback in callbacks)
+            {
+                try
                 {
-                    EnginePhaseManager.EnterPhase(previousPhase);
+                    callback();
+                }
+                catch
+                {
+                    // Callback errors should not break the observer system
                 }
             }
         }

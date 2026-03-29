@@ -1,5 +1,7 @@
+using System;
 using System.IO;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
@@ -44,71 +46,118 @@ public class NetworkService : INetworkService
             FenLogger.Log($"[Loader] Compression: {contentEncoding}", LogCategory.Network);
     }
 
-    public async Task<Stream> GetStreamAsync(string url)
+    public Task<Stream> GetStreamAsync(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
             throw new InvalidOperationException($"Invalid network URL: {url}");
         }
 
-        var decision = BrowserSecurityPolicy.EvaluateNetworkRequest(uri);
-        if (!decision.IsAllowed)
-        {
-            decision.Log();
-            throw new InvalidOperationException(decision.Message);
-        }
-
-        using var logScope = FenLogger.BeginScope(
-            component: "NetworkService",
-            data: new System.Collections.Generic.Dictionary<string, object>
-            {
-                ["url"] = uri.AbsoluteUri
-            });
-
-        if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
-        
-        var response = await _httpClient.SendAsync(request);
-        LogResponse(response);
-        
-        return await response.Content.ReadAsStreamAsync();
+        return GetStreamAsync(uri);
     }
 
-    public async Task<string> GetStringAsync(string url)
+    public Task<string> GetStringAsync(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
             throw new InvalidOperationException($"Invalid network URL: {url}");
         }
 
+        return GetStringAsync(uri);
+    }
+
+    public async Task<Stream> GetStreamAsync(Uri uri, CancellationToken cancellationToken = default)
+    {
+        if (uri == null)
+            throw new ArgumentNullException(nameof(uri));
+        if (!uri.IsAbsoluteUri)
+            throw new InvalidOperationException($"Invalid network URL: {uri}");
+
+        var configuration = NetworkConfiguration.Instance;
+        configuration.ValidateOrThrow();
+        EnforceSecurityPolicy(uri);
+
+        using var logScope = FenLogger.BeginScope(
+            component: "NetworkService",
+            data: new System.Collections.Generic.Dictionary<string, object>
+            {
+                ["url"] = uri.AbsoluteUri,
+                ["mode"] = "stream"
+            });
+
+        using var request = CreateRequest(uri, configuration);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.ResourceTimeoutSeconds));
+
+        if (DebugConfig.LogResourceLoader)
+            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+
+        var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            timeoutCts.Token).ConfigureAwait(false);
+
+        response.EnsureSuccessStatusCode();
+        LogResponse(response);
+        return await response.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
+    }
+
+    public async Task<string> GetStringAsync(Uri uri, CancellationToken cancellationToken = default)
+    {
+        if (uri == null)
+            throw new ArgumentNullException(nameof(uri));
+        if (!uri.IsAbsoluteUri)
+            throw new InvalidOperationException($"Invalid network URL: {uri}");
+
+        var configuration = NetworkConfiguration.Instance;
+        configuration.ValidateOrThrow();
+        EnforceSecurityPolicy(uri);
+
+        using var logScope = FenLogger.BeginScope(
+            component: "NetworkService",
+            data: new System.Collections.Generic.Dictionary<string, object>
+            {
+                ["url"] = uri.AbsoluteUri,
+                ["mode"] = "string"
+            });
+
+        using var request = CreateRequest(uri, configuration);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.DocumentTimeoutSeconds));
+
+        if (DebugConfig.LogResourceLoader)
+            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseContentRead,
+            timeoutCts.Token).ConfigureAwait(false);
+
+        response.EnsureSuccessStatusCode();
+        LogResponse(response);
+        return await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+    }
+
+    private static void EnforceSecurityPolicy(Uri uri)
+    {
         var decision = BrowserSecurityPolicy.EvaluateNetworkRequest(uri);
         if (!decision.IsAllowed)
         {
             decision.Log();
             throw new InvalidOperationException(decision.Message);
         }
+    }
 
-        using var logScope = FenLogger.BeginScope(
-            component: "NetworkService",
-            data: new System.Collections.Generic.Dictionary<string, object>
-            {
-                ["url"] = uri.AbsoluteUri
-            });
+    private HttpRequestMessage CreateRequest(Uri uri, NetworkConfiguration configuration)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri)
+        {
+            Version = configuration.GetPreferredHttpVersion(),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
 
-        if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
-        
-        var response = await _httpClient.SendAsync(request);
-        LogResponse(response);
-        
-        var content = await response.Content.ReadAsStringAsync();
-        
-        return content;
+        request.Headers.TryAddWithoutValidation("Accept-Encoding", configuration.GetAcceptEncodingHeader());
+        return request;
     }
 }

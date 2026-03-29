@@ -228,5 +228,29 @@ namespace FenBrowser.Tests.Engine
             EnginePhaseManager.EnterPhase(EnginePhase.Idle);
             Assert.Equal(EnginePhase.Idle, EnginePhaseManager.CurrentPhase);
         }
+
+        [Fact]
+        public void EngineContext_PushPhase_RestoresPreviousPhase()
+        {
+            EngineContext.Current.BeginPhase(EnginePhase.Layout);
+
+            using (EngineContext.Current.PushPhase(EnginePhase.JSExecution))
+            {
+                Assert.Equal(EnginePhase.JSExecution, EngineContext.Current.CurrentPhase);
+            }
+
+            Assert.Equal(EnginePhase.Layout, EngineContext.Current.CurrentPhase);
+        }
+
+        [Fact]
+        public void EngineContext_BeginPhase_InvalidTransition_Throws()
+        {
+            EngineContext.Current.BeginPhase(EnginePhase.Layout);
+
+            var exception = Assert.Throws<EngineInvariantException>(() =>
+                EngineContext.Current.BeginPhase(EnginePhase.JSExecution));
+
+            Assert.Contains("Invalid phase transition", exception.Message, StringComparison.Ordinal);
+        }
     }
 }

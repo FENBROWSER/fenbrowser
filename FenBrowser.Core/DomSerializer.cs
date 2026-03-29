@@ -39,12 +39,19 @@ namespace FenBrowser.Core
             // Handle special node types
             if (node.NodeType == NodeType.Text)
             {
-                var text = node.NodeValue?.Trim();
-                if (!string.IsNullOrEmpty(text))
+                var text = node.NodeValue ?? string.Empty;
+                if (prettyPrint)
                 {
+                    if (string.IsNullOrWhiteSpace(text))
+                        return;
+
                     sb.Append(indent);
                     sb.Append(EscapeHtml(text));
                     sb.Append(newline);
+                }
+                else
+                {
+                    sb.Append(EscapeHtml(text));
                 }
                 return;
             }
@@ -61,7 +68,14 @@ namespace FenBrowser.Core
 
             if (node.NodeType == NodeType.DocumentType)
             {
-                sb.Append("<!DOCTYPE html>");
+                if (node is DocumentType documentType)
+                {
+                    sb.Append(documentType.ToString());
+                }
+                else
+                {
+                    sb.Append("<!DOCTYPE html>");
+                }
                 sb.Append(newline);
                 return;
             }
@@ -139,7 +153,7 @@ namespace FenBrowser.Core
                     var child = children[i];
                     if (child.NodeType == NodeType.Text && !string.IsNullOrEmpty(child.NodeValue))
                     {
-                        sb.Append(EscapeHtml(child.NodeValue.Trim()));
+                        sb.Append(EscapeHtml(child.NodeValue));
                     }
                 }
             }
@@ -157,7 +171,8 @@ namespace FenBrowser.Core
                 .Replace("&", "&amp;")
                 .Replace("<", "&lt;")
                 .Replace(">", "&gt;")
-                .Replace("\"", "&quot;");
+                .Replace("\"", "&quot;")
+                .Replace("'", "&#39;");
         }
 
         /// <summary>

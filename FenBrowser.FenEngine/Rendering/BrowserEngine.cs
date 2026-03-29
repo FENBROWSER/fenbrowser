@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -19,6 +20,9 @@ public class BrowserEngine : IBrowserEngine
 
     public string Title { get; private set; } = "New Tab";
     public string Url { get; private set; } = string.Empty;
+    public BrowserEngineLoadState LoadState { get; private set; } = BrowserEngineLoadState.Idle;
+    public string LastError { get; private set; } = string.Empty;
+    public bool IsLoading => LoadState == BrowserEngineLoadState.Loading;
 
     public BrowserEngine(INetworkService networkService, ILogger logger)
     {
@@ -33,21 +37,49 @@ public class BrowserEngine : IBrowserEngine
             throw new ArgumentException("URL cannot be null or whitespace.", nameof(url));
         }
 
-        _logger.Log(LogLevel.Info, $"Loading URL: {url}");
-        Url = url;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException("URL must be an absolute URI.", nameof(url));
+        }
+
+        await LoadAsync(uri).ConfigureAwait(false);
+    }
+
+    public async Task LoadAsync(Uri uri, CancellationToken cancellationToken = default)
+    {
+        if (uri == null)
+            throw new ArgumentNullException(nameof(uri));
+        if (!uri.IsAbsoluteUri)
+            throw new ArgumentException("URI must be absolute.", nameof(uri));
+
+        Url = uri.AbsoluteUri;
+        LastError = string.Empty;
+        LoadState = BrowserEngineLoadState.Loading;
+        _logger.Log(LogLevel.Info, $"Loading URL: {uri.AbsoluteUri}");
 
         try
         {
-            string content = await _networkService.GetStringAsync(url).ConfigureAwait(false) ?? string.Empty;
+            string content = await _networkService.GetStringAsync(uri, cancellationToken).ConfigureAwait(false) ?? string.Empty;
             _logger.Log(LogLevel.Info, $"Content loaded, length: {content.Length}");
 
-            Title = ExtractTitle(content, url);
+            Title = ExtractTitle(content, uri.AbsoluteUri);
+            LoadState = BrowserEngineLoadState.Complete;
             _logger.Log(LogLevel.Debug, $"Resolved title: {Title}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            LastError = ex.Message;
+            Title = "Load cancelled";
+            LoadState = BrowserEngineLoadState.Cancelled;
+            _logger.Log(LogLevel.Warn, $"Cancelled load for {uri.AbsoluteUri}");
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError($"Failed to load {url}", ex);
+            LastError = ex.Message;
             Title = "Error loading page";
+            LoadState = BrowserEngineLoadState.Failed;
+            _logger.LogError($"Failed to load {uri.AbsoluteUri}", ex);
         }
     }
 

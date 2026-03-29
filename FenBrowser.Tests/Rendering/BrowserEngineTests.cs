@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -20,6 +21,8 @@ namespace FenBrowser.Tests.Rendering
 
             Assert.Equal("Fen Browser", engine.Title);
             Assert.Equal("https://example.com/page", engine.Url);
+            Assert.Equal(BrowserEngineLoadState.Complete, engine.LoadState);
+            Assert.False(engine.IsLoading);
         }
 
         [Fact]
@@ -53,26 +56,68 @@ namespace FenBrowser.Tests.Rendering
             await engine.LoadAsync("https://example.com/error");
 
             Assert.Equal("Error loading page", engine.Title);
+            Assert.Equal(BrowserEngineLoadState.Failed, engine.LoadState);
+            Assert.Equal("network down", engine.LastError);
+        }
+
+        [Fact]
+        public async Task LoadAsync_TracksCancelledState()
+        {
+            var network = new StubNetworkService((_, token) => Task.FromCanceled<string>(token));
+            var engine = new BrowserEngine(network, new NullLogger());
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                engine.LoadAsync(new Uri("https://example.com/cancel"), cts.Token));
+
+            Assert.Equal(BrowserEngineLoadState.Cancelled, engine.LoadState);
+            Assert.Equal("Load cancelled", engine.Title);
+            Assert.False(string.IsNullOrWhiteSpace(engine.LastError));
+        }
+
+        [Fact]
+        public async Task LoadAsync_RejectsRelativeUrls()
+        {
+            var network = new StubNetworkService(_ => "<title>ignored</title>");
+            var engine = new BrowserEngine(network, new NullLogger());
+
+            await Assert.ThrowsAsync<ArgumentException>(() => engine.LoadAsync("/relative/path"));
         }
 
         private sealed class StubNetworkService : INetworkService
         {
-            private readonly Func<string, string> _getString;
+            private readonly Func<Uri, CancellationToken, Task<string>> _getStringAsync;
 
             public StubNetworkService(Func<string, string> getString)
+                : this((uri, _) => Task.FromResult(getString(uri.AbsoluteUri)))
             {
-                _getString = getString;
+            }
+
+            public StubNetworkService(Func<Uri, CancellationToken, Task<string>> getStringAsync)
+            {
+                _getStringAsync = getStringAsync;
             }
 
             public Task<Stream> GetStreamAsync(string url)
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(_getString(url));
-                return Task.FromResult<Stream>(new MemoryStream(bytes));
+                return GetStreamAsync(new Uri(url), CancellationToken.None);
             }
 
             public Task<string> GetStringAsync(string url)
             {
-                return Task.FromResult(_getString(url));
+                return GetStringAsync(new Uri(url), CancellationToken.None);
+            }
+
+            public async Task<Stream> GetStreamAsync(Uri uri, CancellationToken cancellationToken = default)
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(await _getStringAsync(uri, cancellationToken));
+                return new MemoryStream(bytes);
+            }
+
+            public Task<string> GetStringAsync(Uri uri, CancellationToken cancellationToken = default)
+            {
+                return _getStringAsync(uri, cancellationToken);
             }
         }
 

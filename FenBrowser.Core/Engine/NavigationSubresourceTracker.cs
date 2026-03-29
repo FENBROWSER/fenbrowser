@@ -113,6 +113,19 @@ namespace FenBrowser.Core.Engine
                     : 0;
             }
         }
+
+        public bool HasPendingLoads(long navigationId)
+        {
+            return GetPendingCount(navigationId) > 0;
+        }
+
+        public IReadOnlyDictionary<long, int> SnapshotPendingCounts()
+        {
+            lock (_sync)
+            {
+                return new Dictionary<long, int>(_pendingByNavigation);
+            }
+        }
     }
 }
 
