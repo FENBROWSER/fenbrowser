@@ -11,7 +11,7 @@
 
 using System.Text;
 using FenBrowser.Core.Dom.V2;
-using FenBrowser.FenEngine.HTML;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Conformance;
 
@@ -130,9 +130,7 @@ public sealed class Html5LibTestRunner
         try
         {
             // Parse with FenBrowser's parser
-            var tokenizer = new HtmlTokenizer(input);
-            var builder = new HtmlTreeBuilder(tokenizer);
-            var document = builder.Build();
+            var document = new HtmlParser(input).Parse();
 
             // Serialize the tree to html5lib test format
             result.ActualTree = SerializeTree(document).TrimEnd();

@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Xunit;
 using FenBrowser.Core.Dom.V2;
-using FenBrowser.FenEngine.HTML;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Tests.Html5lib
 {
@@ -17,9 +17,7 @@ namespace FenBrowser.Tests.Html5lib
     {
         private Document Parse(string html)
         {
-            var tokenizer = new HtmlTokenizer(html);
-            var builder = new HtmlTreeBuilder(tokenizer);
-            return builder.Build();
+            return new HtmlParser(html).Parse();
         }
         
         // --- Basic Structure Tests ---
@@ -108,7 +106,7 @@ namespace FenBrowser.Tests.Html5lib
             var doc = Parse("<svg viewBox=\"0 0 100 100\"><circle cx=\"50\"/></svg>");
             var svg = doc.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName.Equals("svg", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(svg);
-            Assert.Equal(ForeignContent.SvgNamespace, svg!.NamespaceUri);
+            Assert.Equal(Namespaces.Svg, svg!.NamespaceUri);
         }
         
         [Fact]
@@ -117,7 +115,7 @@ namespace FenBrowser.Tests.Html5lib
             var doc = Parse("<math><mi>x</mi></math>");
             var math = doc.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName.Equals("math", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(math);
-            Assert.Equal(ForeignContent.MathMLNamespace, math!.NamespaceUri);
+            Assert.Equal(Namespaces.MathML, math!.NamespaceUri);
         }
         
         [Fact]
@@ -128,7 +126,7 @@ namespace FenBrowser.Tests.Html5lib
             var p = doc.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "P");
             Assert.NotNull(p);
             // P should be in HTML namespace, not SVG
-            Assert.Equal(ForeignContent.HtmlNamespace, p!.NamespaceUri);
+            Assert.Equal(Namespaces.Html, p!.NamespaceUri);
         }
         
         // --- Select Element Tests ---

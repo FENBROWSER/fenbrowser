@@ -23,9 +23,7 @@ namespace FenBrowser.FenEngine.Testing
             float viewportH = 600;
 
             // 1. Parse HTML
-            var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
-            var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
-            var doc = builder.Build();
+            var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
 
             // 2. Compute Style
             Console.WriteLine("[Verify] Computing styles...");

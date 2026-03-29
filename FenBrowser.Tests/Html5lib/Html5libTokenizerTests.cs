@@ -4,7 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Xunit;
-using FenBrowser.FenEngine.HTML;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Tests.Html5lib
 {
@@ -14,6 +14,12 @@ namespace FenBrowser.Tests.Html5lib
     /// </summary>
     public class Html5libTokenizerTests
     {
+        private static string? GetAttributeValue(StartTagToken tag, string name)
+        {
+            return tag.Attributes.FirstOrDefault(
+                attr => string.Equals(attr.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
+        }
+
         private List<HtmlToken> Tokenize(string html)
         {
             var tokenizer = new HtmlTokenizer(html);
@@ -60,7 +66,7 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<div>");
             var tag = tokens.OfType<StartTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("DIV", tag.TagName);
+            Assert.Equal("div", tag.TagName, ignoreCase: true);
         }
         
         [Fact]
@@ -69,9 +75,9 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<div class=\"foo\" id='bar'>");
             var tag = tokens.OfType<StartTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("DIV", tag.TagName);
-            Assert.Equal("foo", tag.Attributes["class"]);
-            Assert.Equal("bar", tag.Attributes["id"]);
+            Assert.Equal("div", tag.TagName, ignoreCase: true);
+            Assert.Equal("foo", GetAttributeValue(tag, "class"));
+            Assert.Equal("bar", GetAttributeValue(tag, "id"));
         }
         
         [Fact]
@@ -80,7 +86,7 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<br/>");
             var tag = tokens.OfType<StartTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("BR", tag.TagName);
+            Assert.Equal("br", tag.TagName, ignoreCase: true);
             Assert.True(tag.SelfClosing);
         }
         
@@ -90,7 +96,7 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("</div>");
             var tag = tokens.OfType<EndTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("DIV", tag.TagName);
+            Assert.Equal("div", tag.TagName, ignoreCase: true);
         }
         
         // --- DOCTYPE Tests ---
@@ -138,8 +144,8 @@ namespace FenBrowser.Tests.Html5lib
         public void Tokenize_ScriptContent()
         {
             var tokens = Tokenize("<script>var x = 1 < 2;</script>");
-            var startTag = tokens.OfType<StartTagToken>().FirstOrDefault(t => t.TagName == "SCRIPT");
-            var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => t.TagName == "SCRIPT");
+            var startTag = tokens.OfType<StartTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "script", StringComparison.OrdinalIgnoreCase));
+            var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "script", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(startTag);
             Assert.NotNull(endTag);
         }
@@ -148,8 +154,8 @@ namespace FenBrowser.Tests.Html5lib
         public void Tokenize_StyleContent()
         {
             var tokens = Tokenize("<style>.a > .b { color: red; }</style>");
-            var startTag = tokens.OfType<StartTagToken>().FirstOrDefault(t => t.TagName == "STYLE");
-            var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => t.TagName == "STYLE");
+            var startTag = tokens.OfType<StartTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "style", StringComparison.OrdinalIgnoreCase));
+            var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "style", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(startTag);
             Assert.NotNull(endTag);
         }
@@ -162,7 +168,7 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<a href=\"?a=1&amp;b=2\">");
             var tag = tokens.OfType<StartTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("?a=1&b=2", tag.Attributes["href"]);
+            Assert.Equal("?a=1&b=2", GetAttributeValue(tag, "href"));
         }
         
         [Fact]
@@ -171,7 +177,7 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<div class=foo>");
             var tag = tokens.OfType<StartTagToken>().FirstOrDefault();
             Assert.NotNull(tag);
-            Assert.Equal("foo", tag.Attributes["class"]);
+            Assert.Equal("foo", GetAttributeValue(tag, "class"));
         }
         
         // --- Edge Case Tests ---

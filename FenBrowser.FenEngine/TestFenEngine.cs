@@ -269,9 +269,7 @@ namespace FenBrowser.FenEngine.Tests
                  // Scope to avoid variable collision
                  {
                      string html12 = "<div id='parent'><b>Bold</b><p>Paragraph</p></div>";
-                     var tokenizer12 = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html12);
-                     var builder12 = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer12);
-                     var doc12 = builder12.Build();
+                     var doc12 = new FenBrowser.Core.Parsing.HtmlParser(html12).Parse();
                      
                      var div12 = (Element)doc12.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "DIV");
                      if (div12 == null) 
