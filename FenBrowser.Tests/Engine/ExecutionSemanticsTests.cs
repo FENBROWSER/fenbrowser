@@ -282,6 +282,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void AnimationFrameCallbacks_RunBeforeRenderWithinRenderingOpportunity()
+        {
+            var order = new List<string>();
+            var coordinator = EventLoopCoordinator.Instance;
+
+            coordinator.SetRenderCallback(() => order.Add("Render"));
+            coordinator.ScheduleAnimationFrame(() => order.Add("RAF"));
+
+            coordinator.ScheduleTask(() =>
+            {
+                order.Add("Task");
+                coordinator.NotifyLayoutDirty();
+            }, TaskSource.Other);
+
+            coordinator.ProcessNextTask();
+
+            Assert.Equal(new[] { "Task", "RAF", "Render" }, order);
+        }
+
+        [Fact]
         public void ClearQueues_RemovesAllPending()
         {
             var coordinator = EventLoopCoordinator.Instance;

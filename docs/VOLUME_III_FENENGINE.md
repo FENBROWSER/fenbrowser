@@ -5599,3 +5599,19 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj --no-restore -p:BuildProjectReferences=false`: pass.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_BigIntAddition_MixedWithNumber_ShouldThrowTypeError|FullyQualifiedName~Bytecode_WithStatement_WithUndefinedTarget_ShouldThrowTypeError|FullyQualifiedName~Bytecode_UncaughtTopLevelBoundary_PreservesThrownObject|FullyQualifiedName~Bytecode_StackOverflowProtection_ShouldNotCrashHost|FullyQualifiedName~Bytecode_OperandStackOverflow_IsCatchableRangeError|FullyQualifiedName~Bytecode_InstructionLimit_DoesNotLeakAcrossExecutions|FullyQualifiedName~JavaScriptRuntimeProfileTests" --no-build`: pass (`8/8`).
   - Broader `BytecodeExecutionTests` plus `JavaScriptRuntimeProfileTests` recheck now leaves four unrelated failures: the missing local `test262/harness/assert.js` fixture, two class/static-field paths that still resolve `Object` incorrectly in the bare bytecode environment, and the pre-existing async `new TypeError(...)` rejection mismatch where the constructor is not available in that same environment.
+
+## 2.181 Event-Loop Rendering Opportunity Throttling And rAF Ordering Recovery (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+  - Replaced the per-tick `_layoutRunThisTick` latch with a timestamped rendering-opportunity gate so idle rendering work is throttled to roughly one pass per 16 ms without suppressing dirty-layout flushes.
+  - `requestAnimationFrame(...)` callbacks now run before the render callback inside the same rendering opportunity, which aligns the coordinator with the browser-style frame structure.
+  - Observer callbacks remain post-layout in this engine, because their geometry source is the fresh layout result rather than a speculative pre-layout phase.
+  - Queue clearing now resets the render timestamp so the next explicit rendering opportunity is not incorrectly delayed by stale frame state.
+- `FenBrowser.Tests/Engine/ExecutionSemanticsTests.cs`
+  - Added a focused regression proving `requestAnimationFrame(...)` runs before render when a task dirties layout in the same turn.
+  - Existing observer ordering coverage continues to assert `Task -> Render -> Observer`.
+- Why this mattered:
+  - The local event-loop edit had one useful improvement and one regression mixed together: render-opportunity throttling plus rAF ordering were solid, but moving observers ahead of layout violated the engine's own observer pipeline contract.
+  - FenBrowser's observer system evaluates geometry from completed layout snapshots, so keeping observer delivery after render is required for consistency with `ObserverCoordinator`.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ExecutionSemanticsTests|FullyQualifiedName~EventLoopTests"`: pass.
