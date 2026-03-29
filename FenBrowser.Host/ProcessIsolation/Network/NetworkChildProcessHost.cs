@@ -38,6 +38,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 Environment.GetEnvironmentVariable("FEN_NETWORK_ALLOW_UNSANDBOXED"),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
+            using var launchScope = FenLogger.BeginScope(
+                component: "NetworkProcessLauncher",
+                data: new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["allowUnsandboxedFallback"] = allowUnsandboxedFallback
+                });
 
             var exePath = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(exePath))
@@ -74,27 +80,19 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 startInfo.Environment["FEN_NETWORK_CAPABILITIES"] = "network,cookies,cache,dns";
 
                 var sandboxFactory = PlatformLayerFactory.GetInstance().CreateSandboxFactory();
-                if (!allowUnsandboxedFallback && !sandboxFactory.IsSandboxingSupported)
+                if (!SandboxLaunchPolicy.TryAcquire(
+                    "network child",
+                    sandboxFactory,
+                    OsSandboxProfile.NetworkProcess,
+                    allowUnsandboxedFallback,
+                    "FEN_NETWORK_ALLOW_UNSANDBOXED",
+                    out var sandbox))
                 {
-                    FenLogger.Error(
-                        "[NetworkProcess] Refusing network child launch: no supported OS sandbox factory is available on this host. Set FEN_NETWORK_ALLOW_UNSANDBOXED=1 to override.",
-                        LogCategory.General);
                     session.Dispose();
                     return false;
                 }
-
-                var sandbox = sandboxFactory.Create(OsSandboxProfile.NetworkProcess);
-                if (sandbox is NullSandbox && !allowUnsandboxedFallback)
-                {
-                    FenLogger.Error(
-                        "[NetworkProcess] Refusing network child launch: network sandbox resolved to NullSandbox. Set FEN_NETWORK_ALLOW_UNSANDBOXED=1 to override.",
-                        LogCategory.General);
-                    sandbox.Dispose();
-                    session.Dispose();
-                    return false;
-                }
-
-                sandbox.ApplyToProcessStartInfo(startInfo);
+                
+                sandbox?.ApplyToProcessStartInfo(startInfo);
 
                 Process child;
                 if (sandbox.RequiresCustomSpawn)
@@ -112,9 +110,9 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
                 if (child == null)
                 {
-                    sandbox.Dispose();
+                    sandbox?.Dispose();
                     session.Dispose();
-                    FenLogger.Error("[NetworkProcess] Failed to spawn network child process.", LogCategory.General);
+                    FenLogger.Error("[NetworkProcess] Failed to spawn network child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
@@ -124,9 +122,9 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 {
                     FenLogger.Error(
                         $"[NetworkProcess] Network child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
-                        LogCategory.General);
+                        LogCategory.ProcessIsolation);
                     try { child.Kill(entireProcessTree: true); } catch { }
-                    sandbox.Dispose();
+                    sandbox?.Dispose();
                     session.Dispose();
                     return false;
                 }
@@ -136,14 +134,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 _session = session;
 
                 FenLogger.Info(
-                    $"[NetworkProcess] Network child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox.ProfileName}).",
-                    LogCategory.General);
+                    $"[NetworkProcess] Network child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
+                    LogCategory.ProcessIsolation);
                 return true;
             }
             catch (Exception ex)
             {
                 session.Dispose();
-                FenLogger.Error($"[NetworkProcess] Failed to start network child: {ex.Message}", LogCategory.General);
+                FenLogger.Error($"[NetworkProcess] Failed to start network child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
             }
         }
