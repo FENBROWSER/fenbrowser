@@ -18,6 +18,7 @@ namespace FenBrowser.Core.Logging
         public string Message { get; set; }
         public string ThreadId { get; set; }
         public Exception Exception { get; set; }
+        public string Component { get; set; }
         
         // Structured logging properties
         public string SourceFile { get; set; }
@@ -75,6 +76,8 @@ namespace FenBrowser.Core.Logging
                 extra.Append($" [{DurationMs}ms]");
             if (!string.IsNullOrEmpty(CorrelationId))
                 extra.Append($" [CID:{CorrelationId}]");
+            if (!string.IsNullOrEmpty(Component))
+                extra.Append($" [CMP:{Component}]");
                 
             return $"{time} [{levelStr}] {categoryStr} | {msg}{extra}";
         }
@@ -97,6 +100,9 @@ namespace FenBrowser.Core.Logging
 
                 if (!string.IsNullOrEmpty(CorrelationId))
                     obj["correlationId"] = CorrelationId;
+
+                if (!string.IsNullOrEmpty(Component))
+                    obj["component"] = Component;
 
                 if (DurationMs.HasValue)
                     obj["durationMs"] = DurationMs.Value;
@@ -169,6 +175,9 @@ namespace FenBrowser.Core.Logging
 
                 if (root.TryGetProperty("correlationId", out var cid))
                     entry.CorrelationId = cid.GetString();
+
+                if (root.TryGetProperty("component", out var component))
+                    entry.Component = component.GetString();
 
                 if (root.TryGetProperty("durationMs", out var dur))
                     entry.DurationMs = dur.GetInt64();

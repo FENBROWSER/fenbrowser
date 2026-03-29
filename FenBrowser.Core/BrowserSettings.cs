@@ -39,7 +39,9 @@ namespace FenBrowser.Core
         public bool LogToFile { get; set; } = true;
         public bool LogToDebug { get; set; } = true;
         public int MaxLogFileSizeMB { get; set; } = 10;
+        public int MaxArchivedFiles { get; set; } = 10;
         public int MemoryBufferSize { get; set; } = 1000;
+        public bool MirrorStructuredLogs { get; set; } = true;
         
         /// <summary>
         /// Path for log files. Defaults to "logs" folder in the current execution directory.

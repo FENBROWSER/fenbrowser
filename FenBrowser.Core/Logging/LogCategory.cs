@@ -35,6 +35,10 @@ namespace FenBrowser.Core.Logging
         Paint        = 1 << 22,  // Paint commands, clipping, z-index
         Frame        = 1 << 23,  // Frame timing, orchestration, render loop
         Verification = 1 << 24,  // Verification system logs (Source vs Rendered vs Visual)
+        Security     = 1 << 25,  // Policy decisions, denials, sandbox posture
+        Accessibility= 1 << 26,  // Accessibility trees, platform bridge events
+        ProcessIsolation = 1 << 27, // Child process contracts, sandbox lifecycle, IPC boundaries
+        DevTools     = 1 << 28,  // Remote debugging, protocol traffic, instrumentation
         All          = int.MaxValue
     }
 

@@ -1,8 +1,7 @@
 using System;
-using System.IO;
-using System.Collections.Concurrent;
-using System.Threading;
+using System.Collections.Generic;
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core
@@ -40,58 +39,120 @@ namespace FenBrowser.Core
             LogManager.Log(LogCategory.General, LogLevel.Info, $"FenLogger initialized with path: {logFilePath}");
         }
 
-        public static void Log(string message, LogCategory category = LogCategory.General, LogLevel level = LogLevel.Info)
+        public static IDisposable BeginScope(
+            string component = null,
+            string correlationId = null,
+            IReadOnlyDictionary<string, object> data = null)
         {
-            LogManager.Log(category, level, message);
-            EmitStructured(category, level, message);
+            return LogContext.Push(component, correlationId, data);
         }
 
-        public static void Debug(string message, LogCategory category = LogCategory.General) 
+        public static IDisposable BeginCorrelationScope(
+            string correlationId = null,
+            string component = null,
+            IReadOnlyDictionary<string, object> data = null)
         {
-            LogManager.Log(category, LogLevel.Debug, message);
-            EmitStructured(category, LogLevel.Debug, message);
+            return LogContext.Push(component, correlationId, data);
+        }
+
+        public static void Log(
+            string message,
+            LogCategory category = LogCategory.General,
+            LogLevel level = LogLevel.Info,
+            Exception ex = null,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFile = "",
+            [CallerLineNumber] int sourceLine = 0)
+        {
+            var entry = CreateEntry(category, level, message, ex, memberName, sourceFile, sourceLine);
+            LogManager.Log(entry);
+            EmitStructured(entry);
+        }
+
+        public static void Debug(
+            string message,
+            LogCategory category = LogCategory.General,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFile = "",
+            [CallerLineNumber] int sourceLine = 0) 
+        {
+            Log(message, category, LogLevel.Debug, null, memberName, sourceFile, sourceLine);
         }
             
-        public static void Info(string message, LogCategory category = LogCategory.General) 
+        public static void Info(
+            string message,
+            LogCategory category = LogCategory.General,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFile = "",
+            [CallerLineNumber] int sourceLine = 0) 
         {
-            LogManager.Log(category, LogLevel.Info, message);
-            EmitStructured(category, LogLevel.Info, message);
+            Log(message, category, LogLevel.Info, null, memberName, sourceFile, sourceLine);
         }
             
-        public static void Warn(string message, LogCategory category = LogCategory.General) 
+        public static void Warn(
+            string message,
+            LogCategory category = LogCategory.General,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFile = "",
+            [CallerLineNumber] int sourceLine = 0) 
         {
-            LogManager.Log(category, LogLevel.Warn, message);
-            EmitStructured(category, LogLevel.Warn, message);
+            Log(message, category, LogLevel.Warn, null, memberName, sourceFile, sourceLine);
         }
             
-        public static void Error(string message, LogCategory category = LogCategory.General, Exception ex = null) 
+        public static void Error(
+            string message,
+            LogCategory category = LogCategory.General,
+            Exception ex = null,
+            [CallerMemberName] string memberName = "",
+            [CallerFilePath] string sourceFile = "",
+            [CallerLineNumber] int sourceLine = 0) 
         {
-            LogManager.LogError(category, message, ex);
-            EmitStructured(category, LogLevel.Error, message, ex);
+            Log(message, category, LogLevel.Error, ex, memberName, sourceFile, sourceLine);
         }
         
         // --- NEW: Structured Logging ---
         
-        private static void EmitStructured(LogCategory category, LogLevel level, string message, Exception ex = null)
+        private static LogEntry CreateEntry(
+            LogCategory category,
+            LogLevel level,
+            string message,
+            Exception ex,
+            string memberName,
+            string sourceFile,
+            int sourceLine)
+        {
+            return new LogEntry
+            {
+                Category = category,
+                Level = level,
+                Message = message ?? string.Empty,
+                Exception = ex,
+                MethodName = memberName,
+                SourceFile = string.IsNullOrWhiteSpace(sourceFile) ? null : System.IO.Path.GetFileName(sourceFile),
+                SourceLine = sourceLine
+            };
+        }
+
+        private static void EmitStructured(LogEntry logEntry)
         {
             if (!StructuredOutputEnabled && OnStructuredLog == null) return;
             
-            var entry = new StructuredLogEntry
+            var structuredEntry = new StructuredLogEntry
             {
-                Timestamp = DateTime.UtcNow,
-                Level = level.ToString(),
-                Category = category.ToString(),
-                Message = message,
-                Exception = ex?.ToString()
+                Timestamp = logEntry.Timestamp,
+                Level = logEntry.Level.ToString(),
+                Category = logEntry.Category.ToString(),
+                Message = logEntry.Message,
+                Exception = logEntry.Exception?.ToString()
             };
             
-            OnStructuredLog?.Invoke(entry);
+            OnStructuredLog?.Invoke(structuredEntry);
             
             if (StructuredOutputEnabled)
             {
                 try
                 {
-                    var json = JsonSerializer.Serialize(entry, new JsonSerializerOptions { WriteIndented = false });
+                    var json = JsonSerializer.Serialize(structuredEntry, new JsonSerializerOptions { WriteIndented = false });
                     Console.WriteLine(json);
                 }
                 catch { /* Avoid infinite loops if JSON serialization fails */ }
@@ -106,11 +167,20 @@ namespace FenBrowser.Core
         public static void LogMetric(string name, double value, string unit = "ms", LogCategory category = LogCategory.Performance)
         {
             var message = $"[METRIC] {name}: {value:F2} {unit}";
-            LogManager.Log(category, LogLevel.Info, message);
+            var entry = new LogEntry
+            {
+                Category = category,
+                Level = LogLevel.Info,
+                Message = message
+            };
+            entry.WithData("metricName", name);
+            entry.WithData("metricValue", value);
+            entry.WithData("metricUnit", unit);
+            LogManager.Log(entry);
             
             if (StructuredOutputEnabled || OnStructuredLog != null)
             {
-                var entry = new StructuredLogEntry
+                var structuredEntry = new StructuredLogEntry
                 {
                     Timestamp = DateTime.UtcNow,
                     Level = "Metric",
@@ -120,7 +190,7 @@ namespace FenBrowser.Core
                     MetricValue = value,
                     MetricUnit = unit
                 };
-                OnStructuredLog?.Invoke(entry);
+                OnStructuredLog?.Invoke(structuredEntry);
             }
         }
         

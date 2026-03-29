@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
+  </ItemGroup>
+
 </Project>

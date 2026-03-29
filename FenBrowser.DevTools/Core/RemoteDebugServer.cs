@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Timers;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.DevTools.Core;
 
@@ -53,6 +54,22 @@ public class RemoteDebugServer : IDisposable
 
         if (!IPAddress.TryParse(bindAddress, out var bindIp))
             bindIp = IPAddress.Loopback;
+
+        var allowRemoteClients = string.Equals(
+            Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_ALLOW_REMOTE"),
+            "1",
+            StringComparison.OrdinalIgnoreCase);
+        var bindDecision = BrowserSecurityPolicy.EvaluateRemoteDebugBinding(
+            bindIp,
+            allowRemoteClients,
+            !string.IsNullOrWhiteSpace(authToken));
+        if (!bindDecision.IsAllowed)
+        {
+            bindDecision.Log(LogCategory.Security);
+            throw new InvalidOperationException(bindDecision.Message);
+        }
+
+        bindDecision.Log(LogCategory.Security, LogLevel.Info);
         _advertisedHost = bindIp.AddressFamily == AddressFamily.InterNetworkV6 ? "[::1]" : bindIp.ToString();
 
         // Security hardening: bind to explicit local interface unless caller opts otherwise.
@@ -80,14 +97,14 @@ public class RemoteDebugServer : IDisposable
         {
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
-            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.General);
+            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.DevTools);
             if (_usesEphemeralAuthToken)
             {
-                FenLogger.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.General);
+                FenLogger.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.Security);
             }
             else
             {
-                FenLogger.Info("[RemoteDebug] Using configured auth token from FEN_REMOTE_DEBUG_TOKEN.", LogCategory.General);
+                FenLogger.Info("[RemoteDebug] Using configured auth token from FEN_REMOTE_DEBUG_TOKEN.", LogCategory.Security);
             }
             
             // Start heartbeat timer (10/10)
@@ -97,7 +114,7 @@ public class RemoteDebugServer : IDisposable
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[RemoteDebug] Failed to start TCP listener: {ex.Message}", LogCategory.General);
+            FenLogger.Error($"[RemoteDebug] Failed to start TCP listener: {ex.Message}", LogCategory.DevTools);
         }
     }
     
@@ -151,14 +168,14 @@ public class RemoteDebugServer : IDisposable
             try
             {
                 var client = await _listener.AcceptSocketAsync();
-                FenLogger.Info($"[RemoteDebug] Connection accepted from {client.RemoteEndPoint}", LogCategory.General);
+                FenLogger.Info($"[RemoteDebug] Connection accepted from {client.RemoteEndPoint}", LogCategory.DevTools);
                 _ = HandleClient(client);
             }
             catch (Exception ex)
             {
                 if (!_cts.IsCancellationRequested)
                 {
-                    FenLogger.Error($"[RemoteDebug] Accept error: {ex.Message}", LogCategory.General);
+                    FenLogger.Error($"[RemoteDebug] Accept error: {ex.Message}", LogCategory.DevTools);
                 }
                 break;
             }
@@ -167,6 +184,12 @@ public class RemoteDebugServer : IDisposable
 
     private async Task HandleClient(Socket client)
     {
+        using var scope = FenLogger.BeginScope(
+            component: "RemoteDebug",
+            data: new Dictionary<string, object>
+            {
+                ["remoteEndPoint"] = client.RemoteEndPoint?.ToString() ?? string.Empty
+            });
         try
         {
             var stream = new NetworkStream(client, true);
@@ -182,7 +205,7 @@ public class RemoteDebugServer : IDisposable
 
             if (!IsAuthorizedRequest(request))
             {
-                FenLogger.Warn("[RemoteDebug] Unauthorized request rejected", LogCategory.General);
+                FenLogger.Warn("[RemoteDebug] Unauthorized request rejected", LogCategory.Security);
                 await SendUnauthorizedAsync(stream);
                 return;
             }
@@ -191,7 +214,7 @@ public class RemoteDebugServer : IDisposable
             {
                 if (request.Contains("Upgrade: websocket", StringComparison.OrdinalIgnoreCase))
                 {
-                    FenLogger.Info("[RemoteDebug] WebSocket Upgrade detected", LogCategory.General);
+                    FenLogger.Info("[RemoteDebug] WebSocket Upgrade detected", LogCategory.DevTools);
                     // Handle WebSocket Upgrade
                     if (DoHandshake(stream, request))
                     {
@@ -210,11 +233,11 @@ public class RemoteDebugServer : IDisposable
         catch (OperationCanceledException)
         {
              // Timeout - client connected but sent nothing (e.g. HTTPS handshake attempt)
-             FenLogger.Warn("[RemoteDebug] Client timed out (possible HTTPS handshake attempt?)", LogCategory.General);
+             FenLogger.Warn("[RemoteDebug] Client timed out (possible HTTPS handshake attempt?)", LogCategory.DevTools);
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[RemoteDebug] Client error: {ex.Message}", LogCategory.General);
+            FenLogger.Error($"[RemoteDebug] Client error: {ex.Message}", LogCategory.DevTools);
         }
         finally
         {
