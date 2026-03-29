@@ -1,11 +1,5 @@
-// =============================================================================
-// SessionCommands.cs
-// W3C WebDriver Session Commands
-// 
-// SPEC REFERENCE: W3C WebDriver §8 - Sessions
-//                 https://www.w3.org/TR/webdriver2/#sessions
-// =============================================================================
-
+using System;
+using System.Linq;
 using System.Text.Json;
 using FenBrowser.WebDriver.Protocol;
 
@@ -17,12 +11,12 @@ namespace FenBrowser.WebDriver.Commands
     public class SessionCommands
     {
         private readonly SessionManager _sessionManager;
-        
+
         public SessionCommands(SessionManager sessionManager)
         {
             _sessionManager = sessionManager;
         }
-        
+
         /// <summary>
         /// Create a new session.
         /// POST /session
@@ -30,46 +24,52 @@ namespace FenBrowser.WebDriver.Commands
         public WebDriverResponse NewSession(JsonElement? body)
         {
             Capabilities requestedCaps = null;
-            
+
             if (body.HasValue)
             {
+                if (body.Value.ValueKind != JsonValueKind.Object)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Session payload must be a JSON object");
+                }
+
+                CapabilityRequest request;
                 try
                 {
-                    var request = JsonSerializer.Deserialize<CapabilityRequest>(body.Value.GetRawText());
-                    requestedCaps = request?.Capabilities?.AlwaysMatch;
-                    
-                    // If alwaysMatch is null, try firstMatch
-                    if (requestedCaps == null && request?.Capabilities?.FirstMatch?.Count > 0)
-                    {
-                        requestedCaps = request.Capabilities.FirstMatch[0];
-                    }
+                    request = JsonSerializer.Deserialize<CapabilityRequest>(body.Value.GetRawText());
                 }
-                catch
+                catch (JsonException ex)
                 {
-                    // Ignore parse errors, use defaults
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Invalid capabilities payload: {ex.Message}");
+                }
+
+                requestedCaps = request?.Capabilities?.AlwaysMatch;
+                if (requestedCaps == null && request?.Capabilities?.FirstMatch?.Count > 0)
+                {
+                    requestedCaps = request.Capabilities.FirstMatch.FirstOrDefault();
                 }
             }
-            
+
+            requestedCaps?.ValidateOrThrow();
             var session = _sessionManager.CreateSession(requestedCaps);
-            
+
             return WebDriverResponse.Success(new NewSessionResponse
             {
                 SessionId = session.Id,
                 Capabilities = session.Capabilities
             });
         }
-        
+
         /// <summary>
         /// Delete a session.
         /// DELETE /session/{sessionId}
         /// </summary>
         public WebDriverResponse DeleteSession(string sessionId)
         {
-            _sessionManager.GetSession(sessionId); // Validate exists
+            _sessionManager.GetSession(sessionId);
             _sessionManager.DeleteSession(sessionId);
             return WebDriverResponse.Success(null);
         }
-        
+
         /// <summary>
         /// Get session timeouts.
         /// GET /session/{sessionId}/timeouts
@@ -79,7 +79,7 @@ namespace FenBrowser.WebDriver.Commands
             var session = _sessionManager.GetSession(sessionId);
             return WebDriverResponse.Success(session.Timeouts);
         }
-        
+
         /// <summary>
         /// Set session timeouts.
         /// POST /session/{sessionId}/timeouts
@@ -87,20 +87,41 @@ namespace FenBrowser.WebDriver.Commands
         public WebDriverResponse SetTimeouts(string sessionId, JsonElement? body)
         {
             var session = _sessionManager.GetSession(sessionId);
-            
-            if (body.HasValue)
+
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object)
             {
-                if (body.Value.TryGetProperty("script", out var script) && script.ValueKind == JsonValueKind.Number)
-                    session.Timeouts.Script = script.GetInt32();
-                    
-                if (body.Value.TryGetProperty("pageLoad", out var pageLoad) && pageLoad.ValueKind == JsonValueKind.Number)
-                    session.Timeouts.PageLoad = pageLoad.GetInt32();
-                    
-                if (body.Value.TryGetProperty("implicit", out var impl) && impl.ValueKind == JsonValueKind.Number)
-                    session.Timeouts.Implicit = impl.GetInt32();
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Timeout payload must be a JSON object");
             }
-            
+
+            if (body.Value.TryGetProperty("script", out var script))
+                session.Timeouts.Script = ParseTimeout("script", script);
+
+            if (body.Value.TryGetProperty("pageLoad", out var pageLoad))
+                session.Timeouts.PageLoad = ParseTimeout("pageLoad", pageLoad);
+
+            if (body.Value.TryGetProperty("implicit", out var implicitTimeout))
+                session.Timeouts.Implicit = ParseTimeout("implicit", implicitTimeout);
+
+            session.Timeouts.ValidateOrThrow();
             return WebDriverResponse.Success(null);
+        }
+
+        private static int? ParseTimeout(string name, JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.Null)
+                return null;
+
+            if (element.ValueKind != JsonValueKind.Number || !element.TryGetInt64(out var rawValue))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer or null");
+            }
+
+            if (rawValue < 0 || rawValue > int.MaxValue)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must stay within [0, {int.MaxValue}]");
+            }
+
+            return (int)rawValue;
         }
     }
 }

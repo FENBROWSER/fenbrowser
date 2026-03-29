@@ -1,13 +1,7 @@
-// =============================================================================
-// ScriptCommands.cs
-// W3C WebDriver Script Execution Commands
-// 
-// SPEC REFERENCE: W3C WebDriver §13 - Script Execution
-//                 https://www.w3.org/TR/webdriver2/#executing-script
-// =============================================================================
-
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
@@ -20,12 +14,12 @@ namespace FenBrowser.WebDriver.Commands
     public class ScriptCommands
     {
         private readonly CommandHandler _handler;
-        
+
         public ScriptCommands(CommandHandler handler)
         {
             _handler = handler;
         }
-        
+
         /// <summary>
         /// Execute synchronous script.
         /// POST /session/{sessionId}/execute/sync
@@ -33,18 +27,18 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ExecuteSyncAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var (script, args) = ParseScriptRequest(body);
+            var (script, args) = ParseScriptRequest(body, session);
 
             if (!_handler.IsScriptAllowed(sessionId, script))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
             }
-            
+
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.JavaScriptError, "Browser not connected");
             }
-            
+
             try
             {
                 var result = await _handler.Browser.ExecuteScriptAsync(script, args);
@@ -55,7 +49,7 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
             }
         }
-        
+
         /// <summary>
         /// Execute asynchronous script.
         /// POST /session/{sessionId}/execute/async
@@ -63,20 +57,20 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ExecuteAsyncAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var (script, args) = ParseScriptRequest(body);
+            var (script, args) = ParseScriptRequest(body, session);
 
             if (!_handler.IsScriptAllowed(sessionId, script))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
             }
-            
+
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.JavaScriptError, "Browser not connected");
             }
-            
+
             var timeout = session.Timeouts.Script ?? 30000;
-            
+
             try
             {
                 var result = await _handler.Browser.ExecuteAsyncScriptAsync(script, args, timeout);
@@ -91,90 +85,134 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
             }
         }
-        
-        private (string script, object[] args) ParseScriptRequest(JsonElement? body)
+
+        private (string script, object[] args) ParseScriptRequest(JsonElement? body, Session session)
         {
-            if (!body.HasValue)
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object)
             {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script is required");
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script payload must be a JSON object");
             }
-            
+
             if (!body.Value.TryGetProperty("script", out var scriptElement))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Script is required");
             }
-            
+
             var script = scriptElement.GetString();
             if (string.IsNullOrEmpty(script))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Script cannot be empty");
             }
-            
+
             var args = new List<object>();
-            if (body.Value.TryGetProperty("args", out var argsElement) && 
-                argsElement.ValueKind == JsonValueKind.Array)
+            if (body.Value.TryGetProperty("args", out var argsElement))
             {
+                if (argsElement.ValueKind != JsonValueKind.Array)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Script args must be an array");
+                }
+
                 foreach (var arg in argsElement.EnumerateArray())
                 {
-                    args.Add(DeserializeArg(arg));
+                    args.Add(DeserializeArg(arg, session));
                 }
             }
-            
+
             return (script, args.ToArray());
         }
-        
-        private object DeserializeArg(JsonElement element)
+
+        private object DeserializeArg(JsonElement element, Session session)
         {
-            return element.ValueKind switch
+            switch (element.ValueKind)
             {
-                JsonValueKind.String => element.GetString(),
-                JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                JsonValueKind.Null => null,
-                JsonValueKind.Array => DeserializeArray(element),
-                JsonValueKind.Object => DeserializeObject(element),
-                _ => null
-            };
-        }
-        
-        private object[] DeserializeArray(JsonElement element)
-        {
-            var list = new List<object>();
-            foreach (var item in element.EnumerateArray())
-            {
-                list.Add(DeserializeArg(item));
+                case JsonValueKind.String:
+                    return element.GetString();
+                case JsonValueKind.Number:
+                    return element.TryGetInt64(out var whole) ? whole : element.GetDouble();
+                case JsonValueKind.True:
+                    return true;
+                case JsonValueKind.False:
+                    return false;
+                case JsonValueKind.Null:
+                    return null;
+                case JsonValueKind.Array:
+                    return element.EnumerateArray().Select(item => DeserializeArg(item, session)).ToArray();
+                case JsonValueKind.Object:
+                    if (TryDeserializeReference(element, session, out var reference))
+                        return reference;
+
+                    var dict = new Dictionary<string, object>(StringComparer.Ordinal);
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        dict[property.Name] = DeserializeArg(property.Value, session);
+                    }
+
+                    return dict;
+                default:
+                    return null;
             }
-            return list.ToArray();
         }
-        
-        private Dictionary<string, object> DeserializeObject(JsonElement element)
+
+        private static bool TryDeserializeReference(JsonElement element, Session session, out object reference)
         {
-            var dict = new Dictionary<string, object>();
-            foreach (var prop in element.EnumerateObject())
+            reference = null;
+            if (element.TryGetProperty(ElementReference.Identifier, out var elementId))
             {
-                dict[prop.Name] = DeserializeArg(prop.Value);
+                reference = session.GetElement(elementId.GetString());
+                return true;
             }
-            return dict;
+
+            if (element.TryGetProperty(ShadowRootReference.Identifier, out var shadowId))
+            {
+                reference = session.GetElement(shadowId.GetString());
+                return true;
+            }
+
+            return false;
         }
-        
+
         private object SerializeResult(object result, Session session)
         {
-            // If result is an element, return element reference
-            if (result != null && IsElement(result))
+            if (result == null)
+                return null;
+
+            if (IsElement(result))
             {
-                var elementId = session.RegisterElement(result);
-                return new ElementReference(elementId);
+                return new ElementReference(session.RegisterElement(result));
             }
-            
+
+            if (result is IDictionary dictionary)
+            {
+                var serialized = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (DictionaryEntry entry in dictionary)
+                {
+                    if (entry.Key is string key)
+                    {
+                        serialized[key] = SerializeResult(entry.Value, session);
+                    }
+                }
+
+                return serialized;
+            }
+
+            if (result is IEnumerable enumerable && result is not string)
+            {
+                var items = new List<object>();
+                foreach (var item in enumerable)
+                {
+                    items.Add(SerializeResult(item, session));
+                }
+
+                return items;
+            }
+
             return result;
         }
-        
-        private bool IsElement(object obj)
+
+        private static bool IsElement(object obj)
         {
-            // Check if this is a DOM element (implementation-specific)
             var typeName = obj.GetType().Name;
-            return typeName == "Element" || typeName.EndsWith("Element");
+            return typeName == "Element" || typeName.EndsWith("Element", StringComparison.Ordinal);
         }
     }
 }
