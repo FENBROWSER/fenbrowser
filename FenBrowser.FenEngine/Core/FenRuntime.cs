@@ -10202,7 +10202,14 @@ namespace FenBrowser.FenEngine.Core
             DefineMathFn("floor", 1, (args, thisVal) =>
                 FenValue.FromNumber(Math.Floor(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
             DefineMathFn("round", 1, (args, thisVal) =>
-                FenValue.FromNumber(Math.Round(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            {
+                // ECMA-262 §21.3.2.28: round(x) = floor(x + 0.5), except
+                // values in (-0.5, +0] return -0 (not +0 from floor(x+0.5))
+                var x = args.Length > 0 ? args[0].ToNumber() : double.NaN;
+                if (double.IsNaN(x) || double.IsInfinity(x) || x == 0.0) return FenValue.FromNumber(x);
+                if (x > -0.5 && x < 0) return FenValue.FromNumber(-0.0);
+                return FenValue.FromNumber(Math.Floor(x + 0.5));
+            });
             DefineMathFn("max", 2, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromNumber(double.NegativeInfinity);
@@ -10218,8 +10225,16 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromNumber(min);
             });
             DefineMathFn("pow", 2, (args, thisVal) =>
-                FenValue.FromNumber(Math.Pow(args.Length > 0 ? args[0].ToNumber() : double.NaN,
-                    args.Length > 1 ? args[1].ToNumber() : double.NaN)));
+            {
+                // ECMA-262 §21.3.2.26: special cases that differ from C# Math.Pow
+                var b = args.Length > 0 ? args[0].ToNumber() : double.NaN;
+                var e = args.Length > 1 ? args[1].ToNumber() : double.NaN;
+                // abs(base)==1 and exponent is ±Infinity → NaN (C# returns 1)
+                if (Math.Abs(b) == 1.0 && double.IsInfinity(e)) return FenValue.FromNumber(double.NaN);
+                // base==1 and exponent is NaN → NaN (C# returns 1)
+                if (b == 1.0 && double.IsNaN(e)) return FenValue.FromNumber(double.NaN);
+                return FenValue.FromNumber(Math.Pow(b, e));
+            });
             DefineMathFn("sqrt", 1, (args, thisVal) =>
                 FenValue.FromNumber(Math.Sqrt(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
             DefineMathFn("random", 0, (args, thisVal) =>
@@ -10348,6 +10363,10 @@ namespace FenBrowser.FenEngine.Core
             DefineMathConst("LOG10E", Math.Log10(Math.E));
             DefineMathConst("SQRT2", Math.Sqrt(2));
             DefineMathConst("SQRT1_2", Math.Sqrt(0.5));
+
+            // §21.3.1.9: Math[@@toStringTag] = "Math"
+            math.SetSymbolProperty("toStringTag", FenValue.FromString("Math"),
+                writable: false, enumerable: false, configurable: true);
 
             /* [PERF-REMOVED] */
             SetGlobal("Math", FenValue.FromObject(math));
@@ -11504,27 +11523,8 @@ namespace FenBrowser.FenEngine.Core
                     return FenValue.FromObject(sp);
                 })));
 
-            // ES6 Math Extensions
-            var mathObj = (FenValue)GetGlobal("Math");
-            if (mathObj.IsObject)
-            {
-                var m = mathObj.AsObject();
-                m.Set("cbrt", FenValue.FromFunction(new FenFunction("cbrt", (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromNumber(Math.Pow(args.Length > 0 ? args[0].ToNumber() : double.NaN, 1.0 / 3.0)))));
-                m.Set("hypot", FenValue.FromFunction(new FenFunction("hypot", (args, thisVal) =>
-                {
-                    double sum = 0;
-                    foreach (var arg in args)
-                    {
-                        double n = arg.ToNumber();
-                        sum += n * n;
-                    }
-
-                    return FenValue.FromNumber(Math.Sqrt(sum));
-                })));
-                m.Set("log2", FenValue.FromFunction(new FenFunction("log2", (FenValue[] args, FenValue thisVal) =>
-                    FenValue.FromNumber(Math.Log(args.Length > 0 ? args[0].ToNumber() : double.NaN, 2)))));
-            }
+            // ES6 Math Extensions — already registered above via DefineMathFn with correct
+            // Infinity/NaN handling, IsConstructor=false, and NativeLength. No duplicate needed.
 
             // Global functions: parseInt, parseFloat, isNaN, isFinite
             SetGlobal("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) =>
