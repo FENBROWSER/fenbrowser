@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.IO;
 using FenBrowser.Core;
 using Xunit;
 
@@ -50,6 +51,41 @@ namespace FenBrowser.Tests.Core
             Assert.Equal(10, settings.Logging.MaxArchivedFiles);
             Assert.Equal(1000, settings.Logging.MemoryBufferSize);
             Assert.False(string.IsNullOrWhiteSpace(settings.Logging.LogPath));
+        }
+
+        [Fact]
+        public void Normalize_MigratesLegacyLogPath_ToCurrentWorkspaceLogs()
+        {
+            string originalDirectory = Directory.GetCurrentDirectory();
+            string tempDirectory = Path.Combine(Path.GetTempPath(), "fenbrowser-settings-tests", Path.GetRandomFileName());
+            Directory.CreateDirectory(tempDirectory);
+
+            try
+            {
+                Directory.SetCurrentDirectory(tempDirectory);
+
+                var settings = new BrowserSettings
+                {
+                    Logging = new LogSettings
+                    {
+                        LogPath = Path.Combine(AppContext.BaseDirectory, "logs")
+                    }
+                };
+
+                settings.Normalize();
+
+                Assert.True(settings.Logging.EnableLogging);
+                Assert.Equal(Path.Combine(tempDirectory, "logs"), settings.Logging.LogPath);
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(originalDirectory);
+
+                if (Directory.Exists(tempDirectory))
+                {
+                    Directory.Delete(tempDirectory, recursive: true);
+                }
+            }
         }
     }
 }

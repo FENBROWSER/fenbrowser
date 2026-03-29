@@ -21,17 +21,16 @@ namespace FenBrowser.Core.Logging
         private static bool _globalEnabled = true;
         
         // Log file base path
-        private static string _basePath = Path.Combine(AppContext.BaseDirectory, "logs");
+        private static string _basePath = GetDefaultBasePath();
         
         /// <summary>
         /// Initialize the structured logger with optional base path.
         /// </summary>
         public static void Initialize(string basePath = null)
         {
-            if (!string.IsNullOrEmpty(basePath))
-            {
-                _basePath = basePath;
-            }
+            _basePath = !string.IsNullOrWhiteSpace(basePath)
+                ? basePath
+                : GetDefaultBasePath();
             
             try
             {
@@ -235,9 +234,9 @@ namespace FenBrowser.Core.Logging
             
             try
             {
-                var fileName = $"network_fetch_{DateTime.Now:yyyyMMdd_HHmmss}.html";
+                var fileName = $"raw_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Network Fetch (Raw) -->\n{htmlContent}");
+                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Network Fetch (Raw) -->\n{htmlContent ?? string.Empty}");
                 Info("Network", $"Raw network source dumped to: {filePath}");
                 return filePath;
             }
@@ -259,7 +258,7 @@ namespace FenBrowser.Core.Logging
             {
                 var fileName = $"engine_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Fen Engine Processed DOM -->\n{htmlContent}");
+                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Fen Engine Processed DOM -->\n{htmlContent ?? string.Empty}");
                 Info("Rendering", $"Engine source dumped to: {filePath}");
                 return filePath;
             }
@@ -324,6 +323,24 @@ namespace FenBrowser.Core.Logging
                       $"Margin=[{marginTop:F0},{marginRight:F0},{marginBottom:F0},{marginLeft:F0}]";
             
             Debug("Layout", log);
+        }
+
+        private static string GetDefaultBasePath()
+        {
+            try
+            {
+                var cwd = Directory.GetCurrentDirectory();
+                if (!string.IsNullOrWhiteSpace(cwd))
+                {
+                    return Path.Combine(cwd, "logs");
+                }
+            }
+            catch
+            {
+                // Fall back to AppContext below.
+            }
+
+            return Path.Combine(AppContext.BaseDirectory, "logs");
         }
     }
     
