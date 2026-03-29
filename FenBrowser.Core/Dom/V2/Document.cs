@@ -191,6 +191,9 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string BaseURI { get; set; }
 
+        /// <summary>Origin of this document per HTML spec §7.5.</summary>
+        public FenBrowser.Core.Security.Origin Origin { get; set; }
+
         /// <summary>
         /// The document's content type.
         /// https://dom.spec.whatwg.org/#dom-document-contenttype
