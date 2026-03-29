@@ -20,9 +20,15 @@ namespace FenBrowser.Tests.Core
         public async Task LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage()
         {
             string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-            string logDir = Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net8.0", "logs");
-            string snapshotPath = Directory
-                .GetFiles(logDir, "engine_source_*.html")
+            string[] candidateLogDirs =
+            {
+                Path.Combine(repoRoot, "logs"),
+                Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net8.0", "logs")
+            };
+
+            string snapshotPath = candidateLogDirs
+                .Where(Directory.Exists)
+                .SelectMany(dir => Directory.GetFiles(dir, "engine_source_*.html"))
                 .OrderByDescending(File.GetLastWriteTimeUtc)
                 .FirstOrDefault();
 

@@ -1636,3 +1636,34 @@ _End of Volume VI_
 - `FenBrowser.Tests/WebDriver/WebDriverContractTests.cs`
 - `FenBrowser.Tests/WebIDL/WebIdlBindingGeneratorTests.cs`
   - Added regressions for route normalization, timeout rejection, capability validation, element-reference script argument/return handling, and deterministic binding generation.
+
+## 6.49 P1 Runtime Diagnostics Artifact Closure (2026-03-30)
+
+- `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs`
+  - The Google snapshot verification path now resolves `engine_source_*.html` from workspace-root `logs` first and only falls back to the legacy host-bin diagnostics path for compatibility.
+  - This matches the production diagnostics contract introduced by the runtime logging closure instead of silently depending on an outdated artifact location.
+
+- Runtime verification contract closed on `2026-03-30`:
+  - clean-state host run emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_003122.html`
+    - `logs/engine_source_20260330_003123.html`
+    - `logs/rendered_text_20260330_003123.txt`
+    - `logs/fenbrowser_20260330_003121.log`
+    - `logs/fenbrowser_20260330_003121.jsonl`
+  - the verification report in the live host log now records all three correlated paths:
+    - `Raw Path`
+    - `Engine Path`
+    - `Text Path`
+
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~RenderWatchdogTests"`: pass (`6/6`) on `2026-03-30`.
+
+- Why this matters:
+  - P1 was not honestly complete while runtime evidence was incomplete or split across the wrong folders.
+  - With this closure, the verification stack now sees the same reality the operator sees:
+    - painted frame,
+    - engine DOM snapshot,
+    - rendered text snapshot,
+    - structured log correlation.
