@@ -5650,3 +5650,19 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - The shrink-to-fit path also had a geometry reuse bug where the second pass started from already-offset descendants, which is exactly the kind of compounding layout error that shows up on search-style stacked wrappers.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~CascadeModernTests|FullyQualifiedName~BlockFormattingContextRelayoutTests"`: pass.
+
+## 2.184 Standalone Bytecode Realm Bootstrap For Core Intrinsics (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added explicit standalone-scope helpers that create or attach a fully initialized runtime realm to plain `FenEnvironment` chains.
+  - This gives bare bytecode execution access to core globals such as `Object`, `Error`, and `TypeError` without requiring callers to manually stand up a full `JavaScriptEngine`.
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Standalone bytecode-backed function invocation now falls back to a runtime-backed intrinsic scope instead of an empty environment when no execution context or captured environment is available.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Restored the previously failing bare-bytecode class and async-error regressions by executing them in a proper intrinsic realm.
+  - Added a direct regression proving a plain `FenEnvironment` can be upgraded to expose `Object` and `TypeError`.
+- Why this mattered:
+  - The bytecode compiler already lowers class fields and accessors through `Object.defineProperty(...)`, and ordinary source like `new TypeError(...)` also depends on standard constructor globals.
+  - A completely empty `FenEnvironment` therefore was not a valid standalone realm, which surfaced as misleading `ReferenceError: Object is not defined` and `ReferenceError` rejections in otherwise correct bytecode paths.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_StandaloneScopeBootstrap_ProvidesCoreIntrinsics|FullyQualifiedName~Bytecode_AsyncThrowErrorObject_ShouldPreserveRejectedObject|FullyQualifiedName~Bytecode_ClassStatement_WithFieldsStaticBlockAndMethods_ShouldWork|FullyQualifiedName~Bytecode_ClassExpression_ShouldReturnConstructableFunction|FullyQualifiedName~Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor|FullyQualifiedName~Bytecode_ClassPropertyNode_ShouldEvaluateInitializer|FullyQualifiedName~Bytecode_StaticBlockNode_ShouldExecuteBody"`: pass.

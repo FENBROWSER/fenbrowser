@@ -31,7 +31,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var lexer = new Lexer(js);
             var parser = new Parser(lexer, false);
             var ast = parser.ParseProgram();
-            var env = new FenEnvironment();
+            var env = FenRuntime.CreateStandaloneIntrinsicScope();
             var codeBlock = _compiler.Compile(ast);
             return _vm.Execute(codeBlock, env);
         }
@@ -58,7 +58,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var lexer = new Lexer(js);
             var parser = new Parser(lexer, false);
             var ast = parser.ParseProgram();
-            var env = new FenEnvironment();
+            var env = FenRuntime.CreateStandaloneIntrinsicScope();
             var codeBlock = _compiler.Compile(ast);
             return _vm.Execute(codeBlock, env, CancellationToken.None, limits);
         }
@@ -96,7 +96,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
 
         private FenValue Evaluate(AstNode ast, FenEnvironment? env = null)
         {
-            var scope = env ?? new FenEnvironment();
+            var scope = FenRuntime.EnsureStandaloneIntrinsics(env ?? new FenEnvironment());
             var codeBlock = _compiler.Compile(ast);
             return _vm.Execute(codeBlock, scope);
         }
@@ -1160,6 +1160,14 @@ namespace FenBrowser.Tests.Engine.Bytecode
             Assert.NotNull(error);
             Assert.Equal("TypeError", error.Get("name").AsString());
             Assert.Equal("boom", error.Get("message").AsString());
+        }
+
+        [Fact]
+        public void Bytecode_StandaloneScopeBootstrap_ProvidesCoreIntrinsics()
+        {
+            var env = FenRuntime.EnsureStandaloneIntrinsics(new FenEnvironment());
+            var result = Evaluate(ParseProgram("typeof Object + ',' + typeof TypeError;"), env);
+            Assert.Equal("function,function", result.AsString());
         }
 
         [Fact]

@@ -271,7 +271,7 @@ namespace FenBrowser.FenEngine.Core
 
         private FenValue InvokeViaDirectBytecode(FenValue[] args, IExecutionContext context, FenValue thisBinding)
         {
-            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? new FenEnvironment();
+            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? FenRuntime.CreateStandaloneIntrinsicScope();
             var newEnv = new FenEnvironment(baseEnv);
             if (BytecodeBlock != null && BytecodeBlock.IsStrict)
             {
@@ -300,7 +300,7 @@ namespace FenBrowser.FenEngine.Core
             var constants = new List<FenValue>(3);
             var instructionBytes = new List<byte>(32);
 
-            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? new FenEnvironment();
+            var baseEnv = Env ?? context?.Environment as FenEnvironment ?? FenRuntime.CreateStandaloneIntrinsicScope();
             FenFunction callable = this;
 
             constants.Add(thisBinding);
