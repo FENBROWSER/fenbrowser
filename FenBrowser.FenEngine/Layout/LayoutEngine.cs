@@ -196,15 +196,16 @@ namespace FenBrowser.FenEngine.Layout
             bool isFixed = position == "fixed";
             if (!isFixed)
             {
-                float absoluteBottom = parentContentAbsY + relOffsetY + box.Geometry.MarginBox.Bottom;
+                float absoluteBottomBaseY = ResolveAbsoluteBaseY(box.Parent, box.Geometry, parentContentAbsY);
+                float absoluteBottom = absoluteBottomBaseY + relOffsetY + box.Geometry.MarginBox.Bottom;
                 if (!float.IsNaN(absoluteBottom) && !float.IsInfinity(absoluteBottom))
                 {
                     maxBottom = Math.Max(maxBottom, absoluteBottom);
                 }
             }
 
-            float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
-            float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
+            float currentContentAbsX = ResolveAbsoluteContentX(box.Parent, box.Geometry, parentContentAbsX);
+            float currentContentAbsY = ResolveAbsoluteContentY(box.Parent, box.Geometry, parentContentAbsY);
 
             foreach (var child in box.Children)
             {
@@ -246,15 +247,19 @@ namespace FenBrowser.FenEngine.Layout
                         Descent = box.Geometry.Descent
                     };
 
-                    FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, parentContentAbsX + relOffsetX, parentContentAbsY + relOffsetY);
+                    float baseShiftX = ResolveAbsoluteBaseX(box.Parent, box.Geometry, parentContentAbsX);
+                    float baseShiftY = ResolveAbsoluteBaseY(box.Parent, box.Geometry, parentContentAbsY);
+                    FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, baseShiftX + relOffsetX, baseShiftY + relOffsetY);
 
                     dict[box.SourceNode] = absModel;
                 }
             }
 
-            // Children use UNSHIFTED coordinates (relative positioning doesn't affect children's flow)
-            float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
-            float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
+            // Child geometry is inconsistent today: some formatting contexts leave descendants
+            // parent-relative, while others already materialize absolute document coordinates.
+            // Only inherit the parent content offset when the child box still fits the parent-local range.
+            float currentContentAbsX = ResolveAbsoluteContentX(box.Parent, box.Geometry, parentContentAbsX);
+            float currentContentAbsY = ResolveAbsoluteContentY(box.Parent, box.Geometry, parentContentAbsY);
 
             foreach(var c in box.Children)
                 CollectBoxesAbsolute(c, dict, currentContentAbsX, currentContentAbsY);
@@ -278,8 +283,8 @@ namespace FenBrowser.FenEngine.Layout
              }
 
              // Apply relative offset to THIS element's visual position only
-             float absBorderX = parentContentAbsX + (float)box.Geometry.BorderBox.Left + relOffsetX;
-             float absBorderY = parentContentAbsY + (float)box.Geometry.BorderBox.Top + relOffsetY;
+             float absBorderX = ResolveAbsoluteBaseX(box.Parent, box.Geometry, parentContentAbsX) + (float)box.Geometry.BorderBox.Left + relOffsetX;
+             float absBorderY = ResolveAbsoluteBaseY(box.Parent, box.Geometry, parentContentAbsY) + (float)box.Geometry.BorderBox.Top + relOffsetY;
 
              if (box.SourceNode is Element el)
              {
@@ -287,11 +292,75 @@ namespace FenBrowser.FenEngine.Layout
                  rects[el] = new ElementGeometry(absBorderX, absBorderY, b.Width, b.Height);
              }
 
-             // Children use UNSHIFTED coordinates (relative positioning doesn't affect children's flow)
-             float currentContentAbsX = parentContentAbsX + (float)box.Geometry.ContentBox.Left;
-             float currentContentAbsY = parentContentAbsY + (float)box.Geometry.ContentBox.Top;
+             float currentContentAbsX = ResolveAbsoluteContentX(box.Parent, box.Geometry, parentContentAbsX);
+             float currentContentAbsY = ResolveAbsoluteContentY(box.Parent, box.Geometry, parentContentAbsY);
 
              foreach(var c in box.Children) FlattenBoxTreeAbsolute(c, rects, context, currentContentAbsX, currentContentAbsY);
+        }
+
+        private static float ResolveAbsoluteBaseX(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox parent,
+            BoxModel geometry,
+            float parentContentAbsX)
+        {
+            return GeometryLooksParentRelative(parent, geometry)
+                ? parentContentAbsX
+                : 0f;
+        }
+
+        private static float ResolveAbsoluteBaseY(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox parent,
+            BoxModel geometry,
+            float parentContentAbsY)
+        {
+            return GeometryLooksParentRelative(parent, geometry)
+                ? parentContentAbsY
+                : 0f;
+        }
+
+        private static float ResolveAbsoluteContentX(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox parent,
+            BoxModel geometry,
+            float parentContentAbsX)
+        {
+            return ResolveAbsoluteBaseX(parent, geometry, parentContentAbsX) + geometry.ContentBox.Left;
+        }
+
+        private static float ResolveAbsoluteContentY(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox parent,
+            BoxModel geometry,
+            float parentContentAbsY)
+        {
+            return ResolveAbsoluteBaseY(parent, geometry, parentContentAbsY) + geometry.ContentBox.Top;
+        }
+
+        private static bool GeometryLooksParentRelative(
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox parent,
+            BoxModel geometry)
+        {
+            if (parent?.Geometry == null || geometry == null)
+            {
+                return false;
+            }
+
+            const float epsilon = 1f;
+            float parentWidth = Math.Max(0f, parent.Geometry.ContentBox.Width);
+            float parentHeight = Math.Max(0f, parent.Geometry.ContentBox.Height);
+
+            if (parentWidth <= epsilon && parentHeight <= epsilon)
+            {
+                return false;
+            }
+
+            bool xFitsParentLocalSpace =
+                geometry.MarginBox.Left >= -epsilon &&
+                geometry.MarginBox.Left <= parentWidth + epsilon;
+
+            bool yFitsParentLocalSpace =
+                geometry.MarginBox.Top >= -epsilon &&
+                geometry.MarginBox.Top <= parentHeight + epsilon;
+
+            return xFitsParentLocalSpace && yFitsParentLocalSpace;
         }
         
         /// <summary>

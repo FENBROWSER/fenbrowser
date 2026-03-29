@@ -252,6 +252,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport)
         {
+            SkiaRenderBackend skiaBackend = backend as SkiaRenderBackend;
+            int? initialSaveCount = skiaBackend?.Canvas?.SaveCount;
+
             try
             {
                 DrawNode(backend, node, viewport);
@@ -259,6 +262,20 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 FenLogger.Error($"[SkiaRenderer] DrawNode Failed for {node.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                if (skiaBackend?.Canvas != null && initialSaveCount.HasValue)
+                {
+                    int currentSaveCount = skiaBackend.Canvas.SaveCount;
+                    if (currentSaveCount != initialSaveCount.Value)
+                    {
+                        FenLogger.Warn(
+                            $"[SkiaRenderer] Correcting canvas save-count imbalance for {node?.GetType().Name}: {currentSaveCount} -> {initialSaveCount.Value}",
+                            LogCategory.Rendering);
+                        skiaBackend.Canvas.RestoreToCount(initialSaveCount.Value);
+                    }
+                }
             }
         }
         
