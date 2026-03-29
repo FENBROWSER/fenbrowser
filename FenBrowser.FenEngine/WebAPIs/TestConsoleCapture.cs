@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using FenBrowser.Core;
 
 namespace FenBrowser.FenEngine.WebAPIs
@@ -103,6 +104,8 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static readonly Regex TestFailPattern = new Regex(@"^(FAIL|NOT OK)\s+(.+)$", RegexOptions.IgnoreCase);
         private static readonly Regex TestTimeoutPattern = new Regex(@"^TIMEOUT\s+(.+)$", RegexOptions.IgnoreCase);
         private static readonly Regex TestResultPattern = new Regex(@"^Result:\s+(PASS|FAIL)\s+(.+)$", RegexOptions.IgnoreCase);
+        private const string StructuredResultMarker = "__FEN_WPT_RESULT__";
+        private const string StructuredCompletionMarker = "__FEN_WPT_COMPLETE__";
         
         private static void TryParseTestHarnessResult(string message)
         {
@@ -112,6 +115,18 @@ namespace FenBrowser.FenEngine.WebAPIs
             foreach (var line in lines)
             {
                 var trimmed = line.Trim();
+
+                if (trimmed.StartsWith(StructuredResultMarker, StringComparison.Ordinal))
+                {
+                    ParseStructuredResult(trimmed[StructuredResultMarker.Length..]);
+                    continue;
+                }
+
+                if (trimmed.StartsWith(StructuredCompletionMarker, StringComparison.Ordinal))
+                {
+                    ParseStructuredCompletion(trimmed[StructuredCompletionMarker.Length..]);
+                    continue;
+                }
                 
                 // Check for PASS
                 var passMatch = TestPassPattern.Match(trimmed);
@@ -146,6 +161,62 @@ namespace FenBrowser.FenEngine.WebAPIs
                         : TestHarnessAPI.TestStatus.Fail;
                     TestHarnessAPI.AddResult(resultMatch.Groups[2].Value, status);
                 }
+            }
+        }
+
+        private static void ParseStructuredResult(string payloadJson)
+        {
+            if (string.IsNullOrWhiteSpace(payloadJson))
+            {
+                return;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(payloadJson);
+                var root = document.RootElement;
+                var name = root.TryGetProperty("name", out var nameElement)
+                    ? nameElement.GetString()
+                    : "unnamed";
+                var status = root.TryGetProperty("status", out var statusElement)
+                    ? statusElement.GetInt32()
+                    : -1;
+                var message = root.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+
+                TestHarnessAPI.AddResult(
+                    name,
+                    status == 0 ? TestHarnessAPI.TestStatus.Pass : TestHarnessAPI.TestStatus.Fail,
+                    message);
+            }
+            catch (Exception ex)
+            {
+                TestHarnessAPI.Log($"[Parser] Failed to parse structured WPT result: {ex.Message}");
+            }
+        }
+
+        private static void ParseStructuredCompletion(string payloadJson)
+        {
+            if (string.IsNullOrWhiteSpace(payloadJson))
+            {
+                TestHarnessAPI.ReportHarnessStatus("complete");
+                return;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(payloadJson);
+                var root = document.RootElement;
+                var message = root.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+                TestHarnessAPI.ReportHarnessStatus("complete", message);
+            }
+            catch (Exception ex)
+            {
+                TestHarnessAPI.Log($"[Parser] Failed to parse structured WPT completion: {ex.Message}");
+                TestHarnessAPI.ReportHarnessStatus("complete");
             }
         }
         
