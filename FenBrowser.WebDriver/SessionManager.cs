@@ -27,6 +27,11 @@ namespace FenBrowser.WebDriver
         
         public SessionManager(int maxSessions = 10)
         {
+            if (maxSessions < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxSessions), "maxSessions must be at least 1.");
+            }
+
             _maxSessions = maxSessions;
         }
         
@@ -171,7 +176,12 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public string RegisterElement(object element)
         {
-            var id = Interlocked.Increment(ref _elementCounter).ToString();
+            if (element == null)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Cannot register a null element reference");
+            }
+
+            var id = $"e{Interlocked.Increment(ref _elementCounter)}";
             _elementCache[id] = new WeakReference<object>(element);
             return id;
         }

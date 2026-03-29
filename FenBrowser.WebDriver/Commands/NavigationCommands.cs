@@ -32,12 +32,12 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> NavigateToAsync(string sessionId, JsonElement? body)
         {
             _handler.GetSession(sessionId);
-            
-            if (!body.HasValue || !body.Value.TryGetProperty("url", out var urlElement))
+
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object || !body.Value.TryGetProperty("url", out var urlElement))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "URL is required");
             }
-            
+
             var url = urlElement.GetString();
             if (string.IsNullOrEmpty(url))
             {
@@ -49,18 +49,17 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"Navigation blocked by security policy: {url}");
             }
             
-            // Validate URL format
-            if (!Uri.TryCreate(url, UriKind.Absolute, out _))
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"Invalid URL: {url}");
             }
-            
+
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
-            
-            await _handler.Browser.NavigateAsync(url);
+
+            await _handler.Browser.NavigateAsync(absoluteUri.AbsoluteUri);
             return WebDriverResponse.Success(null);
         }
         
