@@ -324,6 +324,7 @@ namespace FenBrowser.Core.Accessibility
     public sealed class LinuxAtSpiBridge : IPlatformA11yBridge
     {
         private AccessibilityTree _tree;
+        private LinuxAtSpiEventBroker _eventBroker;
         private bool _available;
         private bool _disposed;
 
@@ -357,42 +358,60 @@ namespace FenBrowser.Core.Accessibility
             if (!_available)
             {
                 FenLogger.Info("[AT-SPI] AT-SPI2 bus not found (AT_SPI_BUS_ADDRESS unset). " +
-                    "Accessibility events will not reach assistive technologies.", LogCategory.General);
+                    "Accessibility events will not reach assistive technologies.", LogCategory.Accessibility);
+                return;
+            }
+
+            _eventBroker?.Dispose();
+            if (!LinuxAtSpiEventBroker.TryCreate(out _eventBroker, out var failureReason))
+            {
+                _available = false;
+                FenLogger.Warn(
+                    $"[AT-SPI] Failed to initialize event broker: {failureReason}",
+                    LogCategory.Accessibility);
                 return;
             }
 
             if (tree != null)
                 tree.TreeInvalidated += OnTreeInvalidated;
 
-            // NOTE: Full AT-SPI2 support requires connecting to the AT-SPI2 DBus socket,
-            // registering the application via org.a11y.atspi.Registry, and implementing
-            // the org.a11y.atspi.Accessible interface for each node.
-            // The current implementation routes events through the AT-SPI2 event name map
-            // but does not yet establish a DBus connection.
-            // Screen readers (Orca, etc.) will not receive these events until the DBus
-            // connection is implemented.
-            FenLogger.Warn("[AT-SPI] Bridge initialised in stub mode — DBus connection not yet " +
-                "implemented. Accessibility events will be logged but not forwarded to screen readers.",
-                LogCategory.General);
+            FenLogger.Info(
+                "[AT-SPI] Accessibility bridge initialized with bounded event queue and DBus signal emission.",
+                LogCategory.Accessibility);
         }
 
         public void FireEvent(AccessibilityNode node, A11yEvent eventType)
         {
             if (!_available || node == null) return;
 
-            var atspiEvent = MapAtSpiEvent(eventType);
-            if (atspiEvent == null) return;
+            if (!TryCreateSignal(node, eventType, propertyName: null, oldValue: null, newValue: null, out var signal))
+            {
+                return;
+            }
 
-            // TODO: emit DBus signal on org.a11y.atspi.Event.* interface via a persistent
-            // DBus connection to AT_SPI_BUS_ADDRESS. Until then, log for diagnostics.
-            FenLogger.Debug($"[AT-SPI] (stub) Event '{atspiEvent}' for node '{node.Name}'", LogCategory.General);
+            if (!_eventBroker.TryPost(signal, out var failureReason))
+            {
+                FenLogger.Warn(
+                    $"[AT-SPI] Dropped event '{signal.Member}' for node '{node.Name}': {failureReason}",
+                    LogCategory.Accessibility);
+            }
         }
 
         public void FirePropertyChanged(AccessibilityNode node, string propertyName, object oldValue, object newValue)
         {
             if (!_available || node == null) return;
-            // TODO: emit org.a11y.atspi.Event.Object:property-change DBus signal.
-            FenLogger.Debug($"[AT-SPI] (stub) PropertyChanged '{propertyName}' for node '{node.Name}'", LogCategory.General);
+
+            if (!TryCreateSignal(node, A11yEvent.PropertyChanged, propertyName, oldValue, newValue, out var signal))
+            {
+                return;
+            }
+
+            if (!_eventBroker.TryPost(signal, out var failureReason))
+            {
+                FenLogger.Warn(
+                    $"[AT-SPI] Dropped property change '{propertyName}' for node '{node.Name}': {failureReason}",
+                    LogCategory.Accessibility);
+            }
         }
 
         public void UpdateWindowHandle(IntPtr hwnd) { /* AT-SPI2 is window-handle-independent */ }
@@ -404,25 +423,137 @@ namespace FenBrowser.Core.Accessibility
             FireEvent(_tree?.Root, A11yEvent.StructureChanged);
         }
 
-        private static string MapAtSpiEvent(A11yEvent e) => e switch
+        private static bool TryCreateSignal(
+            AccessibilityNode node,
+            A11yEvent eventType,
+            string propertyName,
+            object oldValue,
+            object newValue,
+            out AtSpiSignal signal)
         {
-            A11yEvent.FocusChanged      => "focus:focused",
-            A11yEvent.StateChanged      => "object:state-changed",
-            A11yEvent.PropertyChanged   => "object:property-change",
-            A11yEvent.StructureChanged  => "object:children-changed",
-            A11yEvent.TextChanged       => "object:text-changed",
-            A11yEvent.ValueChanged      => "object:property-change:accessible-value",
-            A11yEvent.SelectionChanged  => "object:selection-changed",
-            A11yEvent.LiveRegionChanged => "object:property-change:accessible-name",
-            A11yEvent.AlertFired        => "object:state-changed:showing",
-            _ => null
-        };
+            signal = null;
+            if (node == null)
+            {
+                return false;
+            }
+
+            var payload = newValue?.ToString()
+                ?? oldValue?.ToString()
+                ?? node.Name
+                ?? string.Empty;
+
+            switch (eventType)
+            {
+                case A11yEvent.FocusChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "StateChanged",
+                        Detail1 = "focused",
+                        Detail2 = 1,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.PropertyChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "PropertyChange",
+                        Detail1 = propertyName ?? "property-change",
+                        Detail2 = 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.StructureChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "ChildrenChanged",
+                        Detail1 = "structure",
+                        Detail2 = node.Children?.Count ?? 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.TextChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "TextChanged",
+                        Detail1 = "text",
+                        Detail2 = 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.SelectionChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "SelectionChanged",
+                        Detail1 = "selection",
+                        Detail2 = 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.ValueChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "PropertyChange",
+                        Detail1 = "accessible-value",
+                        Detail2 = 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.LiveRegionChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "PropertyChange",
+                        Detail1 = "accessible-name",
+                        Detail2 = 0,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.AlertFired:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "StateChanged",
+                        Detail1 = "showing",
+                        Detail2 = 1,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                case A11yEvent.StateChanged:
+                    signal = new AtSpiSignal
+                    {
+                        InterfaceName = "org.a11y.atspi.Event.Object",
+                        Member = "StateChanged",
+                        Detail1 = propertyName ?? "state",
+                        Detail2 = 1,
+                        Detail3 = 0,
+                        Payload = payload
+                    };
+                    return true;
+                default:
+                    return false;
+            }
+        }
 
         public void Dispose()
         {
             if (!_disposed)
             {
                 _disposed = true;
+                _eventBroker?.Dispose();
                 if (_tree != null) _tree.TreeInvalidated -= OnTreeInvalidated;
             }
         }
@@ -685,4 +816,3 @@ namespace FenBrowser.Core.Accessibility
         }
     }
 }
-

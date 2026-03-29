@@ -10,10 +10,8 @@ using FenBrowser.Core.Logging;
 namespace FenBrowser.FenEngine.Layout
 {
     /// <summary>
-    /// Pure layout computation engine.
-    /// Currently serves as a facade - methods will be incrementally migrated from SkiaDomRenderer.
-    /// 
-    /// Goal: No painting, no Skia rendering, no JS execution.
+    /// Pure layout computation engine used by the render-frame pipeline.
+    /// Goal: no painting, no backend rasterization, no JS execution.
     /// </summary>
     public sealed class LayoutEngine
     {
@@ -110,7 +108,7 @@ namespace FenBrowser.FenEngine.Layout
             context.Layout(rootBox, initialState);
             DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
 
-            // 4. Transform Result back to Legacy Format (for Renderer compatibility)
+            // 4. Materialize renderer-facing layout artifacts from the box tree.
             var elementRects = new Dictionary<Element, ElementGeometry>();
             
             // PASS 1: Flatten for Legacy API (Absolute Coordinates)

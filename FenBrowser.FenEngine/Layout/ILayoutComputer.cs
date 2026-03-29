@@ -23,8 +23,7 @@ namespace FenBrowser.FenEngine.Layout
     }
 
     /// <summary>
-    /// Interface for layout computation.
-    /// Allows SkiaDomRenderer to implement layout methods while they are being migrated to LayoutEngine.
+    /// Interface for layout computation used by the render-frame pipeline.
     /// </summary>
     public interface ILayoutComputer
     {
