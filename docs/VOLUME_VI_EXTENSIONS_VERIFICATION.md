@@ -460,6 +460,22 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - `scripts/ci/run-parser-fuzz-regressions.ps1`
   - fuzz regressions execute deterministic hostile corpus + mutation coverage and fail CI on parser/renderer crashes.
 
+### 4.15.1 Watchdog Presentation Correctness (2026-03-30)
+
+- `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs`
+  - Added `Render_WatchdogForcesFullRaster_WhenNoBaseFrameExists`.
+  - Added `Render_WatchdogPreservesSeededBaseFrame_WhenReusableFrameExists`.
+  - Coverage now proves that watchdog pressure cannot blank a first/full frame and that caller-seeded reusable frames remain intact when preservation mode is explicitly requested.
+
+- `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs`
+  - Failure diagnostics now include render watchdog state.
+  - The focused Google snapshot regression passed after the watchdog fix while still asserting visible raster coverage in the live search-shell region.
+
+- Verification on `2026-03-30`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~RenderWatchdogTests"`: pass (`3/3`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~GoogleSnapshotDiagnosticsTests.LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage"`: pass (`1/1`).
+  - Required host runtime cycle produced a visibly painted `debug_screenshot.png` instead of the earlier blank-white frame, confirming that the watchdog change fixed the presentation regression in the Debug host path.
+
 ### 4.16 WPT Harness Execution Reliability (2026-02-27)
 
 - `FenBrowser.WPT/HeadlessNavigator.cs`
@@ -1585,3 +1601,38 @@ _End of Volume VI_
 - Verification:
   - `dotnet build FenBrowser.sln -nologo`
   - completed successfully on `2026-03-29`.
+
+### 4.9 P1 WebDriver And Binding-Pipeline Hardening (2026-03-29)
+
+- `FenBrowser.WebDriver/Protocol/Capabilities.cs`
+  - Capability negotiation now validates `pageLoadStrategy`, prompt behavior, timeout bounds, proxy shape, and `fen:options` instead of accepting malformed capability payloads and silently defaulting.
+  - Session timeouts now clone and validate explicitly rather than reusing permissive object graphs.
+
+- `FenBrowser.WebDriver/Commands/SessionCommands.cs`
+  - New-session payload parsing now rejects malformed JSON instead of silently falling back to defaults.
+  - Timeout updates now require object-shaped input and reject negative or overflow values with `invalid argument`.
+
+- `FenBrowser.WebDriver/CommandRouter.cs`
+  - Route registration now rejects duplicate `(method, path)` mappings.
+  - Incoming request paths are normalized for query-string stripping and trailing-slash tolerance.
+  - Route parameters are percent-decoded before command execution.
+
+- `FenBrowser.WebDriver/Commands/NavigationCommands.cs`
+  - Navigation now canonicalizes absolute URIs before dispatch and rejects malformed request bodies earlier.
+
+- `FenBrowser.WebDriver/Commands/ScriptCommands.cs`
+  - Script arguments now deserialize WebDriver element and shadow-root references back into cached session objects.
+  - Script results now recursively serialize nested element results back into compliant WebDriver element references instead of only handling a top-level element.
+
+- `FenBrowser.WebDriver/SessionManager.cs`
+  - Session creation now rejects non-positive session limits.
+  - Element-reference registration now rejects null elements and emits prefixed opaque reference ids.
+
+- `FenBrowser.Core/WebIDL/WebIdlBindingGenerator.cs`
+- `FenBrowser.WebIdlGen/Program.cs`
+  - The WebIDL pipeline now has deterministic generation ordering, manifest hashing, stale-output cleanup, and `--verify` support.
+  - This matters to verification because generated binding drift is now observable and enforceable in CI instead of hidden behind incidental file ordering.
+
+- `FenBrowser.Tests/WebDriver/WebDriverContractTests.cs`
+- `FenBrowser.Tests/WebIDL/WebIdlBindingGeneratorTests.cs`
+  - Added regressions for route normalization, timeout rejection, capability validation, element-reference script argument/return handling, and deterministic binding generation.
