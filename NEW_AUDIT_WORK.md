@@ -45,6 +45,34 @@ Remaining work in this ledger is P1 and P2 completion, plus warning-debt cleanup
   - the active `fenbrowser_*.log` file remained extremely thin, so first-class structured diagnostics are still not fully surfaced on this path.
   - P1 therefore remains in progress until the runtime diagnostic contract is as reliable as the render path itself.
 
+### 2026-03-30 P1 Closure Snapshot
+
+- Closed the runtime diagnostic completeness gap that was still blocking P1:
+  - `BrowserSettings` now defaults production-style logging on and normalizes the legacy `AppContext.BaseDirectory/logs` path back to workspace-root `logs`.
+  - `LogManager` now initializes `StructuredLogger` against the active log path so module logs and artifact dumps stop splitting between repo-root and host-bin folders.
+  - `StructuredLogger` now emits `raw_source_*.html` under the unified diagnostics root and keeps engine/rendered dumps on that same path.
+  - `BrowserHost` now captures engine-source and rendered-text diagnostics per navigation from the live repaint seam, but only after the DOM is meaningfully populated; the post-render seam still forces a final capture so diagnostics cannot be starved by long-running page scripts.
+  - Engine source capture now prefers the browser's DOM-native serialization path (`doctype` + `OuterHTML` / `ToHtml`) before falling back to the generic serializer, which removes the old high-risk diagnostic stall on large pages.
+  - `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs` now resolves `engine_source_*.html` from workspace-root `logs` first and only falls back to the legacy host-bin path for compatibility.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -nologo`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~RenderWatchdogTests"`: pass (`6/6`).
+  - Required runtime host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_003122.html`
+    - `logs/engine_source_20260330_003123.html`
+    - `logs/rendered_text_20260330_003123.txt`
+    - `logs/fenbrowser_20260330_003121.log`
+    - `logs/fenbrowser_20260330_003121.jsonl`
+  - Runtime outcome:
+    - the screenshot remains visibly painted with the Google homepage shell, search chrome, language strip, footer, and top navigation.
+    - the engine snapshot is now full-sized (`190552` bytes) instead of the earlier truncated partial shell.
+    - the verification report now consistently records `Raw Path`, `Engine Path`, and `Text Path` in the same live run.
+- P1 status:
+  - `completed` for the audit/workstream scope defined in this ledger.
+  - Remaining work after this point is P2 hardening plus general warning-debt cleanup, not an open P1 blocker.
+
 All work below is guided by the FenBrowser mandate:
 - Security is first-class.
 - Modularity is first-class.
