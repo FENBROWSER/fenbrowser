@@ -103,6 +103,8 @@ namespace FenBrowser.FenEngine.Core
                 // Reset the default prototypes so objectPrototype/functionPrototype created in this runtime
                 // don't accidentally inherit from a prototype created by a previous FenRuntime instance.
                 FenObject.DefaultPrototype = null;
+                FenObject.DefaultArrayPrototype = null;
+                FenObject.DefaultIteratorPrototype = null;
                 FenFunction.DefaultFunctionPrototype = null;
 
                 // Clear DOM wrapper identity cache so stale wrappers from the previous page are not reused.
@@ -424,9 +426,9 @@ namespace FenBrowser.FenEngine.Core
 
         private void CaptureRealmIntrinsics()
         {
-            _realmObjectPrototype = FenObject.DefaultPrototype ?? ResolveIntrinsicPrototypeFromGlobal("Object");
-            _realmFunctionPrototype = FenFunction.DefaultFunctionPrototype ?? ResolveIntrinsicPrototypeFromGlobal("Function");
-            _realmArrayPrototype = FenObject.DefaultArrayPrototype ?? ResolveIntrinsicPrototypeFromGlobal("Array");
+            _realmObjectPrototype = ResolveIntrinsicPrototypeFromGlobal("Object") ?? FenObject.DefaultPrototype;
+            _realmFunctionPrototype = ResolveIntrinsicPrototypeFromGlobal("Function") ?? FenFunction.DefaultFunctionPrototype;
+            _realmArrayPrototype = ResolveIntrinsicPrototypeFromGlobal("Array") ?? FenObject.DefaultArrayPrototype;
             _realmIteratorPrototype = FenObject.DefaultIteratorPrototype;
         }
 
@@ -464,6 +466,54 @@ namespace FenBrowser.FenEngine.Core
             }
 
             return FenObject.DefaultPrototype;
+        }
+
+        internal IObject ResolveArrayPrototypeForNewArray()
+        {
+            if (_realmArrayPrototype != null)
+            {
+                return _realmArrayPrototype;
+            }
+
+            var arrayCtor = _globalEnv != null ? _globalEnv.Get("Array") : FenValue.Undefined;
+            if (arrayCtor.IsObject || arrayCtor.IsFunction)
+            {
+                var ctorObject = arrayCtor.AsObject();
+                if (ctorObject != null)
+                {
+                    var prototypeValue = ctorObject.Get("prototype", _context);
+                    if ((prototypeValue.IsObject || prototypeValue.IsFunction) && prototypeValue.AsObject() != null)
+                    {
+                        return prototypeValue.AsObject();
+                    }
+                }
+            }
+
+            return FenObject.DefaultArrayPrototype;
+        }
+
+        internal IObject ResolveFunctionPrototypeForNewFunction()
+        {
+            if (_realmFunctionPrototype != null)
+            {
+                return _realmFunctionPrototype;
+            }
+
+            var functionCtor = _globalEnv != null ? _globalEnv.Get("Function") : FenValue.Undefined;
+            if (functionCtor.IsObject || functionCtor.IsFunction)
+            {
+                var ctorObject = functionCtor.AsObject();
+                if (ctorObject != null)
+                {
+                    var prototypeValue = ctorObject.Get("prototype", _context);
+                    if ((prototypeValue.IsObject || prototypeValue.IsFunction) && prototypeValue.AsObject() != null)
+                    {
+                        return prototypeValue.AsObject();
+                    }
+                }
+            }
+
+            return FenFunction.DefaultFunctionPrototype;
         }
 
         private ActiveRuntimeScope EnterRealmActivationScope()

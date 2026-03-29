@@ -83,7 +83,7 @@ namespace FenBrowser.FenEngine.Core
             OwningRuntime = FenRuntime.GetActiveRuntime();
             // Inherit from Object.prototype by default.
             // Guard: don't self-reference (objectPrototype itself is created before DefaultPrototype is set).
-            var defaultPrototype = DefaultPrototype ?? OwningRuntime?.ResolveObjectPrototypeForNewObject();
+            var defaultPrototype = OwningRuntime?.ResolveObjectPrototypeForNewObject() ?? DefaultPrototype;
             if (defaultPrototype != null && !ReferenceEquals(defaultPrototype, this))
                 _prototype = defaultPrototype;
         }
@@ -102,8 +102,9 @@ namespace FenBrowser.FenEngine.Core
         {
             var arr = new FenObject();
             arr.InternalClass = "Array";
-            if (DefaultArrayPrototype != null && !ReferenceEquals(DefaultArrayPrototype, arr))
-                arr.SetPrototype(DefaultArrayPrototype);
+            var defaultArrayPrototype = arr.OwningRuntime?.ResolveArrayPrototypeForNewArray() ?? DefaultArrayPrototype;
+            if (defaultArrayPrototype != null && !ReferenceEquals(defaultArrayPrototype, arr))
+                arr.SetPrototype(defaultArrayPrototype);
 
             // JS arrays must always expose a numeric length; many runtime paths cast this directly.
             arr.Set("length", FenValue.FromNumber(0));
