@@ -1153,9 +1153,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 try
                 {
-                    var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(htmlString);
-                    var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
-                    var parsed = builder.Build();
+                    var parsed = new FenBrowser.Core.Parsing.HtmlParser(htmlString).Parse();
                     if (parsed?.ChildNodes != null)
                     {
                         foreach (var child in parsed.ChildNodes.ToArray()) // Copy to avoid modification of source collection during iteration if active
