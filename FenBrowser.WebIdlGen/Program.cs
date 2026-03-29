@@ -1,41 +1,43 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using FenBrowser.Core.WebIDL;
-
-// ── WebIDL Binding Generator Tool ────────────────────────────────────────────
-// Usage:
-//   webidlgen --idl <dir-or-glob> --out <output-dir> [--ns <namespace>]
-//
-// Reads all *.idl files from <dir-or-glob>, parses them with WebIdlParser,
-// generates C# binding source with WebIdlBindingGenerator, and writes the
-// resulting *.g.cs files to <output-dir>.
-//
-// Integrated into FenBrowser.FenEngine.csproj via a BeforeCompile target:
-//   <Target Name="GenerateWebIdlBindings" BeforeTargets="BeforeBuild">
-//     <Exec Command="dotnet run --project FenBrowser.WebIdlGen -- --idl ... --out ..." />
-//   </Target>
-// ─────────────────────────────────────────────────────────────────────────────
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.Error.WriteLine("Usage: webidlgen --idl <idl-dir> --out <output-dir> [--ns <namespace>]");
+    Console.Error.WriteLine("Usage: webidlgen --idl <idl-dir> --out <output-dir> [--ns <namespace>] [--verify]");
     return 1;
 }
 
-string idlDir = null, outDir = null, ns = "FenBrowser.FenEngine.Bindings.Generated";
+string idlDir = null;
+string outDir = null;
+string ns = "FenBrowser.FenEngine.Bindings.Generated";
+bool verifyOnly = false;
 
-for (int i = 0; i < args.Length - 1; i++)
+for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
     {
-        case "--idl": idlDir = args[++i]; break;
-        case "--out": outDir = args[++i]; break;
-        case "--ns":  ns    = args[++i]; break;
+        case "--idl" when i + 1 < args.Length:
+            idlDir = args[++i];
+            break;
+        case "--out" when i + 1 < args.Length:
+            outDir = args[++i];
+            break;
+        case "--ns" when i + 1 < args.Length:
+            ns = args[++i];
+            break;
+        case "--verify":
+            verifyOnly = true;
+            break;
     }
 }
 
-if (string.IsNullOrEmpty(idlDir) || string.IsNullOrEmpty(outDir))
+if (string.IsNullOrWhiteSpace(idlDir) || string.IsNullOrWhiteSpace(outDir))
 {
     Console.Error.WriteLine("ERROR: --idl and --out are required.");
     return 1;
@@ -49,7 +51,11 @@ if (!Directory.Exists(idlDir))
 
 Directory.CreateDirectory(outDir);
 
-var idlFiles = Directory.GetFiles(idlDir, "*.idl", SearchOption.AllDirectories);
+var idlFiles = Directory
+    .GetFiles(idlDir, "*.idl", SearchOption.AllDirectories)
+    .OrderBy(path => Path.GetRelativePath(idlDir, path), StringComparer.Ordinal)
+    .ToArray();
+
 if (idlFiles.Length == 0)
 {
     Console.Error.WriteLine($"WARNING: No .idl files found in {idlDir}");
@@ -59,54 +65,158 @@ if (idlFiles.Length == 0)
 Console.WriteLine($"[webidlgen] Found {idlFiles.Length} IDL file(s) in {idlDir}");
 
 var parser = new WebIdlParser();
-var parseResults = idlFiles
-    .Select(f =>
-    {
-        var src = File.ReadAllText(f);
-        return parser.Parse(src);
-    })
-    .ToList();
-
-// Merge all parse results into one by combining into first result
-var allErrors = parseResults.SelectMany(r => r.Errors).ToList();
-var allDefs = parseResults.SelectMany(r => r.Definitions).ToList();
-// Re-parse as single merged IDL string is not practical; use a wrapper
 var merged = new IdlParseResult();
-foreach (var d in allDefs) merged.Definitions.Add(d);
-foreach (var e in allErrors) merged.Errors.Add(e);
+
+foreach (var file in idlFiles)
+{
+    var source = File.ReadAllText(file);
+    var parseResult = parser.Parse(source);
+    var relativePath = NormalizePath(Path.GetRelativePath(idlDir, file));
+
+    foreach (var definition in parseResult.Definitions)
+    {
+        merged.Definitions.Add(definition);
+    }
+
+    foreach (var error in parseResult.Errors)
+    {
+        merged.Errors.Add($"{relativePath}: {error}");
+    }
+}
 
 if (merged.Errors.Count > 0)
 {
     foreach (var err in merged.Errors)
+    {
         Console.Error.WriteLine($"  PARSE ERROR: {err}");
+    }
+
     Console.Error.WriteLine($"[webidlgen] {merged.Errors.Count} parse error(s). Aborting.");
     return 1;
 }
 
-var opts = new BindingGeneratorOptions
+var generator = new WebIdlBindingGenerator(new BindingGeneratorOptions
 {
     Namespace = ns,
     EmitBrandChecks = true,
     EmitSameObjectCaching = true,
     EmitExposedChecks = true,
-    EmitCEReactions = true,
-};
+    EmitCEReactions = true
+});
 
-var generator = new WebIdlBindingGenerator(opts);
-var files = generator.Generate(merged);
+var files = generator.Generate(merged)
+    .OrderBy(file => file.FileName, StringComparer.Ordinal)
+    .ToList();
 
-int written = 0;
+var expectedOutputs = new HashSet<string>(files.Select(file => file.FileName), StringComparer.Ordinal);
+var existingOutputs = Directory.GetFiles(outDir, "*.g.cs", SearchOption.TopDirectoryOnly)
+    .Select(Path.GetFileName)
+    .Where(name => !string.IsNullOrWhiteSpace(name))
+    .ToHashSet(StringComparer.Ordinal);
+
+var changedFiles = new List<string>();
+var removedFiles = new List<string>();
+
 foreach (var file in files)
 {
     var path = Path.Combine(outDir, file.FileName);
     var existing = File.Exists(path) ? File.ReadAllText(path) : null;
-    if (existing != file.SourceCode)
+    if (!string.Equals(existing, file.SourceCode, StringComparison.Ordinal))
     {
-        File.WriteAllText(path, file.SourceCode);
-        Console.WriteLine($"  wrote {file.FileName}");
-        written++;
+        changedFiles.Add(file.FileName);
+        if (!verifyOnly)
+        {
+            File.WriteAllText(path, file.SourceCode, Encoding.UTF8);
+            Console.WriteLine($"  wrote {file.FileName}");
+        }
     }
 }
 
-Console.WriteLine($"[webidlgen] Done. {written}/{files.Count} file(s) updated.");
+foreach (var staleFile in existingOutputs.Where(name => !expectedOutputs.Contains(name)).OrderBy(name => name, StringComparer.Ordinal))
+{
+    removedFiles.Add(staleFile);
+    if (!verifyOnly)
+    {
+        File.Delete(Path.Combine(outDir, staleFile));
+        Console.WriteLine($"  removed stale {staleFile}");
+    }
+}
+
+var manifest = new WebIdlManifest
+{
+    Namespace = ns,
+    Inputs = idlFiles.Select(path => new ManifestInput
+    {
+        RelativePath = NormalizePath(Path.GetRelativePath(idlDir, path)),
+        Sha256 = ComputeSha256(File.ReadAllText(path))
+    }).ToList(),
+    Outputs = files.Select(file => new ManifestOutput
+    {
+        FileName = file.FileName,
+        Sha256 = ComputeSha256(file.SourceCode)
+    }).ToList()
+};
+
+var manifestPath = Path.Combine(outDir, "webidl-bindings-manifest.json");
+var manifestJson = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+var existingManifest = File.Exists(manifestPath) ? File.ReadAllText(manifestPath) : null;
+if (!string.Equals(existingManifest, manifestJson, StringComparison.Ordinal))
+{
+    changedFiles.Add(Path.GetFileName(manifestPath));
+    if (!verifyOnly)
+    {
+        File.WriteAllText(manifestPath, manifestJson, Encoding.UTF8);
+        Console.WriteLine("  wrote webidl-bindings-manifest.json");
+    }
+}
+
+if (verifyOnly)
+{
+    if (changedFiles.Count > 0 || removedFiles.Count > 0)
+    {
+        foreach (var changed in changedFiles.Distinct(StringComparer.Ordinal).OrderBy(name => name, StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine($"  VERIFY FAILED: {changed} is out of date");
+        }
+
+        foreach (var removed in removedFiles)
+        {
+            Console.Error.WriteLine($"  VERIFY FAILED: stale generated file present: {removed}");
+        }
+
+        Console.Error.WriteLine("[webidlgen] Verification failed.");
+        return 2;
+    }
+
+    Console.WriteLine("[webidlgen] Verification passed.");
+    return 0;
+}
+
+Console.WriteLine($"[webidlgen] Done. {changedFiles.Distinct(StringComparer.Ordinal).Count()}/{files.Count + 1} output(s) updated.");
 return 0;
+
+static string NormalizePath(string path) => path.Replace('\\', '/');
+
+static string ComputeSha256(string value)
+{
+    return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}
+
+internal sealed class WebIdlManifest
+{
+    public string Namespace { get; set; } = string.Empty;
+    public List<ManifestInput> Inputs { get; set; } = new();
+    public List<ManifestOutput> Outputs { get; set; } = new();
+}
+
+internal sealed class ManifestInput
+{
+    public string RelativePath { get; set; } = string.Empty;
+    public string Sha256 { get; set; } = string.Empty;
+}
+
+internal sealed class ManifestOutput
+{
+    public string FileName { get; set; } = string.Empty;
+    public string Sha256 { get; set; } = string.Empty;
+}

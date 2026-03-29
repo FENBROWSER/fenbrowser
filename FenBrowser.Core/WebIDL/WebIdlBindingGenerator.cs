@@ -82,7 +82,9 @@ namespace FenBrowser.Core.WebIDL
             var merged = MergeDefinitions(parsed.Definitions);
             BuildTypeRegistry(parsed.Definitions, merged);
 
-            foreach (var def in merged)
+            foreach (var def in merged
+                .OrderBy(GetDefinitionSortOrder)
+                .ThenBy(static def => def.Name ?? string.Empty, StringComparer.Ordinal))
             {
                 switch (def)
                 {
@@ -104,7 +106,22 @@ namespace FenBrowser.Core.WebIDL
                 }
             }
 
-            return files;
+            return files
+                .OrderBy(static file => file.FileName, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        private static int GetDefinitionSortOrder(IdlDefinition definition)
+        {
+            return definition switch
+            {
+                IdlInterface => 0,
+                IdlDictionary => 1,
+                IdlEnum => 2,
+                IdlNamespace => 3,
+                IdlCallback => 4,
+                _ => 5
+            };
         }
 
         private void BuildTypeRegistry(List<IdlDefinition> originalDefinitions, List<IdlDefinition> mergedDefinitions)

@@ -1,0 +1,195 @@
+﻿{
+  "Namespace": "FenBrowser.FenEngine.Bindings.Generated",
+  "Inputs": [
+    {
+      "RelativePath": "Attr.idl",
+      "Sha256": "1B8C9CEE3DFC79A5A8937FD26CFCBAF77382FC8821D754E09226280F24455113"
+    },
+    {
+      "RelativePath": "CharacterData.idl",
+      "Sha256": "4D36D1356C5CF1079AE62C306F445E77B0FF7ECC557C2DBEA9B2B445F17C0B1A"
+    },
+    {
+      "RelativePath": "Document.idl",
+      "Sha256": "F78AC19B95270CC359890966136E1036574811DDBA8B5A5E1D639D25AA2A665C"
+    },
+    {
+      "RelativePath": "Element.idl",
+      "Sha256": "AFD5DC6C31E3709286769B57311E17E9C7232B138FF913F58298D025A3CD44D1"
+    },
+    {
+      "RelativePath": "Event.idl",
+      "Sha256": "776B0296CE4F1D9F27275248DF22E826860FDC5EEFADC87357D82F714F42F823"
+    },
+    {
+      "RelativePath": "EventTarget.idl",
+      "Sha256": "5B247BCE6B32FB5FCF3A954D44AB887E4884F47E75A69BCE3C3D8EE8FF3F3CE3"
+    },
+    {
+      "RelativePath": "HTMLElement.idl",
+      "Sha256": "F3F7A878402339C2566CBED297104B3C4B434801A1503CE74C80A9313952AF2A"
+    },
+    {
+      "RelativePath": "Node.idl",
+      "Sha256": "B672F14704845218C8ADD34B64BF1C12EE099D446E863D8FD5B53CE72B03D4FC"
+    },
+    {
+      "RelativePath": "NodeList.idl",
+      "Sha256": "0F16ECBC5D32F350A5B8166B9AA276F79702E1A5EF35A5AB9041556293DE00B5"
+    },
+    {
+      "RelativePath": "Window.idl",
+      "Sha256": "420EE30CDACBD5A68C307BE05CF17956C3AD3E85C6F81DEF99B4395E5E36C2C9"
+    }
+  ],
+  "Outputs": [
+    {
+      "FileName": "AddEventListenerOptionsBinding.g.cs",
+      "Sha256": "FC1D2F31E8A3D4CCB0760E91B2D4C32DF9CD80AA4A492FF5FE4AB749C218D51B"
+    },
+    {
+      "FileName": "AttrBinding.g.cs",
+      "Sha256": "9DE748354418106C6B508FF67339C3172EF73518C5EB02D5B603725D0D4F02E4"
+    },
+    {
+      "FileName": "CDATASectionBinding.g.cs",
+      "Sha256": "90FF69B1462FD65F68A3E3B12CCBC2A72B1A9665667E6780235F224A9558F899"
+    },
+    {
+      "FileName": "CharacterDataBinding.g.cs",
+      "Sha256": "60EB68C4E67D98260C5B7E7C90F127ED955A6E740FAE8656E1D65119108BA415"
+    },
+    {
+      "FileName": "CommentBinding.g.cs",
+      "Sha256": "45A6FBDD81D6DB94FCE51A2B2DB9589259F6B81F7F41F1BC508323B7FF18F30A"
+    },
+    {
+      "FileName": "CustomEventBinding.g.cs",
+      "Sha256": "75AEAB4721FA1EC14D6AD2C5561314DBF4CCCA20161B9ABC085BEC26BCA7362E"
+    },
+    {
+      "FileName": "CustomEventInitBinding.g.cs",
+      "Sha256": "7DEAE8EE111F45CF9DCE4FF8BC327352CF10507600D7C9382B4D4FFF9852D3BF"
+    },
+    {
+      "FileName": "DocumentBinding.g.cs",
+      "Sha256": "1610242B2D40CE02EBFD5CF0F29E910B9ABA4D8F32AD3C65108EF2EB053EC3DB"
+    },
+    {
+      "FileName": "DocumentFragmentBinding.g.cs",
+      "Sha256": "3DE19D6B60B5280C9810AA945389F1EF8B3C53FBE676513F1B4A2F3B1A879534"
+    },
+    {
+      "FileName": "DocumentTypeBinding.g.cs",
+      "Sha256": "74895133CB2C539026F49ED008BF9AB89F357BACDA52D1C89B4ABB091DBD53C0"
+    },
+    {
+      "FileName": "ElementBinding.g.cs",
+      "Sha256": "750CBEA52449F29A992DB8DC95347FA785EF924DF3B1FFAC6BA297A2E51C625D"
+    },
+    {
+      "FileName": "ElementCreationOptionsBinding.g.cs",
+      "Sha256": "8AF8615F9BD6CCCADB28529CE43971F51A7C02E967E21EA02E25313D63467BFB"
+    },
+    {
+      "FileName": "EventBinding.g.cs",
+      "Sha256": "A8020081EE300939C9BEB346C3398E3C177595C6A63F358DF8FF8390467535D6"
+    },
+    {
+      "FileName": "EventInitBinding.g.cs",
+      "Sha256": "6390AB3B62B9068D8F09B5A49AE2493C87E9BA5DF9D1FA1A16B10A3B81AE0EA7"
+    },
+    {
+      "FileName": "EventListenerCallbackBinding.g.cs",
+      "Sha256": "9C8B909AAA22E2B0E319F5DBDCDD23AD8B255328796DA04CDF832C814DE3550C"
+    },
+    {
+      "FileName": "EventListenerOptionsBinding.g.cs",
+      "Sha256": "3A61FCCF89AABB28757EE7501DF8F3D37A0B7BEDA8723C75B39BBF414508F2F2"
+    },
+    {
+      "FileName": "EventTargetBinding.g.cs",
+      "Sha256": "01EB77C0E5D8ACEAD6D1771067579A4B74EB7B0806A951FFE32B650BF38AB3E4"
+    },
+    {
+      "FileName": "FocusOptionsBinding.g.cs",
+      "Sha256": "6201F2D4D59A0636965F9D0B9415894A1D1F6DA461C69908E3E7C5E2C80CFEF9"
+    },
+    {
+      "FileName": "GetHTMLOptionsBinding.g.cs",
+      "Sha256": "C8D6DAC73F274C02115673E1D1E5D943CA7DFAFD7CDD80F71EFB4FB834792844"
+    },
+    {
+      "FileName": "GetRootNodeOptionsBinding.g.cs",
+      "Sha256": "20287420D92B613F219272CCE8296E861DB047972CC05CD76D8849B4842EB33B"
+    },
+    {
+      "FileName": "HTMLCollectionBinding.g.cs",
+      "Sha256": "C25C3ABBC8171686D1F6307CC738185968E9CC6991975A85032F1ECFA3947ACE"
+    },
+    {
+      "FileName": "HTMLElementBinding.g.cs",
+      "Sha256": "2C0D1A89277BA16FD9B26C4F21560CACF729045557046CB4DC3E9D0FC580C058"
+    },
+    {
+      "FileName": "NamedNodeMapBinding.g.cs",
+      "Sha256": "979E05E09D2D976E8B7F7B8FED9EB5D5C26D472BDC5FE438F965973954A0BBA3"
+    },
+    {
+      "FileName": "NodeBinding.g.cs",
+      "Sha256": "16BFD554EEB999AC37D2FCD2106A488E0226C1734823E24C73F5B9EF5D9929D5"
+    },
+    {
+      "FileName": "NodeListBinding.g.cs",
+      "Sha256": "44F3701AA155EE06AA1C5E4555BB7DEED38B5CC4D864D3E510CA22C96DB2361D"
+    },
+    {
+      "FileName": "ProcessingInstructionBinding.g.cs",
+      "Sha256": "9EA39B0079D72C4A253A716917416215E2C7F934E4D1134315508B7BB23E126C"
+    },
+    {
+      "FileName": "ScrollBehaviorBinding.g.cs",
+      "Sha256": "85FB52252DBAFE97D642112C7D830E1446EBBF6F376982ACFD9CE6036EED83D9"
+    },
+    {
+      "FileName": "ScrollOptionsBinding.g.cs",
+      "Sha256": "10BEB94724DE0ED6ABBF2EC321176E4D8EF93EB260AC15A894A38A6C0ADF82E7"
+    },
+    {
+      "FileName": "ScrollToOptionsBinding.g.cs",
+      "Sha256": "2203A19CEB1AE0FE2A28F604629F024C3536BF071E58D01399F892F5282FC747"
+    },
+    {
+      "FileName": "ShadowRootBinding.g.cs",
+      "Sha256": "BAACF8C51AB80F9E1AD7CF3A2050FA44F78B73758E658E50056152DD3B3A0514"
+    },
+    {
+      "FileName": "ShadowRootInitBinding.g.cs",
+      "Sha256": "BCC6936BC388FAD3B61C25DE626E20544A85F80B45784966A0B21099E1272696"
+    },
+    {
+      "FileName": "ShadowRootModeBinding.g.cs",
+      "Sha256": "F4F1ACCAB3CA30C8F25D9149363C594924EB3745A8C0939841E0DA85844135A1"
+    },
+    {
+      "FileName": "SlotAssignmentModeBinding.g.cs",
+      "Sha256": "12835964F2BE1E7164F0EB3F0A9B31D95D14AA16381DF81A8D2083B2E3468E7F"
+    },
+    {
+      "FileName": "StructuredSerializeOptionsBinding.g.cs",
+      "Sha256": "2AA1130CBACC3E0F4446C1BF777BE368DB26D7B0BEE2DF8E0A2B14CA7790CE08"
+    },
+    {
+      "FileName": "TextBinding.g.cs",
+      "Sha256": "1392F4A30A2248121290BCEB7D1D0B1C2F2D9F6B387B4ADB50A15417A3842B81"
+    },
+    {
+      "FileName": "WindowBinding.g.cs",
+      "Sha256": "3CD7AD37115189BCDC8F7CADE963420C61E216FE32B8BE6876BE0ECEA41B421D"
+    },
+    {
+      "FileName": "WindowPostMessageOptionsBinding.g.cs",
+      "Sha256": "3AFDCBEAB52FF14EC298B842D0A6BDED49F08322635505BD41E561D5C63EFBE8"
+    }
+  ]
+}
