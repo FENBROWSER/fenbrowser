@@ -98,9 +98,7 @@ namespace FenBrowser.FenEngine.Core
             IsNative = true;
             Name = name; // setter stores name property + triggers StoreFunctionLengthProperty via fallback
             StoreFunctionLengthProperty(); // Parameters is null for native, NativeLength=-1 -> length=0
-            // Functions inherit from Function.prototype (which inherits from Object.prototype)
-            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
-                SetPrototype(DefaultFunctionPrototype);
+            ApplyFunctionPrototype();
         }
 
         public FenFunction(List<Identifier> parameters, BlockStatement body, FenEnvironment env)
@@ -112,8 +110,7 @@ namespace FenBrowser.FenEngine.Core
             CompileAstBodyToBytecode();
             Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty(); // Parameters.Count -> length
-            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
-                SetPrototype(DefaultFunctionPrototype);
+            ApplyFunctionPrototype();
         }
 
         public FenFunction(List<Identifier> parameters, Bytecode.CodeBlock bytecodeBlock, FenEnvironment env)
@@ -124,8 +121,7 @@ namespace FenBrowser.FenEngine.Core
             IsNative = false;
             Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty();
-            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
-                SetPrototype(DefaultFunctionPrototype);
+            ApplyFunctionPrototype();
         }
 
         public FenFunction(List<Identifier> parameters, AstNode body, FenEnvironment env)
@@ -137,8 +133,16 @@ namespace FenBrowser.FenEngine.Core
             CompileAstBodyToBytecode();
             Name = string.Empty; // setter stores name property
             StoreFunctionLengthProperty();
-            if (DefaultFunctionPrototype != null && !ReferenceEquals(DefaultFunctionPrototype, this))
-                SetPrototype(DefaultFunctionPrototype);
+            ApplyFunctionPrototype();
+        }
+
+        private void ApplyFunctionPrototype()
+        {
+            var defaultFunctionPrototype = OwningRuntime?.ResolveFunctionPrototypeForNewFunction() ?? DefaultFunctionPrototype;
+            if (defaultFunctionPrototype != null && !ReferenceEquals(defaultFunctionPrototype, this))
+            {
+                SetPrototype(defaultFunctionPrototype);
+            }
         }
 
         /// <summary>
@@ -263,7 +267,17 @@ namespace FenBrowser.FenEngine.Core
 
             if (!IsAsync && !IsGenerator)
             {
+                if (OwningRuntime != null)
+                {
+                    return OwningRuntime.RunWithRealmActivation(() => InvokeViaDirectBytecode(args, context, actualThis));
+                }
+
                 return InvokeViaDirectBytecode(args, context, actualThis);
+            }
+
+            if (OwningRuntime != null)
+            {
+                return OwningRuntime.RunWithRealmActivation(() => InvokeViaBytecodeThunk(args, context, actualThis));
             }
 
             return InvokeViaBytecodeThunk(args, context, actualThis);

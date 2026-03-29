@@ -5666,3 +5666,24 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - A completely empty `FenEnvironment` therefore was not a valid standalone realm, which surfaced as misleading `ReferenceError: Object is not defined` and `ReferenceError` rejections in otherwise correct bytecode paths.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Bytecode_StandaloneScopeBootstrap_ProvidesCoreIntrinsics|FullyQualifiedName~Bytecode_AsyncThrowErrorObject_ShouldPreserveRejectedObject|FullyQualifiedName~Bytecode_ClassStatement_WithFieldsStaticBlockAndMethods_ShouldWork|FullyQualifiedName~Bytecode_ClassExpression_ShouldReturnConstructableFunction|FullyQualifiedName~Bytecode_ClassStatement_StaticField_ShouldBindOnConstructor|FullyQualifiedName~Bytecode_ClassPropertyNode_ShouldEvaluateInitializer|FullyQualifiedName~Bytecode_StaticBlockNode_ShouldExecuteBody"`: pass.
+
+## 2.185 Realm-Scoped Prototype Factories And Bytecode Callback Activation (2026-03-29)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Runtime construction now clears array and iterator default-prototype statics alongside object/function defaults before bootstrapping a new realm.
+  - Realm intrinsic capture now prefers the runtime's own global constructors over whatever static defaults another runtime may have published.
+  - Added explicit runtime helpers for resolving the current realm's `Array.prototype` and `Function.prototype` for freshly allocated engine objects.
+- `FenBrowser.FenEngine/Core/FenObject.cs`
+  - Plain object creation now prefers the active runtime's `Object.prototype` over process-wide fallback statics.
+  - `FenObject.CreateArray()` now binds new arrays to the owning runtime's `Array.prototype` first, which removes cross-realm prototype leakage in async/microtask-heavy paths.
+- `FenBrowser.FenEngine/Core/FenFunction.cs`
+  - Fresh functions now prefer the owning runtime's `Function.prototype`.
+  - Bytecode-backed function invocation now runs under the function's owning runtime activation scope, not just native builtins, so async callbacks and deferred user code keep the correct realm intrinsics when they allocate objects or arrays.
+- `FenBrowser.Tests/Engine/BuiltinCompletenessTests.cs`
+  - Added deterministic regressions that boot a second runtime before draining microtasks and verify `Promise.all(...)` results plus object literals created inside `Promise.then(...)` callbacks still resolve against the original runtime's prototypes.
+- Why this mattered:
+  - The engine still had global static prototype caches in hot allocation paths, which meant a later runtime bootstrap could silently contaminate object/array/function creation in another runtime, especially once execution resumed from deferred promise/microtask callbacks.
+  - That is exactly the kind of cross-realm state bleed that makes browser engines flaky under concurrent pages, workers, or parallel verification.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~Promise_All_ResultUsesArrayPrototype|FullyQualifiedName~Promise_All_ResultKeepsOriginArrayPrototype_AfterAnotherRuntimeBoots|FullyQualifiedName~Promise_Then_CallbackObjectLiteral_KeepsOriginObjectPrototype_AfterAnotherRuntimeBoots|FullyQualifiedName~Array_PrototypeMap_Call_WithStringConstructor_ReturnsMappedArray|FullyQualifiedName~Array_FromAsync_ArrayLikeLengthObserver_CoercesValueOf_AndKeepsArrayPrototype|FullyQualifiedName~ExecuteSimple_BytecodeFirst_PlainObjectsInheritObjectPrototype"`: pass.
+  - Follow-up spot check: the same tranche does not yet close the separate `Reflect.construct` proxy forwarding, RegExp legacy accessor, or for-of closure-capture failures; those remain the next bytecode/builtin semantic gaps.

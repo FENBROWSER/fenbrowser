@@ -707,6 +707,45 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Promise_All_ResultKeepsOriginArrayPrototype_AfterAnotherRuntimeBoots()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var promiseAllJoinType = 'missing';
+                var promiseAllProtoOut = false;
+                Promise.all([Promise.resolve(2), Promise.resolve(1)]).then(function(arr) {
+                    promiseAllJoinType = typeof arr.join;
+                    promiseAllProtoOut = Object.getPrototypeOf(arr) === Array.prototype;
+                });
+            ");
+
+            _ = CreateRuntime();
+            EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+
+            Assert.Equal("function", rt.GetGlobal("promiseAllJoinType").ToString());
+            Assert.True(rt.GetGlobal("promiseAllProtoOut").ToBoolean());
+        }
+
+        [Fact]
+        public void Promise_Then_CallbackObjectLiteral_KeepsOriginObjectPrototype_AfterAnotherRuntimeBoots()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var promiseObjectProtoOut = false;
+                Promise.resolve(1).then(function() {
+                    promiseObjectProtoOut =
+                        Object.getPrototypeOf({ marker: 1 }) === Object.prototype &&
+                        typeof ({}).toString === 'function';
+                });
+            ");
+
+            _ = CreateRuntime();
+            EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
+
+            Assert.True(rt.GetGlobal("promiseObjectProtoOut").ToBoolean());
+        }
+
+        [Fact]
         public void Array_FromAsync_ObservedAsyncIteratorReturningSyncGenerator_Resolves()
         {
             var rt = CreateRuntime();
