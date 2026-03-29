@@ -1562,3 +1562,26 @@ _End of Volume VI_
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --no-restore -p:OutDir=C:\Temp\fenbrowser-tests-build\ --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.BrowserHostShadowDomTests|FullyQualifiedName~FenBrowser.Tests.WebDriver.ShadowRootCommandsTests"`
 - Verification result:
   - focused xUnit coverage: `4/4` passed
+
+## 6.48 Structured WPT Harness Capture And Runtime Conformance Snapshots (2026-03-29)
+
+- `FenBrowser.FenEngine/WebAPIs/TestConsoleCapture.cs`
+  - Added structured result parsing for `__FEN_WPT_RESULT__` and `__FEN_WPT_COMPLETE__` console markers.
+  - Harness completion and per-test reporting can now flow through JSON payloads instead of relying only on loose text pattern matching, which makes runner output more stable when tests emit additional console noise.
+- Snapshot artifacts added under `docs/`:
+  - `test_results_array.md`
+  - `test_results_boolean.md`
+  - `test_results_expressions.md`
+  - `test_results_function.md`
+  - `test_results_json.md`
+  - `test_results_literals.md`
+  - `test_results_math.md`
+  - `test_results_number.md`
+  - `test_results_object.md`
+  - `test_results_promise.md`
+  - `test_results_regexp.md`
+  - `test_results_statements.md`
+  - `test_results_string.md`
+- Verification:
+  - `dotnet build FenBrowser.sln -nologo`
+  - completed successfully on `2026-03-29`.
