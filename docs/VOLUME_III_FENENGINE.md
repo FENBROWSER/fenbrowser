@@ -5731,3 +5731,35 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - In practice that meant loop bodies could fail with `ReferenceError` for correctly bound destructuring names, and global duplicate-binding validation could silently miss spec-required errors because it was checking `_destructured` instead of the real bound names.
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.ForOf_ArrayDestructuring|FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.GlobalScriptValidation_LetArrayDestructuring_RejectsDuplicateVarBinding|FullyQualifiedName~FenBrowser.Tests.Engine.JsEngineImprovementsTests.GlobalScriptValidation_ForOfArrayDestructuring_RejectsDuplicateVarBinding" --no-restore`: pass.
+
+## 2.189 Runtime/Tooling Separation, Canonical HTML Parsing, And Render-Frame Pipeline Closure (2026-03-29)
+
+- `FenBrowser.FenEngine/FenBrowser.FenEngine.csproj`
+  - The shipped FenEngine assembly no longer compiles:
+    - `Program.cs`
+    - `TestFenEngine.cs`
+    - `Testing/**`
+    - `WebAPIs/TestHarnessAPI.cs`
+    - `WebAPIs/TestConsoleCapture.cs`
+    - `HTML/**`
+  - `FenBrowser.Tooling` is granted friend access through `InternalsVisibleTo` for runtime-only helpers needed by the extracted runners.
+- `FenBrowser.FenEngine/Rendering/BrowserHostOptions.cs`
+  - Added an explicit tooling hook surface for request remapping and script overrides so harness behavior flows through a named options object instead of accumulating inside the product runtime.
+- `FenBrowser.FenEngine/Rendering/Core/IRenderFramePipeline.cs`
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+- `FenBrowser.FenEngine/Layout/LayoutEngine.cs`
+- `FenBrowser.FenEngine/Layout/ILayoutComputer.cs`
+  - `SkiaDomRenderer` now implements the formal render-frame pipeline contract and returns a stable `RenderFrameResult` describing layout, paint tree, damage, overlays, and watchdog state.
+  - Transitional-pipeline wording and feature-flag posture were removed so renderer ownership is now explicit instead of adapter-shaped.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Remaining runtime async-script and dynamic-script hooks are now documented and logged as generic runtime/tooling extension points rather than WPT-branded behavior.
+- Parser ownership outcome:
+  - Runtime callers now rely on `FenBrowser.Core.Parsing.HtmlParser`.
+  - The deleted `FenBrowser.FenEngine/HTML/*` duplicate stack no longer carries bug-fix authority for shipped parsing behavior.
+- Compatibility note:
+  - Harness sources still physically live under `FenBrowser.FenEngine/*` paths in the repository, but runtime compilation ownership has been removed; the assembly owner is now `FenBrowser.Tooling`.
+- Verification:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -nologo`
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -nologo`
+  - both completed successfully on `2026-03-29`.
