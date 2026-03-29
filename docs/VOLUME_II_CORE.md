@@ -798,3 +798,15 @@ _End of Volume II_
 - ETP console diagnostics now include the blocked request path along with the host so first-party false positives are easier to reproduce from runtime logs.
 - Regression coverage: `FenBrowser.Tests/Core/Network/TrackingPreventionHandlerTests.cs`.
 
+### 1.42 Document Origin Primitives And Same-Origin Policy Helpers (2026-03-29)
+- `FenBrowser.Core/Dom/V2/Document.cs`
+- `FenBrowser.Core/Security/Origin.cs`
+- `FenBrowser.Core/Security/SecurityChecks.cs`
+- Added first-class `Document.Origin` state plus a normalized `Origin` value object for scheme/host/port tuples and opaque-origin handling.
+- Added centralized same-origin, `postMessage`, SameSite-cookie, CSP, and CORS-preflight helper checks so browser-path security decisions stop being scattered across ad hoc call sites.
+- Why this mattered:
+  - The core DOM document model had no canonical origin state, which made future same-origin enforcement and cross-origin diagnostics brittle by construction.
+  - A browser engine needs one obvious place for security boundary logic; otherwise compatibility exceptions and logging drift across features.
+- Regression coverage:
+  - `FenBrowser.Tests/Core/SecurityChecksTests.cs`
+
