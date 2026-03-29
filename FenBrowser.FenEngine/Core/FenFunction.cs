@@ -62,6 +62,14 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public FenFunction BoundTargetFunction { get; set; }
 
+        /// <summary>
+        /// Whether invocation must create the inner function-name binding used by
+        /// declarations and explicit named function expressions.
+        /// Inferred names only affect the observable `.name` property and must not
+        /// shadow outer lexical bindings.
+        /// </summary>
+        public bool HasOwnNameBinding { get; set; }
+
         private int _nativeLength = -1;
         /// <summary>
         /// Explicit length for native functions. -1 means compute from Parameters.Count.
@@ -271,13 +279,13 @@ namespace FenBrowser.FenEngine.Core
             }
 
             InitializeFastStore(newEnv);
-            if (!string.IsNullOrEmpty(Name))
-            {
-                SetBinding(newEnv, Name, FenValue.FromFunction(this));
-            }
-
             if (!IsArrowFunction)
             {
+                if (HasOwnNameBinding && !string.IsNullOrEmpty(Name))
+                {
+                    SetBinding(newEnv, Name, FenValue.FromFunction(this));
+                }
+
                 SetBinding(newEnv, "this", thisBinding);
             }
 

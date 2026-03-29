@@ -559,6 +559,20 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_AnonymousFunctionExpression_InferredName_DoesNotCreateInnerNameBinding()
+        {
+            var result = Evaluate("var f = function() { return typeof f; }; var g = f; f = 1; g();");
+            Assert.Equal("number", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_NamedFunctionExpression_PreservesInnerNameBinding()
+        {
+            var result = Evaluate("var f = function inner() { return typeof inner; }; var g = f; f = 1; g();");
+            Assert.Equal("function", result.AsString());
+        }
+
+        [Fact]
         public void Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();

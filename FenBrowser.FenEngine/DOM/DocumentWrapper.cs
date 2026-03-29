@@ -458,15 +458,16 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0) return FenValue.Null;
+            if (args.Length == 0)
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
+
             var selector = args[0].ToString();
             var results = new List<Element>();
             RecursiveQuerySelector(_root, selector, results);
-            
-            var list = new FenObject();
-            for (int i = 0; i < results.Count; i++) list.Set(i.ToString(), DomWrapperFactory.Wrap(results[i], _context));
-            list.Set("length", FenValue.FromNumber(results.Count));
-            return FenValue.FromObject(list);
+
+            return FenValue.FromObject(new NodeListWrapper(results.Cast<Node>(), _context));
         }
 
         private FenValue GetElementsByClassName(FenValue[] args, FenValue thisVal)
