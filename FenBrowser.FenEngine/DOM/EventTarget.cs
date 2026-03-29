@@ -490,31 +490,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private static bool TryExtractThrownValue(Exception exception, out FenValue thrownValue)
         {
-            thrownValue = FenValue.Undefined;
-            if (exception == null)
-            {
-                return false;
-            }
-
-            if (exception is JsThrownValueException jsThrownValueException)
-            {
-                thrownValue = jsThrownValueException.ThrownValue;
-                return true;
-            }
-
-            var thrownValueProperty = exception.GetType().GetProperty("ThrownValue");
-            if (thrownValueProperty?.PropertyType != typeof(FenValue))
-            {
-                return false;
-            }
-
-            if (thrownValueProperty.GetValue(exception) is FenValue extracted)
-            {
-                thrownValue = extracted;
-                return true;
-            }
-
-            return false;
+            return JsThrownValueException.TryExtract(exception, out thrownValue);
         }
 
         private static void InvokeFenRuntimeTopLevelListeners(IExecutionContext context, DomEvent evt, bool capturePhase)
