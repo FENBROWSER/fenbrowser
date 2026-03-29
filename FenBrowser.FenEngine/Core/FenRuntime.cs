@@ -2904,10 +2904,14 @@ namespace FenBrowser.FenEngine.Core
                     ? thisVal.ToNumber()
                     : (thisVal.AsObject()?.Get("__value__").ToNumber() ?? double.NaN);
                 var digits = args.Length > 0 ? (int)args[0].ToNumber() : 0;
+                // §21.1.3.3 step 3: RangeError if f < 0 or f > 100
+                if (digits < 0 || digits > 100) throw new FenRangeError("RangeError: toFixed() digits argument must be between 0 and 100");
                 if (double.IsNaN(num)) return FenValue.FromString("NaN");
                 if (double.IsPositiveInfinity(num)) return FenValue.FromString("Infinity");
                 if (double.IsNegativeInfinity(num)) return FenValue.FromString("-Infinity");
-                return FenValue.FromString(num.ToString("F" + Math.Max(0, Math.Min(20, digits))));
+                // §21.1.3.3: If abs(x) >= 10^21 return ToString(x)
+                if (Math.Abs(num) >= 1e21) return FenValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return FenValue.FromString(num.ToString("F" + digits, System.Globalization.CultureInfo.InvariantCulture));
             })));
 
             numberProto.SetBuiltin("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
@@ -2980,15 +2984,32 @@ namespace FenBrowser.FenEngine.Core
             numberProto.SetBuiltin("toExponential", FenValue.FromFunction(new FenFunction("toExponential", (args, thisVal) =>
             {
                 if (thisVal.IsNull || thisVal.IsUndefined) throw new FenTypeError("TypeError: Number.prototype.toExponential called on null or undefined");
-                var num = thisVal.IsNumber ? thisVal.ToNumber() : (thisVal.AsObject()?.Get("__value__").ToNumber() ?? double.NaN);
+                // §21.1.3.2: thisNumberValue — must be a Number or Number wrapper
+                double num;
+                if (thisVal.IsNumber) num = thisVal.ToNumber();
+                else if (thisVal.IsObject)
+                {
+                    var wv = thisVal.AsObject()?.Get("__value__");
+                    if (wv.HasValue && wv.Value.IsNumber) num = wv.Value.ToNumber();
+                    else throw new FenTypeError("TypeError: Number.prototype.toExponential requires that 'this' be a Number");
+                }
+                else throw new FenTypeError("TypeError: Number.prototype.toExponential requires that 'this' be a Number");
                 if (double.IsNaN(num)) return FenValue.FromString("NaN");
                 if (double.IsPositiveInfinity(num)) return FenValue.FromString("Infinity");
                 if (double.IsNegativeInfinity(num)) return FenValue.FromString("-Infinity");
+                // .NET "e" format uses 3-digit exponents; JS uses minimal digits. Fix via regex.
+                string result;
                 if (args.Length == 0 || args[0].IsUndefined)
-                    return FenValue.FromString(num.ToString("e", System.Globalization.CultureInfo.InvariantCulture));
-                var fractionDigits = (int)args[0].ToNumber();
-                if (fractionDigits < 0 || fractionDigits > 100) throw new FenRangeError("RangeError: toExponential() argument must be between 0 and 100");
-                return FenValue.FromString(num.ToString("e" + fractionDigits, System.Globalization.CultureInfo.InvariantCulture));
+                    result = num.ToString("e", System.Globalization.CultureInfo.InvariantCulture);
+                else
+                {
+                    var fractionDigits = (int)args[0].ToNumber();
+                    if (fractionDigits < 0 || fractionDigits > 100) throw new FenRangeError("RangeError: toExponential() argument must be between 0 and 100");
+                    result = num.ToString("e" + fractionDigits, System.Globalization.CultureInfo.InvariantCulture);
+                }
+                // Normalize exponent: e+007 → e+7, e-002 → e-2
+                result = System.Text.RegularExpressions.Regex.Replace(result, @"e([+-])0*(\d+)$", "e$1$2");
+                return FenValue.FromString(result);
             })));
 
             numberProto.SetBuiltin("toLocaleString", FenValue.FromFunction(new FenFunction("toLocaleString", (args, thisVal) =>
@@ -3004,33 +3025,56 @@ namespace FenBrowser.FenEngine.Core
             numberCtor.Set("prototype", FenValue.FromObject(numberProto));
             numberProto.SetBuiltin("constructor", FenValue.FromFunction(numberCtor));
 
-            // Number static methods
-            numberCtor.Set("isNaN", FenValue.FromFunction(new FenFunction("isNaN", (args, thisVal) =>
+            // Number static methods — ECMA-262 §21.1.2
+            // Helper: define non-enumerable Number method with correct .length and IsConstructor=false
+            void DefineNumberFn(string name, int length, Func<FenValue[], FenValue, FenValue> impl)
+            {
+                var fn = new FenFunction(name, impl) { NativeLength = length, IsConstructor = false };
+                numberCtor.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = FenValue.FromFunction(fn),
+                    Writable = true,
+                    Enumerable = false,
+                    Configurable = true
+                });
+            }
+            void DefineNumberConst(string name, double value)
+            {
+                numberCtor.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = FenValue.FromNumber(value),
+                    Writable = false,
+                    Enumerable = false,
+                    Configurable = false
+                });
+            }
+
+            DefineNumberFn("isNaN", 1, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromBoolean(false);
                 var val = args[0];
                 return FenValue.FromBoolean(val.IsNumber && double.IsNaN(val.ToNumber()));
-            })));
+            });
 
-            numberCtor.Set("isFinite", FenValue.FromFunction(new FenFunction("isFinite", (args, thisVal) =>
+            DefineNumberFn("isFinite", 1, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromBoolean(false);
                 var val = args[0];
                 if (!val.IsNumber) return FenValue.FromBoolean(false);
                 var num = val.ToNumber();
                 return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num));
-            })));
+            });
 
-            numberCtor.Set("isInteger", FenValue.FromFunction(new FenFunction("isInteger", (args, thisVal) =>
+            DefineNumberFn("isInteger", 1, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromBoolean(false);
                 var val = args[0];
                 if (!val.IsNumber) return FenValue.FromBoolean(false);
                 var num = val.ToNumber();
                 return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num);
-            })));
+            });
 
-            numberCtor.Set("isSafeInteger", FenValue.FromFunction(new FenFunction("isSafeInteger", (args, thisVal) =>
+            DefineNumberFn("isSafeInteger", 1, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromBoolean(false);
                 var val = args[0];
@@ -3039,9 +3083,9 @@ namespace FenBrowser.FenEngine.Core
                 const double MAX_SAFE_INTEGER = 9007199254740991.0; // 2^53 - 1
                 return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num &&
                                             Math.Abs(num) <= MAX_SAFE_INTEGER);
-            })));
+            });
 
-            numberCtor.Set("parseFloat", FenValue.FromFunction(new FenFunction("parseFloat", (args, thisVal) =>
+            DefineNumberFn("parseFloat", 1, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromNumber(double.NaN);
                 var str = args[0].ToString().Trim();
@@ -3050,17 +3094,15 @@ namespace FenBrowser.FenEngine.Core
                 {
                     return FenValue.FromNumber(result);
                 }
-
                 return FenValue.FromNumber(double.NaN);
-            })));
+            });
 
-            numberCtor.Set("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) =>
+            DefineNumberFn("parseInt", 2, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromNumber(double.NaN);
                 var str = args[0].ToString().Trim();
                 int radix = args.Length > 1 ? (int)args[1].ToNumber() : 10;
                 if (radix < 2 || radix > 36) return FenValue.FromNumber(double.NaN);
-
                 try
                 {
                     var result = Convert.ToInt64(str, radix);
@@ -3070,17 +3112,17 @@ namespace FenBrowser.FenEngine.Core
                 {
                     return FenValue.FromNumber(double.NaN);
                 }
-            })));
+            });
 
-            // Number constants
-            numberCtor.Set("EPSILON", FenValue.FromNumber(double.Epsilon));
-            numberCtor.Set("MAX_VALUE", FenValue.FromNumber(double.MaxValue));
-            numberCtor.Set("MIN_VALUE", FenValue.FromNumber(double.Epsilon)); // Smallest positive value
-            numberCtor.Set("MAX_SAFE_INTEGER", FenValue.FromNumber(9007199254740991.0)); // 2^53 - 1
-            numberCtor.Set("MIN_SAFE_INTEGER", FenValue.FromNumber(-9007199254740991.0)); // -(2^53 - 1)
-            numberCtor.Set("POSITIVE_INFINITY", FenValue.FromNumber(double.PositiveInfinity));
-            numberCtor.Set("NEGATIVE_INFINITY", FenValue.FromNumber(double.NegativeInfinity));
-            numberCtor.Set("NaN", FenValue.FromNumber(double.NaN));
+            // Number constants — §21.1.2.1-8: non-writable, non-enumerable, non-configurable
+            DefineNumberConst("EPSILON", 2.2204460492503131e-16); // 2^-52 (NOT double.Epsilon which is 5e-324)
+            DefineNumberConst("MAX_VALUE", double.MaxValue);
+            DefineNumberConst("MIN_VALUE", double.Epsilon); // Smallest positive value (~5e-324)
+            DefineNumberConst("MAX_SAFE_INTEGER", 9007199254740991.0); // 2^53 - 1
+            DefineNumberConst("MIN_SAFE_INTEGER", -9007199254740991.0); // -(2^53 - 1)
+            DefineNumberConst("POSITIVE_INFINITY", double.PositiveInfinity);
+            DefineNumberConst("NEGATIVE_INFINITY", double.NegativeInfinity);
+            DefineNumberConst("NaN", double.NaN);
 
             SetGlobal("Number", FenValue.FromFunction(numberCtor));
             window.Set("Number", FenValue.FromFunction(numberCtor));
@@ -3161,11 +3203,20 @@ namespace FenBrowser.FenEngine.Core
             // Function.prototype.length (default 0)
             functionProto.DefineOwnProperty("length", new PropertyDescriptor { Value = FenValue.FromNumber(0), Writable = false, Enumerable = false, Configurable = true });
             functionProto.DefineOwnProperty("name", new PropertyDescriptor { Value = FenValue.FromString(""), Writable = false, Enumerable = false, Configurable = true });
-            // Set correct lengths on Function.prototype methods
-            { var v = functionProto.Get("call"); if (v.IsFunction) { var fn = v.AsFunction(); if (fn != null) fn.NativeLength = 1; } }
-            { var v = functionProto.Get("apply"); if (v.IsFunction) { var fn = v.AsFunction(); if (fn != null) fn.NativeLength = 2; } }
-            { var v = functionProto.Get("bind"); if (v.IsFunction) { var fn = v.AsFunction(); if (fn != null) fn.NativeLength = 1; } }
-            { var v = functionProto.Get("toString"); if (v.IsFunction) { var fn = v.AsFunction(); if (fn != null) fn.NativeLength = 0; } }
+            // Set correct lengths and IsConstructor=false on Function.prototype methods
+            foreach (var methodName in new[] { "call", "apply", "bind", "toString" })
+            {
+                var v = functionProto.Get(methodName);
+                if (v.IsFunction)
+                {
+                    var fn = v.AsFunction() as FenFunction;
+                    if (fn != null)
+                    {
+                        fn.NativeLength = methodName == "apply" ? 2 : (methodName == "bind" || methodName == "call" ? 1 : 0);
+                        fn.IsConstructor = false;
+                    }
+                }
+            }
 
 
             // Symbol (Refactored to use JsSymbol primitive type)
@@ -10115,128 +10166,161 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Math object
+            // Math object — ECMA-262 §21.3
             var math = new FenObject();
-            math.Set("PI", FenValue.FromNumber(Math.PI));
-            math.Set("E", FenValue.FromNumber(Math.E));
-            math.Set("abs", FenValue.FromFunction(new FenFunction("abs", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Abs(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("ceil", FenValue.FromFunction(new FenFunction("ceil", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Ceiling(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("floor", FenValue.FromFunction(new FenFunction("floor", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Floor(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("round", FenValue.FromFunction(new FenFunction("round", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Round(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("max", FenValue.FromFunction(new FenFunction("max", (args, thisVal) =>
+
+            // Helper: define a non-enumerable Math method with correct .length and IsConstructor=false
+            void DefineMathFn(string name, int length, Func<FenValue[], FenValue, FenValue> impl)
+            {
+                var fn = new FenFunction(name, impl) { NativeLength = length, IsConstructor = false };
+                math.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = FenValue.FromFunction(fn),
+                    Writable = true,
+                    Enumerable = false,
+                    Configurable = true
+                });
+            }
+            // Helper: define a non-enumerable, non-writable, non-configurable Math constant
+            void DefineMathConst(string name, double value)
+            {
+                math.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = FenValue.FromNumber(value),
+                    Writable = false,
+                    Enumerable = false,
+                    Configurable = false
+                });
+            }
+
+            DefineMathConst("PI", Math.PI);
+            DefineMathConst("E", Math.E);
+            DefineMathFn("abs", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Abs(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("ceil", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Ceiling(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("floor", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Floor(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("round", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Round(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("max", 2, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromNumber(double.NegativeInfinity);
                 double max = args[0].ToNumber();
                 for (int i = 1; i < args.Length; i++) max = Math.Max(max, args[i].ToNumber());
                 return FenValue.FromNumber(max);
-            })));
-            math.Set("min", FenValue.FromFunction(new FenFunction("min", (args, thisVal) =>
+            });
+            DefineMathFn("min", 2, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.FromNumber(double.PositiveInfinity);
                 double min = args[0].ToNumber();
                 for (int i = 1; i < args.Length; i++) min = Math.Min(min, args[i].ToNumber());
                 return FenValue.FromNumber(min);
-            })));
-            math.Set("pow", FenValue.FromFunction(new FenFunction("pow", (FenValue[] args, FenValue thisVal) =>
+            });
+            DefineMathFn("pow", 2, (args, thisVal) =>
                 FenValue.FromNumber(Math.Pow(args.Length > 0 ? args[0].ToNumber() : double.NaN,
-                    args.Length > 1 ? args[1].ToNumber() : double.NaN)))));
-            math.Set("sqrt", FenValue.FromFunction(new FenFunction("sqrt", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Sqrt(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("random", FenValue.FromFunction(new FenFunction("random", (FenValue[] args, FenValue thisVal) =>
+                    args.Length > 1 ? args[1].ToNumber() : double.NaN)));
+            DefineMathFn("sqrt", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Sqrt(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("random", 0, (args, thisVal) =>
             {
                 lock (_mathRandom)
                 {
                     return FenValue.FromNumber(_mathRandom.NextDouble());
                 }
-            })));
-            math.Set("sin", FenValue.FromFunction(new FenFunction("sin", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Sin(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("cos", FenValue.FromFunction(new FenFunction("cos", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Cos(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("tan", FenValue.FromFunction(new FenFunction("tan", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Tan(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("trunc", FenValue.FromFunction(new FenFunction("trunc", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Truncate(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("sign", FenValue.FromFunction(new FenFunction("sign", (FenValue[] args, FenValue thisVal) =>
+            });
+            DefineMathFn("sin", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Sin(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("cos", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Cos(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("tan", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Tan(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("trunc", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Truncate(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("sign", 1, (args, thisVal) =>
             {
                 var x = args.Length > 0 ? args[0].ToNumber() : double.NaN;
                 if (double.IsNaN(x)) return FenValue.FromNumber(double.NaN);
                 if (x == 0)
                 {
-                    // Preserve the sign of zero per ECMAScript.
+                    // Preserve the sign of zero per ECMAScript §21.3.2.29
                     return FenValue.FromNumber(double.IsNegativeInfinity(1.0 / x) ? -0.0 : 0.0);
                 }
-
                 return FenValue.FromNumber(x > 0 ? 1 : -1);
-            })));
-            math.Set("log", FenValue.FromFunction(new FenFunction("log", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Log(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("log10", FenValue.FromFunction(new FenFunction("log10", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Log10(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("exp", FenValue.FromFunction(new FenFunction("exp", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Exp(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("asin", FenValue.FromFunction(new FenFunction("asin", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Asin(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("acos", FenValue.FromFunction(new FenFunction("acos", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Acos(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("atan", FenValue.FromFunction(new FenFunction("atan", (FenValue[] args, FenValue thisVal) =>
-                FenValue.FromNumber(Math.Atan(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("atan2", FenValue.FromFunction(new FenFunction("atan2", (FenValue[] args, FenValue thisVal) =>
+            });
+            DefineMathFn("log", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Log(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("log10", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Log10(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("exp", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Exp(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("asin", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Asin(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("acos", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Acos(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("atan", 1, (args, thisVal) =>
+                FenValue.FromNumber(Math.Atan(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("atan2", 2, (args, thisVal) =>
                 FenValue.FromNumber(Math.Atan2(args.Length > 0 ? args[0].ToNumber() : double.NaN,
-                    args.Length > 1 ? args[1].ToNumber() : double.NaN)))));
-            math.Set("hypot", FenValue.FromFunction(new FenFunction("hypot", (args, thisVal) =>
+                    args.Length > 1 ? args[1].ToNumber() : double.NaN)));
+            DefineMathFn("hypot", 2, (args, thisVal) =>
             {
+                if (args.Length == 0) return FenValue.FromNumber(0.0);
+                // §21.3.2.17: If any argument is ±Infinity, return +Infinity
+                bool hasInf = false;
+                bool hasNaN = false;
                 double sum = 0;
                 foreach (var arg in args)
                 {
                     var n = arg.ToNumber();
-                    sum += n * n;
+                    if (double.IsInfinity(n)) hasInf = true;
+                    else if (double.IsNaN(n)) hasNaN = true;
+                    else sum += n * n;
                 }
-
+                if (hasInf) return FenValue.FromNumber(double.PositiveInfinity);
+                if (hasNaN) return FenValue.FromNumber(double.NaN);
                 return FenValue.FromNumber(Math.Sqrt(sum));
-            })));
+            });
             // ES2015+ Math methods
-            math.Set("cbrt",
-                FenValue.FromFunction(new FenFunction("cbrt",
-                    (args, t) => FenValue.FromNumber(Math.Cbrt(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("log2",
-                FenValue.FromFunction(new FenFunction("log2",
-                    (args, t) => FenValue.FromNumber(Math.Log2(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("log1p", FenValue.FromFunction(new FenFunction("log1p", (args, t) =>
+            DefineMathFn("cbrt", 1, (args, t) =>
+            {
+                var x = args.Length > 0 ? args[0].ToNumber() : double.NaN;
+                return FenValue.FromNumber(Math.Cbrt(x));
+            });
+            DefineMathFn("log2", 1, (args, t) =>
+                FenValue.FromNumber(Math.Log2(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("log1p", 1, (args, t) =>
             {
                 var x = args.Length > 0 ? args[0].ToNumber() : double.NaN;
                 return FenValue.FromNumber(Math.Log(1 + x));
-            })));
-            math.Set("expm1", FenValue.FromFunction(new FenFunction("expm1", (args, t) =>
+            });
+            DefineMathFn("expm1", 1, (args, t) =>
             {
                 var x = args.Length > 0 ? args[0].ToNumber() : double.NaN;
+                // §21.3.2.14: expm1(-0) must return -0, expm1(+0) must return +0
+                if (x == 0.0) return FenValue.FromNumber(x); // preserves sign of zero
                 return FenValue.FromNumber(Math.Exp(x) - 1);
-            })));
-            math.Set("sinh",
-                FenValue.FromFunction(new FenFunction("sinh",
-                    (args, t) => FenValue.FromNumber(Math.Sinh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("cosh",
-                FenValue.FromFunction(new FenFunction("cosh",
-                    (args, t) => FenValue.FromNumber(Math.Cosh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("tanh",
-                FenValue.FromFunction(new FenFunction("tanh",
-                    (args, t) => FenValue.FromNumber(Math.Tanh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("asinh",
-                FenValue.FromFunction(new FenFunction("asinh",
-                    (args, t) => FenValue.FromNumber(Math.Asinh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("acosh",
-                FenValue.FromFunction(new FenFunction("acosh",
-                    (args, t) => FenValue.FromNumber(Math.Acosh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("atanh",
-                FenValue.FromFunction(new FenFunction("atanh",
-                    (args, t) => FenValue.FromNumber(Math.Atanh(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("clz32", FenValue.FromFunction(new FenFunction("clz32", (args, t) =>
+            });
+            DefineMathFn("sinh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Sinh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("cosh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Cosh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("tanh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Tanh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("asinh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Asinh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("acosh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Acosh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("atanh", 1, (args, t) =>
+                FenValue.FromNumber(Math.Atanh(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("clz32", 1, (args, t) =>
             {
-                var n = (uint)(int)(args.Length > 0 ? args[0].ToNumber() : 0);
+                // §21.3.2.11: ToUint32 conversion — NaN, Infinity, -Infinity all become 0
+                var d = args.Length > 0 ? args[0].ToNumber() : 0;
+                if (double.IsNaN(d) || double.IsInfinity(d) || d == 0) return FenValue.FromNumber(32);
+                // ToUint32: (sign(d) * floor(abs(d))) mod 2^32
+                long i64 = (long)d;
+                uint n = (uint)(i64 & 0xFFFFFFFF);
                 if (n == 0) return FenValue.FromNumber(32);
                 int clz = 0;
                 while ((n & 0x80000000) == 0)
@@ -10244,26 +10328,26 @@ namespace FenBrowser.FenEngine.Core
                     clz++;
                     n <<= 1;
                 }
-
                 return FenValue.FromNumber(clz);
-            })));
-            math.Set("fround",
-                FenValue.FromFunction(new FenFunction("fround",
-                    (args, t) =>
-                        FenValue.FromNumber((double)(float)(args.Length > 0 ? args[0].ToNumber() : double.NaN)))));
-            math.Set("imul", FenValue.FromFunction(new FenFunction("imul", (args, t) =>
+            });
+            DefineMathFn("fround", 1, (args, t) =>
+                FenValue.FromNumber((double)(float)(args.Length > 0 ? args[0].ToNumber() : double.NaN)));
+            DefineMathFn("imul", 2, (args, t) =>
             {
-                int a = args.Length > 0 ? (int)args[0].ToNumber() : 0;
-                int b = args.Length > 1 ? (int)args[1].ToNumber() : 0;
+                // §21.3.2.19: ToUint32 both operands, multiply as int32
+                var ad = args.Length > 0 ? args[0].ToNumber() : 0;
+                var bd = args.Length > 1 ? args[1].ToNumber() : 0;
+                int a = (int)(uint)((long)ad & 0xFFFFFFFF);
+                int b = (int)(uint)((long)bd & 0xFFFFFFFF);
                 return FenValue.FromNumber((double)(a * b));
-            })));
-            // Math constants
-            math.Set("LN2", FenValue.FromNumber(Math.Log(2)));
-            math.Set("LN10", FenValue.FromNumber(Math.Log(10)));
-            math.Set("LOG2E", FenValue.FromNumber(Math.Log2(Math.E)));
-            math.Set("LOG10E", FenValue.FromNumber(Math.Log10(Math.E)));
-            math.Set("SQRT2", FenValue.FromNumber(Math.Sqrt(2)));
-            math.Set("SQRT1_2", FenValue.FromNumber(Math.Sqrt(0.5)));
+            });
+            // Math constants — §21.3.1: non-writable, non-enumerable, non-configurable
+            DefineMathConst("LN2", Math.Log(2));
+            DefineMathConst("LN10", Math.Log(10));
+            DefineMathConst("LOG2E", Math.Log2(Math.E));
+            DefineMathConst("LOG10E", Math.Log10(Math.E));
+            DefineMathConst("SQRT2", Math.Sqrt(2));
+            DefineMathConst("SQRT1_2", Math.Sqrt(0.5));
 
             /* [PERF-REMOVED] */
             SetGlobal("Math", FenValue.FromObject(math));
@@ -11737,84 +11821,7 @@ namespace FenBrowser.FenEngine.Core
                 return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num));
             })));
 
-            // Number object with static methods
-            var numberObj = new FenObject();
-            numberObj.Set("isNaN", FenValue.FromFunction(new FenFunction("isNaN", (args, thisVal) =>
-            {
-                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
-                return FenValue.FromBoolean(double.IsNaN(args[0].ToNumber()));
-            })));
-            numberObj.Set("isFinite", FenValue.FromFunction(new FenFunction("isFinite", (args, thisVal) =>
-            {
-                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
-                var num = args[0].ToNumber();
-                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num));
-            })));
-            numberObj.Set("isInteger", FenValue.FromFunction(new FenFunction("isInteger", (args, thisVal) =>
-            {
-                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
-                var num = args[0].ToNumber();
-                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num);
-            })));
-            numberObj.Set("parseInt", FenValue.FromFunction(new FenFunction("parseInt", (args, thisVal) =>
-            {
-                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
-                var str = args[0].ToString().Trim();
-                int radix = args.Length > 1 ? (int)args[1].ToNumber() : 10;
-                if (radix == 0) radix = 10;
-                if (radix < 2 || radix > 36) return FenValue.FromNumber(double.NaN);
-                bool negative = str.StartsWith("-");
-                if (negative) str = str.Substring(1);
-                if (str.StartsWith("+")) str = str.Substring(1);
-                if ((str.StartsWith("0x") || str.StartsWith("0X")))
-                {
-                    if (radix == 10 || radix == 16) radix = 16;
-                    str = str.Substring(2);
-                }
-
-                try
-                {
-                    long result = Convert.ToInt64(str, radix);
-                    return FenValue.FromNumber(negative ? -result : result);
-                }
-                catch
-                {
-                    return FenValue.FromNumber(double.NaN);
-                }
-            })));
-            numberObj.Set("parseFloat", FenValue.FromFunction(new FenFunction("parseFloat", (args, thisVal) =>
-            {
-                if (args.Length == 0) return FenValue.FromNumber(double.NaN);
-                if (double.TryParse(args[0].ToString().Trim(), System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out double result))
-                    return FenValue.FromNumber(result);
-                return FenValue.FromNumber(double.NaN);
-            })));
-
-            // Number constants
-            numberObj.Set("MAX_VALUE", FenValue.FromNumber(double.MaxValue));
-            numberObj.Set("MIN_VALUE", FenValue.FromNumber(double.Epsilon));
-            numberObj.Set("NaN", FenValue.FromNumber(double.NaN));
-            numberObj.Set("POSITIVE_INFINITY", FenValue.FromNumber(double.PositiveInfinity));
-            numberObj.Set("NEGATIVE_INFINITY", FenValue.FromNumber(double.NegativeInfinity));
-            numberObj.Set("MAX_SAFE_INTEGER", FenValue.FromNumber(9007199254740991));
-            numberObj.Set("MIN_SAFE_INTEGER", FenValue.FromNumber(-9007199254740991));
-            numberObj.Set("EPSILON", FenValue.FromNumber(2.220446049250313e-16));
-
-            // Number.isSafeInteger(value)
-            numberObj.Set("isSafeInteger", FenValue.FromFunction(new FenFunction("isSafeInteger", (args, thisVal) =>
-            {
-                if (args.Length == 0 || !args[0].IsNumber) return FenValue.FromBoolean(false);
-                var num = args[0].ToNumber();
-                return FenValue.FromBoolean(!double.IsNaN(num) && !double.IsInfinity(num) && Math.Floor(num) == num &&
-                                            Math.Abs(num) <= 9007199254740991);
-            })));
-
-            // Number prototype methods (toFixed, toPrecision, toExponential)
-            // These will be accessed on number values
-            numberObj.Set("prototype", FenValue.FromObject(new FenObject()));
-
-            // Number already registered at top
+            // Number object already registered at top with proper descriptors (numberCtor)
 
             // encodeURI / decodeURI
             SetGlobal("encodeURI", FenValue.FromFunction(new FenFunction("encodeURI", (args, thisVal) =>
@@ -12054,9 +12061,21 @@ namespace FenBrowser.FenEngine.Core
                 SetGlobal("Array", FenValue.FromObject(arrayObj));
             }
 
-            // JSON object
+            // JSON object — ECMA-262 §25.5
             var json = new FenObject();
-            json.Set("parse", FenValue.FromFunction(new FenFunction("parse", (args, thisVal) =>
+            // Helper for non-enumerable JSON methods with correct .length
+            void DefineJsonFn(string name, int length, Func<FenValue[], FenValue, FenValue> impl)
+            {
+                var fn = new FenFunction(name, impl) { NativeLength = length, IsConstructor = false };
+                json.DefineOwnProperty(name, new PropertyDescriptor
+                {
+                    Value = FenValue.FromFunction(fn),
+                    Writable = true,
+                    Enumerable = false,
+                    Configurable = true
+                });
+            }
+            DefineJsonFn("parse", 2, (args, thisVal) =>
             {
                 if (args.Length == 0) throw new FenTypeError("TypeError: JSON.parse requires one argument");
                 try
@@ -12081,8 +12100,8 @@ namespace FenBrowser.FenEngine.Core
                 {
                     throw new FenSyntaxError($"SyntaxError: JSON.parse: {ex.Message}");
                 }
-            })));
-            json.Set("stringify", FenValue.FromFunction(new FenFunction("stringify", (args, thisVal) =>
+            });
+            DefineJsonFn("stringify", 3, (args, thisVal) =>
             {
                 if (args.Length == 0) return FenValue.Undefined;
                 try
@@ -12139,7 +12158,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     throw new FenTypeError($"TypeError: JSON.stringify: {ex.Message}");
                 }
-            })));
+            });
             /* [PERF-REMOVED] */
             SetGlobal("JSON", FenValue.FromObject(json));
 
