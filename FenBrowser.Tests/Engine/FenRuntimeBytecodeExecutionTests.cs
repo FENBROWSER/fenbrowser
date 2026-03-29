@@ -638,7 +638,7 @@ namespace FenBrowser.Tests.Engine
             Assert.NotNull(calcFn);
             Assert.NotNull(calcFn.BytecodeBlock);
             Assert.Contains((byte)OpCode.LoadLocal, calcFn.BytecodeBlock.Instructions);
-            Assert.Contains((byte)OpCode.StoreLocal, calcFn.BytecodeBlock.Instructions);
+            Assert.Contains((byte)OpCode.StoreLocalDeclaration, calcFn.BytecodeBlock.Instructions);
 
             rt.ExecuteSimple("var calcOut = calc(10, 5);");
             Assert.Equal(15, ((FenValue)rt.GetGlobal("calcOut")).AsNumber());
@@ -776,6 +776,7 @@ namespace FenBrowser.Tests.Engine
         public void ExecuteSimple_BytecodeFirst_ClassFieldDirectEval_AllowsNewTargetAndReturnsUndefined()
         {
             var rt = CreateRuntime();
+            rt.Context.Permissions.Grant(JsPermissions.Eval);
             rt.ExecuteSimple(@"
                 var executed = false;
                 var C = class {
@@ -793,6 +794,7 @@ namespace FenBrowser.Tests.Engine
         public void ExecuteSimple_BytecodeFirst_DerivedClassFieldDirectEval_AllowsSuperProperty()
         {
             var rt = CreateRuntime();
+            rt.Context.Permissions.Grant(JsPermissions.Eval);
             rt.ExecuteSimple(@"
                 var executed = false;
                 var A = class { };
