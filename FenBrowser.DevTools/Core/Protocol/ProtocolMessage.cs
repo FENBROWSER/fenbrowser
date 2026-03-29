@@ -139,8 +139,17 @@ public static class ProtocolJson
     public static string Serialize<T>(T value) =>
         JsonSerializer.Serialize(value, Options);
     
-    public static T? Deserialize<T>(string json) =>
-        JsonSerializer.Deserialize<T>(json, Options);
+    public static T? Deserialize<T>(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, Options);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
+    }
     
     public static ProtocolRequest? ParseRequest(string json) =>
         Deserialize<ProtocolRequest>(json);
