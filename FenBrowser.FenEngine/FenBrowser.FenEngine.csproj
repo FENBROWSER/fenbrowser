@@ -28,8 +28,20 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="Program.cs" />
+    <Compile Remove="TestFenEngine.cs" />
+    <Compile Remove="HTML\**\*.cs" />
+    <Compile Remove="Testing\**\*.cs" />
+    <Compile Remove="WebAPIs\TestHarnessAPI.cs" />
+    <Compile Remove="WebAPIs\TestConsoleCapture.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FenBrowser.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FenBrowser.Tooling</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

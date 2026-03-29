@@ -13,6 +13,7 @@
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
     <ProjectReference Include="..\FenBrowser.Host\FenBrowser.Host.csproj" />
+    <ProjectReference Include="..\FenBrowser.Tooling\FenBrowser.Tooling.csproj" />
   </ItemGroup>
 
 </Project>
