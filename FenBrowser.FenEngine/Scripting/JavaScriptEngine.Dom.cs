@@ -452,9 +452,7 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         if (!_e.SandboxAllows(SandboxFeature.DomMutation, "innerHTML")) return;
                         var html = value ?? string.Empty;
-                        var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
-                        var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
-                        var doc = builder.Build();
+                        var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
                         ContainerNode container = null;
                         try
                         {
@@ -508,9 +506,7 @@ namespace FenBrowser.FenEngine.Scripting
                 try
                 {
                     var pos = (position ?? "").Trim().ToLowerInvariant();
-                    var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html ?? string.Empty);
-                    var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
-                    var frag = builder.Build();
+                    var frag = new FenBrowser.Core.Parsing.HtmlParser(html ?? string.Empty).Parse();
                     ContainerNode container = null;
                     try
                     {
@@ -1004,9 +1000,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                      var html = value.ToString();
                      try {
-                         var tokenizer = new FenBrowser.FenEngine.HTML.HtmlTokenizer(html);
-                         var builder = new FenBrowser.FenEngine.HTML.HtmlTreeBuilder(tokenizer);
-                         var doc = builder.Build();
+                         var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
                          _node.RemoveAllChildren();
                          foreach(var ch in doc.Children) {
                              _node.AppendChild(ch.CloneNode(true));
