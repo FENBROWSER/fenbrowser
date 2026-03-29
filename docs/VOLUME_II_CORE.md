@@ -810,3 +810,15 @@ _End of Volume II_
 - Regression coverage:
   - `FenBrowser.Tests/Core/SecurityChecksTests.cs`
 
+### 1.43 HtmlTreeBuilder Active-Formatting Reconstruction And Adoption-Agency Recovery (2026-03-29)
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
+- `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderFormattingRecoveryTests.cs`
+- The production tree builder now reconstructs active formatting elements before character insertion and ordinary start-tag insertion, instead of only handling a narrow subset of formatting-tag paths.
+- Misnested formatting end tags now route through an explicit adoption-agency implementation for the standard formatting-element set (`a`, `b`, `em`, `font`, `i`, `nobr`, `small`, `strong`, `tt`, `u`, etc.) instead of the older “pop if present” shortcut.
+- Why this mattered:
+  - The simplified formatting-element handling was good enough for trivial markup, but it loses structural fidelity on real-world malformed documents and is exactly the sort of parser shortcut that shows up in search-homepage and wiki-style content.
+  - Reconstructing active formatting elements before ordinary insertion paths is required for the tree builder to preserve formatting continuity across the parser states the HTML spec expects.
+- Regression coverage:
+  - `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderTableCellFormattingTests.cs`
+  - `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderFormattingRecoveryTests.cs`
+
