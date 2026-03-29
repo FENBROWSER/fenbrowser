@@ -1463,6 +1463,32 @@ _End of Volume VI_
   - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug /nodeReuse:false /p:UseSharedCompilation=false --filter "FullyQualifiedName~Array_StaticBuiltinMetadata_MatchesSpecSurface|FullyQualifiedName~RunSingleTestAsync_ArrayFromAsync_ArrayLikePromiseValues_Passes|FullyQualifiedName~RegExp_Literal_Inherits_RegExpPrototype_Methods|FullyQualifiedName~Reflect_Get_OnProxy_PreservesSymbolPropertyKeys"`
 - Verification result:
   - focused xUnit coverage: `4/4` passed
+
+## 6.48 Tooling Assembly Ownership For Conformance And Harness Code (2026-03-29)
+
+- `FenBrowser.Tooling/FenBrowser.Tooling.csproj`
+- `FenBrowser.Tooling/Program.cs`
+- `FenBrowser.Tooling/Host/ToolingBrowserHostOptions.cs`
+- Introduced `FenBrowser.Tooling` as the dedicated assembly owner for Test262 runners, WPT runners, Acid runners, headless harness helpers, and harness-facing `BrowserHost` options.
+- Runtime-owned harness compilation was removed from `FenBrowser.FenEngine`; the tooling assembly now compiles linked sources for:
+  - `FenBrowser.FenEngine/Testing/*`
+  - `FenBrowser.FenEngine/WebAPIs/TestHarnessAPI.cs`
+  - `FenBrowser.FenEngine/WebAPIs/TestConsoleCapture.cs`
+  - `FenBrowser.FenEngine/TestFenEngine.cs`
+- Solution graph migration:
+  - `FenBrowser.WPT`, `FenBrowser.Test262`, `FenBrowser.Conformance`, and `FenBrowser.Tests` now reference `FenBrowser.Tooling` instead of depending on runtime-owned harness compilation.
+- Parser-ownership follow-through:
+  - html5lib/conformance/test callers that previously imported `FenBrowser.FenEngine.HTML` were moved to `FenBrowser.Core.Parsing`, aligning verification with the canonical parser stack.
+- Host/runtime posture:
+  - `FenBrowser.Host/Program.cs` no longer exposes dedicated Test262/WebDriver/tooling startup modes; tooling invocation is an external concern, not host runtime ownership.
+- Verification:
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -nologo`
+  - `dotnet build FenBrowser.Conformance/FenBrowser.Conformance.csproj -nologo`
+  - `dotnet build FenBrowser.WPT/FenBrowser.WPT.csproj -nologo`
+  - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -nologo`
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -nologo`
+  - `dotnet build FenBrowser.sln -nologo`
+  - all completed successfully on `2026-03-29` (with existing warning debt still present in the wider test tree).
 - Exact Test262 single-file rechecks:
   - `built-ins/Array/length.js` -> `PASS`
   - `built-ins/Array/prop-desc.js` -> `PASS`

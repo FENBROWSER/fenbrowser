@@ -379,4 +379,17 @@ Net effect:
 - Network and Sources panes behave like real split views instead of one shared scroller.
 - Console/runtime object inspection no longer grows retained state without a release path.
 
+### 5.14 Remote Debug Bind Policy And Structured Correlation (2026-03-29)
+
+- `FenBrowser.DevTools/Core/RemoteDebugServer.cs`
+  - Remote debug bind selection now routes through `FenBrowser.Core.Security.BrowserSecurityPolicy.EvaluateRemoteDebugBinding(...)`.
+  - Loopback remains the default allowed bind surface.
+  - Non-loopback binding now requires explicit operator override via `FEN_REMOTE_DEBUG_ALLOW_REMOTE=1`.
+- The remote debug server now emits `DevTools` and `Security` category logs with ambient scope metadata for bind rejection, listener startup, client session handling, and request-path failures.
+- Why this mattered:
+  - A production browser cannot treat remote-debug exposure as an ad hoc TCP convenience toggle.
+  - The deny path must be explicit, logged, and consistent with the rest of the browser security boundary model.
+- Verification:
+  - `dotnet build FenBrowser.DevTools/FenBrowser.DevTools.csproj -nologo` completed successfully on `2026-03-29`.
+
 _End of Volume V_

@@ -210,6 +210,26 @@ The executable wrapper.
   - Repository includes `Directory.Build.props` restore/resolver safety overrides to improve determinism on machines exhibiting silent project-graph failures.
   - Known machine-specific issue can still surface as `Build FAILED (0 warnings, 0 errors)` during full host/tests builds; component-level build validation should be used when this occurs.
 
+## P0 Architecture Closure (2026-03-29)
+
+- Runtime/tooling ownership:
+  - `FenBrowser.Host/Program.cs` is now a browser-or-child-process entrypoint only.
+  - Test262, WPT, Acid, debug-css, and related harness workflows moved behind the dedicated `FenBrowser.Tooling` assembly instead of remaining host startup modes.
+- Parser ownership:
+  - `FenBrowser.Core/Parsing/*` is now the single runtime HTML parser authority.
+  - The duplicate `FenBrowser.FenEngine/HTML/*` runtime compilation path was removed, and conformance/tests now consume the canonical core parser.
+- Renderer ownership:
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs` now implements the explicit `IRenderFramePipeline` contract and no longer carries transitional-pipeline posture.
+- Security/logging ownership:
+  - `FenBrowser.Core/Security/BrowserSecurityPolicy.cs`, `SecurityDecision.cs`, and `Sandbox/SandboxLaunchPolicy.cs` centralize navigation/network/remote-debug and sandbox-launch decisions with observable deny paths.
+  - `FenBrowser.Core/Logging/LogContext.cs`, `FenLogger.cs`, and `LogManager.cs` now provide ambient correlation scopes, structured mirrors, archive trimming, and stable categories for `Security`, `Accessibility`, `ProcessIsolation`, and `DevTools`.
+- Accessibility ownership:
+  - Linux AT-SPI now emits through a bounded broker (`LinuxAtSpiEventBroker.cs`) with explicit failure logging instead of remaining a placeholder bridge.
+- Solution-graph impact:
+  - `FenBrowser.Tooling` is now the assembly owner for linked harness sources (`FenBrowser.FenEngine/Testing/*`, `TestHarnessAPI.cs`, `TestConsoleCapture.cs`, `TestFenEngine.cs`), while `FenBrowser.WPT`, `FenBrowser.Test262`, `FenBrowser.Conformance`, and `FenBrowser.Tests` reference that tooling assembly instead of runtime-owned harness compilation.
+- Verification:
+  - `dotnet build FenBrowser.sln -nologo` completed successfully on `2026-03-29`.
+
 ---
 
 _End of Volume I_

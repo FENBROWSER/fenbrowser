@@ -706,3 +706,33 @@ _End of Volume IV_
 - Net effect:
   - The Host no longer asks the UI layer to redraw from speculative or stale post-navigation pulses after a committed frame already exists.
   - Google-style page-wide flicker is reduced because visible swaps now follow committed renderer output instead of redundant host-side repaint nudges.
+
+### 6.37 Host Entry-Point Closure And Auxiliary Target Contracts (2026-03-29)
+
+- `FenBrowser.Host/Program.cs`
+  - The host entrypoint now resolves only the real runtime modes:
+    - `Browser`
+    - `RendererChild`
+    - `NetworkChild`
+    - `GpuChild`
+    - `UtilityChild`
+  - Tooling arguments such as `--test262`, `--wpt`, `--acid2`, `--port=...`, and `--debug-css` are now rejected with an explicit error directing operators to `FenBrowser.Tooling`.
+- `FenBrowser.Host/BrowserIntegrationRuntime.cs`
+  - Added a runtime-specific integration bootstrap surface so browser integration startup does not need to share ownership with former tooling entrypoint code.
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetProcessContract.cs`
+- `FenBrowser.Host/ProcessIsolation/Gpu/GpuProcessIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Utility/UtilityProcessIpc.cs`
+  - GPU and utility target processes are no longer empty placeholder seams; both now expose explicit profile/capability contracts that broker and child sides validate during startup.
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+- `FenBrowser.Host/ProcessIsolation/Network/NetworkChildProcessHost.cs`
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetChildProcessHost.cs`
+  - Child-process launch now flows through `SandboxLaunchPolicy`, so renderer/network/GPU/utility children fail closed on unsupported or `NullSandbox` resolution unless the corresponding override is explicitly set.
+  - Structured process-isolation logging scopes now attach target kind, sandbox posture, and correlation metadata to launch/ready/failure paths.
+- Net effect:
+  - Host startup no longer owns conformance or automation runner modes.
+  - Auxiliary process seams are now declared runtime contracts instead of placeholder files.
+  - Unsandboxed fallback is explicit policy, not silent drift.
+- Verification:
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -nologo`
+  - `dotnet build FenBrowser.sln -nologo`
+  - both completed successfully on `2026-03-29`.

@@ -822,3 +822,25 @@ _End of Volume II_
   - `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderTableCellFormattingTests.cs`
   - `FenBrowser.Tests/Core/Parsing/HtmlTreeBuilderFormattingRecoveryTests.cs`
 
+### 1.44 First-Class Logging, Security Policy, And Linux AT-SPI Event Brokerage (2026-03-29)
+- `FenBrowser.Core/Logging/LogCategory.cs`
+- `FenBrowser.Core/Logging/LogContext.cs`
+- `FenBrowser.Core/Logging/LogEntry.cs`
+- `FenBrowser.Core/Logging/LogManager.cs`
+- `FenBrowser.Core/FenLogger.cs`
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/Security/SecurityDecision.cs`
+- `FenBrowser.Core/Security/BrowserSecurityPolicy.cs`
+- `FenBrowser.Core/Security/Sandbox/SandboxLaunchPolicy.cs`
+- `FenBrowser.Core/NetworkService.cs`
+- `FenBrowser.Core/Accessibility/LinuxAtSpiEventBroker.cs`
+- `FenBrowser.Core/Accessibility/PlatformA11yBridge.cs`
+- Added ambient correlation/component/data scopes for production logging so cross-process incidents can be tied together without hand-built log prefixes.
+- `LogManager` now supports JSON log mirroring, bounded archive retention, caller/component metadata capture, and stable categories for `Security`, `Accessibility`, `ProcessIsolation`, and `DevTools`.
+- `BrowserSecurityPolicy` is now the canonical policy gate for outbound network requests, top-level navigation acceptance, and remote-debug bind decisions.
+- `SandboxLaunchPolicy` prevents `NullSandbox` from silently presenting as production enforcement; unsandboxed child launch now requires explicit operator override rather than error-path drift.
+- `NetworkService` now rejects malformed or policy-disallowed absolute URIs before dispatch and logs those denials through the structured security path.
+- Linux accessibility now uses a bounded AT-SPI event broker with DBus signal emission and observable queue-drop/error reporting, replacing the earlier partial stub posture.
+- Verification:
+  - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -nologo` completed successfully on `2026-03-29`.
+
