@@ -31,6 +31,7 @@ public class BrowserIntegration
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
     private SKSize _lastViewportSize;
+    private bool _hasReceivedViewportSize = false;
     
     // Threading & Event Queue
     private readonly ConcurrentQueue<Action> _eventQueue = new ConcurrentQueue<Action>();
@@ -400,7 +401,7 @@ public class BrowserIntegration
         {
             if ((!_needsRepaint && coordinator.CurrentPhase != FenBrowser.Core.Engine.EnginePhase.Layout) || _lastViewportSize.Width <= 0)
             {
-                if (_needsRepaint && _lastViewportSize.Width <= 0)
+                if (_needsRepaint && _lastViewportSize.Width <= 0 && _hasReceivedViewportSize)
                     Console.WriteLine("[DBG-EL] WARNING: _needsRepaint=true but _lastViewportSize.Width=0!");
                 return false;
             }
@@ -1149,6 +1150,7 @@ public class BrowserIntegration
         }
 
         FenLogger.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
+        _hasReceivedViewportSize = true;
         if (_lastViewportSize != size)
         {
             _lastViewportSize = size;
