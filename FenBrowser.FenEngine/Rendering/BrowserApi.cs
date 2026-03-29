@@ -200,6 +200,8 @@ namespace FenBrowser.FenEngine.Rendering
         private Uri _current;
         private long _latestNavigationId;
         private long _activeRenderNavigationId;
+        private long _engineDiagnosticsCapturedNavigationId;
+        private long _renderedDiagnosticsCapturedNavigationId;
         private bool _disposed;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
@@ -256,6 +258,190 @@ namespace FenBrowser.FenEngine.Rendering
         {
             try { FenLogger.Error(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
+        }
+
+        private static string BuildEngineSourceSnapshot(Node activeNode, Uri uri)
+        {
+            if (activeNode == null)
+            {
+                return "<!-- Fen engine source unavailable: active DOM is null. -->";
+            }
+
+            try
+            {
+                if (activeNode is Document document)
+                {
+                    var documentElementHtml = document.DocumentElement?.OuterHTML;
+                    if (!string.IsNullOrWhiteSpace(documentElementHtml))
+                    {
+                        var builder = new System.Text.StringBuilder();
+                        if (document.Doctype != null)
+                        {
+                            builder.Append(document.Doctype.ToString());
+                        }
+
+                        builder.Append(documentElementHtml);
+                        return builder.ToString();
+                    }
+
+                    return "<!-- Fen engine source unavailable: document element is null. -->";
+                }
+
+                if (activeNode is Element element)
+                {
+                    var elementHtml = element.OuterHTML;
+                    if (!string.IsNullOrWhiteSpace(elementHtml))
+                    {
+                        return elementHtml;
+                    }
+
+                    return $"<!-- Fen engine source unavailable: outerHTML was empty for <{element.TagName}>. -->";
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Engine source fast-path serialization failed for '{uri}': {ex.Message}", LogCategory.General);
+            }
+
+            try
+            {
+                var html = activeNode.ToHtml();
+                if (!string.IsNullOrWhiteSpace(html))
+                {
+                    return html;
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Engine source fallback serialization failed for '{uri}': {ex.Message}", LogCategory.General);
+            }
+
+            try
+            {
+                var serialized = DomSerializer.Serialize(activeNode, prettyPrint: false);
+                if (!string.IsNullOrWhiteSpace(serialized))
+                {
+                    return serialized;
+                }
+
+                TryLogWarn($"[BrowserHost] Engine source serializer returned empty output for '{uri}'.", LogCategory.General);
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Engine source serializer failed for '{uri}': {ex.Message}", LogCategory.General);
+            }
+
+            return $"<!-- Fen engine source unavailable for '{uri}'. NodeType={activeNode.NodeType}. -->";
+        }
+
+        private void TryCaptureNavigationDiagnosticsSnapshot()
+        {
+            var navigationId = Interlocked.Read(ref _activeRenderNavigationId);
+            if (navigationId <= 0)
+            {
+                navigationId = Interlocked.Read(ref _latestNavigationId);
+            }
+
+            TryCaptureNavigationDiagnosticsSnapshot(navigationId, _current, allowIncomplete: false);
+        }
+
+        private void TryCaptureNavigationDiagnosticsSnapshot(long navigationId, Uri uri, bool allowIncomplete)
+        {
+            if (navigationId <= 0 || uri == null)
+            {
+                return;
+            }
+
+            var activeNode = _engine.GetActiveDom();
+            if (activeNode == null)
+            {
+                return;
+            }
+
+            string textContent = GetTextContent();
+            int domNodeCount = activeNode.SelfAndDescendants()?.Count() ?? 0;
+            if (!allowIncomplete && !IsDiagnosticsSnapshotReady(activeNode, domNodeCount, textContent))
+            {
+                return;
+            }
+
+            TryCaptureEngineSourceSnapshot(navigationId, uri, activeNode);
+            TryCaptureRenderedTextSnapshot(navigationId, uri, textContent, domNodeCount);
+        }
+
+        private static bool IsDiagnosticsSnapshotReady(Node activeNode, int domNodeCount, string textContent)
+        {
+            if (activeNode == null)
+            {
+                return false;
+            }
+
+            if (domNodeCount >= 64)
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(textContent) && textContent.Length >= 32)
+            {
+                return true;
+            }
+
+            if (activeNode is Document document && document.Body != null && domNodeCount >= 24)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private void TryCaptureEngineSourceSnapshot(long navigationId, Uri uri, Node activeNode)
+        {
+            if (Interlocked.Read(ref _engineDiagnosticsCapturedNavigationId) == navigationId)
+            {
+                return;
+            }
+
+            try
+            {
+                string engineSource = BuildEngineSourceSnapshot(activeNode, uri);
+                string enginePath = StructuredLogger.DumpEngineSource(uri.AbsoluteUri, engineSource);
+                if (!string.IsNullOrEmpty(enginePath))
+                {
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
+                    Interlocked.Exchange(ref _engineDiagnosticsCapturedNavigationId, navigationId);
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Engine source dump failed for '{uri}': {ex.Message}", LogCategory.General);
+            }
+        }
+
+        private void TryCaptureRenderedTextSnapshot(long navigationId, Uri uri, string textContent, int domNodeCount)
+        {
+            if (Interlocked.Read(ref _renderedDiagnosticsCapturedNavigationId) == navigationId)
+            {
+                return;
+            }
+
+            try
+            {
+                FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(
+                    uri.AbsoluteUri,
+                    domNodeCount,
+                    textContent?.Length ?? 0);
+
+                string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
+                if (!string.IsNullOrEmpty(renderedPath))
+                {
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
+                    Interlocked.Exchange(ref _renderedDiagnosticsCapturedNavigationId, navigationId);
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Rendered text dump failed for '{uri}': {ex.Message}", LogCategory.General);
+            }
         }
 
         private void TryInvokeRepaintReady(object payload)
@@ -506,6 +692,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             _engine.RepaintReady += (elem) =>
             {
+                TryCaptureNavigationDiagnosticsSnapshot();
                 TryInvokeRepaintReady(elem);
             };
 
@@ -1061,44 +1248,14 @@ pre {{
                     return false;
                 }
 
-                // Dump Engine Source (Processed DOM level)
-                try
-                {
-                    var activeNode = _engine.ActiveDom;
-                    string engineSource = "";
-                    if (activeNode is Document d) engineSource = d.DocumentElement?.OuterHTML ?? "";
-                    else if (activeNode is Element e) engineSource = e.OuterHTML;
-                    else engineSource = activeNode?.NodeValue ?? "";
-                    string enginePath = StructuredLogger.DumpEngineSource(uri.AbsoluteUri, engineSource);
-                    if (!string.IsNullOrEmpty(enginePath))
-                    {
-                        FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
-                    }
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
+                TryCaptureNavigationDiagnosticsSnapshot(navigationId, uri, allowIncomplete: true);
                 
                 TryLogDebug($"[BrowserApi] RenderAsync finished for {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General);
                 
                 TryInvokeRepaintReady(elem);
                 _navigationLifecycle.MarkInteractive(navigationId, BuildInteractiveLifecycleDetail(result));
 
-                // Dump Rendered Text for side-by-side comparison (Phase 11)
-                try
-                {
-                    string textContent = GetTextContent();
-                    var activeDom = _engine.GetActiveDom();
-                    int domNodeCount = activeDom?.SelfAndDescendants()?.Count() ?? 0;
-                    FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(
-                        uri.AbsoluteUri,
-                        domNodeCount,
-                        textContent?.Length ?? 0);
-                    string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
-                    if (!string.IsNullOrEmpty(renderedPath))
-                    {
-                        FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
-                    }
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
+                TryCaptureNavigationDiagnosticsSnapshot(navigationId, uri, allowIncomplete: true);
 
                 if (!_isNavigatingHistory)
                 {
