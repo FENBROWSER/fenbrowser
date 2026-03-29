@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace FenBrowser.Core.Engine
@@ -12,53 +11,61 @@ namespace FenBrowser.Core.Engine
     {
         [ThreadStatic]
         private static EngineContext _instance;
-        
+
         /// <summary>
         /// Gets the thread-local engine context instance.
         /// </summary>
         public static EngineContext Current => _instance ??= new EngineContext();
-        
+
         private EnginePhase _currentPhase = EnginePhase.Idle;
-        private int _passIndex = 0;
-        private int _currentNodeId = 0;
-        private string _currentNodeTag = "";
-        
+        private int _passIndex;
+        private int _currentNodeId;
+        private string _currentNodeTag = string.Empty;
+
         /// <summary>Maximum allowed layout passes before convergence failure.</summary>
         public const int MaxLayoutPasses = 10;
-        
+
         /// <summary>Current engine phase.</summary>
         public EnginePhase CurrentPhase => _currentPhase;
-        
+
         /// <summary>Current pass index (for layout convergence loops).</summary>
         public int PassIndex => _passIndex;
-        
+
         /// <summary>Current node being processed (for diagnostics).</summary>
         public int CurrentNodeId => _currentNodeId;
-        
+
         /// <summary>Current node tag (for diagnostics).</summary>
         public string CurrentNodeTag => _currentNodeTag;
-        
+
         private EngineContext() { }
-        
+
         /// <summary>
-        /// Begin a new engine phase. Validates linear transitions.
+        /// Begin a new engine phase. Validates explicit transitions.
         /// </summary>
-        /// <param name="phase">The phase to enter.</param>
-        /// <exception cref="EngineInvariantException">Thrown if phase transition is invalid.</exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void BeginPhase(EnginePhase phase)
         {
-            // STRICT MICROTASK SAFETY:
             if (phase == EnginePhase.Microtasks && _currentPhase == EnginePhase.Microtasks)
-            {
-                 throw new InvalidOperationException("[EngineContext] VIOLATION: Recursive entry into Microtasks phase is forbidden!");
-            }
+                throw new InvalidOperationException("[EngineContext] VIOLATION: Recursive entry into Microtasks phase is forbidden!");
 
             ValidatePhaseTransition(_currentPhase, phase);
             _currentPhase = phase;
             _passIndex = 0;
         }
-        
+
+        /// <summary>
+        /// Temporarily switch phases and restore the previous phase on dispose.
+        /// Intended for tightly bounded callbacks such as observer delivery.
+        /// </summary>
+        public EnginePhaseScope PushPhase(EnginePhase phase)
+        {
+            var previousPhase = _currentPhase;
+            ValidateScopedTransition(previousPhase, phase);
+            _currentPhase = phase;
+            _passIndex = 0;
+            return new EnginePhaseScope(this, previousPhase);
+        }
+
         /// <summary>
         /// End current phase and return to Idle.
         /// </summary>
@@ -68,7 +75,7 @@ namespace FenBrowser.Core.Engine
             _currentPhase = EnginePhase.Idle;
             _passIndex = 0;
         }
-        
+
         /// <summary>
         /// Reset context to initial state (for testing).
         /// </summary>
@@ -76,18 +83,17 @@ namespace FenBrowser.Core.Engine
         {
             _instance = new EngineContext();
         }
-        
+
         /// <summary>
         /// Increment pass index (for layout convergence loops).
         /// </summary>
-        /// <exception cref="LayoutConvergenceException">Thrown if max passes exceeded.</exception>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void IncrementPass()
         {
             _passIndex++;
             EngineInvariants.AssertConvergenceLimit(_passIndex, MaxLayoutPasses);
         }
-        
+
         /// <summary>
         /// Set current node for diagnostics.
         /// </summary>
@@ -95,14 +101,14 @@ namespace FenBrowser.Core.Engine
         public void SetCurrentNode(int nodeId, string tag)
         {
             _currentNodeId = nodeId;
-            _currentNodeTag = tag ?? "";
+            _currentNodeTag = tag ?? string.Empty;
         }
-        
+
         /// <summary>
         /// Format diagnostic prefix for logging.
         /// </summary>
         public string DiagnosticPrefix => $"[{_currentPhase}][Pass={_passIndex}][Node={_currentNodeTag}#{_currentNodeId}]";
-        
+
         /// <summary>
         /// Validates that the engine is NOT in any of the specified phases.
         /// </summary>
@@ -118,61 +124,99 @@ namespace FenBrowser.Core.Engine
         }
 
         /// <summary>
-        /// Validates phase transition follows linear order.
+        /// Validates phase transition follows explicit engine ordering.
         /// </summary>
         private static void ValidatePhaseTransition(EnginePhase from, EnginePhase to)
         {
-            // Idle can transition to ANY phase (starting a specific test/pass)
-            if (from == EnginePhase.Idle)
-                return;
-            
-            // Any phase can transition to Idle (reset)
-            if (to == EnginePhase.Idle)
-                return;
-            
-            // Normal forward transition (+1)
-            if ((int)to == (int)from + 1)
-                return;
-            
-            // Same phase is allowed (re-entry for loops)
-            if (to == from)
-                return;
-            
-            // JSExecution can jump to Microtasks (after task completes)
-            if (from == EnginePhase.JSExecution && to == EnginePhase.Microtasks)
-                return;
-            
-            // Microtasks can return to JSExecution (for callbacks)
-            if (from == EnginePhase.Microtasks && to == EnginePhase.JSExecution)
-                return;
-            
-            // Layout can jump to Observers (after paint)
-            if (from == EnginePhase.Layout && to == EnginePhase.Observers)
-                return;
-            
-            // Observers can jump to Animation
-            if (from == EnginePhase.Observers && to == EnginePhase.Animation)
-                return;
-            
-            // Animation can return to JSExecution (for RAF callbacks)
-            if (from == EnginePhase.Animation && to == EnginePhase.JSExecution)
-                return;
-            
-            // Microtasks can jump directly to Layout (for render update)
-            if (from == EnginePhase.Microtasks && to == EnginePhase.Layout)
-                return;
-            
-            // Observers/Animation can go to Microtasks (for callbacks)
-            if ((from == EnginePhase.Observers || from == EnginePhase.Animation) && to == EnginePhase.Microtasks)
+            if (IsValidTransition(from, to))
                 return;
 
-            #if DEBUG
-            // Strict validation disabled for tests to allow jumping states
-            // throw new EngineInvariantException($"Invalid phase transition: {from} → {to}. Phases must be linear.");
-            #endif
+            throw new EngineInvariantException($"Invalid phase transition: {from} -> {to}. Phases must be explicit.");
+        }
+
+        private static void ValidateScopedTransition(EnginePhase from, EnginePhase to)
+        {
+            if (IsValidTransition(from, to, allowScopedTransitions: true))
+                return;
+
+            throw new EngineInvariantException($"Invalid scoped phase transition: {from} -> {to}. Scoped transitions must be explicit.");
+        }
+
+        internal void RestorePhase(EnginePhase phase)
+        {
+            _currentPhase = phase;
+            _passIndex = 0;
+        }
+
+        internal static bool IsValidTransition(EnginePhase from, EnginePhase to, bool allowScopedTransitions = false)
+        {
+            if (from == EnginePhase.Idle || to == EnginePhase.Idle)
+                return true;
+
+            if ((int)to == (int)from + 1)
+                return true;
+
+            if (to == from)
+                return true;
+
+            if (from == EnginePhase.JSExecution && to == EnginePhase.Microtasks)
+                return true;
+
+            if (from == EnginePhase.Microtasks && to == EnginePhase.JSExecution)
+                return true;
+
+            if (from == EnginePhase.Layout && to == EnginePhase.Observers)
+                return true;
+
+            if (from == EnginePhase.Observers && to == EnginePhase.Animation)
+                return true;
+
+            if (from == EnginePhase.Animation && to == EnginePhase.JSExecution)
+                return true;
+
+            if (from == EnginePhase.Microtasks && to == EnginePhase.Layout)
+                return true;
+
+            if ((from == EnginePhase.Observers || from == EnginePhase.Animation) && to == EnginePhase.Microtasks)
+                return true;
+
+            if (allowScopedTransitions &&
+                to == EnginePhase.JSExecution &&
+                (from == EnginePhase.Measure || from == EnginePhase.Layout || from == EnginePhase.Paint ||
+                 from == EnginePhase.Observers || from == EnginePhase.Animation))
+            {
+                return true;
+            }
+
+            return false;
         }
     }
-    
+
+    /// <summary>
+    /// Restores the previous engine phase when disposed.
+    /// </summary>
+    public sealed class EnginePhaseScope : IDisposable
+    {
+        private EngineContext _context;
+        private readonly EnginePhase _previousPhase;
+
+        internal EnginePhaseScope(EngineContext context, EnginePhase previousPhase)
+        {
+            _context = context;
+            _previousPhase = previousPhase;
+        }
+
+        public void Dispose()
+        {
+            var context = _context;
+            if (context == null)
+                return;
+
+            _context = null;
+            context.RestorePhase(_previousPhase);
+        }
+    }
+
     /// <summary>
     /// Exception thrown when engine invariants are violated.
     /// </summary>
@@ -181,7 +225,7 @@ namespace FenBrowser.Core.Engine
         public EngineInvariantException(string message) : base(message) { }
         public EngineInvariantException(string message, Exception inner) : base(message, inner) { }
     }
-    
+
     /// <summary>
     /// Exception thrown when layout fails to converge within iteration limit.
     /// </summary>
@@ -189,8 +233,8 @@ namespace FenBrowser.Core.Engine
     {
         public int PassCount { get; }
         public int MaxPasses { get; }
-        
-        public LayoutConvergenceException(int passCount, int maxPasses) 
+
+        public LayoutConvergenceException(int passCount, int maxPasses)
             : base($"Layout failed to converge after {passCount} passes (max: {maxPasses})")
         {
             PassCount = passCount;

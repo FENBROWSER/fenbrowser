@@ -31,14 +31,28 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// The current node.
         /// </summary>
-        public Node CurrentNode { get; set; }
+        private Node _currentNode;
+
+        public Node CurrentNode
+        {
+            get => _currentNode;
+            set
+            {
+                if (value == null)
+                    throw new ArgumentNullException(nameof(value));
+                if (!IsInclusiveDescendantOfRoot(value))
+                    throw new DomException(DomExceptionNames.NotFoundError,
+                        "CurrentNode must stay within the TreeWalker root.");
+                _currentNode = value;
+            }
+        }
 
         public TreeWalker(Node root, uint whatToShow = 0xFFFFFFFF, NodeFilter filter = null)
         {
             Root = root ?? throw new ArgumentNullException(nameof(root));
             WhatToShow = whatToShow;
             Filter = filter;
-            CurrentNode = root;
+            _currentNode = root;
         }
 
         /// <summary>
@@ -265,6 +279,17 @@ namespace FenBrowser.Core.Dom.V2
                 return Filter(node);
 
             return NodeFilterResult.Accept;
+        }
+
+        private bool IsInclusiveDescendantOfRoot(Node node)
+        {
+            for (var current = node; current != null; current = current.ParentNode)
+            {
+                if (ReferenceEquals(current, Root))
+                    return true;
+            }
+
+            return false;
         }
     }
 

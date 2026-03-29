@@ -479,7 +479,33 @@ namespace FenBrowser.Core.Dom.V2
             UpdateConnectedFlag();
         }
 
-        protected virtual void OnParentChanged(Node oldParent, Node newParent) { }
+        protected virtual void OnParentChanged(Node oldParent, Node newParent)
+        {
+            var newScope = ResolveTreeScope(newParent);
+            if (!ReferenceEquals(_treeScope, newScope))
+            {
+                UpdateTreeScopeRecursive(newScope);
+            }
+        }
+
+        private static TreeScope ResolveTreeScope(Node node)
+        {
+            return node switch
+            {
+                null => null,
+                ShadowRoot shadowRoot => shadowRoot._treeScope,
+                _ => node._treeScope
+            };
+        }
+
+        private void UpdateTreeScopeRecursive(TreeScope newScope)
+        {
+            _treeScope = newScope;
+            for (var child = FirstChild; child != null; child = child._nextSibling)
+            {
+                child.UpdateTreeScopeRecursive(newScope);
+            }
+        }
 
         private void UpdateConnectedFlag()
         {

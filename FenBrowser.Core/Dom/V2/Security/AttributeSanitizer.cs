@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using FenBrowser.Core.Accessibility;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Dom.V2.Security
 {
@@ -154,7 +155,7 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (StrictMode && BlockInlineEventHandlersInStrictMode && IsEventHandler(name))
             {
                 if (LogBlocked)
-                    System.Diagnostics.Debug.WriteLine($"[Security] Blocked event handler: {name}");
+                    LogBlockedDecision(name, value, "event-handler-blocked");
 
                 sanitizedValue = "";
                 return AttributeValidationResult.Sanitize("Event handler values blocked in strict mode");
@@ -188,8 +189,9 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (name.StartsWith("aria-", StringComparison.OrdinalIgnoreCase))
             {
                 if (!AriaSpec.IsValidPropertyValue(name, value) && LogBlocked)
-                    System.Diagnostics.Debug.WriteLine(
-                        $"[Accessibility] Invalid value '{value}' for {name} (treating as missing)");
+                    FenLogger.Warn(
+                        $"[AttributeSanitizer] Invalid ARIA value treated as missing. name={name}, value={value}",
+                        LogCategory.Accessibility);
                 // Do NOT block or sanitize — ARIA spec requires graceful degradation
             }
 
@@ -249,7 +251,7 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (JavaScriptPattern.IsMatch(trimmed))
             {
                 if (LogBlocked)
-                    System.Diagnostics.Debug.WriteLine($"[Security] Blocked javascript: URL");
+                    LogBlockedDecision(null, trimmed, "javascript-url");
                 sanitizedUrl = "";
                 return AttributeValidationResult.Sanitize("javascript: URLs are blocked");
             }
@@ -258,7 +260,7 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (VbScriptPattern.IsMatch(trimmed))
             {
                 if (LogBlocked)
-                    System.Diagnostics.Debug.WriteLine($"[Security] Blocked vbscript: URL");
+                    LogBlockedDecision(null, trimmed, "vbscript-url");
                 sanitizedUrl = "";
                 return AttributeValidationResult.Sanitize("vbscript: URLs are blocked");
             }
@@ -271,7 +273,7 @@ namespace FenBrowser.Core.Dom.V2.Security
                 if (!AllowedDataMimeTypes.Contains(mimeType))
                 {
                     if (LogBlocked)
-                        System.Diagnostics.Debug.WriteLine($"[Security] Blocked data: URL with mime type: {mimeType}");
+                        LogBlockedDecision(null, trimmed, $"data-url-mime-blocked:{mimeType}");
                     sanitizedUrl = "";
                     return AttributeValidationResult.Sanitize($"data: URLs with mime type '{mimeType}' are blocked");
                 }
@@ -350,6 +352,13 @@ namespace FenBrowser.Core.Dom.V2.Security
             return modified
                 ? AttributeValidationResult.Sanitize("Dangerous URLs in style removed")
                 : AttributeValidationResult.Valid();
+        }
+
+        private static void LogBlockedDecision(string attributeName, string value, string reason)
+        {
+            FenLogger.Warn(
+                $"[AttributeSanitizer] Blocked or sanitized attribute content. reason={reason}, attribute={attributeName ?? "(n/a)"}, value={value ?? string.Empty}",
+                LogCategory.Security);
         }
     }
 

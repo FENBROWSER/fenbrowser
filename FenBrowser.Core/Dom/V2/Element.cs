@@ -425,7 +425,7 @@ namespace FenBrowser.Core.Dom.V2
             if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
-                    _treeScope?.UnregisterId(oldValue);
+                    _treeScope?.UnregisterId(oldValue, this);
                 if (!string.IsNullOrEmpty(attr.Value))
                     _treeScope?.RegisterId(attr.Value, this);
 
@@ -480,7 +480,7 @@ namespace FenBrowser.Core.Dom.V2
             if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
-                    _treeScope?.UnregisterId(oldValue);
+                    _treeScope?.UnregisterId(oldValue, this);
                 _flags &= ~NodeFlags.HasId;
             }
 

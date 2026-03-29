@@ -13,6 +13,8 @@ namespace FenBrowser.Core.Dom.V2
     /// </summary>
     public sealed class NodeIterator
     {
+        private Document _owningDocument;
+
         /// <summary>
         /// The root of the iteration.
         /// </summary>
@@ -66,7 +68,11 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// Detaches the iterator (no-op in modern browsers).
         /// </summary>
-        public void Detach() { }
+        public void Detach()
+        {
+            _owningDocument?.UnregisterNodeIterator(this);
+            _owningDocument = null;
+        }
 
         private Node Traverse(bool next)
         {
@@ -221,6 +227,11 @@ namespace FenBrowser.Core.Dom.V2
                     return true;
             }
             return false;
+        }
+
+        internal void Attach(Document ownerDocument)
+        {
+            _owningDocument = ownerDocument;
         }
     }
 }

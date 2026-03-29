@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace FenBrowser.Core;
@@ -19,4 +21,14 @@ public interface INetworkService
     /// Fetches content as string.
     /// </summary>
     Task<string> GetStringAsync(string url);
+
+    /// <summary>
+    /// Fetches content from an already-validated absolute URI.
+    /// </summary>
+    Task<Stream> GetStreamAsync(Uri uri, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fetches textual content from an already-validated absolute URI.
+    /// </summary>
+    Task<string> GetStringAsync(Uri uri, CancellationToken cancellationToken = default);
 }

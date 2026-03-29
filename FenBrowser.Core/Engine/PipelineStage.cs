@@ -111,6 +111,64 @@ namespace FenBrowser.Core.Engine
         }
 
         /// <summary>
+        /// Returns true when a pipeline transition respects the sequential stage order.
+        /// </summary>
+        public static bool IsValidTransition(this PipelineStage current, PipelineStage next)
+        {
+            if (current == next)
+                return true;
+
+            if (current == PipelineStage.Idle)
+                return next == PipelineStage.Tokenizing;
+
+            if (next == PipelineStage.Idle)
+                return true;
+
+            return (int)next == (int)current + 1;
+        }
+
+        public static PipelineStage? GetNextStage(this PipelineStage current)
+        {
+            if (current == PipelineStage.Presenting)
+                return null;
+
+            if (current == PipelineStage.Idle)
+                return PipelineStage.Tokenizing;
+
+            return (PipelineStage)((int)current + 1);
+        }
+
+        public static PipelineStage? GetPreviousStage(this PipelineStage current)
+        {
+            if (current == PipelineStage.Idle)
+                return null;
+
+            if (current == PipelineStage.Tokenizing)
+                return PipelineStage.Idle;
+
+            return (PipelineStage)((int)current - 1);
+        }
+
+        /// <summary>
+        /// Returns the name of the expected input data type for this stage.
+        /// </summary>
+        public static string InputTypeName(this PipelineStage stage)
+        {
+            return stage switch
+            {
+                PipelineStage.Idle => "None",
+                PipelineStage.Tokenizing => "DocumentBytes",
+                PipelineStage.Parsing => "TokenStream",
+                PipelineStage.Styling => "DOMTree",
+                PipelineStage.Layout => "StyleTree",
+                PipelineStage.Painting => "LayoutTree",
+                PipelineStage.Rasterizing => "DisplayList",
+                PipelineStage.Presenting => "RasterOutput",
+                _ => "Unknown"
+            };
+        }
+
+        /// <summary>
         /// Returns the name of the output data type for this stage.
         /// </summary>
         public static string OutputTypeName(this PipelineStage stage)

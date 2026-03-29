@@ -418,6 +418,8 @@ namespace FenBrowser.Core.Dom.V2
             // Mark inserted node as style-dirty so incremental recascade picks it up
             node.MarkDirty(InvalidationKind.Style);
 
+            InvalidateStructuralCachesAfterMutation();
+
             // Notify observers
             NotifyChildListMutation(null, node);
 
@@ -462,6 +464,8 @@ namespace FenBrowser.Core.Dom.V2
             // Mark inserted node as style-dirty so incremental recascade picks it up
             node.MarkDirty(InvalidationKind.Style);
 
+            InvalidateStructuralCachesAfterMutation();
+
             // Notify observers
             NotifyChildListMutation(null, node);
 
@@ -496,11 +500,15 @@ namespace FenBrowser.Core.Dom.V2
 
         private Node RemoveChildInternal(Node child)
         {
+            var owningDocument = child._ownerDocument;
+            owningDocument?.NotifyNodeRemoved(child);
+
             _children.Remove(child);
             child.SetParent(null);
 
             // Invalidate cache
             InvalidateChildCache();
+            InvalidateStructuralCachesAfterMutation();
 
             // Mark parent style-dirty: removal may affect sibling selectors
             this.MarkDirty(InvalidationKind.Style);
@@ -514,6 +522,23 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             return child;
+        }
+
+        private void InvalidateStructuralCachesAfterMutation()
+        {
+            var root = GetRootNode();
+            switch (root)
+            {
+                case Document document:
+                    document.InvalidateIdIndex();
+                    break;
+                case ShadowRoot shadowRoot:
+                    shadowRoot.InvalidateStructureCaches();
+                    break;
+                case DocumentFragment fragment:
+                    fragment.InvalidateIdIndex();
+                    break;
+            }
         }
 
         private void AdoptNode(Node node)

@@ -67,7 +67,7 @@ namespace FenBrowser.Core
         /// <summary>
         /// Respect system proxy settings. Default: false to avoid dev environments that inject a dead 127.0.0.1:9 proxy.
         /// </summary>
-        public bool UseSystemProxy { get; set; } = true;
+        public bool UseSystemProxy { get; set; } = false;
 
         /// <summary>
         /// If true, SSL/TLS certificate errors are ignored (for development/offline lab environments).
@@ -187,6 +187,8 @@ namespace FenBrowser.Core
         /// </summary>
         public Version GetPreferredHttpVersion()
         {
+            ValidateOrThrow();
+
             if (EnableHttp3)
                 return System.Net.HttpVersion.Version30;
             if (EnableHttp2)
@@ -199,6 +201,8 @@ namespace FenBrowser.Core
         /// </summary>
         public System.Net.DecompressionMethods GetDecompressionMethods()
         {
+            ValidateOrThrow();
+
             var methods = System.Net.DecompressionMethods.None;
 
             if (EnableBrotli)
@@ -209,6 +213,37 @@ namespace FenBrowser.Core
                 methods |= System.Net.DecompressionMethods.Deflate;
 
             return methods;
+        }
+
+        /// <summary>
+        /// Validate the active configuration and fail fast on nonsensical values.
+        /// </summary>
+        public void ValidateOrThrow()
+        {
+            if (MaxConnectionsPerServer < 1)
+                throw new InvalidOperationException("NetworkConfiguration.MaxConnectionsPerServer must be at least 1.");
+            if (ConnectionTimeoutSeconds < 1)
+                throw new InvalidOperationException("NetworkConfiguration.ConnectionTimeoutSeconds must be at least 1 second.");
+            if (DocumentTimeoutSeconds < 1)
+                throw new InvalidOperationException("NetworkConfiguration.DocumentTimeoutSeconds must be at least 1 second.");
+            if (ResourceTimeoutSeconds < 1)
+                throw new InvalidOperationException("NetworkConfiguration.ResourceTimeoutSeconds must be at least 1 second.");
+            if (MaxImageCacheBytes < 0 || MaxTextCacheBytes < 0 || MaxDiskCacheBytes < 0)
+                throw new InvalidOperationException("Network cache limits cannot be negative.");
+            if (MaxImageCacheCount < 0 || MaxTextCacheCount < 0)
+                throw new InvalidOperationException("Network cache entry limits cannot be negative.");
+            if (CacheTTL < TimeSpan.Zero)
+                throw new InvalidOperationException("NetworkConfiguration.CacheTTL cannot be negative.");
+            if (LazyLoadThresholdPx < 0)
+                throw new InvalidOperationException("NetworkConfiguration.LazyLoadThresholdPx cannot be negative.");
+            if (MaxConcurrentLazyLoads < 1)
+                throw new InvalidOperationException("NetworkConfiguration.MaxConcurrentLazyLoads must be at least 1.");
+            if (TabSuspensionMinutes < 0)
+                throw new InvalidOperationException("NetworkConfiguration.TabSuspensionMinutes cannot be negative.");
+            if (MinActiveTabs < 1)
+                throw new InvalidOperationException("NetworkConfiguration.MinActiveTabs must be at least 1.");
+            if (AggressiveSuspensionThreshold <= 0)
+                throw new InvalidOperationException("NetworkConfiguration.AggressiveSuspensionThreshold must be positive.");
         }
 
         /// <summary>
@@ -225,6 +260,8 @@ namespace FenBrowser.Core
             EnableBrotli = true;
             EnableGzip = true;
             EnableDeflate = true;
+            UseSystemProxy = false;
+            IgnoreCertificateErrors = false;
             MaxImageCacheBytes = 100 * 1024 * 1024;
             MaxTextCacheBytes = 50 * 1024 * 1024;
             MaxImageCacheCount = 500;

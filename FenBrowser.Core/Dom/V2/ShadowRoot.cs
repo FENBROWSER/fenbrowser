@@ -2,6 +2,7 @@
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System.Collections.Generic;
+using System.Linq;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -36,6 +37,8 @@ namespace FenBrowser.Core.Dom.V2
         /// https://dom.spec.whatwg.org/#dom-shadowroot-host
         /// </summary>
         public Element Host { get; }
+
+        private Element _activeElement;
 
         /// <summary>
         /// Creates a new ShadowRoot attached to the given host element.
@@ -117,7 +120,21 @@ namespace FenBrowser.Core.Dom.V2
         {
             _adoptedStylesheets ??= new List<object>();
             _adoptedStylesheets.Clear();
-            _adoptedStylesheets.AddRange(stylesheets);
+            if (stylesheets == null)
+            {
+                return;
+            }
+
+            foreach (var stylesheet in stylesheets)
+            {
+                if (stylesheet == null)
+                    throw new ArgumentNullException(nameof(stylesheets), "Adopted stylesheets cannot contain null entries.");
+
+                if (_adoptedStylesheets.Contains(stylesheet))
+                    continue;
+
+                _adoptedStylesheets.Add(stylesheet);
+            }
         }
 
         // --- Active Element ---
@@ -125,7 +142,24 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// The currently focused element within this shadow tree.
         /// </summary>
-        public Element ActiveElement { get; set; }
+        public Element ActiveElement
+        {
+            get => _activeElement;
+            set
+            {
+                if (value == null)
+                {
+                    _activeElement = null;
+                    return;
+                }
+
+                if (!IsDescendantOfShadowRoot(value))
+                    throw new DomException(DomExceptionNames.NotFoundError,
+                        "ActiveElement must belong to this shadow root.");
+
+                _activeElement = value;
+            }
+        }
 
         // --- innerHTML ---
 
@@ -180,5 +214,16 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         public override string ToString() => $"#shadow-root ({Mode})";
+
+        internal void InvalidateStructureCaches()
+        {
+            InvalidateSlotCache();
+            _treeScope?.InvalidateIdIndex();
+        }
+
+        private bool IsDescendantOfShadowRoot(Node node)
+        {
+            return ReferenceEquals(node?.GetRootNode(), this);
+        }
     }
 }

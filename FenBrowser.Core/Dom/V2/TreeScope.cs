@@ -71,6 +71,9 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(id) || element == null)
                 return;
 
+            if (_idIndexDirty)
+                return;
+
             _idIndex ??= new Dictionary<string, Element>(StringComparer.Ordinal);
 
             // First element wins (per spec)
@@ -81,12 +84,18 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// Unregisters an element's ID from this tree scope.
         /// </summary>
-        public void UnregisterId(string id)
+        public void UnregisterId(string id, Element element = null)
         {
             if (string.IsNullOrEmpty(id) || _idIndex == null)
                 return;
 
-            _idIndex.Remove(id);
+            if (!_idIndex.TryGetValue(id, out var existing))
+                return;
+
+            if (element == null || ReferenceEquals(existing, element))
+            {
+                _idIndexDirty = true;
+            }
         }
 
         /// <summary>
@@ -101,6 +110,11 @@ namespace FenBrowser.Core.Dom.V2
         {
             _idIndex ??= new Dictionary<string, Element>(StringComparer.Ordinal);
             _idIndex.Clear();
+
+            if (_root is Element rootElement && !string.IsNullOrEmpty(rootElement.Id))
+            {
+                _idIndex[rootElement.Id] = rootElement;
+            }
 
             foreach (var node in _root.Descendants())
             {
