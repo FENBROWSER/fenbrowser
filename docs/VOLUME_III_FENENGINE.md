@@ -5842,3 +5842,35 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - the screenshot is no longer blank; the Google page shell, doodle, search chrome, language strip, and footer now paint visibly in the live host path.
     - the active Debug diagnostics surface still does not emit a fresh `raw_source_*.html` or `engine_source_*.html` artifact, and the structured host log remains minimal.
     - This closes the blank-frame rendering blocker but leaves runtime diagnostic completeness as an open P1 item.
+
+## 2.193 P1 Runtime Diagnostic Closure (2026-03-30)
+
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `BrowserHost` now captures engine-source and rendered-text diagnostics on the live repaint seam with per-navigation guards, instead of depending only on late post-navigation execution.
+  - Repaint-driven capture now waits for a meaningfully populated DOM/text surface before emitting artifacts, which prevents the old truncated-shell snapshots from becoming the only engine evidence for a navigation.
+  - The post-render seam still forces a final capture for the current navigation, so diagnostics do not disappear just because scripts or image work keep the page active for longer.
+  - Engine snapshot generation now prefers the browser's fast DOM-native serialization path (`doctype` + `OuterHTML` / `ToHtml`) before falling back to the generic serializer, which removes the earlier high-risk diagnostic stall point on large pages.
+
+- `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs`
+  - The Google snapshot regression now resolves `engine_source_*.html` from workspace-root `logs` first, with the older host-bin log directory retained only as a compatibility fallback.
+
+- Why this mattered:
+  - P1's last open blocker was not the renderer anymore; it was the truthfulness of the runtime evidence.
+  - A production browser cannot claim first-class diagnostics if the visible frame paints correctly but the engine snapshot, rendered text snapshot, and structured logs are missing or emitted into the wrong location.
+
+- Verification
+  - `dotnet build FenBrowser.sln -nologo`: pass on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~RenderWatchdogTests"`: pass (`6/6`) on `2026-03-30`.
+  - Required host runtime check on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_003122.html`
+    - `logs/engine_source_20260330_003123.html`
+    - `logs/rendered_text_20260330_003123.txt`
+    - `logs/fenbrowser_20260330_003121.log`
+    - `logs/fenbrowser_20260330_003121.jsonl`
+  - Runtime outcome:
+    - the screenshot remains visibly painted with the Google homepage shell, search chrome, language strip, top navigation, and footer.
+    - the engine snapshot is now full-sized (`190552` bytes) instead of the earlier truncated partial shell.
+    - the verification report now records `Raw Path`, `Engine Path`, and `Text Path` in the same live run.
+    - This closes the final open P1 blocker.
