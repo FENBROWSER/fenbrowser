@@ -35,7 +35,7 @@ namespace FenBrowser.Core
 
     public class LogSettings
     {
-        public bool EnableLogging { get; set; } = false;
+        public bool EnableLogging { get; set; } = true;
         public int EnabledCategories { get; set; } = -1;
         public int MinimumLevel { get; set; } = (int)FenBrowser.Core.Logging.LogLevel.Info;
         public bool LogToFile { get; set; } = true;
@@ -48,7 +48,7 @@ namespace FenBrowser.Core
         /// <summary>
         /// Path for log files. Defaults to "logs" folder in the current execution directory.
         /// </summary>
-        public string LogPath { get; set; } = Path.Combine(AppContext.BaseDirectory, "logs");
+        public string LogPath { get; set; } = GetDefaultLogPath();
 
         internal void Normalize()
         {
@@ -61,10 +61,30 @@ namespace FenBrowser.Core
             if (MemoryBufferSize < 1)
                 MemoryBufferSize = 1000;
 
-            if (string.IsNullOrWhiteSpace(LogPath))
+            var legacyBaseDirectoryPath = Path.Combine(AppContext.BaseDirectory, "logs");
+            if (string.IsNullOrWhiteSpace(LogPath) ||
+                string.Equals(Path.GetFullPath(LogPath), Path.GetFullPath(legacyBaseDirectoryPath), StringComparison.OrdinalIgnoreCase))
             {
-                LogPath = Path.Combine(AppContext.BaseDirectory, "logs");
+                LogPath = GetDefaultLogPath();
             }
+        }
+
+        private static string GetDefaultLogPath()
+        {
+            try
+            {
+                var cwd = Directory.GetCurrentDirectory();
+                if (!string.IsNullOrWhiteSpace(cwd))
+                {
+                    return Path.Combine(cwd, "logs");
+                }
+            }
+            catch
+            {
+                // Fall back to AppContext below.
+            }
+
+            return Path.Combine(AppContext.BaseDirectory, "logs");
         }
     }
 

@@ -75,6 +75,7 @@ namespace FenBrowser.Core.Logging
                 Instance._maxLogFileBytes = Math.Max(1, settings.MaxLogFileSizeMB) * 1024L * 1024L;
                 Instance._maxArchivedFiles = Math.Max(1, settings.MaxArchivedFiles);
                 Instance._mirrorStructuredLogs = settings.MirrorStructuredLogs;
+                StructuredLogger.Initialize(logPath);
                 
                 System.Diagnostics.Debug.WriteLine($"[LogManager] Initialized at: {Instance._logFilePath}");
             }

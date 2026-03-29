@@ -889,3 +889,22 @@ _End of Volume II_
   - The generator tool now writes `webidl-bindings-manifest.json`, removes stale generated outputs, supports `--verify`, and reports parse errors with file-relative attribution.
   - This hardens the binding pipeline from "generated breadth exists" toward "generated ownership is reproducible and auditable".
 
+### 1.45 Workspace-Root Diagnostics Defaults And Structured Logger Path Unification (2026-03-30)
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/Logging/LogManager.cs`
+- `FenBrowser.Core/Logging/StructuredLogger.cs`
+- `BrowserSettings.LogSettings` now defaults logging on for real browser runs and normalizes the legacy `AppContext.BaseDirectory/logs` default back to workspace-root `logs`, so clean-state debug cycles stop drifting into host-bin folders.
+- `LogManager.InitializeFromSettings()` now initializes `StructuredLogger` with the resolved active log path, which makes raw-source dumps, engine snapshots, rendered-text snapshots, and module log files share one authoritative diagnostics root.
+- `StructuredLogger` now emits the runtime fetch artifact as `raw_source_*.html`, matching the verification contract and avoiding the older `network_fetch_*.html` naming drift on the live host path.
+- Why this mattered:
+  - the old split-path behavior produced thin or misleading runtime evidence because some artifacts landed under repo-root `logs` while others still resolved relative to `AppContext.BaseDirectory`.
+  - production logging cannot be first-class if the artifact root itself is unstable.
+- Verification:
+  - `dotnet build FenBrowser.sln -nologo`: pass on `2026-03-30`.
+  - required host cycle on `2026-03-30` emitted unified workspace-root diagnostics including:
+    - `logs/raw_source_20260330_003122.html`
+    - `logs/engine_source_20260330_003123.html`
+    - `logs/rendered_text_20260330_003123.txt`
+    - `logs/fenbrowser_20260330_003121.log`
+    - `logs/fenbrowser_20260330_003121.jsonl`
+
