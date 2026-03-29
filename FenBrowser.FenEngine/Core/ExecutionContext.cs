@@ -133,7 +133,7 @@ namespace FenBrowser.FenEngine.Core
             if (!Limits.CheckCallStack(CallStackDepth))
             {
                 throw new Errors.FenResourceError(
-                    $"Maximum call stack size exceeded ({Limits.MaxCallStackDepth})");
+                    $"RangeError: Maximum call stack size exceeded ({Limits.MaxCallStackDepth})");
             }
         }
 
@@ -142,7 +142,7 @@ namespace FenBrowser.FenEngine.Core
             if (!ShouldContinue)
             {
                 throw new Errors.FenTimeoutError(
-                    $"Script execution timeout ({Limits.MaxExecutionTime.TotalSeconds}s)");
+                    $"Error: Script execution timeout ({Limits.MaxExecutionTime.TotalSeconds}s)");
             }
         }
 

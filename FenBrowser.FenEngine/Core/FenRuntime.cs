@@ -46,6 +46,7 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _domDocumentPrototype;
         private FenObject _domElementPrototype;
         private FenObject _domHtmlElementPrototype;
+        private FenObject _domHtmlImageElementPrototype;
         private FenObject _domTextPrototype;
         private FenObject _domCommentPrototype;
         private FenObject _domAttrPrototype;
@@ -265,12 +266,33 @@ namespace FenBrowser.FenEngine.Core
 
         internal FenValue CreateThrownErrorValue(ErrorType errorType, string message)
         {
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                var colonIndex = message.IndexOf(':');
+                if (colonIndex > 0)
+                {
+                    var prefixedName = message.Substring(0, colonIndex);
+                    if (string.Equals(prefixedName, "Error", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "TypeError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "RangeError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "ReferenceError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "SyntaxError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "EvalError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "URIError", StringComparison.Ordinal) ||
+                        string.Equals(prefixedName, "SecurityError", StringComparison.Ordinal))
+                    {
+                        return CreateThrownErrorValue(prefixedName, message);
+                    }
+                }
+            }
+
             string errorName = errorType switch
             {
                 ErrorType.Type => "TypeError",
                 ErrorType.Range => "RangeError",
                 ErrorType.Reference => "ReferenceError",
                 ErrorType.Syntax => "SyntaxError",
+                ErrorType.Security => "SecurityError",
                 _ => "Error"
             };
 
@@ -7811,6 +7833,14 @@ namespace FenBrowser.FenEngine.Core
                 return CreateInterfaceConstructor(name, prototype);
             }
 
+            FenValue CreateImageConstructorValue(FenObject prototype)
+            {
+                var ctor = new FenFunction("Image", (args, thisVal) => CreateImageElementValue(args));
+                ctor.Prototype = prototype;
+                ctor.Set("prototype", FenValue.FromObject(prototype));
+                return FenValue.FromFunction(ctor);
+            }
+
             // Provide minimal constructor interfaces required by baseline DOM WPT files.
             var nodePrototype = new FenObject();
             var nodeCtorFn = new FenFunction("Node", (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject()));
@@ -7903,6 +7933,17 @@ namespace FenBrowser.FenEngine.Core
             _domHtmlElementPrototype = htmlElementPrototype;
             SetGlobal("HTMLElement", htmlElementCtorVal);
             DefineWindowInterface(window, "HTMLElement", htmlElementCtorVal);
+
+            var htmlImageElementPrototype = new FenObject();
+            htmlImageElementPrototype.InternalClass = "HTMLImageElementPrototype";
+            htmlImageElementPrototype.SetPrototype(htmlElementPrototype);
+            _domHtmlImageElementPrototype = htmlImageElementPrototype;
+            var imageCtorVal = CreateImageConstructorValue(htmlImageElementPrototype);
+            htmlImageElementPrototype.SetBuiltin("constructor", imageCtorVal);
+            SetGlobal("Image", imageCtorVal);
+            SetGlobal("HTMLImageElement", imageCtorVal);
+            DefineWindowInterface(window, "Image", imageCtorVal);
+            DefineWindowInterface(window, "HTMLImageElement", imageCtorVal);
 
             var documentPrototype = new FenObject();
             documentPrototype.InternalClass = "DocumentPrototype";
@@ -15877,6 +15918,95 @@ namespace FenBrowser.FenEngine.Core
                 RegisterLegacyNamedGlobals(child);
             }
         }
+
+        private FenValue CreateImageElementValue(FenValue[] args)
+        {
+            FenValue imageValue = FenValue.Null;
+
+            if (GetGlobal("document") is FenValue documentValue &&
+                documentValue.IsObject &&
+                documentValue.AsObject() is DocumentWrapper documentWrapper)
+            {
+                var currentNode = documentWrapper.Node;
+                var ownerDocument = currentNode as Document ?? currentNode.OwnerDocument;
+                var imageElement = ownerDocument != null ? ownerDocument.CreateElement("img") : new Element("img");
+                imageValue = DomWrapperFactory.Wrap(imageElement, _context);
+            }
+            else if (_domBridge != null)
+            {
+                imageValue = _domBridge.CreateElement("img");
+            }
+            else
+            {
+                imageValue = DomWrapperFactory.Wrap(new Element("img"), _context);
+            }
+
+            if (imageValue.IsObject)
+            {
+                var imageObject = imageValue.AsObject();
+                if (_domHtmlImageElementPrototype != null)
+                {
+                    imageObject.SetPrototype(_domHtmlImageElementPrototype);
+                }
+
+                if (args != null && args.Length > 0)
+                {
+                    imageObject.Set("width", args[0], _context);
+                }
+
+                if (args != null && args.Length > 1)
+                {
+                    imageObject.Set("height", args[1], _context);
+                }
+            }
+
+            return imageValue;
+        }
+
+        private bool TryGetPrimaryGlobalObject(out FenObject globalObject)
+        {
+            globalObject = _windowObject;
+            if (globalObject != null)
+            {
+                return true;
+            }
+
+            if (_globalEnv.Get("globalThis") is FenValue globalThisValue &&
+                globalThisValue.IsObject &&
+                globalThisValue.AsObject() is FenObject globalThisObject)
+            {
+                globalObject = globalThisObject;
+                return true;
+            }
+
+            globalObject = null;
+            return false;
+        }
+
+        private void HydratePrimaryGlobalObject(FenObject globalObject)
+        {
+            if (globalObject == null)
+            {
+                return;
+            }
+
+            foreach (var bindingName in _globalEnv.GetOwnBindingNames())
+            {
+                var bindingValue = _globalEnv.Get(bindingName);
+                globalObject.Set(bindingName, bindingValue);
+            }
+        }
+
+        private void MirrorBindingOntoPrimaryGlobalObject(string name, FenValue value)
+        {
+            if (!TryGetPrimaryGlobalObject(out var globalObject))
+            {
+                return;
+            }
+
+            globalObject.Set(name, value);
+        }
+
         public void SetGlobal(string name, FenValue value)
         {
             if ((string.Equals(name, "window", StringComparison.Ordinal) || string.Equals(name, "globalThis", StringComparison.Ordinal)) && value.IsObject)
@@ -15885,6 +16015,26 @@ namespace FenBrowser.FenEngine.Core
             }
 
             _globalEnv.Set(name, value);
+
+            if (string.Equals(name, "window", StringComparison.Ordinal) &&
+                value.IsObject &&
+                value.AsObject() is FenObject windowObject)
+            {
+                _windowObject = windowObject;
+                HydratePrimaryGlobalObject(windowObject);
+                return;
+            }
+
+            if (string.Equals(name, "globalThis", StringComparison.Ordinal) &&
+                value.IsObject &&
+                value.AsObject() is FenObject globalThisObject &&
+                _windowObject == null)
+            {
+                HydratePrimaryGlobalObject(globalThisObject);
+                return;
+            }
+
+            MirrorBindingOntoPrimaryGlobalObject(name, value);
         }
 
         private void NormalizeGlobalIntrinsicFunctionPrototypes(FenObject functionPrototype)
@@ -16314,25 +16464,7 @@ namespace FenBrowser.FenEngine.Core
 
         private static bool TryExtractThrownValue(Exception exception, out FenValue thrownValue)
         {
-            thrownValue = FenValue.Undefined;
-            if (exception == null)
-            {
-                return false;
-            }
-
-            var thrownValueProperty = exception.GetType().GetProperty("ThrownValue");
-            if (thrownValueProperty?.PropertyType != typeof(FenValue))
-            {
-                return false;
-            }
-
-            if (thrownValueProperty.GetValue(exception) is FenValue extracted)
-            {
-                thrownValue = extracted;
-                return true;
-            }
-
-            return false;
+            return JsThrownValueException.TryExtract(exception, out thrownValue);
         }
 
         private bool IsGlobalScriptExecution()

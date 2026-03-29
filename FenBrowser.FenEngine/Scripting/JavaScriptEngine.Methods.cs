@@ -36,7 +36,22 @@ namespace FenBrowser.FenEngine.Scripting
                 snippet = snippet.Replace("\n", " ").Replace("\r", "");
                 FenLogger.Debug($"[JS] RunInline (evt={evt} target={target}): {snippet}", LogCategory.JavaScript);
 
-                Evaluate(code);
+                var execution = ExecuteRuntimeScript(
+                    code,
+                    string.IsNullOrWhiteSpace(evt) ? JavaScriptExecutionKind.Inline : JavaScriptExecutionKind.EventHandler,
+                    BuildInlineSourceName(evt, target));
+                if (execution.Exception != null)
+                {
+                    FenLogger.Error($"[JS] RunInline Error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
+                    return false;
+                }
+
+                if (!execution.Succeeded)
+                {
+                    FenLogger.Warn($"[JS] RunInline failed: {execution.Value}", LogCategory.JavaScript);
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -155,7 +170,7 @@ namespace FenBrowser.FenEngine.Scripting
         {
              if (string.IsNullOrWhiteSpace(code)) return;
              FenLogger.Debug($"[JS] ExecuteScriptBlock src={src ?? "inline"}", LogCategory.JavaScript);
-             RunInline(code);
+             ExecuteRuntimeScript(code, JavaScriptExecutionKind.ScriptBlock, src ?? "script-block");
         }
 
         public void RegisterUserFunction(string name, Func<object, object> func)

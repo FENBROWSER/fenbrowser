@@ -35,6 +35,46 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDomAsync_GlobalBootstrapProbe_SeesMathOnWindowAndGlobalThis()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>var x=function(a){var c=[typeof globalThis==='object'&&globalThis,a,typeof window==='object'&&window,typeof self==='object'&&self];for(var i=0;i<c.length;++i){var e=c[i];if(e&&e.Math===Math){globalThis.__bootstrapProbeWindow=e===window;globalThis.__bootstrapProbeGlobalThis=e===globalThis;return e;}}throw Error('b');};x(this);</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__bootstrapProbeWindow"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__bootstrapProbeGlobalThis"));
+            Assert.Equal(true, engine.Evaluate("window.Math === Math"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_ImageConstructorAndImgSrcReflection_AreAvailable()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><img id='hero'><script>var probe=document.getElementById('hero');globalThis.__initialImgSrcType=typeof probe.src;globalThis.__initialImgSrcValue=probe.src;var beacon=new Image(16,8);beacon.src='https://example.com/pixel.png';globalThis.__imageCtorType=typeof Image;globalThis.__imageTagName=beacon.tagName;globalThis.__imageWidth=beacon.width;globalThis.__imageHeight=beacon.height;globalThis.__imageSrc=beacon.src;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("function", engine.Evaluate("globalThis.__imageCtorType")?.ToString());
+            Assert.Equal("string", engine.Evaluate("globalThis.__initialImgSrcType")?.ToString());
+            Assert.Equal(string.Empty, engine.Evaluate("globalThis.__initialImgSrcValue")?.ToString());
+            Assert.Equal("IMG", engine.Evaluate("globalThis.__imageTagName")?.ToString());
+            Assert.Equal("16", engine.Evaluate("String(globalThis.__imageWidth)")?.ToString());
+            Assert.Equal("8", engine.Evaluate("String(globalThis.__imageHeight)")?.ToString());
+            Assert.Equal("https://example.com/pixel.png", engine.Evaluate("globalThis.__imageSrc")?.ToString());
+        }
+
+        [Fact]
         public void WimbCapabilities_GlobalProvidesEncodedCapabilityPayload()
         {
             var engine = new JavaScriptEngine(CreateHost());
@@ -426,6 +466,88 @@ namespace FenBrowser.Tests.Engine
             await engine.SetDomAsync(doc.DocumentElement, baseUri);
 
             Assert.Equal("ok", engine.Evaluate("globalThis.__bundleEvalStatus")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GoogleBootstrapCleanup_IteratesNodeListAndRemovesBlockingLinks()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head>" +
+                "<link id='a' blocking='render' rel='stylesheet' href='/a.css'>" +
+                "<link id='b' blocking='render' rel='stylesheet' href='/b.css'>" +
+                "</head><body>" +
+                "<script>(function(){function cleanup(){const links=document.querySelectorAll('link[blocking=render]');for(const link of links)link.remove();globalThis.__remainingBlockingLinks=document.querySelectorAll('link[blocking=render]').length;}cleanup();})();</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("0", engine.Evaluate("String(globalThis.__remainingBlockingLinks)")?.ToString());
+            Assert.Equal("0", engine.Evaluate("String(document.querySelectorAll('link[blocking=render]').length)")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GoogleViewTransitionBootstrap_AppendsStyleIntoHead()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head></head><body>" +
+                "<script>var __styleNode;function ensureStyle(){__styleNode||(__styleNode=document.createElement('style'),document.head.append(__styleNode));return __styleNode;}ensureStyle().textContent='@view-transition{navigation:auto;}';globalThis.__headStyleCount=document.head.querySelectorAll('style').length;globalThis.__headStyleText=document.head.querySelector('style').textContent;</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__headStyleCount)")?.ToString());
+            Assert.Equal("@view-transition{navigation:auto;}", engine.Evaluate("globalThis.__headStyleText")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GoogleViewTransitionBootstrap_SeesWindowAndDocumentEventTargets()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head></head><body>" +
+                "<script>globalThis.__windowAddEventListenerType=typeof window.addEventListener;globalThis.__documentAddEventListenerType=typeof document.addEventListener;window.addEventListener('pageswap',function(){});window.addEventListener('pagereveal',async function(){});document.addEventListener('click',function(){});</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("function", engine.Evaluate("globalThis.__windowAddEventListenerType")?.ToString());
+            Assert.Equal("function", engine.Evaluate("globalThis.__documentAddEventListenerType")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GoogleViewTransitionBootstrap_NarrowStartupPathRunsWithoutThrow()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head>" +
+                "<link id='render-blocker' blocking='render' rel='stylesheet' href='/a.css'>" +
+                "</head><body>" +
+                "<form><input name='q' value='fen'></form>" +
+                "<script>try{const links=document.querySelectorAll('link[blocking=render]');for(const link of links)link.remove();let styleNode;function ensureStyle(){styleNode||(styleNode=document.createElement('style'),document.head.append(styleNode));return styleNode;}window.addEventListener('pageswap',function(){},{once:true});window.addEventListener('pagereveal',function(){ensureStyle().textContent='@view-transition{navigation:none;}';},{once:true});document.addEventListener('click',function(event){for(const binding of [{i:'data-vt-d',types:[]}]){if(event.target&&event.target.closest&&event.target.closest('['+binding.i+']')){globalThis.__vtClickMatched=true;}}},{capture:true,passive:true});ensureStyle().textContent='@view-transition{navigation:auto;}';globalThis.__googleStartupStatus='ok';}catch(e){globalThis.__googleStartupStatus=String(e&&e.message?e.message:e);}</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("ok", engine.Evaluate("globalThis.__googleStartupStatus")?.ToString());
+            Assert.Equal("@view-transition{navigation:auto;}", engine.Evaluate("document.head.querySelector('style').textContent")?.ToString());
         }
 
         [Fact]

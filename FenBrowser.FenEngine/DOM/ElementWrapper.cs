@@ -108,6 +108,12 @@ namespace FenBrowser.FenEngine.DOM
                 case "height":
                     return FenValue.FromNumber(GetDimension("height"));
 
+                case "src":
+                    return FenValue.FromString(_element.GetAttribute("src") ?? string.Empty);
+
+                case "currentsrc":
+                    return FenValue.FromString(_element.GetAttribute("src") ?? string.Empty);
+
                 case "clientwidth":
                     // clientWidth - inner width without scrollbar (for viewport calculations)
                     // For documentElement, return viewport width
@@ -792,6 +798,21 @@ namespace FenBrowser.FenEngine.DOM
                     _element.SetAttribute("type", value.ToString() ?? string.Empty);
                     break;
 
+                case "src":
+                    _element.SetAttribute("src", value.ToString() ?? string.Empty);
+                    _context?.RequestRender?.Invoke();
+                    break;
+
+                case "width":
+                    _element.SetAttribute("width", value.ToString() ?? string.Empty);
+                    _context?.RequestRender?.Invoke();
+                    break;
+
+                case "height":
+                    _element.SetAttribute("height", value.ToString() ?? string.Empty);
+                    _context?.RequestRender?.Invoke();
+                    break;
+
                 case "checked":
                     if (value.ToBoolean()) _element.SetAttribute("checked", "");
                     else _element.RemoveAttribute("checked");
@@ -820,7 +841,7 @@ namespace FenBrowser.FenEngine.DOM
         public override bool Delete(string key, IExecutionContext context = null) => false;
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "contentEditable", "isContentEditable", "type", "checked", "disabled", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy" };
+            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "contentEditable", "isContentEditable", "type", "checked", "disabled", "src", "currentSrc", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy" };
 
         private string GetContentEditableState()
         {
@@ -1192,6 +1213,9 @@ namespace FenBrowser.FenEngine.DOM
         private void SetTextContent(FenValue value)
         {
             var text = value.ToString();
+
+            // DOM textContent writes must be observable immediately by later JS in the same task.
+            _element.TextContent = text;
             
             // Enqueue mutation (Deferred)
             DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
@@ -2016,11 +2040,14 @@ namespace FenBrowser.FenEngine.DOM
         
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0) return CreateEmptyArray();
+            if (args.Length == 0)
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
             var selector = args[0].ToString();
-            var results = new List<FenValue>();
+            var results = new List<Node>();
             FindAllDescendants(_element, selector, results);
-            return CreateArrayFromResults(results);
+            return FenValue.FromObject(new NodeListWrapper(results, _context));
         }
 
         private Element FindFirstDescendant(Element parent, string selector)
@@ -2036,13 +2063,13 @@ namespace FenBrowser.FenEngine.DOM
              return null;
         }
         
-        private void FindAllDescendants(Element parent, string selector, List<FenValue> results)
+        private void FindAllDescendants(Element parent, string selector, List<Node> results)
         {
              if (parent.ChildNodes == null) return;
              
              foreach (var child in parent.ChildNodes.OfType<Element>())
              {
-                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) results.Add(DomWrapperFactory.Wrap(child, _context));
+                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) results.Add(child);
                  FindAllDescendants(child, selector, results);
              }
         }
@@ -2900,30 +2927,6 @@ namespace FenBrowser.FenEngine.DOM
             return clone != null ? DomWrapperFactory.Wrap(clone, _context) : FenValue.Null;
         }
         
-        /// <summary>
-        /// Create an array-like FenObject from a list of FenValue results
-        /// </summary>
-        private FenValue CreateArrayFromResults(List<FenValue> results)
-        {
-            var arr = new FenObject();
-            for (int i = 0; i < results.Count; i++)
-            {
-                arr.Set(i.ToString(), results[i]);
-            }
-            arr.Set("length", FenValue.FromNumber(results.Count));
-            return FenValue.FromObject(arr);
-        }
-
-        /// <summary>
-        /// Create an empty array-like FenObject
-        /// </summary>
-        private FenValue CreateEmptyArray()
-        {
-            var arr = new FenObject();
-            arr.Set("length", FenValue.FromNumber(0));
-            return FenValue.FromObject(arr);
-        }
-
         private FenValue GetBoundingClientRectMethod(FenValue[] args, FenValue thisVal)
         {
             if (_context == null)

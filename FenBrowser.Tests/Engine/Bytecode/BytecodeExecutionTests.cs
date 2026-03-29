@@ -6,10 +6,12 @@ using FenBrowser.FenEngine.Core.Bytecode;
 using FenBrowser.FenEngine.Core.Bytecode.Compiler;
 using FenBrowser.FenEngine.Core.Bytecode.VM;
 using FenBrowser.FenEngine.Errors;
+using FenBrowser.FenEngine.Security;
 using FenValue = FenBrowser.FenEngine.Core.FenValue;
 using Xunit.Sdk;
 using System.IO;
 using System.Linq;
+using System.Threading;
 
 namespace FenBrowser.Tests.Engine.Bytecode
 {
@@ -42,14 +44,23 @@ namespace FenBrowser.Tests.Engine.Bytecode
             }
             catch (Exception ex)
             {
-                var thrownProp = ex.GetType().GetProperty("ThrownValue");
-                if (thrownProp?.GetValue(ex) is FenValue thrownValue)
+                if (JsThrownValueException.TryExtract(ex, out var thrownValue))
                 {
                     throw new XunitException($"JS exception: {DescribeFenValue(thrownValue)}", ex);
                 }
 
                 throw;
             }
+        }
+
+        private FenValue EvaluateWithLimits(string js, IResourceLimits limits)
+        {
+            var lexer = new Lexer(js);
+            var parser = new Parser(lexer, false);
+            var ast = parser.ParseProgram();
+            var env = new FenEnvironment();
+            var codeBlock = _compiler.Compile(ast);
+            return _vm.Execute(codeBlock, env, CancellationToken.None, limits);
         }
 
         private static string DescribeFenValue(FenValue value)
@@ -95,6 +106,25 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var lexer = new Lexer(js);
             var parser = new Parser(lexer, false);
             return parser.ParseProgram();
+        }
+
+        private sealed class TestResourceLimits : IResourceLimits
+        {
+            public int MaxCallStackDepth { get; set; } = 100;
+            public TimeSpan MaxExecutionTime { get; set; } = TimeSpan.FromSeconds(5);
+            public long MaxInstructionCount { get; set; } = 100_000;
+            public long MaxTotalMemory { get; set; } = 50 * 1024 * 1024;
+            public int MaxStringLength { get; set; } = 1_000_000;
+            public int MaxArrayLength { get; set; } = 100_000;
+            public int MaxObjectProperties { get; set; } = 10_000;
+            public int MaxPropertyChainDepth { get; set; } = 100;
+
+            public bool CheckCallStack(int currentDepth) => currentDepth < MaxCallStackDepth;
+            public bool CheckExecutionTime(TimeSpan elapsed) => elapsed < MaxExecutionTime;
+            public bool CheckMemory(long bytes) => bytes < MaxTotalMemory;
+            public bool CheckString(int length) => length < MaxStringLength;
+            public bool CheckArray(int length) => length < MaxArrayLength;
+            public bool CheckObjectProperties(int count) => count < MaxObjectProperties;
         }
 
         private static string GetRepositoryRoot()
@@ -259,19 +289,62 @@ namespace FenBrowser.Tests.Engine.Bytecode
         [Fact]
         public void Bytecode_StackOverflowProtection_ShouldNotCrashHost()
         {
-            // We haven't implemented function calls in the compiler yet, so we can't fully test 
-            // the infinite recursion JS yet. For Phase 1, just asserting the CallFrame structure exists.
-            var lexer = new Lexer("1;");
-            var parser = new Parser(lexer, false);
-            var ast = parser.ParseProgram();
-            var env = new FenEnvironment();
-            var codeBlock = _compiler.Compile(ast);
+            var result = EvaluateWithDiagnostics(@"
+                var outcome = 'ok';
+                try {
+                    function recurse() { return recurse(); }
+                    recurse();
+                } catch (e) {
+                    outcome = e.name;
+                }
+                outcome;
+            ");
 
-            // Directly invoking call frame mechanisms
-            var frame = new CallFrame(codeBlock, env, 0);
-            Assert.NotNull(frame);
-            Assert.Equal(0, frame.IP);
-            Assert.Equal(0, frame.StackBase);
+            Assert.Equal("RangeError", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_OperandStackOverflow_IsCatchableRangeError()
+        {
+            var args = string.Join(",", Enumerable.Repeat("0", 17000));
+            var result = EvaluateWithDiagnostics($@"
+                var outcome = 'ok';
+                try {{
+                    function noop() {{ return 1; }}
+                    noop({args});
+                }} catch (e) {{
+                    outcome = e.name;
+                }}
+                outcome;
+            ");
+
+            Assert.Equal("RangeError", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_InstructionLimit_DoesNotLeakAcrossExecutions()
+        {
+            var constrainedResult = EvaluateWithLimits(@"
+                var outcome = 'ok';
+                try {
+                    while (true) { }
+                } catch (e) {
+                    outcome = e.name;
+                }
+                outcome;
+            ", new TestResourceLimits { MaxInstructionCount = 64 });
+
+            Assert.Equal("Error", constrainedResult.AsString());
+
+            var recoveryResult = EvaluateWithDiagnostics(@"
+                var total = 0;
+                for (var i = 0; i < 32; i = i + 1) {
+                    total = total + i;
+                }
+                total;
+            ");
+
+            Assert.Equal(496, (int)recoveryResult.AsNumber());
         }
 
         [Fact]
@@ -1059,6 +1132,20 @@ namespace FenBrowser.Tests.Engine.Bytecode
         {
             var ex = Assert.Throws<Exception>(() => Evaluate("with (undefined) { x; }"));
             Assert.Contains("Cannot convert undefined or null to object", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Bytecode_UncaughtTopLevelBoundary_PreservesThrownObject()
+        {
+            var ex = Assert.Throws<Exception>(() => Evaluate("throw { name: 'TypeError', message: 'boom' };"));
+            Assert.Equal(typeof(Exception), ex.GetType());
+            Assert.True(JsThrownValueException.TryExtract(ex, out var thrownValue));
+            Assert.True(thrownValue.IsObject);
+
+            var error = thrownValue.AsObject();
+            Assert.NotNull(error);
+            Assert.Equal("TypeError", error.Get("name").AsString());
+            Assert.Equal("boom", error.Get("message").AsString());
         }
 
         [Fact]

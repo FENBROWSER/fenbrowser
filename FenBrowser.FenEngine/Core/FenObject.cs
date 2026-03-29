@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Engine; // Phase enum
 using FenBrowser.FenEngine.Core.Types;
@@ -65,32 +64,7 @@ namespace FenBrowser.FenEngine.Core
 
         private static bool TryUnwrapJsThrownValue(Exception ex, out FenValue thrownValue)
         {
-            thrownValue = FenValue.Undefined;
-            if (ex == null)
-            {
-                return false;
-            }
-
-            var exType = ex.GetType();
-            if (!string.Equals(exType.Name, "JsUncaughtException", StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            var thrownProp = exType.GetProperty("ThrownValue", BindingFlags.Public | BindingFlags.Instance);
-            if (thrownProp == null || thrownProp.PropertyType != typeof(FenValue))
-            {
-                return false;
-            }
-
-            var raw = thrownProp.GetValue(ex);
-            if (raw is FenValue fen)
-            {
-                thrownValue = fen;
-                return true;
-            }
-
-            return false;
+            return JsThrownValueException.TryExtract(ex, out thrownValue);
         }
 
         private static void RethrowUnwrappedJsValue(Exception ex)
@@ -1046,6 +1020,43 @@ namespace FenBrowser.FenEngine.Core
             }
         }
         
+        /// <summary>
+        /// Enumerate all enumerable string-keyed properties in the prototype chain.
+        /// Used by for...in per ECMA-262 §14.7.5.9. Returns own enumerable keys first,
+        /// then walks the prototype chain, skipping already-seen keys (shadowed properties).
+        /// </summary>
+        public virtual IEnumerable<string> EnumerableKeys(IExecutionContext context = null)
+        {
+            var seen = new HashSet<string>();
+            IObject current = this;
+            while (current != null)
+            {
+                if (current is FenObject fenObj)
+                {
+                    foreach (var key in fenObj.Keys(context))
+                    {
+                        if (seen.Add(key))
+                            yield return key;
+                    }
+                    current = fenObj.GetPrototype();
+                }
+                else
+                {
+                    // For non-FenObject IObject implementations
+                    var keys = current.Keys(context);
+                    if (keys != null)
+                    {
+                        foreach (var key in keys)
+                        {
+                            if (seen.Add(key))
+                                yield return key;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
         /// <summary>
         /// Get all own property names (including non-enumerable).
         /// </summary>
