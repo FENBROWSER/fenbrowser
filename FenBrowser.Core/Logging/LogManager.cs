@@ -147,6 +147,27 @@ namespace FenBrowser.Core.Logging
         }
 
         /// <summary>
+        /// Main structured logging entry point for callers that already have a populated LogEntry.
+        /// </summary>
+        public static void Log(LogEntry entry)
+        {
+            if (entry == null || !IsEnabled(entry.Category, entry.Level))
+            {
+                return;
+            }
+
+            try
+            {
+                Instance.WriteToSinks(entry);
+                LogEntryAdded?.Invoke(entry);
+            }
+            catch
+            {
+                // Never throw from logging
+            }
+        }
+
+        /// <summary>
         /// Log an error with exception details.
         /// </summary>
         public static void LogError(LogCategory category, string message, Exception exception = null)

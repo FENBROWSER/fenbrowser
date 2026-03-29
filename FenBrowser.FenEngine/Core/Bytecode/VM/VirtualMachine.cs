@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Reflection;
 using System.Threading;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
@@ -63,27 +62,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private static bool TryExtractThrownValue(Exception ex, out FenValue thrownValue)
         {
-            thrownValue = FenValue.Undefined;
-            if (ex == null)
-            {
-                return false;
-            }
-
-            var exType = ex.GetType();
-            var thrownProp = exType.GetProperty("ThrownValue", BindingFlags.Public | BindingFlags.Instance);
-            if (thrownProp == null || thrownProp.PropertyType != typeof(FenValue))
-            {
-                return false;
-            }
-
-            var raw = thrownProp.GetValue(ex);
-            if (raw is FenValue fen)
-            {
-                thrownValue = fen;
-                return true;
-            }
-
-            return false;
+            return JsThrownValueException.TryExtract(ex, out thrownValue);
         }
 
         private sealed class BytecodeArrayObject : FenObject
@@ -403,6 +382,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
                 index = value;
                 return true;
+            }
+        }
+
+        private sealed class VmOperandStack
+        {
+            private readonly FenValue[] _items;
+
+            public VmOperandStack(int capacity)
+            {
+                _items = new FenValue[capacity];
+            }
+
+            public FenValue[] Items => _items;
+
+            public ref FenValue this[int index]
+            {
+                [MethodImpl(MethodImplOptions.AggressiveInlining)]
+                get => ref GetReference(index);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private ref FenValue GetReference(int index)
+            {
+                if ((uint)index >= (uint)_items.Length)
+                {
+                    throw CreateOperandStackBoundsException(index, _items.Length);
+                }
+
+                return ref _items[index];
             }
         }
 
@@ -773,9 +781,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private bool _generatorYielded;
         private FenValue _generatorYieldValue;
 
-        // Fixed-size fast heap for operands (prevents boxing and allocation in hot loop)
+        // Fixed-size fast heap for operands. The wrapper preserves the existing indexing shape
+        // while making overflow/underflow explicit JS-visible failures instead of CLR array faults.
         private const int STACK_SIZE = 16384;
-        private readonly FenValue[] _stack = new FenValue[STACK_SIZE];
+        private readonly VmOperandStack _stack = new VmOperandStack(STACK_SIZE);
         private int _sp = 0; // Stack pointer
         private FenValue _completionValue = FenValue.Undefined; // Stores the result of the last evaluated expression
 
@@ -859,18 +868,55 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             if (result.Type != JsValueType.Error) return;
             var msg = result.AsString() ?? string.Empty;
-            var colonIdx = msg.IndexOf(':');
-            if (colonIdx > 0)
+            if (TryParseKnownErrorPrefix(msg, out var errorType, out var errorMessage))
             {
-                var prefix = msg.Substring(0, colonIdx);
-                if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
-                    prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
-                {
-                    ThrowJsError(prefix, msg.Substring(colonIdx + 1).TrimStart());
-                    return;
-                }
+                ThrowJsError(errorType, errorMessage);
+                return;
             }
             ThrowJsError("Error", msg);
+        }
+
+        private static bool TryParseKnownErrorPrefix(string rawMessage, out string errorType, out string errorMessage)
+        {
+            errorType = null;
+            errorMessage = rawMessage ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(rawMessage))
+            {
+                return false;
+            }
+
+            var colonIdx = rawMessage.IndexOf(':');
+            if (colonIdx <= 0)
+            {
+                return false;
+            }
+
+            var prefix = rawMessage.Substring(0, colonIdx);
+            if (!string.Equals(prefix, "Error", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "TypeError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "RangeError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "ReferenceError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "SyntaxError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "URIError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "EvalError", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "SecurityError", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            errorType = prefix;
+            errorMessage = rawMessage.Substring(colonIdx + 1).TrimStart();
+            return true;
+        }
+
+        private static Exception CreateOperandStackBoundsException(int index, int capacity)
+        {
+            if (index < 0)
+            {
+                return new FenInternalError("VM Error: Operand stack underflow.");
+            }
+
+            return new FenResourceError($"RangeError: Maximum operand stack size exceeded ({capacity}).");
         }
 
         private FenValue ResolveNonStrictThisBinding(CallFrame frame)
@@ -923,6 +969,25 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             var code = sourceValue.AsString() ?? string.Empty;
+            var activeRuntime = FenRuntime.GetActiveRuntime();
+            var activeContext = activeRuntime?.Context;
+
+            if (activeContext != null && !activeContext.Permissions.Check(FenBrowser.FenEngine.Security.JsPermissions.Eval))
+            {
+                activeContext.Permissions.LogViolation(
+                    FenBrowser.FenEngine.Security.JsPermissions.Eval,
+                    "direct eval",
+                    "direct eval blocked by permission policy");
+                ThrowJsError(
+                    "EvalError",
+                    "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the current security policy.");
+            }
+
+            if (code.Length > 1_000_000)
+            {
+                ThrowJsError("EvalError", "eval() input exceeds maximum allowed size (1 MB).");
+            }
+
             bool inheritStrict = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
             bool allowNewTarget = (directEvalFlags & DirectEvalAllowNewTargetFlag) != 0;
             bool forceUndefinedNewTarget = (directEvalFlags & DirectEvalForceUndefinedNewTargetFlag) != 0;
@@ -1570,28 +1635,38 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv)
         {
-            return Execute(initialBlock, initialEnv, FenValue.Undefined);
+            return ExecuteInternal(initialBlock, initialEnv, FenValue.Undefined, CancellationToken.None, null);
         }
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, CancellationToken cancellationToken)
         {
-            _cancellationToken = cancellationToken;
-            _instructionsSinceCancelCheck = 0;
-            return Execute(initialBlock, initialEnv, FenValue.Undefined);
+            return ExecuteInternal(initialBlock, initialEnv, FenValue.Undefined, cancellationToken, null);
         }
 
         public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, CancellationToken cancellationToken, Security.IResourceLimits limits)
+        {
+            return ExecuteInternal(initialBlock, initialEnv, FenValue.Undefined, cancellationToken, limits);
+        }
+
+        public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, FenValue initialNewTarget)
+        {
+            return ExecuteInternal(initialBlock, initialEnv, initialNewTarget, CancellationToken.None, null);
+        }
+
+        private FenValue ExecuteInternal(
+            CodeBlock initialBlock,
+            FenEnvironment initialEnv,
+            FenValue initialNewTarget,
+            CancellationToken cancellationToken,
+            Security.IResourceLimits limits)
         {
             _cancellationToken = cancellationToken;
             _instructionsSinceCancelCheck = 0;
             _totalInstructionCount = 0;
             _limits = limits;
+            _generatorYielded = false;
+            _generatorYieldValue = FenValue.Undefined;
             FenObject.ResetAllocatedBytes();
-            return Execute(initialBlock, initialEnv, FenValue.Undefined);
-        }
-
-        public FenValue Execute(CodeBlock initialBlock, FenEnvironment initialEnv, FenValue initialNewTarget)
-        {
             _sp = 0;
             _completionValue = FenValue.Undefined;
             _frameCount = 0;
@@ -1607,7 +1682,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private CallFrame PushFrame(CodeBlock block, FenEnvironment env, int stackBase)
         {
             if (_frameCount >= MAX_FRAMES)
-                throw new FenResourceError("VM Error: Call stack exceeded maximum depth.");
+                throw new FenResourceError($"RangeError: Maximum call stack size exceeded ({MAX_FRAMES}).");
 
             if (block != null && block.LocalSlotCount > 0)
             {
@@ -1674,12 +1749,12 @@ run_loop_restart:
                                 _totalInstructionCount += CANCEL_CHECK_INTERVAL;
                                 if (_totalInstructionCount > _limits.MaxInstructionCount)
                                     throw new Errors.FenResourceError(
-                                        $"Script exceeded maximum instruction count ({_limits.MaxInstructionCount:N0}). Possible infinite loop.");
+                                        $"Error: Script exceeded maximum instruction count ({_limits.MaxInstructionCount:N0}). Possible infinite loop.");
 
                                 long allocatedBytes = FenObject.GetAllocatedBytes();
                                 if (allocatedBytes > _limits.MaxTotalMemory)
                                     throw new Errors.FenResourceError(
-                                        $"Script exceeded memory limit ({_limits.MaxTotalMemory / (1024 * 1024)}MB). Allocated: {allocatedBytes / (1024 * 1024)}MB.");
+                                        $"Error: Script exceeded memory limit ({_limits.MaxTotalMemory / (1024 * 1024)}MB). Allocated: {allocatedBytes / (1024 * 1024)}MB.");
                             }
                         }
 
@@ -2170,7 +2245,7 @@ run_loop_restart:
                                     var args = new FenValue[argCount];
                                     if (argCount > 0)
                                     {
-                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                        Array.Copy(_stack.Items, argStart, args, 0, argCount);
                                     }
 
                                     _sp = argStart - 1; // Pop callee + args
@@ -2186,7 +2261,7 @@ run_loop_restart:
                                     {
                                         // Generator call: capture args and return a suspended GeneratorObject
                                         var genArgs = new FenValue[argCount];
-                                        if (argCount > 0) Array.Copy(_stack, argStart, genArgs, 0, argCount);
+                                        if (argCount > 0) Array.Copy(_stack.Items, argStart, genArgs, 0, argCount);
                                         _sp = argStart - 1;
                                         _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
                                         break;
@@ -2286,7 +2361,7 @@ run_loop_restart:
                                     var args = new FenValue[argCount];
                                     if (argCount > 0)
                                     {
-                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                        Array.Copy(_stack.Items, argStart, args, 0, argCount);
                                     }
 
                                     _sp = argStart - 2; // Pop receiver + callee + args
@@ -2301,7 +2376,7 @@ run_loop_restart:
                                         var genArgs = new FenValue[argCount];
                                         if (argCount > 0)
                                         {
-                                            Array.Copy(_stack, argStart, genArgs, 0, argCount);
+                                            Array.Copy(_stack.Items, argStart, genArgs, 0, argCount);
                                         }
                                         _sp = argStart - 2;
                                         _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
@@ -2419,7 +2494,7 @@ run_loop_restart:
                                     var args = new FenValue[argCount];
                                     if (argCount > 0)
                                     {
-                                        Array.Copy(_stack, argStart, args, 0, argCount);
+                                        Array.Copy(_stack.Items, argStart, args, 0, argCount);
                                     }
 
                                     _sp = argStart - 1; // Pop constructor + args
@@ -3257,7 +3332,7 @@ run_loop_restart:
                         goto run_loop_restart;
                     }
 
-                    throw new JsUncaughtException(thrownValue);
+                    throw CreateUncaughtHostException(thrownValue, fenError);
                 }
 
                 if (TryExtractThrownValue(ex, out var thrown))
@@ -3269,7 +3344,12 @@ run_loop_restart:
                         goto run_loop_restart;
                     }
 
-                    throw;
+                    if (IsThrownValueBoundaryException(ex))
+                    {
+                        throw;
+                    }
+
+                    throw CreateUncaughtHostException(thrown, ex);
                 }
 
                 // Unwind and handle .NET exceptions gracefully
@@ -3297,7 +3377,12 @@ run_loop_restart:
             string errType = "Error";
             string errMsg = rawMsg;
 
-            if (ex is FenError fenError)
+            if (TryParseKnownErrorPrefix(rawMsg, out var prefixedErrorType, out var prefixedErrorMessage))
+            {
+                errType = prefixedErrorType;
+                errMsg = prefixedErrorMessage;
+            }
+            else if (ex is FenError fenError)
             {
                 errType = fenError.Type switch
                 {
@@ -3305,22 +3390,9 @@ run_loop_restart:
                     ErrorType.Range => "RangeError",
                     ErrorType.Reference => "ReferenceError",
                     ErrorType.Syntax => "SyntaxError",
+                    ErrorType.Security => "SecurityError",
                     _ => "Error"
                 };
-            }
-            else
-            {
-                var colonIdx = rawMsg.IndexOf(':');
-                if (colonIdx > 0)
-                {
-                    var prefix = rawMsg.Substring(0, colonIdx);
-                    if (prefix == "TypeError" || prefix == "RangeError" || prefix == "ReferenceError" ||
-                        prefix == "SyntaxError" || prefix == "URIError" || prefix == "EvalError")
-                    {
-                        errType = prefix;
-                        errMsg = rawMsg.Substring(colonIdx + 1).TrimStart();
-                    }
-                }
             }
 
             if (_frameCount > 0)
@@ -3374,6 +3446,20 @@ run_loop_restart:
                 }
             }
             return value.AsString();
+        }
+
+        private Exception CreateUncaughtHostException(FenValue thrownValue, Exception innerException = null)
+        {
+            return JsThrownValueException.CreateBoundaryException(
+                $"Uncaught JS Exception: {FormatExceptionValue(thrownValue)}",
+                thrownValue,
+                innerException);
+        }
+
+        private static bool IsThrownValueBoundaryException(Exception exception)
+        {
+            return exception?.GetType() == typeof(Exception) &&
+                   exception.Data?[JsThrownValueException.ThrownValueDataKey] is FenValue;
         }
 
         private void HandleException(FenValue exceptionValue, ref CallFrame currentFrame)
@@ -3432,7 +3518,7 @@ run_loop_restart:
             // Uncaught exception!
             var formattedErr = FormatExceptionValue(exceptionValue);
             Console.WriteLine($"[VM Uncaught Exception] {formattedErr}");
-            throw new JsUncaughtException(exceptionValue);
+            throw CreateUncaughtHostException(exceptionValue);
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
