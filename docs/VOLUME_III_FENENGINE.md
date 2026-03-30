@@ -5962,3 +5962,52 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - first navigation commit still exceeded budget and rastered in `Full` mode.
     - follow-up steady-state frames switched to `PreservedBaseFrame` mode with committed-frame reuse and near-zero frame cost (`0.07ms` to `0.19ms`).
     - layout logs now show explicit width-source resolution such as `Raw=8 Resolved=8 Source=available` and `Raw=∞ Resolved=1908 Source=containing-block`.
+
+## 2.196 Render/Perf P2 Budget Enforcement, Queue Prioritization, And Benchmark Gates (2026-03-30)
+
+- `FenBrowser.FenEngine/Typography/SkiaFontService.cs`
+- `FenBrowser.FenEngine/Adapters/SkiaTextMeasurer.cs`
+  - Typography hot paths now use bounded LRU caches instead of unbounded dictionaries.
+  - Both services now expose cache snapshots with entry counts, bytes, hit/miss totals, and eviction totals so render diagnostics can distinguish healthy reuse from thrash.
+
+- `FenBrowser.FenEngine/Rendering/ImageLoader.cs`
+  - Static and animated image caching now reports one coherent memory/telemetry surface:
+    - static count
+    - animated count and animated frame count
+    - bytes
+    - hits
+    - misses
+    - evictions
+  - Eviction now considers static and animated assets together, which closes the earlier split-budget blind spot for animated images.
+
+- `FenBrowser.FenEngine/Core/EventLoop/TaskQueue.cs`
+- `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+  - Event-loop tasks are now classified into `Interactive`, `UserVisible`, and `Background` buckets.
+  - The coordinator exposes detailed per-slice results and queue snapshots so the host can reserve render budget and defer background work instead of letting non-interactive tasks steal frame time under pressure.
+
+- `FenBrowser.FenEngine/Rendering/IRenderBackend.cs`
+- `FenBrowser.FenEngine/Rendering/Backends/SkiaRenderBackend.cs`
+- `FenBrowser.FenEngine/Rendering/Backends/HeadlessRenderBackend.cs`
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Advanced paint operations now belong to the backend contract itself:
+    - save-depth restoration
+    - filter push/pop
+    - backdrop-filter application
+    - inset shadow drawing
+    - custom paint execution
+  - `SkiaRenderer` no longer depends on concrete backend casts for these paths, which keeps the render architecture portable while preserving live feature coverage.
+
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Added a named render/perf benchmark suite for:
+    - first-frame heavy layout
+    - steady-state damage animation
+    - dense text flow
+  - The benchmark runner now suppresses hot-path logging during measurement and excludes warm-up cost from the steady-state scenario so the benchmark measures the renderer instead of the logger.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~TypographyCachingTests|FullyQualifiedName~EventLoopPriorityTests|FullyQualifiedName~RenderBackendTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~ImageLoaderCacheTelemetryTests"`: pass (`17/17`) on `2026-03-30`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug --no-build -- render-perf`:
+    - `first-frame-heavy-layout`: `297.59ms`
+    - `steady-state-damage-animation`: `5.54ms`
+    - `dense-text-flow`: `35.82ms`
+    - `failureGatePassed=True`

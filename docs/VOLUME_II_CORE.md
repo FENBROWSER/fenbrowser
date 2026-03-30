@@ -983,3 +983,22 @@ _End of Volume II_
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~P2ClosureContractTests"`: pass on `2026-03-30`.
   - required host runtime check on `2026-03-30` emitted the full diagnostics set under workspace-root `logs`.
 
+### 1.49 Render/Perf P2 Core Budget Configuration And Bounded Cache Primitives (2026-03-30)
+- `FenBrowser.Core/RenderPerformanceConfiguration.cs`
+- `FenBrowser.Core/Cache/BoundedLruCache.cs`
+  - Added a centralized render/perf configuration object for hot-path cache and scheduler budgets:
+    - typography cache entry and byte limits
+    - reserved render budget for normal and busy frames
+    - per-frame event-loop task caps
+  - Added a reusable bounded LRU cache primitive with:
+    - entry-count limits
+    - byte-budget limits
+    - hit/miss/eviction observability
+    - stable snapshot export for diagnostics and tests
+- Why this mattered:
+  - render/perf P2 could not close while memory discipline lived as scattered magic numbers inside engine classes.
+  - the browser needed one explicit place to define render-side budget policy and one explicit primitive to enforce bounded cache ownership.
+- Verification:
+  - `FenBrowser.Tests/Rendering/TypographyCachingTests.cs`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~TypographyCachingTests"`: pass on `2026-03-30`.
+

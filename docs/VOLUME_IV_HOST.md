@@ -851,3 +851,33 @@ _End of Volume IV_
   - Runtime outcome:
     - the first Google commit was still expensive and fully rastered.
     - subsequent animation-driven commits were logged as `PreservedBaseFrame` with the same committed frame reused, and later steady-state frames dropped to near-zero total cost.
+
+### 6.42 Host Render/Perf P2 Deadline-Aware Scheduling And Frame-Telemetry Expansion (2026-03-30)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - The host render loop now carries per-frame event-loop slice telemetry:
+    - processed task count
+    - interactive/user-visible/background task counts
+    - deferred background task count
+    - pending queue counts by priority bucket
+    - reserved render budget for the current frame
+  - Busy frames now prioritize interactive work and defer background work instead of draining the queue indiscriminately under repaint pressure.
+  - Low-signal invalidations (`Timer`, `Animation`, `Scroll`, `Input`, `Overlay`) no longer automatically trigger a full verification report, which keeps runtime verification closer to meaningful content transitions.
+  - Structured `[FRAME] Commit` entries now include:
+    - event-loop slice data
+    - image-cache counts/bytes/hits/misses/evictions
+    - font-cache counts/bytes/hits/misses/evictions
+    - text-measure cache counts/bytes/hits/misses/evictions
+- Why this mattered:
+  - P2 closure required the host to stop behaving like a passive frame presenter.
+  - A production browser needs deadline-aware task shaping at the host/render boundary and first-class operator telemetry for why a frame was cheap or expensive.
+- Verification:
+  - required clean-state host run on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_153456.html`
+    - `logs/engine_source_20260330_153457.html`
+    - `logs/rendered_text_20260330_153457.txt`
+    - `logs/fenbrowser_20260330_153454.log`
+    - `logs/fenbrowser_20260330_153454.jsonl`
+  - the structured frame stream now records `eventLoop*`, `imageCache*`, `fontCache*`, and `textMeasure*` fields on each commit.
