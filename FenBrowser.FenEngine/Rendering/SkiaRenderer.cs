@@ -252,8 +252,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport)
         {
-            SkiaRenderBackend skiaBackend = backend as SkiaRenderBackend;
-            int? initialSaveCount = skiaBackend?.Canvas?.SaveCount;
+            int initialSaveDepth = backend.SaveDepth;
 
             try
             {
@@ -265,16 +264,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
             finally
             {
-                if (skiaBackend?.Canvas != null && initialSaveCount.HasValue)
+                if (backend.SaveDepth != initialSaveDepth)
                 {
-                    int currentSaveCount = skiaBackend.Canvas.SaveCount;
-                    if (currentSaveCount != initialSaveCount.Value)
-                    {
-                        FenLogger.Warn(
-                            $"[SkiaRenderer] Correcting canvas save-count imbalance for {node?.GetType().Name}: {currentSaveCount} -> {initialSaveCount.Value}",
-                            LogCategory.Rendering);
-                        skiaBackend.Canvas.RestoreToCount(initialSaveCount.Value);
-                    }
+                    FenLogger.Warn(
+                        $"[SkiaRenderer] Correcting backend save-depth imbalance for {node?.GetType().Name}: {backend.SaveDepth} -> {initialSaveDepth}",
+                        LogCategory.Rendering);
+                    backend.RestoreToSaveDepth(initialSaveDepth);
                 }
             }
         }
@@ -350,26 +345,25 @@ namespace FenBrowser.FenEngine.Rendering
             bool pushedFilter = false;
             SKImageFilter filterLayer = null;
             if (node is StackingContextPaintNode scFilter &&
-                !string.IsNullOrEmpty(scFilter.Filter) &&
-                backend is SkiaRenderBackend skiaFilterBackend &&
-                skiaFilterBackend.Canvas != null)
+                !string.IsNullOrEmpty(scFilter.Filter))
             {
                 filterLayer = CssFilterParser.Parse(scFilter.Filter);
                 if (filterLayer != null)
                 {
-                    using var paint = new SKPaint { ImageFilter = filterLayer };
-                    skiaFilterBackend.Canvas.SaveLayer(paint);
+                    backend.PushFilter(filterLayer);
                     pushedFilter = true;
                 }
             }
 
             // Apply backdrop-filter (affects backdrop behind this context)
             if (node is StackingContextPaintNode scBackdrop &&
-                !string.IsNullOrEmpty(scBackdrop.BackdropFilter) &&
-                backend is SkiaRenderBackend skiaBackdropBackend &&
-                skiaBackdropBackend.Canvas != null)
+                !string.IsNullOrEmpty(scBackdrop.BackdropFilter))
             {
-                ApplyBackdropFilter(skiaBackdropBackend.Canvas, scBackdrop.Bounds, scBackdrop.BackdropFilter);
+                using var backdropFilter = CssFilterParser.Parse(scBackdrop.BackdropFilter);
+                if (backdropFilter != null)
+                {
+                    backend.ApplyBackdropFilter(scBackdrop.Bounds, backdropFilter);
+                }
             }
 
             // Apply scroll offset
@@ -405,9 +399,9 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Restore state in reverse order
-            if (pushedFilter && backend is SkiaRenderBackend skiaFilterBackend2 && skiaFilterBackend2.Canvas != null)
+            if (pushedFilter)
             {
-                skiaFilterBackend2.Canvas.Restore();
+                backend.PopFilter();
             }
             filterLayer?.Dispose();
 
@@ -619,60 +613,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (node.Inset)
             {
-                // Inset shadow: use SkiaRenderBackend canvas directly for clip-based inset rendering
-                if (backend is SkiaRenderBackend skiaBackend && skiaBackend.Canvas != null)
-                {
-                    var canvas = skiaBackend.Canvas;
-                    canvas.Save();
-
-                    // Clip to element bounds
-                    if (HasNonZeroRadius(node.BorderRadius))
-                    {
-                        using var clipPath = CreateRoundedRectPath(node.Bounds, node.BorderRadius);
-                        canvas.ClipPath(clipPath);
-                    }
-                    else
-                    {
-                        canvas.ClipRect(node.Bounds);
-                    }
-
-                    // The shadow is cast from an imaginary rect shifted by offset and shrunk/grown by spread
-                    var insetRect = new SKRect(
-                        node.Bounds.Left + node.Offset.X + node.Spread,
-                        node.Bounds.Top + node.Offset.Y + node.Spread,
-                        node.Bounds.Right + node.Offset.X - node.Spread,
-                        node.Bounds.Bottom + node.Offset.Y - node.Spread
-                    );
-
-                    // Draw outer fill minus inner hole
-                    using var shadowPath = new SKPath();
-                    shadowPath.AddRect(new SKRect(node.Bounds.Left - 200, node.Bounds.Top - 200, node.Bounds.Right + 200, node.Bounds.Bottom + 200));
-
-                    if (HasNonZeroRadius(node.BorderRadius))
-                    {
-                        using var innerPath = CreateRoundedRectPath(insetRect, node.BorderRadius);
-                        shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
-                    }
-                    else
-                    {
-                        using var innerPath = new SKPath();
-                        innerPath.AddRect(insetRect);
-                        shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
-                    }
-
-                    using var paint = new SKPaint
-                    {
-                        Color = node.Color,
-                        IsAntialias = true,
-                        Style = SKPaintStyle.Fill
-                    };
-
-                    if (node.Blur > 0)
-                        paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, node.Blur / 2);
-
-                    canvas.DrawPath(shadowPath, paint);
-                    canvas.Restore();
-                }
+                backend.DrawInsetBoxShadow(node.Bounds, node.BorderRadius, node.Offset.X, node.Offset.Y, node.Blur, node.Spread, node.Color);
                 return;
             }
 
@@ -696,27 +637,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private void ApplyBackdropFilter(SKCanvas canvas, SKRect bounds, string filterString)
-        {
-            if (canvas == null || string.IsNullOrEmpty(filterString)) return;
-            using var imageFilter = CssFilterParser.Parse(filterString);
-            if (imageFilter == null) return;
-
-            using var paint = new SKPaint { ImageFilter = imageFilter };
-            canvas.SaveLayer(bounds, paint);
-            canvas.ClipRect(bounds);
-            canvas.Restore();
-        }
-
         private void DrawCustom(IRenderBackend backend, CustomPaintNode node)
         {
             if (node.PaintAction == null) return;
-            
-            // Get the canvas from the backend (assumed to be SkiaRenderBackend)
-            if (backend is SkiaRenderBackend skiaBackend && skiaBackend.Canvas != null)
-            {
-                node.PaintAction(skiaBackend.Canvas, node.Bounds);
-            }
+
+            backend.ExecuteCustomPaint(node.PaintAction, node.Bounds);
         }
         
         private void DrawBorder(IRenderBackend backend, BorderPaintNode node)
@@ -766,18 +691,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             bool isVertical = node.WritingMode == "vertical-rl";
-            SKCanvas canvas = null;
-            int saveCount = 0;
+            bool pushedVerticalTransform = false;
 
             if (isVertical)
             {
-                if (backend is FenBrowser.FenEngine.Rendering.Backends.SkiaRenderBackend skiaBackend)
-                {
-                    canvas = skiaBackend.Canvas;
-                    saveCount = canvas.Save();
-                    // Rotate 90 degrees around the text origin
-                    canvas.RotateDegrees(90, node.TextOrigin.X, node.TextOrigin.Y);
-                }
+                backend.PushTransform(SKMatrix.CreateRotationDegrees(90, node.TextOrigin.X, node.TextOrigin.Y));
+                pushedVerticalTransform = true;
             }
             
             // Fix: Access properties directly (node.Format doesn't exist)
@@ -849,9 +768,9 @@ namespace FenBrowser.FenEngine.Rendering
                 DrawTextDecorations(backend, node, textWidth, fontSize, node.Color);
             }
 
-            if (canvas != null && saveCount > 0)
+            if (pushedVerticalTransform)
             {
-                canvas.RestoreToCount(saveCount);
+                backend.PopLayer();
             }
         }
         

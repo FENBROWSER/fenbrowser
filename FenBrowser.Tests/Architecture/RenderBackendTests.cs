@@ -111,5 +111,36 @@ namespace FenBrowser.Tests.Architecture
             // Assert
             Assert.Empty(backend.CommandLog);
         }
+
+        [Fact]
+        public void HeadlessBackend_ExposesFilterAndCustomPaintThroughInterface()
+        {
+            var backend = new HeadlessRenderBackend();
+
+            backend.PushFilter(SKImageFilter.CreateBlur(2, 2));
+            backend.ApplyBackdropFilter(new SKRect(0, 0, 100, 100), SKImageFilter.CreateBlur(1, 1));
+            backend.ExecuteCustomPaint((_, _) => { }, new SKRect(0, 0, 20, 20));
+            backend.PopFilter();
+
+            Assert.Contains(backend.CommandLog, command => command.Name == "PushFilter");
+            Assert.Contains(backend.CommandLog, command => command.Name == "ApplyBackdropFilter");
+            Assert.Contains(backend.CommandLog, command => command.Name == "ExecuteCustomPaint");
+            Assert.Contains(backend.CommandLog, command => command.Name == "PopFilter");
+        }
+
+        [Fact]
+        public void HeadlessBackend_RestoreToSaveDepth_ResetsDepth()
+        {
+            var backend = new HeadlessRenderBackend();
+
+            backend.Save();
+            backend.PushLayer(0.5f);
+            Assert.True(backend.SaveDepth >= 2);
+
+            backend.RestoreToSaveDepth(0);
+
+            Assert.Equal(0, backend.SaveDepth);
+            Assert.Contains(backend.CommandLog, command => command.Name == "RestoreToSaveDepth");
+        }
     }
 }
