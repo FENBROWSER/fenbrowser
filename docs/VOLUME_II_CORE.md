@@ -76,6 +76,20 @@ The browser employs a **Sharded 2-Level Cache**:
     - MIME Sniffing (`MimeSniffer.cs`) if the server sends generic types.
     - Encoding Detection using BOM or headers.
 
+### 3.3 Verification Truth Hardening (2026-03-30)
+
+- `ResourceManager` now registers authoritative source truth only for top-level document fetches. Subresource responses no longer overwrite the navigation-size/hash evidence that drives verification.
+- `ContentVerifier` now resets state per navigation and distinguishes authoritative source/rendered registrations from provisional updates. This prevents late script/style/image activity from corrupting the main document verification summary.
+- Workspace-root runtime artifacts now align with verifier accounting during the render/perf P1 closure run:
+  - `logs/raw_source_20260330_131408.html`: `187710` bytes
+  - verifier network result: `PASS (187527 bytes)`
+  - `logs/rendered_text_20260330_131429.txt`: `517` characters
+  - verifier visible-text result: `PASS (323 characters)`
+- `DebugConfig` defaults were narrowed for production-truthful diagnostics:
+  - deep per-node debug switches now default off
+  - `LogFrameTiming` and `LogVerification` stay enabled
+  - hot-path text-position logging now respects explicit layout-debug gating instead of always writing per-text records
+
 ---
 
 ## 4. The Parsing Engine (`FenBrowser.Core.Parsing`)

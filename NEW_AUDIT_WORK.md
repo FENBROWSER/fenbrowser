@@ -1,160 +1,55 @@
 # NEW_AUDIT_WORK
 
 ## Purpose
-This document is derived from `NEW_AUDIT.md`.
+This document replaces the prior closure ledger.
 
-It is not a summary. It is the production-grade work ledger for every area that was not rated `production-grade`, every missing seam, and every place where the current architecture is too loose for a browser that intends to serve millions of users.
+The earlier `NEW_AUDIT_WORK.md` tracked the architecture, diagnostics, and thin-contract work that came out of `NEW_AUDIT.md`. That ledger is complete.
+
+This new document is the deeper rendering and performance audit ledger for fenbrowser.
+
+It exists to answer one question:
+
+What must change for fen to behave like a production-grade browser under real page load, real interaction, real frame pressure, and real future scale?
+
+This is not a generic optimization wishlist.
+It is the execution ledger for rendering correctness under pressure, frame-time discipline, memory discipline, scheduling, raster strategy, text quality, and production observability.
 
 ## Status
-P0 was implemented on `2026-03-29`.
-P1 was completed on `2026-03-30`.
-P2 was completed on `2026-03-30` for the audit/workstream scope defined in this ledger.
+- Previous architecture/hardening ledger: completed on `2026-03-30`.
+- This rendering/performance ledger: `in progress`.
+- P0: completed on `2026-03-30`.
+- P1: completed on `2026-03-30`.
+- P2: open.
 
-The `7` P0 workstreams are closed in code and synchronized into the volume docs.
-Remaining work after this ledger is broader solution warning debt plus rendering/performance depth work that sits outside the audit-derived P0/P1/P2 closure scope.
+## Current Runtime Reality
+Ground truth from the clean-state Google host run on `2026-03-30` after the P1 closure pass:
 
-### 2026-03-29 P1 Progress Snapshot
+- `debug_screenshot.png` is visibly painted and shows the Google homepage shell instead of a blank or mostly unpainted frame.
+- Diagnostics now converge under workspace-root `logs`, including:
+  - `logs/raw_source_20260330_131408.html`
+  - `logs/engine_source_20260330_131429.html`
+  - `logs/rendered_text_20260330_131429.txt`
+  - `logs/fenbrowser_20260330_131407.log`
+  - `logs/fenbrowser_20260330_131407.jsonl`
+- Verification truth is now authoritative instead of being overwritten by later subresource/script churn:
+  - raw-source artifact size: `187710` bytes
+  - verification network result: `PASS (187527 bytes)`
+  - rendered-text artifact size: `517` characters
+  - verification visible-text result: `PASS (323 characters)`
+- The renderer is still materially over budget on first/full frames:
+  - first commit total: `557.24ms`
+  - first commit layout: `236.28ms`
+  - first commit paint: `211.22ms`
+  - first commit raster: `105.21ms`
+- Repeated full render work is no longer the steady-state path for ordinary animation frames once the page has converged:
+  - first commit: `rasterMode=Full`, `baseFrameSeeded=false`, `watchdogTriggered=true`
+  - converged animation tail: `rasterMode=Damage`, `baseFrameSeeded=true`, `layoutUpdated=false`, `usedDamageRasterization=true`, `watchdogTriggered=false`
+  - tail frame timings now settle around `2.64ms` to `3.15ms`
+- Watchdog warnings are no longer the steady-state norm, but isolated convergence outliers still appear (`frameSequence` `5`, `20`, `33`, `79`). That remaining budget discipline is now P2 work, not a P1 blocker.
+- Layout constraint ownership remains explicit in logs from the P0 pass. The remaining `Raw=0 -> viewport` fallback cases are no longer hidden, but they also no longer block steady-state frame reuse.
+- Visible shell correctness and diagnostics truth are materially better, but first/full-frame cost and long-tail spike reduction still remain active P2 work.
 
-- Advanced `Complete Core DOM support surfaces` with concrete invariants for tree-scope ownership, traversal/root boundaries, shadow-root state, sanitization logging, and serializer fidelity.
-- Advanced `Harden engine contracts and lifecycle invariants` with a shared phase-transition matrix, scoped phase restoration, pipeline metadata validation, navigation pending-load snapshots, normalized `BrowserSettings`, and explicit browser/network async contracts.
-- Advanced `Close WebIDL pipeline end to end` with deterministic generator ordering, manifest hashing, stale-output cleanup, and `--verify` mode in `FenBrowser.WebIdlGen`.
-- Advanced `Complete DevTools` with stricter protocol error handling, duplicate-handler rejection, idempotent event subscription, and disposable DOM mutation instrumentation.
-- Advanced `Complete WebDriver` with stricter capability validation, request-body validation, route normalization, reference-safe script argument/result conversion, and session/timeout hardening.
-- Verification on `2026-03-29`:
-  - `dotnet build FenBrowser.sln -nologo`: pass.
-  - Focused regression slice for DOM/engine/UI-dispatch/WebIDL/WebDriver/DevTools: pass (`54/54`).
-  - Required runtime host cycle emitted `debug_screenshot.png`, `dom_dump.txt`, and `logs/click_debug.log`.
-- Open production blocker discovered during the same runtime cycle:
-  - `debug_screenshot.png` is still effectively blank/white while `dom_dump.txt` contains a populated Google DOM tree.
-  - `logs/raw_source_*.html` still did not emit.
-  - P1 therefore remains in progress; the browser still has rendering/diagnostic closure work before P1 can be called fully complete.
-
-### 2026-03-30 P1 Progress Snapshot
-
-- Closed the blank-first-frame regression in the renderer watchdog path:
-  - if raster is over budget and no reusable base frame exists, fen now forces a full raster instead of presenting a white frame.
-  - if a caller explicitly provides a reusable base frame, fen preserves that seeded frame instead of clearing over it.
-- Strengthened render regression coverage:
-  - `FenBrowser.Tests/Rendering/RenderWatchdogTests.cs` now covers watchdog trigger, forced full-raster fallback without a base frame, and seeded-base-frame preservation.
-  - `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs` now records watchdog state in failure diagnostics while asserting visible raster coverage for the Google search shell.
-- Verification on `2026-03-30`:
-  - `dotnet build FenBrowser.sln -nologo`: pass.
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~RenderWatchdogTests"`: pass (`3/3`).
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~GoogleSnapshotDiagnosticsTests.LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage"`: pass (`1/1`).
-  - Required runtime host cycle now emits a visibly painted `debug_screenshot.png` with the Google homepage shell, doodle, buttons, language strip, and footer instead of an all-white frame.
-- Remaining P1 diagnostic gap after the render fix:
-  - the debug run still emitted `network_fetch_*.html` but not a fresh `raw_source_*.html` or `engine_source_*.html` artifact in the active Debug log directory.
-  - the active `fenbrowser_*.log` file remained extremely thin, so first-class structured diagnostics are still not fully surfaced on this path.
-  - P1 therefore remains in progress until the runtime diagnostic contract is as reliable as the render path itself.
-
-### 2026-03-30 P1 Closure Snapshot
-
-- Closed the runtime diagnostic completeness gap that was still blocking P1:
-  - `BrowserSettings` now defaults production-style logging on and normalizes the legacy `AppContext.BaseDirectory/logs` path back to workspace-root `logs`.
-  - `LogManager` now initializes `StructuredLogger` against the active log path so module logs and artifact dumps stop splitting between repo-root and host-bin folders.
-  - `StructuredLogger` now emits `raw_source_*.html` under the unified diagnostics root and keeps engine/rendered dumps on that same path.
-  - `BrowserHost` now captures engine-source and rendered-text diagnostics per navigation from the live repaint seam, but only after the DOM is meaningfully populated; the post-render seam still forces a final capture so diagnostics cannot be starved by long-running page scripts.
-  - Engine source capture now prefers the browser's DOM-native serialization path (`doctype` + `OuterHTML` / `ToHtml`) before falling back to the generic serializer, which removes the old high-risk diagnostic stall on large pages.
-  - `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs` now resolves `engine_source_*.html` from workspace-root `logs` first and only falls back to the legacy host-bin path for compatibility.
-- Verification on `2026-03-30`:
-  - `dotnet build FenBrowser.sln -nologo`: pass.
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~RenderWatchdogTests"`: pass (`6/6`).
-  - Required runtime host cycle emitted:
-    - `debug_screenshot.png`
-    - `dom_dump.txt`
-    - `logs/raw_source_20260330_003122.html`
-    - `logs/engine_source_20260330_003123.html`
-    - `logs/rendered_text_20260330_003123.txt`
-    - `logs/fenbrowser_20260330_003121.log`
-    - `logs/fenbrowser_20260330_003121.jsonl`
-  - Runtime outcome:
-    - the screenshot remains visibly painted with the Google homepage shell, search chrome, language strip, footer, and top navigation.
-    - the engine snapshot is now full-sized (`190552` bytes) instead of the earlier truncated partial shell.
-    - the verification report now consistently records `Raw Path`, `Engine Path`, and `Text Path` in the same live run.
-- P1 status:
-  - `completed` for the audit/workstream scope defined in this ledger.
-  - Remaining work after this point is P2 hardening plus general warning-debt cleanup, not an open P1 blocker.
-
-### 2026-03-30 P2 Progress Snapshot
-
-- Advanced `Harden thin value/config/contract files without bloating them` with deliberate finalization work instead of code-volume inflation:
-  - `CertificateInfo` now normalizes certificate identity fields, deduplicates SAN entries, exposes explicit date-range and trust-state helpers, and reports invalid date ranges instead of silently presenting ambiguous validity.
-  - `CacheKey` now trims inputs, defaults blank partitions to `default`, exposes `IsEmpty`, and uses stable ordinal equality/hash semantics.
-  - `ShardedCache<T>` now exposes capacity, hit/miss/eviction counters, `Contains(...)`, and `TryRemove(...)`, which turns a previously opaque utility into an observable cache contract without changing its thin ownership.
-  - `CornerRadius` and `Thickness` now expose `Empty`, zero/negative-state helpers, and non-negative clamping so geometry/value semantics stop depending on ad hoc caller-side checks.
-- Advanced `Packaging and deterministic tooling cleanup`:
-  - `FenBrowser.Host.csproj`, `FenBrowser.DevTools.csproj`, `FenBrowser.WebDriver.csproj`, and `FenBrowser.WebIdlGen.csproj` now declare explicit assembly/product metadata, deterministic build output, portable PDBs, and CI-aware deterministic mode.
-  - `FenBrowser.Host/app.manifest` now declares `longPathAware` plus an explicit supported Windows compatibility target instead of leaving packaging posture implicit.
-- Verification on `2026-03-30`:
-  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests"`: pass (`8/8`).
-  - Required clean-state host cycle emitted:
-    - `debug_screenshot.png`
-    - `dom_dump.txt`
-    - `logs/raw_source_20260330_102529.html`
-    - `logs/engine_source_20260330_102551.html`
-    - `logs/rendered_text_20260330_102551.txt`
-    - `logs/fenbrowser_20260330_102527.log`
-    - `logs/fenbrowser_20260330_102527.jsonl`
-- P2 status after this tranche:
-  - still `in progress`.
-  - this closes the first hardening/package-determinism tranche, but P2 still includes the remaining thin-surface cleanup across Core, FenEngine, Host, DevTools, and WebDriver that has not yet been re-audited and closed.
-
-### 2026-03-30 P2 Progress Snapshot II
-
-- Advanced the next thin-contract tranche across runtime-facing small surfaces instead of leaving them as permissive glue:
-  - `ConsoleLogger` now serializes console writes through one synchronization gate, normalizes messages, timestamps output, and reports exception type/message explicitly on error paths.
-  - `CssLength` and `CssCornerRadius` now expose final value semantics (`Zero`, equality/hash/operators, zero/negative/percent state, non-negative clamping), and the live paint/clip path now clamps border radii before drawing instead of trusting raw style values.
-  - `RendererInputEvent` now normalizes non-finite coordinates and empty keyboard payloads at the contract boundary; brokered send/receive paths now drop meaningless keyboard events and use explicit `ShouldEmitClick` semantics instead of open-coded click checks.
-  - `ContextMenuItem` and `ContextMenuBuilder` now normalize labels/shortcuts, expose safe invocation semantics, and disable unavailable commands instead of presenting inert enabled actions in the host context menu.
-  - DevTools debugger DTOs now normalize script URLs/source content and clamp negative script position metadata before the protocol surface sees them.
-- Verification on `2026-03-30`:
-  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests"`: pass (`14/14`).
-  - Required clean-state host cycle emitted:
-    - `debug_screenshot.png`
-    - `dom_dump.txt`
-    - `logs/raw_source_20260330_104208.html`
-    - `logs/engine_source_20260330_104230.html`
-    - `logs/rendered_text_20260330_104230.txt`
-    - `logs/fenbrowser_20260330_104207.log`
-    - `logs/fenbrowser_20260330_104207.jsonl`
-  - Runtime outcome:
-    - the browser remained visibly painted and the verification report still recorded `Raw Path`, `Engine Path`, and `Text Path`.
-    - Google still reports an extremely low source-to-rendered-text health ratio and occasional watchdog budget warnings, which are broader rendering/performance debt and not introduced by this thin-contract tranche.
-- P2 status after this tranche:
-  - still `in progress`.
-  - the thin-contract surface is materially tighter, but P2 still has remaining small-contract cleanup and warning-debt reduction work before it can be called fully complete.
-
-### 2026-03-30 P2 Closure Snapshot
-
-- Closed the final P2 thin-surface and diagnostics-routing gaps instead of leaving logging truth split across multiple directories:
-  - `DebugConfig`, `DebugHelper`, `LogCategoryFacts`, `ParserSecurityPolicy`, `FrameDeadline`, `RenderContext`, `RendererSafetyPolicy`, `BaseFrameReusePolicy`, `PositionedGlyph`, `HistoryEntry`, and `SkiaTextMeasurer` now expose explicit normalization, cloning, invariant, and introspection contracts rather than leaving thin runtime helpers permissive.
-  - `DiagnosticPaths`, `LogManager`, and `StructuredLogger` now honor the active diagnostics root consistently, which means structured logs, raw/engine/rendered dumps, and widget click-debug traces converge on the same workspace-root `logs` tree during operator-driven runs.
-  - `ContentVerifier` now reports `Text Density` and distinguishes a genuinely suspicious low-text result from a script-heavy but visibly corroborated page, so fen stops emitting a misleading parser-failure warning when the DOM, CSS, and screenshot evidence already say the page is alive.
-  - Host widget debug traces (`WebContentWidget`, `SwitchWidget`, `BookmarksBarWidget`) now write through `DiagnosticPaths` instead of drifting between `bin/Debug` and LocalAppData.
-- Verification on `2026-03-30`:
-  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass (`811` warnings, `0` errors).
-  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests|FullyQualifiedName~P2ClosureContractTests"`: pass (`29/29`).
-  - Required clean-state host cycle emitted:
-    - `debug_screenshot.png`
-    - `dom_dump.txt`
-    - `logs/click_debug.log`
-    - `logs/raw_source_20260330_111455.html`
-    - `logs/engine_source_20260330_111516.html`
-    - `logs/rendered_text_20260330_111516.txt`
-    - `logs/network.log`
-    - `logs/rendering.log`
-    - `logs/fenbrowser_20260330_111454.log`
-    - `logs/fenbrowser_20260330_111454.jsonl`
-  - Runtime outcome:
-    - `debug_screenshot.png` remains visibly painted with the Google homepage shell, search chrome, language strip, footer, and top navigation.
-    - the workspace-root `logs` directory now contains the full diagnostics set and the host Debug log directory remains empty after the run.
-    - the verification report now logs `Text Density` plus an informational note for script-heavy pages instead of a false-positive parsing-failure warning.
-    - raster/frame watchdog warnings can still occur on Google, but that broader performance debt is now clearly separated from the closed P2 thin-contract scope.
-- P2 status:
-  - `completed` for the audit/workstream scope defined in this ledger.
-  - Remaining work after this point is broader warning-debt cleanup and deeper rendering/performance improvement, not an open P2 blocker.
+These signals mean fen has closed the P0 frame-pipeline blockers, but it is not yet performance-closed overall.
 
 All work below is guided by the FenBrowser mandate:
 - Security is first-class.
@@ -165,170 +60,167 @@ All work below is guided by the FenBrowser mandate:
 - We do not repeat the structural mistakes of Chromium, Firefox, or WebKit.
 - Architecture is destiny.
 
-## Non-Negotiable Production Rules
-- No empty runtime files in shipped code. `stub` means implement or delete.
-- No duplicate subsystem ownership. One parser stack, one renderer surface, one source of truth per responsibility.
-- No product-runtime and test-harness mixing. Harness code belongs in tools or dedicated runner projects.
-- No silent fallback behavior without explicit logging, metrics, and documented intent.
-- No large subsystem may ship without a clear owner boundary, stable contracts, failure handling, and structured diagnostics.
-- No security-sensitive surface may ship without threat modeling, denial paths, and observable policy enforcement.
-- No performance-sensitive hot path may ship without allocation discipline, frame-budget awareness, and traceable telemetry.
-- No logging surface may remain ad hoc. Production logging must be structured, categorized, filterable, and cheap on hot paths.
-- No library is allowed to dictate browser architecture. External libraries are implementation details, not system owners.
-- No hidden global state expansion. Shared state must remain explicit and bounded.
-
-## Closure Rules
-- `stub`
-  Action: implement immediately or delete immediately.
-- `basic`
-  Action: keep thin if that is the right shape, but freeze the contract, validate inputs, add invariants, add diagnostics, and remove ambiguity.
-- `partial`
-  Action: finish the missing semantics, error handling, spec alignment, performance posture, and observability.
-- `production-grade`
-  Action: keep stable, but still subject to architecture cleanup if it depends on non-production-grade neighbors.
-
-Production-grade does not mean every file becomes large.
-Some files should remain small forever.
-The requirement is deliberate completeness, not code volume.
+## Rendering/Performance Non-Negotiables
+- No fake performance wins that lower rendering correctness.
+- No permanent reliance on full-frame raster for ordinary steady-state updates.
+- No hidden layout fallback that silently rewrites bad constraints into viewport-sized values without explicit diagnostics and ownership.
+- No unbounded caches for glyphs, images, display lists, paint nodes, or decoded assets.
+- No UI-thread rendering creep. UI thread owns widgets and windowing; render thread owns layout, paint, raster work.
+- No logging blind spots on hot-path regressions. Frame cost must be attributable by stage and by invalidation reason.
+- No library dominance. Skia remains a drawing backend, not the owner of browser layout metrics or scene semantics.
+- No benchmark-only tuning that regresses interactive behavior, determinism, or memory safety.
 
 ## Required Acceptance Gates For Every Work Item
-- Security: explicit boundary, deny path, abuse case handling.
-- Modularity: single owner, no duplicate authority, clean interfaces.
-- Spec: spec source or explicit deviation note.
-- Performance: hot-path allocations understood, budget or metric defined.
-- Logging: structured logs, categories, and useful failure diagnostics.
-- Failure mode: timeout, crash, cancellation, and recovery behavior defined.
-- Cleanup: no placeholder comments, no transitional debt without a dated removal plan.
+- Correctness: visible output and DOM-to-box behavior remain accurate.
+- Performance: frame-time target, allocation target, or throughput target is explicit.
+- Observability: structured logs, counters, and failure reasons exist.
+- Determinism: same invalidation input produces the same render decision.
+- Memory: ownership, pooling, and eviction behavior are defined.
+- Recovery: over-budget and failure paths degrade visibly and safely, not silently.
+- Scale: the chosen approach still works for large documents, image-heavy pages, and repeated interaction.
 
 ## Anti-Mistakes We Must Avoid
-- No parser duplication.
-- No renderer adapter layer becoming permanent architecture.
-- No "temporary" compatibility surface that silently becomes core.
-- No harness code living forever inside runtime projects.
-- No claiming full process isolation while key IPC/process seams are empty.
-- No platform abstraction that is only nominal on one OS.
-- No logging that is either too noisy to use or too weak to debug production incidents.
-- No spec drift hidden behind permissive recovery logic.
+- No global "mark everything dirty" fallback becoming permanent architecture.
+- No damage-raster feature that is nominal in code but disabled in real production paths.
+- No duplicate render decision logic split between host, browser API, and renderer internals.
+- No repeated full DOM/layout/paint work for unchanged frames just because a timer fired.
+- No caching layer without invalidation truth.
+- No text measurement shortcuts that make Latin pages look acceptable while silently failing broader script coverage.
+- No overfitting to Google-only behavior; use Google as a stress signal, not as the spec.
 
 ## Execution Order
-1. P0: architecture and safety blockers.
-2. P1: subsystem completion and closure.
-3. P2: hardening, packaging, and disciplined thin-surface cleanup.
+1. P0: frame-pipeline and steady-state blockers.
+2. P1: subsystem completion and measurable optimization.
+3. P2: production hardening, budgets, and long-tail scale discipline.
+
+## P0 Closure Evidence
+P0 closed on `2026-03-30` with code, focused regressions, a full solution build, and a required clean-state host cycle.
+
+- Stabilize invalidation and frame ownership:
+  - `BrowserIntegration` now records frames through `RenderFrameRequest` instead of a raw renderer call.
+  - host-side requests now carry explicit invalidation reasons and request sources, and committed-frame telemetry is written to structured `[FRAME] Commit` entries.
+- Make damage tracking and reusable base frames the real update path:
+  - the host now seeds reusable base frames when policy allows it.
+  - the renderer now preserves the seeded base frame when a steady-state frame has no remaining damage, and the live host run showed repeated `PreservedBaseFrame` commits at `0.07ms` to `0.19ms`.
+- Fix layout constraint propagation and sanitize-at-source behavior:
+  - block, inline, flex, and grid width resolution now route through a shared source-order resolver.
+  - layout diagnostics now expose whether width came from `available`, `containing-block`, `viewport`, or the emergency fallback instead of rewriting constraints silently deep in the pipeline.
+- Make render telemetry first-class and cheap:
+  - `RenderFrameResult` now carries invalidation reason, caller identity, raster mode, and per-stage telemetry.
+  - meaningful frame telemetry is mirrored into both text logs and structured `.jsonl` output for regression and operator review.
+
+Verification that closed P0:
+- `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderWatchdogTests|FullyQualifiedName~LayoutConstraintResolverTests"`: pass (`7/7`)
+- Required host runtime cycle on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_123307.html`
+  - `logs/engine_source_20260330_123329.html`
+  - `logs/rendered_text_20260330_123329.txt`
+  - `logs/fenbrowser_20260330_123306.log`
+  - `logs/fenbrowser_20260330_123306.jsonl`
+
+## P1 Closure Evidence
+P1 closed on `2026-03-30` with code, focused regressions, a full solution build, and a required clean-state host cycle.
+
+- Reuse layout, paint-tree, and frame work aggressively:
+  - `SkiaDomRenderer` now keeps paint-only invalidation out of layout on the hot path.
+  - committed frame telemetry proves converged animation frames are `layoutUpdated=false` while still rebuilding paint output as needed.
+  - steady-state animation frames now run through `Damage` rasterization instead of defaulting back to full-frame work.
+- Optimize restyle invalidation where it matters on the live path:
+  - `CssAnimationEngine.DetermineInvalidationKind(...)` now classifies paint-only animation properties separately from geometry-changing properties.
+  - opacity-only animation churn no longer forces layout in the regression slice.
+- Harden typography and shaping throughput:
+  - `SkiaTextMeasurer` caches stable width and line-height inputs.
+  - `SkiaFontService` reuses metrics, width, and glyph-run results for repeated text inputs.
+- Bound image decode and relayout churn:
+  - `ImageLoader.PrewarmImageAsync(...)` now batches burst relayout signals instead of emitting one relayout per decoded image.
+  - host repaint and relayout callbacks now use explicit active-DOM semantics.
+- Reduce verification-to-runtime mismatch:
+  - `ContentVerifier` now resets per navigation and accepts authoritative top-level source/rendered registrations only.
+  - `ResourceManager` only registers top-level document fetches as authoritative source truth.
+  - rendered-text capture now includes visible control fallback text without duplicating aria-label fallback when visible text already exists.
+  - deep debug defaults are now off, while frame timing and verification logging stay on; per-text layout logs are gated behind layout-debug flags so observability no longer distorts the hot path.
+
+Verification that closed P1:
+- `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~BrowserHostRenderedTextTests|FullyQualifiedName~BrowserHostImageInvalidationTests|FullyQualifiedName~TypographyCachingTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~ContentVerifierStateTests"`: pass (`17/17`)
+- Required host runtime cycle on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_131408.html`
+  - `logs/engine_source_20260330_131429.html`
+  - `logs/rendered_text_20260330_131429.txt`
+  - `logs/fenbrowser_20260330_131407.log`
+  - `logs/fenbrowser_20260330_131407.jsonl`
+- Runtime proof that closed P1:
+  - first navigation commit remained expensive at `557.24ms`, which keeps P2 open.
+  - the converged animation tail settled to `2.64ms` to `3.15ms` damage-raster frames with `layoutUpdated=false` and `watchdogTriggered=false`, which is the production-critical P1 turning point.
 
 ## P0 Workstreams
-| Priority | Workstream | Scope From `NEW_AUDIT` | Production-Grade Outcome |
+| Priority | Workstream | Scope | Production-Grade Outcome |
 |---|---|---|---|
-| P0 | Eliminate stubs and dead scaffold | `FenBrowser.Host\ProcessIsolation\Gpu\GpuProcessIpc.cs`, `FenBrowser.Host\ProcessIsolation\Utility\UtilityProcessIpc.cs`, `FenBrowser.WebDriver\Class1.cs` | No empty runtime seams, no dead scaffold, no placeholder process boundary. IPC either exists with authenticated/versioned messages and telemetry, or the surface is removed. |
-| P0 | Separate runtime from harness and audit-only tooling | `FenBrowser.Host\Program.cs`, `FenBrowser.FenEngine\Program.cs`, `FenBrowser.FenEngine\Testing\*`, `FenBrowser.FenEngine\WebAPIs\TestHarnessAPI.cs`, `FenBrowser.FenEngine\WebAPIs\TestConsoleCapture.cs`, WPT/Test262 hooks currently embedded in runtime surfaces | Product runtime projects stop owning test-runner behavior. Browser startup, automation, conformance runners, and internal diagnostics become cleanly separated tools or dedicated projects. |
-| P0 | Unify HTML parsing ownership | `FenBrowser.Core\Parsing\*`, `FenBrowser.FenEngine\HTML\*` | One canonical HTML tokenizer/tree-builder stack. The non-canonical stack is removed or reduced to adapters only during a time-boxed migration. No duplicate parser behavior or split bug-fix ownership. |
-| P0 | Finalize renderer architecture | `FenBrowser.FenEngine\Rendering\SkiaDomRenderer.cs`, `FenBrowser.FenEngine\Rendering\BrowserApi.cs`, `FenBrowser.FenEngine\Rendering\BrowserEngine.cs`, `FenBrowser.FenEngine\Rendering\Core\*`, `FenBrowser.FenEngine\Rendering\Compositing\*`, `FenBrowser.FenEngine\Rendering\Paint\*`, `FenBrowser.FenEngine\Rendering\PaintTree\*`, `FenBrowser.FenEngine\Rendering\RenderTree\*`, `FenBrowser.FenEngine\Rendering\IRenderBackend.cs` | Remove the "transitional" architecture and define the final renderer boundaries: layout input, paint tree, compositing, raster, damage, overlays, and backend abstraction. No permanent adapter debt. |
-| P0 | Accessibility platform parity | `FenBrowser.Core\Accessibility\*` | Windows, Linux, and future macOS paths must have real event emission, stable tree invalidation, platform mapping, and observable failures. Stub-mode AT-SPI is not acceptable for production positioning. |
-| P0 | Logging as first-class architecture | `FenBrowser.Core\FenLogger.cs`, `FenBrowser.Core\ConsoleLogger.cs`, `FenBrowser.Core\Logging\*`, `FenBrowser.DevTools\Core\RemoteDebugServer.cs`, high-signal runtime boundaries in Host/FenEngine/WebDriver | Structured logging schema, stable categories, cheap hot-path logging, log shipping and rotation policy, and production incident correlation across browser, engine, process isolation, automation, and DevTools. |
-| P0 | Security, sandbox, and policy closure | `FenBrowser.Core\Security\*`, `FenBrowser.Core\Security\Sandbox\*`, `FenBrowser.Core\Platform\*`, `FenBrowser.Core\Interop\Windows\*`, `FenBrowser.Core\Network\*`, `FenBrowser.Core\Network\Handlers\*`, `FenBrowser.WebDriver\Security\*` | Real OS and process isolation posture, explicit policy enforcement, observable denial decisions, hardened origin/CSP/network behavior, and no misleading null-sandbox story for production profiles. |
+| P0 | Stabilize invalidation and frame ownership | `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`, `BrowserApi.cs`, `BrowserEngine.cs`, `Rendering/Core/RenderPipeline.cs`, `RenderFrameResult.cs`, `FenBrowser.Host/BrowserIntegration.cs`, `FenBrowser.Host/ProcessIsolation/*` | Completed on `2026-03-30`. A frame is only re-laid out, repainted, or re-rastered when a real invalidation reason exists. Host, browser API, and renderer agree on who requested the frame and why. |
+| P0 | Make damage tracking and reusable base frames the real update path | `FenBrowser.FenEngine/Rendering/Compositing/*`, `PaintDamageTracker.cs`, `DamageRasterizationPolicy.cs`, `SkiaRenderer.cs`, host frame-buffer ownership paths | Completed on `2026-03-30`. Partial updates now act as the default steady-state path when valid. Base-frame seeding, damage region bounds, and fallback behavior are explicit and safe. Emergency full raster remains recovery-only. |
+| P0 | Fix layout constraint propagation and sanitize-at-source behavior | `FenBrowser.FenEngine/Layout/*`, especially `MinimalLayoutComputer.cs`, `LayoutContext.cs`, `ContainingBlockResolver.cs`, `BoxModel.cs`, `LayoutValidator.cs`, block/inline/flex/grid helpers | Completed on `2026-03-30` for source-side ownership and diagnostics. Layout inputs now declare where width came from before reaching deep algorithms. Remaining `Raw=0` viewport fallback cases move to P1 cleanup rather than blocking P0. |
+| P0 | Make render telemetry first-class and cheap | `FenBrowser.Core/Logging/*`, `FenBrowser.Core/Verification/ContentVerifier.cs`, `FenBrowser.FenEngine/Rendering/*`, `FenBrowser.Host/BrowserIntegration.cs` | Completed on `2026-03-30`. Every committed frame now reports URL, invalidation reason, DOM/box/paint counts, stage timings, damage area, raster mode, and watchdog outcomes in structured logs that can drive regression gates. |
 
 ## P1 Workstreams
-| Priority | Workstream | Scope From `NEW_AUDIT` | Production-Grade Outcome |
+| Priority | Workstream | Scope | Production-Grade Outcome |
 |---|---|---|---|
-| P1 | Complete Core DOM support surfaces | `FenBrowser.Core\Dom\V2\Attr.cs`, `Comment.cs`, `DocumentFragment.cs`, `DocumentType.cs`, `DomException.cs`, `DomExtensions.cs`, `Mixins.cs`, `NodeFlags.cs`, `NodeIterator.cs`, `PseudoElement.cs`, `Security\AttributeSanitizer.cs`, `ShadowRoot.cs`, `Text.cs`, `TreeScope.cs`, `TreeWalker.cs`, `FenBrowser.Core\DomSerializer.cs` | Support files stop being "narrow but loose" and become deliberate browser contracts with stable semantics, invariants, sanitization rules, and serialization guarantees. |
-| P1 | Harden engine contracts and lifecycle invariants | `FenBrowser.Core\Engine\EngineContext.cs`, `EngineInvariants.cs`, `EnginePhase.cs`, `NavigationSubresourceTracker.cs`, `PipelineStage.cs`, plus supporting contracts such as `FenBrowser.Core\IBrowserEngine.cs`, `ILogger.cs`, `INetworkService.cs`, `UiThreadHelper.cs`, `BrowserSettings.cs`, `NetworkConfiguration.cs`, `NetworkService.cs` | The engine lifecycle becomes explicit, enforceable, and observable. Contracts become narrow and final instead of permissive glue. |
-| P1 | Close WebIDL pipeline end to end | `FenBrowser.Core\WebIDL\WebIdlBindingGenerator.cs`, `FenBrowser.Core\WebIDL\Idl\*`, `FenBrowser.FenEngine\Bindings\Generated\*`, `FenBrowser.WebIdlGen\*` | Generated breadth must map to real runtime semantics. Deterministic generation, validation, and ownership of host-object behavior replace "generated surface implies completeness." |
-| P1 | Finish bytecode/runtime support layers | `FenBrowser.FenEngine\Core\Bytecode\*`, `FenBrowser.FenEngine\Core\EventLoop\*`, `FenBrowser.FenEngine\Core\Interfaces\*`, `FenBrowser.FenEngine\Core\Types\JsMap.cs`, `JsWeakMap.cs`, `JsWeakSet.cs`, `ModuleNamespaceObject.cs`, `Shape.cs` | Runtime contracts become final, execution semantics become auditably correct, and the bytecode/event-loop subsystems stop depending on loose helper boundaries. |
-| P1 | Complete CSS engine support surfaces | `FenBrowser.Core\Css\CssCornerRadius.cs`, `FenBrowser.Core\Css\ICssEngine.cs`, `FenBrowser.FenEngine\Rendering\Css\*` non-production-grade files, especially `CssLoader.cs`, `CssParser.cs`, `CssSelectorParser.cs`, `CssStyleApplicator.cs`, value/token/model/parser helpers | Styling becomes single-owner, spec-driven, and internally consistent. The "lean parser utility" and older parser removal story must resolve into a coherent CSS subsystem. |
-| P1 | Finish layout support layers | `FenBrowser.FenEngine\Layout\*` non-production-grade files, including `AbsolutePositionSolver.cs`, `BoxModel.cs`, `ContainingBlockResolver.cs`, `Contexts\*`, `Coordinates\*`, `GridLayoutComputer.*`, `LayoutContext.cs`, `LayoutEngine.cs`, `LayoutHelper.cs`, `LayoutPositioningLogic.cs`, `LayoutResult.cs`, `LayoutValidator.cs`, `MarginCollapse*`, `MultiColumnLayoutComputer.cs`, `PseudoBox.cs`, `ReplacedElementSizing.cs`, `ScrollAnchoring.cs`, `TextLayout*`, `TransformParsed.cs`, `Tree\*` | Layout helpers become a coherent system with clear ownership, fewer ambiguous utility layers, and validated algorithm boundaries for block, inline, grid, float, absolute, multicolumn, and writing-mode behavior. |
-| P1 | Productionize Web APIs and workers | `FenBrowser.FenEngine\WebAPIs\FetchEvent.cs`, `IntersectionObserverAPI.cs`, `ResizeObserverAPI.cs`, `TestConsoleCapture.cs`, `FenBrowser.FenEngine\Workers\*` partial files including `ServiceWorker*.cs`, `StructuredClone.cs`, `WorkerConstructor.cs`, `WorkerPromise.cs` | Observer, fetch-event, structured clone, worker, and service-worker behavior become fully specified, observable, and bounded by real resource and security rules. |
-| P1 | Harden typography and shaping | `FenBrowser.FenEngine\Typography\GlyphRun.cs`, `IFontService.cs`, `NormalizedFontMetrics.cs`, `SkiaFontService.cs`, `TextShaper.cs` | Text shaping, metrics, and font selection become reliable, measurable, and backend-independent enough for production rendering quality. |
-| P1 | Harden Host shell and interaction layers | `FenBrowser.Host\ChromeManager.cs`, `RootWidget.cs`, `Context\*`, `Input\*`, `Tabs\*`, `Theme\ThemeManager.cs`, non-production-grade `Widgets\*`, plus packaging surfaces `app.manifest`, `FenBrowser.Host.csproj` | The host shell becomes a clear UI layer with strict thread ownership, input determinism, widget contracts, and fewer broad coordinator classes. |
-| P1 | Complete DevTools | `FenBrowser.DevTools\Core\*` non-production-grade files, `Domains\*` non-production-grade files, `Domains\DTOs\*`, `Instrumentation\DomInstrumenter.cs`, `Panels\ElementsPanel.cs`, `FenBrowser.DevTools.csproj` | Protocol routing, DTO fidelity, panel behavior, instrumentation, and remote debugging become production service tooling instead of a powerful but partly simplified custom stack. |
-| P1 | Complete WebDriver | `FenBrowser.WebDriver\CommandRouter.cs`, `Commands\NavigationCommands.cs`, `ScriptCommands.cs`, `SessionCommands.cs`, `SessionManager.cs`, `Protocol\*`, `Security\*`, `FenBrowser.WebDriver.csproj` | WebDriver becomes fully intentional: spec-aligned command behavior, hardened automation security, stable session semantics, and strong protocol diagnostics. |
+| P1 | Reuse layout, paint-tree, and display-list work aggressively | `FenBrowser.FenEngine/Rendering/PaintTree/*`, `RenderTree/*`, `ElementStateManager.cs`, `SkiaDomRenderer.cs`, layout-to-paint bridge surfaces | Completed on `2026-03-30`. Paint-only invalidation now avoids relayout on the hot path, and converged animation frames reuse damage/base-frame state instead of falling back to repeated full work. |
+| P1 | Optimize CSS/style matching and restyle invalidation | `FenBrowser.FenEngine/Rendering/Css/*`, `FenBrowser.Core/Css/*`, selector matching and style applicator paths | Completed on `2026-03-30` for the live render hot path. Animation-driven restyle invalidation now distinguishes paint-only properties from geometry-changing properties so opacity-class churn no longer triggers relayout by default. |
+| P1 | Harden typography, glyph caching, and text shaping throughput | `FenBrowser.FenEngine/Typography/*`, `Adapters/SkiaTextMeasurer.cs`, `Rendering/PaintTree/PositionedGlyph.cs`, font/fallback services | Completed on `2026-03-30`. Stable measurement and shaping inputs now hit bounded caches for line heights, widths, metrics, and glyph runs. |
+| P1 | Bound image decode, animated image churn, and raster-side asset cost | `FenBrowser.FenEngine/Rendering/ImageLoader.cs`, image cache/decode paths, animation invalidation logic | Completed on `2026-03-30`. Burst image prewarm no longer emits one relayout per decode, and image-driven repaint/relayout signals now route through explicit host semantics. |
+| P1 | Reduce verification-to-runtime mismatch in visual/text fidelity | `FenBrowser.Core/Verification/ContentVerifier.cs`, `FenBrowser.Tests/Core/GoogleSnapshotDiagnosticsTests.cs`, browser diagnostics capture seams | Completed on `2026-03-30`. Verification now reports authoritative top-level source/rendered truth instead of whichever subresource finished last, and rendered-text capture better reflects visible control text. |
+| P1 | Remove repeated steady-state work after first meaningful paint | navigation lifecycle, repaint scheduling, timer-driven invalidation, overlay/input repaint paths | Completed on `2026-03-30`. After convergence, ordinary animation frames now settle into low-single-digit millisecond damage-raster commits instead of repeated full-page render work. |
 
 ## P2 Workstreams
-| Priority | Workstream | Scope From `NEW_AUDIT` | Production-Grade Outcome |
+| Priority | Workstream | Scope | Production-Grade Outcome |
 |---|---|---|---|
-| P2 | Harden thin value/config/contract files without bloating them | `FenBrowser.Core\CertificateInfo.cs`, `FenBrowser.Core\Math\CornerRadius.cs`, `Thickness.cs`, `FenBrowser.Core\Cache\CacheKey.cs`, `ShardedCache.cs`, small interfaces and enums across Core/FenEngine/Host/DevTools/WebDriver | Thin files remain thin, but their APIs become frozen, validated, observable, and intentionally documented. Production-grade does not mean "make this big." It means "make this final." |
-| P2 | Packaging and deterministic tooling cleanup | `FenBrowser.Host\app.manifest`, `FenBrowser.Host\icon.ico`, project files across Host/DevTools/WebDriver/WebIdlGen, small platform/config surfaces | Packaging, manifests, and build metadata become deterministic and explicit. No hidden behavior, machine-specific drift, or accidental feature activation. |
+| P2 | Enforce memory budgets and eviction policy across render assets | glyph caches, decoded image caches, reusable frame buffers, paint/display caches, `ShardedCache<T>` consumers | Renderer memory usage becomes bounded, observable, and eviction-safe under long sessions and large pages. |
+| P2 | Add interaction jank control and deadline-aware scheduling | input-to-render path, `EventLoopCoordinator`, render-thread queues, overlay updates, scroll/input hot paths | Input, scroll, typing, and focus transitions stay responsive even while pages are busy. Deadline misses degrade gracefully instead of cascading. |
+| P2 | Build a production benchmark and regression gate suite | `FenBrowser.Tests/Rendering/*`, `FenBrowser.Tooling/*` benchmark harnesses, representative page/profile corpus | Fen gains stable render/perf benchmarks with thresholds for DOM size, first meaningful paint, steady-state frame cost, text throughput, image churn, and memory. |
+| P2 | Harden platform abstraction for future GPU/backend evolution | backend abstraction seams, host compositor contract, raster/present boundaries | Render/perf improvements do not lock fen into one OS or one backend strategy. The architecture stays portable while getting faster. |
 
 ## Coverage Map
-All non-`production-grade` findings in `NEW_AUDIT.md` are covered by the workstreams above. The coverage rule is by ownership boundary, not by arbitrary file count.
 
-### FenBrowser.Core Coverage
-- Accessibility productionization:
-  `FenBrowser.Core\Accessibility\*`
-- DOM support and sanitization completion:
-  `FenBrowser.Core\Dom\V2\Attr.cs`, `Comment.cs`, `DocumentFragment.cs`, `DocumentType.cs`, `DomException.cs`, `DomExtensions.cs`, `Mixins.cs`, `NodeFlags.cs`, `NodeIterator.cs`, `PseudoElement.cs`, `Security\AttributeSanitizer.cs`, `ShadowRoot.cs`, `Text.cs`, `TreeScope.cs`, `TreeWalker.cs`, `FenBrowser.Core\DomSerializer.cs`
-- Engine contract hardening:
-  `FenBrowser.Core\Engine\EngineContext.cs`, `EngineInvariants.cs`, `EnginePhase.cs`, `NavigationSubresourceTracker.cs`, `PipelineStage.cs`
-- Logging first-class:
-  `FenBrowser.Core\FenLogger.cs`, `FenBrowser.Core\ConsoleLogger.cs`, `FenBrowser.Core\Logging\*`
-- Network and policy hardening:
-  `FenBrowser.Core\Network\*`, `FenBrowser.Core\Network\Handlers\*`, `FenBrowser.Core\NetworkConfiguration.cs`, `FenBrowser.Core\NetworkService.cs`
-- Platform and sandbox closure:
-  `FenBrowser.Core\Platform\*`, `FenBrowser.Core\Security\*`, `FenBrowser.Core\Security\Sandbox\*`, `FenBrowser.Core\Interop\Windows\*`, `FenBrowser.Core\SandboxPolicy.cs`
-- Parsing support completion:
-  `FenBrowser.Core\Parsing\HtmlParser.cs`, `HtmlToken.cs`, `ICssParser.cs`, `IHtmlParser.cs`, `ParserSecurityPolicy.cs`, `PreloadScanner.cs`
-- CSS/runtime support thin-surface hardening:
-  `FenBrowser.Core\Css\CssCornerRadius.cs`, `ICssEngine.cs`, `BrowserSettings.cs`, `CertificateInfo.cs`, `Cache\*`, `Math\*`, `IBrowserEngine.cs`, `ILogger.cs`, `INetworkService.cs`, `UiThreadHelper.cs`, `Verification\ContentVerifier.cs`
-- WebIDL pipeline:
-  `FenBrowser.Core\WebIDL\WebIdlBindingGenerator.cs`, `FenBrowser.Core\WebIDL\Idl\*`
+### FenBrowser.FenEngine
+- Frame ownership, damage tracking, paint/raster cost:
+  `Rendering/SkiaDomRenderer.cs`, `Rendering/SkiaRenderer.cs`, `Rendering/Core/*`, `Rendering/Compositing/*`, `Rendering/PaintTree/*`, `Rendering/RenderTree/*`
+- Layout constraint correctness and relayout cost:
+  `Layout/*`
+- Typography and text throughput:
+  `Typography/*`, `Adapters/SkiaTextMeasurer.cs`
+- Image decode and asset churn:
+  `Rendering/ImageLoader.cs`, related asset caches and animation paths
 
-### FenBrowser.FenEngine Coverage
-- Parser ownership resolution:
-  `FenBrowser.FenEngine\HTML\*`
-- Runtime support completion:
-  `FenBrowser.FenEngine\Core\Bytecode\*`, `FenBrowser.FenEngine\Core\EventLoop\*`, `FenBrowser.FenEngine\Core\Interfaces\*`, `FenBrowser.FenEngine\Core\Types\*` non-production-grade files
-- Generated binding closure:
-  `FenBrowser.FenEngine\Bindings\Generated\*`
-- Layout completion:
-  `FenBrowser.FenEngine\Layout\*` non-production-grade files
-- Rendering architecture finalization:
-  `FenBrowser.FenEngine\Rendering\*` non-production-grade files, including `SkiaDomRenderer.cs`, `BrowserApi.cs`, `Css\*`, `Compositing\*`, `Core\*`, `Interaction\*`, `Paint\*`, `Painting\*`, `PaintTree\*`, `RenderTree\*`, `WebGL\*`, `UserAgent\*`
-- Typography hardening:
-  `FenBrowser.FenEngine\Typography\*`
-- Web APIs and workers:
-  `FenBrowser.FenEngine\WebAPIs\*` non-production-grade files, `FenBrowser.FenEngine\Workers\*` non-production-grade files
-- Harness extraction:
-  `FenBrowser.FenEngine\Program.cs`, `FenBrowser.FenEngine\Testing\*`
+### FenBrowser.Core
+- Logging and telemetry:
+  `Logging/*`, `FenLogger.cs`, `Verification/ContentVerifier.cs`
+- Shared cache and budget primitives:
+  `Cache/*`, `System/FrameDeadline.cs`, supporting thin contracts used by render paths
 
-### FenBrowser.Host Coverage
-- Startup surface cleanup:
-  `FenBrowser.Host\Program.cs`
-- Process isolation implementation:
-  `FenBrowser.Host\ProcessIsolation\*` non-production-grade files, especially `Gpu\GpuProcessIpc.cs`, `Utility\UtilityProcessIpc.cs`, `FrameSharedMemory.cs`, `Targets\*`, `RendererChildLoopIo.cs`, `RendererInputEvent.cs`, `IProcessIsolationCoordinator.cs`, `ProcessIsolationRuntime.cs`, `ProcessIsolationCoordinatorFactory.cs`, `Network\NetworkChildProcessHost.cs`
-- Host shell hardening:
-  `FenBrowser.Host\ChromeManager.cs`, `RootWidget.cs`, `Context\*`, `Input\*`, `Tabs\*`, `Theme\ThemeManager.cs`, non-production-grade `Widgets\*`, `FenBrowser.Host.csproj`, `app.manifest`
+### FenBrowser.Host
+- Host/render contract and presentation ownership:
+  `BrowserIntegration.cs`, `ProcessIsolation/*`, widget repaint/invalidation seams
+- Debug and operator evidence routing:
+  root artifact and log ownership, frame record surfaces
 
-### FenBrowser.DevTools Coverage
-- Core protocol/server/tooling:
-  `FenBrowser.DevTools\Core\*` non-production-grade files
-- Domain and DTO completion:
-  `FenBrowser.DevTools\Domains\*` non-production-grade files, `Domains\DTOs\*`
-- Instrumentation and panel completion:
-  `FenBrowser.DevTools\Instrumentation\DomInstrumenter.cs`, `FenBrowser.DevTools\Panels\ElementsPanel.cs`
+## Closure Rules For This Ledger
+- P0 closed on `2026-03-30` because fen now maintains a believable steady-state frame model under a real Google-class page instead of redoing full render work for every timer/animation frame.
+- P1 closed on `2026-03-30` because renderer subsystems now show measurable reuse and bounded steady-state cost under the live Google-class repro instead of only cleaner code.
+- P2 closes only when performance discipline is enforced by budgets, benchmarks, and memory policy rather than by developer intention.
 
-### FenBrowser.WebDriver Coverage
-- Remove scaffold:
-  `FenBrowser.WebDriver\Class1.cs`
-- Protocol and command completion:
-  `FenBrowser.WebDriver\CommandRouter.cs`, `Commands\*` non-production-grade files, `Protocol\*`, `Security\*`, `SessionManager.cs`, `FenBrowser.WebDriver.csproj`
+## Initial Reality-Based Success Criteria
+The first serious definition of success for this ledger is:
 
-### FenBrowser.WebIdlGen Coverage
-- Deterministic tool hardening:
-  `FenBrowser.WebIdlGen\Program.cs`, `FenBrowser.WebIdlGen.csproj`
+- Google-class pages stay visibly correct.
+- Steady-state no longer repeatedly pays full layout + paint + raster cost.
+- Watchdog warnings become rare exceptions, not expected steady-state output.
+- Damage-raster and reusable-frame paths are real production paths.
+- Frame logs explain exactly why a frame was expensive.
+- Text, images, and overlays stop causing disproportionate churn.
 
-## Definition Of Done For FenBrowser
-An area is only considered production-grade when:
-- It has one clear owner.
-- It has no empty seams.
-- Its security posture is explicit and logged.
-- Its spec posture is explicit and logged.
-- Its hot-path performance behavior is understood and measurable.
-- Its failure handling is observable and recoverable.
-- Its diagnostics are useful in production.
-- Its temporary compatibility code is either removed or time-boxed with a migration owner.
-- It no longer depends on "someone knows how this works" tribal knowledge.
-
-## Strategic Direction
-The audit says FenBrowser already has real engine substance.
-This work ledger is about turning that substance into disciplined browser architecture.
-
-The right move now is not to add random new features.
-The right move is to close ownership, finish the unsafe seams, simplify the architecture, and force every important subsystem to meet production-grade standards before surface area expands again.
+Until those statements are true, fen is still in rendering/performance closure mode.

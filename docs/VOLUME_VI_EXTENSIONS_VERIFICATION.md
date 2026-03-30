@@ -258,6 +258,34 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - switch frame/parent frame routes
     - maximize/minimize/fullscreen routes.
 
+### 4.8 Render/Perf P1 Verification Closure (2026-03-30)
+
+- Added or expanded focused regression coverage for the render/perf P1 tranche:
+  - `FenBrowser.Tests/Rendering/RenderFrameTelemetryTests.cs`
+    - proves paint-only invalidation does not force layout
+    - proves animation-property invalidation classification stays truthful
+  - `FenBrowser.Tests/Rendering/TypographyCachingTests.cs`
+    - proves `SkiaTextMeasurer` and `SkiaFontService` reuse stable cache inputs
+  - `FenBrowser.Tests/Rendering/BrowserHostImageInvalidationTests.cs`
+    - proves host repaint/relayout semantics stay aligned with active DOM ownership
+    - proves image prewarm batches relayout churn for burst asset loads
+  - `FenBrowser.Tests/Core/ContentVerifierStateTests.cs`
+    - proves authoritative top-level source/rendered registrations cannot be overwritten by later provisional or subresource updates
+  - `FenBrowser.Tests/Engine/BrowserHostRenderedTextTests.cs`
+    - proves rendered-text capture includes visible control fallback text without duplicating aria-label fallback
+- The focused P1 command used for closure was:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~BrowserHostRenderedTextTests|FullyQualifiedName~BrowserHostImageInvalidationTests|FullyQualifiedName~TypographyCachingTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~ContentVerifierStateTests"`
+- Result: `17/17` pass.
+- Required runtime verification artifacts for the closure run:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_131408.html`
+  - `logs/engine_source_20260330_131429.html`
+  - `logs/rendered_text_20260330_131429.txt`
+  - `logs/fenbrowser_20260330_131407.log`
+  - `logs/fenbrowser_20260330_131407.jsonl`
+- The runtime closure claim is specific: P1 closed because the steady-state animation path is now damage-rasterized and low-cost under a real Google-class repro. P2 remains open for first/full-frame budgets, outlier watchdog spikes, and longer-horizon benchmarking.
+
 - `FenBrowser.Host/WebDriver/FenBrowserDriver.cs`
 - `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
   - Expanded driver adapters to implement the complete Phase-5 WebDriver command surface.
@@ -1756,3 +1784,46 @@ _End of Volume VI_
 - Closure status:
   - P2 is complete for the audit-derived workstreams in `NEW_AUDIT_WORK.md`.
   - broader solution warning debt and deeper render/performance work remain separate post-P2 backlog items.
+
+## 6.53 Render/Perf P0 Closure Verification (2026-03-30)
+
+- Added focused P0 regression coverage:
+  - `FenBrowser.Tests/Rendering/RenderFrameTelemetryTests.cs`
+    - proves the renderer returns invalidation reason, raster mode, caller identity, and staged frame telemetry through `RenderFrameResult`
+    - proves that a caller-seeded reusable frame remains intact when a steady-state frame has no damage and preservation mode is valid
+  - `FenBrowser.Tests/Layout/LayoutConstraintResolverTests.cs`
+    - proves width resolution uses containing-block width before viewport fallback when the incoming width is unbounded
+    - proves viewport fallback is only used when containing-block width is invalid
+  - existing `RenderWatchdogTests` remained in the P0 slice because preservation and watchdog behavior must coexist without blanking the visible frame
+
+- Focused verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderWatchdogTests|FullyQualifiedName~LayoutConstraintResolverTests"`: pass (`7/7`)
+
+- Required host runtime cycle on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_123307.html`
+  - `logs/engine_source_20260330_123329.html`
+  - `logs/rendered_text_20260330_123329.txt`
+  - `logs/fenbrowser_20260330_123306.log`
+  - `logs/fenbrowser_20260330_123306.jsonl`
+
+- Runtime proof recorded by the structured frame log:
+  - first navigation commit:
+    - `rasterMode=Full`
+    - `baseFrameSeeded=false`
+    - `totalMs=1496.62`
+  - first follow-up animation frame:
+    - `rasterMode=PreservedBaseFrame`
+    - `baseFrameSeeded=true`
+    - `totalMs=359.15`
+  - later steady-state frames:
+    - `rasterMode=PreservedBaseFrame`
+    - `layoutUpdated=false`
+    - `paintTreeRebuilt=false`
+    - `totalMs=0.07` to `0.19`
+
+- Why this matters:
+  - P0 was not about eliminating all performance debt. It was about proving that fen no longer pays full frame cost for every ordinary steady-state frame and that the reason for each frame is observable.
+  - The current verification evidence is sufficient to mark render/perf P0 closed while leaving deeper fidelity, budget, and long-tail optimization work to P1 and P2 of the new ledger.
