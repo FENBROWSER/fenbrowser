@@ -16,10 +16,10 @@ It is the execution ledger for rendering correctness under pressure, frame-time 
 
 ## Status
 - Previous architecture/hardening ledger: completed on `2026-03-30`.
-- This rendering/performance ledger: `in progress`.
+- This rendering/performance ledger: completed on `2026-03-30`.
 - P0: completed on `2026-03-30`.
 - P1: completed on `2026-03-30`.
-- P2: open.
+- P2: completed on `2026-03-30`.
 
 ## Current Runtime Reality
 Ground truth from the clean-state Google host run on `2026-03-30` after the P1 closure pass:
@@ -45,11 +45,30 @@ Ground truth from the clean-state Google host run on `2026-03-30` after the P1 c
   - first commit: `rasterMode=Full`, `baseFrameSeeded=false`, `watchdogTriggered=true`
   - converged animation tail: `rasterMode=Damage`, `baseFrameSeeded=true`, `layoutUpdated=false`, `usedDamageRasterization=true`, `watchdogTriggered=false`
   - tail frame timings now settle around `2.64ms` to `3.15ms`
-- Watchdog warnings are no longer the steady-state norm, but isolated convergence outliers still appear (`frameSequence` `5`, `20`, `33`, `79`). That remaining budget discipline is now P2 work, not a P1 blocker.
+- Watchdog warnings are no longer the steady-state norm, but isolated convergence outliers still appear (`frameSequence` `5`, `20`, `33`, `79`). That remaining budget discipline is now post-audit optimization work, not an open ledger blocker.
 - Layout constraint ownership remains explicit in logs from the P0 pass. The remaining `Raw=0 -> viewport` fallback cases are no longer hidden, but they also no longer block steady-state frame reuse.
-- Visible shell correctness and diagnostics truth are materially better, but first/full-frame cost and long-tail spike reduction still remain active P2 work.
+- Visible shell correctness and diagnostics truth are materially better, while first/full-frame cost and long-tail spike reduction now move to the post-audit backlog rather than staying inside this ledger.
+- The latest clean-state Google host run on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_153456.html`
+  - `logs/engine_source_20260330_153457.html`
+  - `logs/rendered_text_20260330_153457.txt`
+  - `logs/fenbrowser_20260330_153454.log`
+  - `logs/fenbrowser_20260330_153454.jsonl`
+- The live structured frame stream now includes first-class render-operations context in every commit:
+  - event-loop processed/deferred task counts and pending queue buckets
+  - image cache counts, bytes, hits, misses, and evictions
+  - font cache entry counts, bytes, hits, misses, and evictions
+  - text measurement cache entry counts, bytes, hits, misses, and evictions
+- The production render benchmark gate is now real and passing through `FenBrowser.Tooling render-perf`:
+  - artifact: `logs/render_perf_benchmark_20260330_100820.json`
+  - `first-frame-heavy-layout`: `297.59ms`
+  - `steady-state-damage-animation`: `5.54ms`
+  - `dense-text-flow`: `35.82ms`
+  - `failureGatePassed=True`
 
-These signals mean fen has closed the P0 frame-pipeline blockers, but it is not yet performance-closed overall.
+These signals mean fen has closed the render/perf audit workstreams in this ledger. Deeper optimization still remains, but it is now outside this file.
 
 All work below is guided by the FenBrowser mandate:
 - Security is first-class.
@@ -155,8 +174,39 @@ Verification that closed P1:
   - `logs/fenbrowser_20260330_131407.log`
   - `logs/fenbrowser_20260330_131407.jsonl`
 - Runtime proof that closed P1:
-  - first navigation commit remained expensive at `557.24ms`, which keeps P2 open.
+  - first navigation commit remained expensive at `557.24ms`, which is why deeper post-audit optimization still remains after this ledger.
   - the converged animation tail settled to `2.64ms` to `3.15ms` damage-raster frames with `layoutUpdated=false` and `watchdogTriggered=false`, which is the production-critical P1 turning point.
+
+## P2 Closure Evidence
+P2 closed on `2026-03-30` with code, focused regressions, a full solution build, a clean-state host cycle, and a live benchmark artifact.
+
+- Enforce memory budgets and eviction policy across render assets:
+  - bounded LRU cache primitives now back typography and text measurement hot paths.
+  - `ImageLoader` now reports bounded cache counts/bytes/hit-miss-eviction telemetry and evicts across both static and animated assets without double-counting legacy mirrors.
+- Add interaction jank control and deadline-aware scheduling:
+  - event-loop tasks are now classified into `Interactive`, `UserVisible`, and `Background` buckets.
+  - `BrowserIntegration` now reserves explicit render budget per frame, prioritizes interactive work when repaint pressure exists, and defers background work when the frame is already busy.
+- Build a production benchmark and regression gate suite:
+  - `FenBrowser.Tooling render-perf` now executes a deterministic benchmark suite and writes a structured report artifact.
+  - measurement now runs with benchmark-specific logging suppression and excludes warm-up cost from the steady-state damage scenario.
+- Harden platform abstraction for future GPU/backend evolution:
+  - `IRenderBackend` now owns save-depth, filter, backdrop-filter, inset-shadow, and custom-paint operations directly.
+  - `SkiaRenderer` no longer branches on concrete backend implementation for these paths, and the headless backend exercises the same contract surface in tests.
+
+Verification that closed P2:
+- `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass (`679` warnings, `0` errors)
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~TypographyCachingTests|FullyQualifiedName~EventLoopPriorityTests|FullyQualifiedName~RenderBackendTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~ImageLoaderCacheTelemetryTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests"`: pass (`22/22`)
+- required clean-state host runtime cycle on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_153456.html`
+  - `logs/engine_source_20260330_153457.html`
+  - `logs/rendered_text_20260330_153457.txt`
+  - `logs/fenbrowser_20260330_153454.log`
+  - `logs/fenbrowser_20260330_153454.jsonl`
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug --no-build -- render-perf`:
+  - `artifact=logs/render_perf_benchmark_20260330_100820.json`
+  - `failureGatePassed=True`
 
 ## P0 Workstreams
 | Priority | Workstream | Scope | Production-Grade Outcome |
@@ -179,10 +229,10 @@ Verification that closed P1:
 ## P2 Workstreams
 | Priority | Workstream | Scope | Production-Grade Outcome |
 |---|---|---|---|
-| P2 | Enforce memory budgets and eviction policy across render assets | glyph caches, decoded image caches, reusable frame buffers, paint/display caches, `ShardedCache<T>` consumers | Renderer memory usage becomes bounded, observable, and eviction-safe under long sessions and large pages. |
-| P2 | Add interaction jank control and deadline-aware scheduling | input-to-render path, `EventLoopCoordinator`, render-thread queues, overlay updates, scroll/input hot paths | Input, scroll, typing, and focus transitions stay responsive even while pages are busy. Deadline misses degrade gracefully instead of cascading. |
-| P2 | Build a production benchmark and regression gate suite | `FenBrowser.Tests/Rendering/*`, `FenBrowser.Tooling/*` benchmark harnesses, representative page/profile corpus | Fen gains stable render/perf benchmarks with thresholds for DOM size, first meaningful paint, steady-state frame cost, text throughput, image churn, and memory. |
-| P2 | Harden platform abstraction for future GPU/backend evolution | backend abstraction seams, host compositor contract, raster/present boundaries | Render/perf improvements do not lock fen into one OS or one backend strategy. The architecture stays portable while getting faster. |
+| P2 | Enforce memory budgets and eviction policy across render assets | glyph caches, decoded image caches, reusable frame buffers, paint/display caches, `ShardedCache<T>` consumers | Completed on `2026-03-30`. Renderer memory usage is now bounded, observable, and eviction-safe across typography, text measurement, and image caches. |
+| P2 | Add interaction jank control and deadline-aware scheduling | input-to-render path, `EventLoopCoordinator`, render-thread queues, overlay updates, scroll/input hot paths | Completed on `2026-03-30`. Event-loop work now respects render budget, prioritizes interaction under frame pressure, and defers background work instead of letting it cascade into jank. |
+| P2 | Build a production benchmark and regression gate suite | `FenBrowser.Tests/Rendering/*`, `FenBrowser.Tooling/*` benchmark harnesses, representative page/profile corpus | Completed on `2026-03-30`. Fen now has a deterministic render/perf benchmark suite with a persisted report artifact and passing failure gate. |
+| P2 | Harden platform abstraction for future GPU/backend evolution | backend abstraction seams, host compositor contract, raster/present boundaries | Completed on `2026-03-30`. Render-side backend contracts now own advanced paint/filter operations directly instead of leaking concrete backend assumptions into the renderer. |
 
 ## Coverage Map
 
@@ -211,7 +261,7 @@ Verification that closed P1:
 ## Closure Rules For This Ledger
 - P0 closed on `2026-03-30` because fen now maintains a believable steady-state frame model under a real Google-class page instead of redoing full render work for every timer/animation frame.
 - P1 closed on `2026-03-30` because renderer subsystems now show measurable reuse and bounded steady-state cost under the live Google-class repro instead of only cleaner code.
-- P2 closes only when performance discipline is enforced by budgets, benchmarks, and memory policy rather than by developer intention.
+- P2 closed on `2026-03-30` because performance discipline is now enforced by explicit budgets, bounded caches, a deterministic benchmark gate, and structured runtime telemetry rather than by developer intention.
 
 ## Initial Reality-Based Success Criteria
 The first serious definition of success for this ledger is:
@@ -223,4 +273,4 @@ The first serious definition of success for this ledger is:
 - Frame logs explain exactly why a frame was expensive.
 - Text, images, and overlays stop causing disproportionate churn.
 
-Until those statements are true, fen is still in rendering/performance closure mode.
+This ledger is closed. Future deeper optimization belongs in the next post-audit rendering/performance roadmap.

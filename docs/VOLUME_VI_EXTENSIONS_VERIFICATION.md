@@ -1827,3 +1827,48 @@ _End of Volume VI_
 - Why this matters:
   - P0 was not about eliminating all performance debt. It was about proving that fen no longer pays full frame cost for every ordinary steady-state frame and that the reason for each frame is observable.
   - The current verification evidence is sufficient to mark render/perf P0 closed while leaving deeper fidelity, budget, and long-tail optimization work to P1 and P2 of the new ledger.
+
+## 6.54 Render/Perf P2 Closure Verification (2026-03-30)
+
+- Added or expanded focused regression coverage:
+  - `FenBrowser.Tests/Rendering/TypographyCachingTests.cs`
+    - proves `SkiaFontService` and `SkiaTextMeasurer` enforce bounded cache budgets and record evictions
+  - `FenBrowser.Tests/Engine/EventLoopPriorityTests.cs`
+    - proves interactive event-loop work can preempt lower-priority tasks
+  - `FenBrowser.Tests/Architecture/RenderBackendTests.cs`
+    - proves advanced filter/custom-paint operations are exercised through the backend contract instead of concrete renderer casts
+  - `FenBrowser.Tests/Rendering/ImageLoaderCacheTelemetryTests.cs`
+    - proves image-cache counts and hit accounting no longer double-count the legacy cache mirror
+  - `FenBrowser.Tests/Rendering/RenderPerformanceBenchmarkRunnerTests.cs`
+    - proves the benchmark suite emits stable named results and persists an artifact
+
+- Focused verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass (`679` warnings, `0` errors)
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~TypographyCachingTests|FullyQualifiedName~EventLoopPriorityTests|FullyQualifiedName~RenderBackendTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~ImageLoaderCacheTelemetryTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~GoogleSnapshotDiagnosticsTests"`: pass (`22/22`)
+
+- Benchmark gate on `2026-03-30`:
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug --no-build -- render-perf`
+  - artifact: `logs/render_perf_benchmark_20260330_100820.json`
+  - results:
+    - `first-frame-heavy-layout`: `297.59ms`
+    - `steady-state-damage-animation`: `5.54ms`
+    - `dense-text-flow`: `35.82ms`
+  - `failureGatePassed=True`
+
+- Required host runtime cycle on `2026-03-30` emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_153456.html`
+  - `logs/engine_source_20260330_153457.html`
+  - `logs/rendered_text_20260330_153457.txt`
+  - `logs/fenbrowser_20260330_153454.log`
+  - `logs/fenbrowser_20260330_153454.jsonl`
+
+- Runtime proof for the closure claim:
+  - committed frame logs now include deadline-aware event-loop slice data plus image/font/text cache telemetry on every frame
+  - the clean-state Google run remained visibly painted and kept the full diagnostics contract intact
+  - the production benchmark gate now passes with a persisted artifact instead of existing only as compile-time scaffolding
+
+- Closure status:
+  - render/perf `P2` is complete for the ledger tracked in `NEW_AUDIT_WORK.md`
+  - remaining work after this point is post-audit optimization and warning-debt cleanup, not an open ledger blocker
