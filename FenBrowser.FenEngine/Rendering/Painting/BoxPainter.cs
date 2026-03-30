@@ -154,10 +154,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 BlendMode = blendMode,
             };
 
-            var radius = style.BorderRadius;
-            if (radius.TopLeft.Value == 0 && radius.TopRight.Value == 0 && radius.BottomRight.Value == 0 && radius.BottomLeft.Value == 0)
+            var radius = style.BorderRadius.ClampNonNegative();
+            if (radius.IsZero)
             {
-                 radius = new CssCornerRadius(0);
+                 radius = CssCornerRadius.Empty;
             }
             DrawWithRadius(canvas, bgBox, radius, paint);
         }
@@ -332,7 +332,8 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         private void DrawWithRadius(SKCanvas canvas, SKRect rect, CssCornerRadius radius, SKPaint paint)
         {
-            if (radius.TopLeft.Value > 0 || radius.TopRight.Value > 0 || radius.BottomRight.Value > 0 || radius.BottomLeft.Value > 0)
+            radius = radius.ClampNonNegative();
+            if (!radius.IsZero)
             {
                 // Simplified: use uniform radius from top-left
                 float r = (float)Math.Max(radius.TopLeft.Value, Math.Max(radius.TopRight.Value, 

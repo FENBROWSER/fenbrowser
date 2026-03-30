@@ -1,4 +1,5 @@
 using SkiaSharp;
+using System;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -22,12 +23,16 @@ namespace FenBrowser.FenEngine.Rendering
         /// Y position (baseline) in document coordinates.
         /// </summary>
         public float Y { get; init; }
+
+        public bool IsRenderable => GlyphId != 0 && float.IsFinite(X) && float.IsFinite(Y);
         
         public PositionedGlyph(ushort glyphId, float x, float y)
         {
             GlyphId = glyphId;
-            X = x;
-            Y = y;
+            X = float.IsFinite(x) ? x : 0f;
+            Y = float.IsFinite(y) ? y : 0f;
         }
+
+        public override string ToString() => $"glyph={GlyphId} @ ({X}, {Y})";
     }
 }
