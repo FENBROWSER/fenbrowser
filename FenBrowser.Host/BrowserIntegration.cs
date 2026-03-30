@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Interaction;
@@ -43,6 +45,12 @@ public class BrowserIntegration
     private readonly object _frameLock = new object();
     private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     private bool _hasLoggedFrameNull = false; // To reduce warning spam
+    private List<InputOverlayData> _currentOverlays = new();
+    private SKSize _lastCommittedFrameViewport;
+    private float _lastCommittedFrameScrollY;
+    private RenderFrameInvalidationReason _pendingInvalidationReasons =
+        RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Viewport;
+    private string _pendingInvalidationSource = "startup";
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
     private readonly object _remoteFrameLock = new object();
@@ -132,8 +140,11 @@ public class BrowserIntegration
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
             // after a valid frame is committed — never before _currentFrame is ready.
-            _needsRepaint = true;
-            _wakeEvent.Set();
+            RequestFrame(
+                _hasFirstStyledRender
+                    ? RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style
+                    : RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style,
+                "BrowserHost.RepaintReady");
         };
         
         _browser.TitleChanged += (s, title) => TitleChanged?.Invoke(title);
@@ -174,8 +185,9 @@ public class BrowserIntegration
                 
                 if (needsSync)
                 {
-                    _needsRepaint = true;
-                    _wakeEvent.Set();
+                    RequestFrame(
+                        RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style | RenderFrameInvalidationReason.Diagnostics,
+                        "BrowserIntegration.DomPoller");
                 }
             }
             catch {}
@@ -192,9 +204,60 @@ public class BrowserIntegration
         // engine loop and the interpolated frame is actually rendered.
         CssAnimationEngine.Instance.OnAnimationFrame += _ =>
         {
-            _needsRepaint = true;
-            _wakeEvent.Set();
+            RequestFrame(RenderFrameInvalidationReason.Animation, "CssAnimationEngine");
         };
+    }
+
+    private void RequestFrame(RenderFrameInvalidationReason reason, string source, bool notifyUi = false)
+    {
+        if (reason == RenderFrameInvalidationReason.None)
+        {
+            reason = RenderFrameInvalidationReason.Unknown;
+        }
+
+        _pendingInvalidationReasons |= reason;
+        _pendingInvalidationSource = MergeInvalidationSource(_pendingInvalidationSource, source);
+        _needsRepaint = true;
+        _wakeEvent.Set();
+
+        if (notifyUi)
+        {
+            NeedsRepaint?.Invoke();
+        }
+    }
+
+    private void DeferPendingFrame()
+    {
+        _needsRepaint = false;
+    }
+
+    private void ClearPendingFrameRequest()
+    {
+        _needsRepaint = false;
+        _pendingInvalidationReasons = RenderFrameInvalidationReason.None;
+        _pendingInvalidationSource = "idle";
+    }
+
+    private static string MergeInvalidationSource(string existing, string source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return string.IsNullOrWhiteSpace(existing) ? "unknown" : existing;
+        }
+
+        if (string.IsNullOrWhiteSpace(existing) || string.Equals(existing, "idle", StringComparison.OrdinalIgnoreCase))
+        {
+            return source;
+        }
+
+        if (string.Equals(existing, source, StringComparison.Ordinal))
+        {
+            return existing;
+        }
+
+        return existing.Contains(source, StringComparison.Ordinal)
+            ? existing
+            : existing + "|" + source;
     }
 
     private void OnFrameReceivedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererFrameReadyPayload payload)
@@ -246,8 +309,38 @@ public class BrowserIntegration
             }
         }
 
-        _needsRepaint = true;
-        NeedsRepaint?.Invoke();
+        if (payload != null && payload.TotalDurationMs > 0)
+        {
+            var remoteEntry = new LogEntry
+            {
+                Category = LogCategory.Performance,
+                Level = payload.WatchdogTriggered ? FenBrowser.Core.Logging.LogLevel.Warn : FenBrowser.Core.Logging.LogLevel.Info,
+                Component = "BrowserIntegration.RemoteFrame",
+                Message = "[FRAME] RemoteCommit",
+                DurationMs = (long)Math.Round(Math.Max(0d, payload.TotalDurationMs)),
+                Data = new Dictionary<string, object>
+                {
+                    ["url"] = payload.Url ?? "about:blank",
+                    ["frameSequence"] = payload.FrameSequenceNumber,
+                    ["requestedBy"] = payload.RequestedBy ?? "RendererChild.FrameRequest",
+                    ["invalidationReason"] = payload.InvalidationReason ?? RenderFrameInvalidationReason.ProcessIsolation.ToString(),
+                    ["rasterMode"] = payload.RasterMode ?? RenderFrameRasterMode.Full.ToString(),
+                    ["usedDamageRasterization"] = payload.UsedDamageRasterization,
+                    ["damageAreaRatio"] = payload.DamageAreaRatio,
+                    ["layoutUpdated"] = payload.LayoutUpdated,
+                    ["paintTreeRebuilt"] = payload.PaintTreeRebuilt,
+                    ["domNodeCount"] = payload.DomNodeCount,
+                    ["boxCount"] = payload.BoxCount,
+                    ["paintNodeCount"] = payload.PaintNodeCount,
+                    ["watchdogTriggered"] = payload.WatchdogTriggered,
+                    ["watchdogReason"] = payload.WatchdogReason ?? string.Empty
+                }
+            };
+
+            LogManager.Log(remoteEntry);
+        }
+
+        RequestFrame(RenderFrameInvalidationReason.ProcessIsolation, "RendererChild.FrameReady", notifyUi: true);
     }
 
     /// <summary>
@@ -270,8 +363,6 @@ public class BrowserIntegration
         if (_highlightedElement != element)
         {
             _highlightedElement = element;
-            _needsRepaint = true;
-            _wakeEvent.Set();
             NeedsRepaint?.Invoke();
         }
     }
@@ -292,9 +383,7 @@ public class BrowserIntegration
     /// </summary>
     public void RequestRepaint()
     {
-        _needsRepaint = true;
-        _wakeEvent.Set();
-        NeedsRepaint?.Invoke();
+        RequestFrame(RenderFrameInvalidationReason.HostRequest, "BrowserIntegration.RequestRepaint", notifyUi: true);
     }
     
     public async Task<object?> EvaluateScriptAsync(string script)
@@ -419,7 +508,7 @@ public class BrowserIntegration
                     var elapsed = DateTime.Now - _lastNavigationTime;
                     if (elapsed.TotalMilliseconds < 60000)
                     {
-                        _needsRepaint = false;
+                        DeferPendingFrame();
                         _wakeEvent.WaitOne(250);
                         return false;
                     }
@@ -467,6 +556,7 @@ public class BrowserIntegration
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
+        RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Navigate");
 
         // Post-navigation repaint pulse: ensure the engine keeps waking up during the
         // critical window after navigation so content is displayed as soon as it is ready.
@@ -634,12 +724,20 @@ public class BrowserIntegration
             return;
         }
 
+        List<InputOverlayData> overlays = null;
+        Element? highlight = _highlightedElement;
+        bool hasFrame = false;
+
         lock (_frameLock)
         {
             if (_currentFrame != null)
             {
+                hasFrame = true;
                 canvas.DrawPicture(_currentFrame);
-                return;
+                if (_currentOverlays.Count > 0)
+                {
+                    overlays = new List<InputOverlayData>(_currentOverlays);
+                }
             }
             else
             {
@@ -652,8 +750,35 @@ public class BrowserIntegration
             }
         }
 
-        // If no frame exists, draw placeholder
-        DrawPlaceholder(canvas, viewport);
+        if (!hasFrame)
+        {
+            DrawPlaceholder(canvas, viewport);
+            return;
+        }
+
+        if ((overlays == null || overlays.Count == 0) && highlight == null)
+        {
+            return;
+        }
+
+        canvas.Save();
+        canvas.Translate(0, -_scrollY);
+        if (overlays != null)
+        {
+            foreach (var overlay in overlays)
+            {
+                DrawInputOverlay(canvas, overlay);
+            }
+        }
+
+        if (highlight != null)
+        {
+            lock (_rendererLock)
+            {
+                DrawHighlight(canvas, highlight);
+            }
+        }
+        canvas.Restore();
     }
     
     /// <summary>
@@ -662,6 +787,13 @@ public class BrowserIntegration
     /// </summary>
     public void RecordFrame(SKSize viewportSize)
     {
+        var invalidationReasons = _pendingInvalidationReasons == RenderFrameInvalidationReason.None
+            ? RenderFrameInvalidationReason.Unknown
+            : _pendingInvalidationReasons;
+        var requestedBy = string.IsNullOrWhiteSpace(_pendingInvalidationSource)
+            ? "unspecified"
+            : _pendingInvalidationSource;
+
         // Guard: Prevent recording during/after shutdown
         if (!_running) return;
         
@@ -678,7 +810,7 @@ public class BrowserIntegration
         {
             // STOP THE HOT LOOP: If we can't record, stop asking to repaint immediately.
             // We will repaint again when state changes (RepaintReady/Loading/etc) trigger a wake.
-            _needsRepaint = false; 
+            ClearPendingFrameRequest();
             FenLogger.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
             return; 
         }
@@ -691,7 +823,7 @@ public class BrowserIntegration
             var cssElapsed = (DateTime.Now - _lastNavigationTime).TotalMilliseconds;
             if (cssElapsed < 60000)
             {
-                _needsRepaint = false;
+                DeferPendingFrame();
                 FenLogger.Debug($"[BrowserIntegration] RecordFrame deferred: waiting for CSS styles ({cssElapsed:F0}ms).", LogCategory.Rendering);
                 return;
             }
@@ -723,9 +855,30 @@ public class BrowserIntegration
         try
         {
             var viewport = new SKRect(0, 0, viewportSize.Width, viewportSize.Height);
+            SKPicture reusableBaseFrame = null;
+            bool canReuseBaseFrame;
+
+            lock (_frameLock)
+            {
+                canReuseBaseFrame = BaseFrameReusePolicy.CanReuseBaseFrame(
+                    _currentFrame != null,
+                    _lastCommittedFrameViewport,
+                    viewportSize,
+                    _lastCommittedFrameScrollY,
+                    _scrollY);
+
+                if (canReuseBaseFrame)
+                {
+                    reusableBaseFrame = _currentFrame;
+                }
+            }
 
             // Start recording
             var canvas = _recorder.BeginRecording(viewport);
+            if (canReuseBaseFrame && reusableBaseFrame != null)
+            {
+                canvas.DrawPicture(reusableBaseFrame);
+            }
 
             // Adjust for scroll
             var scrolledViewport = new SKRect(
@@ -735,35 +888,30 @@ public class BrowserIntegration
                 viewport.Bottom + _scrollY
             );
 
+            List<InputOverlayData> frameOverlays = new();
             canvas.Save();
             canvas.Translate(0, -_scrollY);
 
-            _renderer.Render(
-                _root,
-                canvas,
-                _styles,
-                scrolledViewport,
-                _browser.CurrentUri?.AbsoluteUri,
-                (contentSize, overlays) =>
+            var frameResult = _renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = _root,
+                Canvas = canvas,
+                Styles = _styles,
+                Viewport = scrolledViewport,
+                BaseUrl = _browser.CurrentUri?.AbsoluteUri,
+                OnLayoutUpdated = (contentSize, overlays) =>
                 {
                     _contentHeight = contentSize.Height;
-
-                    if (overlays != null)
-                    {
-                        foreach (var overlay in overlays)
-                        {
-                            DrawInputOverlay(canvas, overlay);
-                        }
-                    }
+                    frameOverlays = overlays != null
+                        ? new List<InputOverlayData>(overlays)
+                        : new List<InputOverlayData>();
                 },
-                viewportSize
-            );
-
-            // Draw highlight overlay
-            if (_highlightedElement != null)
-            {
-                DrawHighlight(canvas, _highlightedElement);
-            }
+                SeparateLayoutViewport = viewportSize,
+                HasBaseFrame = canReuseBaseFrame && reusableBaseFrame != null,
+                InvalidationReason = invalidationReasons,
+                RequestedBy = requestedBy,
+                EmitVerificationReport = (invalidationReasons & ~RenderFrameInvalidationReason.Timer) != RenderFrameInvalidationReason.None
+            });
 
             canvas.Restore();
 
@@ -774,17 +922,68 @@ public class BrowserIntegration
             {
                 _currentFrame?.Dispose();
                 _currentFrame = newFrame;
+                _currentOverlays = frameOverlays;
+                _lastCommittedFrameViewport = viewportSize;
+                _lastCommittedFrameScrollY = _scrollY;
             }
 
-            FenLogger.Info($"[BrowserIntegration] Frame Recorded. Size: {viewportSize}", LogCategory.Rendering);
+            LogCommittedFrame(frameResult, viewportSize);
 
-            _needsRepaint = false;
+            ClearPendingFrameRequest();
             NeedsRepaint?.Invoke();
         }
         catch (Exception ex)
         {
             FenLogger.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
         }
+    }
+
+    private void LogCommittedFrame(RenderFrameResult frameResult, SKSize viewportSize)
+    {
+        var telemetry = frameResult?.Telemetry;
+        FenLogger.Info(
+            $"[BrowserIntegration] Frame recorded. Viewport={viewportSize.Width}x{viewportSize.Height} Reasons={frameResult?.InvalidationReason} Raster={frameResult?.RasterMode}",
+            LogCategory.Rendering);
+
+        if (telemetry == null)
+        {
+            return;
+        }
+
+        var entry = new LogEntry
+        {
+            Category = LogCategory.Performance,
+            Level = telemetry.WatchdogTriggered ? FenBrowser.Core.Logging.LogLevel.Warn : FenBrowser.Core.Logging.LogLevel.Info,
+            Component = "BrowserIntegration.Frame",
+            Message = "[FRAME] Commit",
+            DurationMs = (long)Math.Round(Math.Max(0d, telemetry.TotalDurationMs)),
+            Data = new Dictionary<string, object>
+            {
+                ["url"] = telemetry.Url ?? CurrentUrl ?? "about:blank",
+                ["frameSequence"] = telemetry.FrameSequence,
+                ["requestedBy"] = telemetry.RequestedBy ?? "unspecified",
+                ["invalidationReason"] = telemetry.InvalidationReason.ToString(),
+                ["rasterMode"] = telemetry.RasterMode.ToString(),
+                ["baseFrameSeeded"] = telemetry.BaseFrameSeeded,
+                ["layoutUpdated"] = telemetry.LayoutUpdated,
+                ["paintTreeRebuilt"] = telemetry.PaintTreeRebuilt,
+                ["damageRegionCount"] = telemetry.DamageRegionCount,
+                ["damageAreaRatio"] = telemetry.DamageAreaRatio,
+                ["usedDamageRasterization"] = frameResult.UsedDamageRasterization,
+                ["domNodeCount"] = telemetry.DomNodeCount,
+                ["boxCount"] = telemetry.BoxCount,
+                ["paintNodeCount"] = telemetry.PaintNodeCount,
+                ["overlayCount"] = telemetry.OverlayCount,
+                ["layoutMs"] = Math.Round(Math.Max(0d, telemetry.LayoutDurationMs), 2),
+                ["paintMs"] = Math.Round(Math.Max(0d, telemetry.PaintDurationMs), 2),
+                ["rasterMs"] = Math.Round(Math.Max(0d, telemetry.RasterDurationMs), 2),
+                ["totalMs"] = Math.Round(Math.Max(0d, telemetry.TotalDurationMs), 2),
+                ["watchdogTriggered"] = telemetry.WatchdogTriggered,
+                ["watchdogReason"] = telemetry.WatchdogReason ?? string.Empty
+            }
+        };
+
+        LogManager.Log(entry);
     }
 
     private bool HasCommittedFrame()
@@ -816,8 +1015,7 @@ public class BrowserIntegration
                 if (_lastNavigationTime != token) break;
                 if (!_running) break;
                 if (_hasFirstStyledRender && HasCommittedFrame()) break;
-                _needsRepaint = true;
-                _wakeEvent.Set();
+                RequestFrame(RenderFrameInvalidationReason.Timer | RenderFrameInvalidationReason.Navigation, "BrowserIntegration.NavigationPulse");
             }
         });
     }
@@ -844,21 +1042,26 @@ public class BrowserIntegration
     {
         return await Task.Run(() =>
         {
-            lock (_frameLock)
+            var size = new SKSizeI((int)_lastViewportSize.Width, (int)_lastViewportSize.Height);
+            if (size.Width <= 0 || size.Height <= 0)
             {
-                if (_currentFrame == null) return "";
-                
-                var size = new SKSizeI((int)_lastViewportSize.Width, (int)_lastViewportSize.Height);
-                if (size.Width <= 0 || size.Height <= 0) return "";
-                
-                using var image = SKImage.FromPicture(_currentFrame, size);
-                if (image == null) return "";
-                
-                using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-                if (data == null) return "";
-                
-                return Convert.ToBase64String(data.ToArray());
+                return string.Empty;
             }
+
+            using var surface = SKSurface.Create(new SKImageInfo(size.Width, size.Height));
+            if (surface == null)
+            {
+                return string.Empty;
+            }
+
+            Render(surface.Canvas, new SKRect(0, 0, size.Width, size.Height));
+            using var image = surface.Snapshot();
+            if (image == null) return string.Empty;
+
+            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+            if (data == null) return string.Empty;
+
+            return Convert.ToBase64String(data.ToArray());
         });
     }
 
@@ -875,9 +1078,7 @@ public class BrowserIntegration
 
         ElementStateManager.Instance.SetFocusedElement(element);
         _highlightedElement = element; // For visual feedback in WebDriver
-        _needsRepaint = true;
-        _wakeEvent.Set();
-        NeedsRepaint?.Invoke();
+        RequestFrame(RenderFrameInvalidationReason.Input | RenderFrameInvalidationReason.Overlay, "BrowserIntegration.FocusNode", notifyUi: true);
     }
 
     /// <summary>
@@ -903,9 +1104,7 @@ public class BrowserIntegration
         _scrollPhysics.SetPosition(_scrollY);
 
         _highlightedElement = element;
-        _needsRepaint = true;
-        _wakeEvent.Set();
-        NeedsRepaint?.Invoke();
+        RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Overlay, "BrowserIntegration.ScrollToElement", notifyUi: true);
     }
     
     private void DrawHighlight(SKCanvas canvas, Element element)
@@ -1020,9 +1219,7 @@ public class BrowserIntegration
 
             FenLogger.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
             
-            _needsRepaint = true;
-            // CRITICAL: Wake the engine thread to process the scroll immediately
-            _wakeEvent.Set();
+            RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
         });
         
         // Immediate UI feedback (optional, we wait for engine to re-record)
@@ -1154,8 +1351,7 @@ public class BrowserIntegration
         if (_lastViewportSize != size)
         {
             _lastViewportSize = size;
-            _needsRepaint = true;
-            _wakeEvent.Set();
+            RequestFrame(RenderFrameInvalidationReason.Viewport, "BrowserIntegration.UpdateViewport");
         }
     }
     
@@ -1482,7 +1678,7 @@ public class BrowserIntegration
             if (Math.Abs(newScrollY - _scrollY) > 0.5f)
             {
                 _scrollY = newScrollY;
-                _needsRepaint = true;
+                RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Animation, "BrowserIntegration.UpdateScrollPhysics");
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
             }
         }

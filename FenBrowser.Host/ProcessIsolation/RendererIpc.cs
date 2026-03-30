@@ -69,6 +69,19 @@ namespace FenBrowser.Host.ProcessIsolation
         /// Set by <see cref="RendererChildSession"/> after reading from <see cref="FrameSharedMemory"/>.
         /// </summary>
         public byte[] PixelData { get; set; }
+        public string RequestedBy { get; set; }
+        public string InvalidationReason { get; set; }
+        public string RasterMode { get; set; }
+        public bool UsedDamageRasterization { get; set; }
+        public float DamageAreaRatio { get; set; }
+        public bool LayoutUpdated { get; set; }
+        public bool PaintTreeRebuilt { get; set; }
+        public bool WatchdogTriggered { get; set; }
+        public string WatchdogReason { get; set; }
+        public double TotalDurationMs { get; set; }
+        public int DomNodeCount { get; set; }
+        public int BoxCount { get; set; }
+        public int PaintNodeCount { get; set; }
     }
 
     internal static class RendererIpc

@@ -10,6 +10,7 @@ using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
 using System.Diagnostics;
+using System.Linq;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -39,12 +40,14 @@ namespace FenBrowser.FenEngine.Rendering
         private float _lastViewportHeight;
         private float _lastScrollY;
         private Node _lastRoot;
+        private int _lastDomNodeCount;
         private const float DefaultViewportWidth = 1920f;
         private const float DefaultViewportHeight = 1080f;
         private const float MaxSafeViewportDimension = 16384f;
         public RendererSafetyPolicy SafetyPolicy { get; set; } = RendererSafetyPolicy.Default;
         public bool LastFrameWatchdogTriggered { get; private set; }
         public string LastFrameWatchdogReason { get; private set; }
+        public RenderFrameTelemetry LastFrameTelemetry { get; private set; }
         
         /// <summary>
         /// Current overlays for input elements.
@@ -100,7 +103,10 @@ namespace FenBrowser.FenEngine.Rendering
                 request.BaseUrl,
                 request.OnLayoutUpdated,
                 request.SeparateLayoutViewport,
-                request.HasBaseFrame);
+                request.HasBaseFrame,
+                request.InvalidationReason,
+                request.RequestedBy,
+                request.EmitVerificationReport);
 
             return new RenderFrameResult
             {
@@ -111,7 +117,11 @@ namespace FenBrowser.FenEngine.Rendering
                 WatchdogTriggered = LastFrameWatchdogTriggered,
                 WatchdogReason = LastFrameWatchdogReason,
                 UsedDamageRasterization = LastFrameUsedDamageRasterization,
-                DamageAreaRatio = LastDamageAreaRatio
+                DamageAreaRatio = LastDamageAreaRatio,
+                InvalidationReason = request.InvalidationReason,
+                RequestedBy = request.RequestedBy,
+                RasterMode = LastFrameTelemetry?.RasterMode ?? RenderFrameRasterMode.None,
+                Telemetry = LastFrameTelemetry
             };
         }
 
@@ -123,7 +133,10 @@ namespace FenBrowser.FenEngine.Rendering
             string baseUrl = null, 
             Action<SKSize, List<InputOverlayData>> onLayoutUpdated = null, 
             SKSize? separateLayoutViewport = null,
-            bool hasBaseFrame = false)
+            bool hasBaseFrame = false,
+            RenderFrameInvalidationReason invalidationReason = RenderFrameInvalidationReason.Unknown,
+            string requestedBy = "direct-call",
+            bool emitVerificationReport = true)
         {
             if (root == null || canvas == null) return;
             
@@ -137,7 +150,13 @@ namespace FenBrowser.FenEngine.Rendering
             _isRendering = true;
             var pipelineContext = PipelineContext.Current;
             var frameWatchdog = Stopwatch.StartNew();
+            var layoutStageWatchdog = new Stopwatch();
+            var paintStageWatchdog = new Stopwatch();
+            var rasterStageWatchdog = new Stopwatch();
             bool watchdogAbortBeforeRaster = false;
+            bool layoutUpdated = false;
+            bool rebuiltPaintTree = false;
+            var rasterMode = RenderFrameRasterMode.None;
             LastFrameWatchdogTriggered = false;
             LastFrameWatchdogReason = null;
             try
@@ -152,14 +171,15 @@ namespace FenBrowser.FenEngine.Rendering
             bool stylesChanged = treeDirty || _lastStyles == null || _lastStyles != styles || (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count);
             _lastStyles = styles;
 
-            // [Verification] Capture content metrics for the verification report
-            if (root is Document doc)
+            if (_lastDomNodeCount <= 0 || root != _lastRoot || treeDirty || (invalidationReason & (RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom)) != 0)
             {
-
+                _lastDomNodeCount = CountNodes(root);
             }
             
-            // Capture state from root downwards using the centralized helper
-            FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFromNode(root, baseUrl ?? "about:blank");
+            if (emitVerificationReport)
+            {
+                FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(baseUrl ?? "about:blank", _lastDomNodeCount, 0);
+            }
 
 
             
@@ -196,6 +216,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Track dirty state
                 bool isLayoutDirty = forceLayout || (root.LayoutDirty || root.ChildLayoutDirty);
                 bool hasActiveAnimations = false;
+                var animationInvalidation = InvalidationKind.None;
 
                 // PHASE 0: Update Animations
                 // Integrate CSS Animation Engine
@@ -219,7 +240,9 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         if (animatedProps.Count > 0 || transitionProps.Count > 0)
                         {
-                            hasActiveAnimations = true; // Animations active -> assume layout might change
+                            hasActiveAnimations = true;
+                            animationInvalidation |= CssAnimationEngine.DetermineInvalidationKind(
+                                animatedProps.Keys.Concat(transitionProps.Keys));
 
                             // Create a clone for this frame to avoid persisting animated values into the base style
                             // (which would break future transitions as 'oldValue' would become the animated value)
@@ -249,11 +272,15 @@ namespace FenBrowser.FenEngine.Rendering
                     pipelineContext.SetStyleSnapshot(styles ?? new Dictionary<Node, CssComputed>());
                 }
 
-                if (hasActiveAnimations) isLayoutDirty = true;
+                if ((animationInvalidation & InvalidationKind.Layout) != 0)
+                {
+                    isLayoutDirty = true;
+                }
 
                 // PHASE 1: Layout using the new LayoutEngine
                 using (pipelineContext.BeginScopedStage(PipelineStage.Layout))
                 {
+                layoutStageWatchdog.Restart();
                 RenderPipeline.EnterLayout();
                 if (isLayoutDirty)
                 {
@@ -283,6 +310,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, 
                         _viewportHeight);
+                    layoutUpdated = true;
                         
 
                         
@@ -342,6 +370,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 RenderPipeline.EndLayout(); // State -> LayoutFrozen
                 pipelineContext.SetLayoutSnapshot(_lastLayout);
+                layoutStageWatchdog.Stop();
                 }
                 
                 // Update Scroll Animations
@@ -355,18 +384,18 @@ namespace FenBrowser.FenEngine.Rendering
                 // PHASE 2: Build Paint Tree
                 using (pipelineContext.BeginScopedStage(PipelineStage.Painting))
                 {
-                var paintStageWatchdog = Stopwatch.StartNew();
+                paintStageWatchdog.Restart();
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
                 bool paintInvalidationSignal = isLayoutDirty
                                                || root.PaintDirty
                                                || root.ChildPaintDirty
                                                || ImageLoader.HasActiveAnimatedImages
-                                               || scrollAnimationActive;
+                                               || scrollAnimationActive
+                                               || (animationInvalidation & InvalidationKind.Paint) != 0;
                 // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
                 bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
                 bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
                 bool isPaintDirty = paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild;
-                bool rebuiltPaintTree = false;
                 // If scroll changed, we usually repaint. But ScrollManager handles offsets in PaintTreeBuilder.
                 // If we skip build, we use old PaintTree with old scroll offsets? 
                 // Currently NewPaintTreeBuilder reads scroll offsets.
@@ -515,7 +544,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
-                    var rasterStageWatchdog = Stopwatch.StartNew();
+                    rasterStageWatchdog.Restart();
                     bool useDamageRasterization = _damageRasterizationPolicy.ShouldUseDamageRasterization(
                         hasBaseFrame,
                         _lastDamageRegions,
@@ -528,6 +557,9 @@ namespace FenBrowser.FenEngine.Rendering
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
                     {
                         LastFrameUsedDamageRasterization = false;
+                        rasterMode = hasBaseFrame
+                            ? RenderFrameRasterMode.PreservedBaseFrame
+                            : RenderFrameRasterMode.Full;
 
                         if (hasBaseFrame)
                         {
@@ -545,12 +577,18 @@ namespace FenBrowser.FenEngine.Rendering
                             _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
                         }
                     }
+                    else if (hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
+                    {
+                        rasterMode = RenderFrameRasterMode.PreservedBaseFrame;
+                    }
                     else if (useDamageRasterization)
                     {
+                        rasterMode = RenderFrameRasterMode.Damage;
                         _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
                     }
                     else
                     {
+                        rasterMode = RenderFrameRasterMode.Full;
                         _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
                     }
                     RenderPipeline.EndPaint(); // State -> Composite
@@ -588,6 +626,25 @@ namespace FenBrowser.FenEngine.Rendering
                     RenderPipeline.EndFrame(); // State -> Idle
                     // PC-4: Record frame duration for EMA-based adaptive pressure tracking.
                     _frameBudgetAdaptivePolicy.ObserveFrame(RenderPipeline.LastFrameDuration);
+                    LastFrameTelemetry = CreateTelemetry(
+                        baseUrl,
+                        requestedBy,
+                        invalidationReason,
+                        rasterMode,
+                        layoutUpdated,
+                        rebuiltPaintTree,
+                        hasBaseFrame,
+                        _lastDomNodeCount,
+                        _boxes.Count,
+                        _lastPaintTree?.NodeCount ?? 0,
+                        CurrentOverlays.Count,
+                        _lastDamageRegions?.Count ?? 0,
+                        layoutStageWatchdog.Elapsed.TotalMilliseconds,
+                        paintStageWatchdog.Elapsed.TotalMilliseconds,
+                        rasterStageWatchdog.Elapsed.TotalMilliseconds,
+                        RenderPipeline.LastFrameDuration.TotalMilliseconds > 0
+                            ? RenderPipeline.LastFrameDuration.TotalMilliseconds
+                            : frameWatchdog.Elapsed.TotalMilliseconds);
                 }
             }
             catch (Exception ex)
@@ -610,15 +667,158 @@ namespace FenBrowser.FenEngine.Rendering
                 // Optional: Draw error message on screen for debug visibility
                 using var paint = new SKPaint { Color = SKColors.Red, TextSize = 20 };
                 canvas.DrawText($"Render Error: {ex.GetType().Name}", 20, 40, paint);
+                LastFrameTelemetry = CreateTelemetry(
+                    baseUrl,
+                    requestedBy,
+                    invalidationReason,
+                    RenderFrameRasterMode.Full,
+                    layoutUpdated,
+                    rebuiltPaintTree,
+                    hasBaseFrame,
+                    _lastDomNodeCount,
+                    _boxes.Count,
+                    _lastPaintTree?.NodeCount ?? 0,
+                    0,
+                    0,
+                    layoutStageWatchdog.Elapsed.TotalMilliseconds,
+                    paintStageWatchdog.Elapsed.TotalMilliseconds,
+                    rasterStageWatchdog.Elapsed.TotalMilliseconds,
+                    frameWatchdog.Elapsed.TotalMilliseconds);
             }
             
-            // [Verification] Finalize and log report
-            FenBrowser.Core.Verification.ContentVerifier.PerformVerification();
+            if (emitVerificationReport &&
+                (layoutUpdated ||
+                 rebuiltPaintTree ||
+                 LastFrameWatchdogTriggered ||
+                 (invalidationReason & (RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style | RenderFrameInvalidationReason.Diagnostics)) != 0))
+            {
+                FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(baseUrl ?? "about:blank", _lastDomNodeCount, CountRenderedTextLength(root));
+                FenBrowser.Core.Verification.ContentVerifier.PerformVerification();
+            }
             }
             finally
             {
                 _isRendering = false;
             }
+        }
+
+        private RenderFrameTelemetry CreateTelemetry(
+            string baseUrl,
+            string requestedBy,
+            RenderFrameInvalidationReason invalidationReason,
+            RenderFrameRasterMode rasterMode,
+            bool layoutUpdated,
+            bool rebuiltPaintTree,
+            bool hasBaseFrame,
+            int domNodeCount,
+            int boxCount,
+            int paintNodeCount,
+            int overlayCount,
+            int damageRegionCount,
+            double layoutDurationMs,
+            double paintDurationMs,
+            double rasterDurationMs,
+            double totalDurationMs)
+        {
+            return new RenderFrameTelemetry
+            {
+                FrameSequence = RenderPipeline.FrameSequence,
+                Url = baseUrl ?? "about:blank",
+                RequestedBy = string.IsNullOrWhiteSpace(requestedBy) ? "unspecified" : requestedBy,
+                InvalidationReason = invalidationReason,
+                RasterMode = rasterMode,
+                DomNodeCount = domNodeCount,
+                BoxCount = boxCount,
+                PaintNodeCount = paintNodeCount,
+                OverlayCount = overlayCount,
+                DamageRegionCount = damageRegionCount,
+                LayoutUpdated = layoutUpdated,
+                PaintTreeRebuilt = rebuiltPaintTree,
+                BaseFrameSeeded = hasBaseFrame,
+                WatchdogTriggered = LastFrameWatchdogTriggered,
+                WatchdogReason = LastFrameWatchdogReason,
+                LayoutDurationMs = layoutDurationMs,
+                PaintDurationMs = paintDurationMs,
+                RasterDurationMs = rasterDurationMs,
+                TotalDurationMs = totalDurationMs,
+                DamageAreaRatio = LastDamageAreaRatio
+            };
+        }
+
+        private static int CountNodes(Node root)
+        {
+            if (root == null)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                count++;
+                var children = current.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+
+            return count;
+        }
+
+        private static int CountRenderedTextLength(Node root)
+        {
+            if (root == null)
+            {
+                return 0;
+            }
+
+            var length = 0;
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                if (current.NodeType == NodeType.Text)
+                {
+                    var text = current.TextContent;
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        length += text.Length;
+                    }
+                }
+
+                var children = current.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+
+            return length;
         }
         
         private void CollectOverlays()
