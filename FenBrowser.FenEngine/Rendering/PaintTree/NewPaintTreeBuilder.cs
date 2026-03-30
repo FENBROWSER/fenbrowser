@@ -2250,7 +2250,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // DEBUG: Log multi-line positioning values
                 var sampleText = box.Lines.Count > 0 ? box.Lines[0].Text : "";
                 // Show full text to debug whitespace
-                FenBrowser.Core.FenLogger.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
+                if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints)
+                {
+                    FenBrowser.Core.FenLogger.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
+                }
                 
                 // Check if parent element requires text-overflow ellipsis
                 bool applyEllipsis = false;
@@ -2438,7 +2441,10 @@ namespace FenBrowser.FenEngine.Rendering
             float baselineY = drawBounds.Top + fontSize * 0.85f;
             
             // DEBUG: Log positioning values to understand the issue
-            FenBrowser.Core.FenLogger.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
+            if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints)
+            {
+                FenBrowser.Core.FenLogger.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
+            }
             
             return new List<TextPaintNode> 
             {

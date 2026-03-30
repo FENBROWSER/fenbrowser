@@ -830,8 +830,14 @@ namespace FenBrowser.Core
 
                 if (LooksTextual(ct))
                 {
-                    // [Verification] Register source truth
-                    FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
+                    if (IsTopLevelDocumentRequest(secFetchDest))
+                    {
+                        FenBrowser.Core.Verification.ContentVerifier.RegisterSource(
+                            url?.ToString() ?? "unknown",
+                            text?.Length ?? 0,
+                            text?.GetHashCode() ?? 0,
+                            authoritative: true);
+                    }
 
                     // Phase 2.3: Sharded Memory Cache
                     var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty };
@@ -1157,8 +1163,14 @@ namespace FenBrowser.Core
 
                 var text = DecodeTextResponse(bodyBytes, resp.Content?.Headers?.ContentType?.CharSet);
 
-                // [Verification] Register source truth
-                FenBrowser.Core.Verification.ContentVerifier.RegisterSource(url?.ToString() ?? "unknown", text?.Length ?? 0, text?.GetHashCode() ?? 0);
+                if (IsTopLevelDocumentRequest(secFetchDest))
+                {
+                    FenBrowser.Core.Verification.ContentVerifier.RegisterSource(
+                        url?.ToString() ?? "unknown",
+                        text?.Length ?? 0,
+                        text?.GetHashCode() ?? 0,
+                        authoritative: true);
+                }
 
                 // Parse X-Frame-Options header for frame-embedding enforcement
                 var xFramePolicy = XFrameOptionsPolicy.None;
