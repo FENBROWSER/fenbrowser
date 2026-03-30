@@ -13,8 +13,13 @@ namespace FenBrowser.Core
         public double Right { get; set; }
         public double Bottom { get; set; }
 
+        public static Thickness Empty => default;
+
         public double Horizontal => Left + Right;
         public double Vertical => Top + Bottom;
+        public bool IsUniform => Left == Top && Top == Right && Right == Bottom;
+        public bool IsZero => Left == 0d && Top == 0d && Right == 0d && Bottom == 0d;
+        public bool HasNegative => Left < 0d || Top < 0d || Right < 0d || Bottom < 0d;
 
         public Thickness(double uniformLength)
         {
@@ -56,6 +61,15 @@ namespace FenBrowser.Core
                    Top == other.Top &&
                    Right == other.Right &&
                    Bottom == other.Bottom;
+        }
+
+        public Thickness ClampNonNegative()
+        {
+            return new Thickness(
+                System.Math.Max(0d, Left),
+                System.Math.Max(0d, Top),
+                System.Math.Max(0d, Right),
+                System.Math.Max(0d, Bottom));
         }
 
         public override int GetHashCode()

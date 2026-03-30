@@ -32,6 +32,14 @@ namespace FenBrowser.Core.Logging
 
         public static string GetLogsDirectory()
         {
+            var envRoot = Environment.GetEnvironmentVariable(DiagnosticsRootEnv);
+            if (!string.IsNullOrWhiteSpace(envRoot))
+            {
+                var workspaceLogsDir = Path.Combine(GetWorkspaceRoot(), "logs");
+                TryEnsureDirectory(workspaceLogsDir);
+                return workspaceLogsDir;
+            }
+
             try
             {
                 var configured = BrowserSettings.Instance?.Logging?.LogPath;

@@ -14,6 +14,9 @@ namespace FenBrowser.Core.Cache
         private readonly Dictionary<CacheKey, LinkedListNode<KeyValuePair<CacheKey, T>>> _map;
         private readonly LinkedList<KeyValuePair<CacheKey, T>> _lru;
         private readonly object _lock = new object();
+        private long _hitCount;
+        private long _missCount;
+        private long _evictionCount;
 
         public ShardedCache(int capacity)
         {
@@ -21,6 +24,14 @@ namespace FenBrowser.Core.Cache
             _map = new Dictionary<CacheKey, LinkedListNode<KeyValuePair<CacheKey, T>>>();
             _lru = new LinkedList<KeyValuePair<CacheKey, T>>();
         }
+
+        public int Capacity => _capacity;
+
+        public long HitCount => System.Threading.Interlocked.Read(ref _hitCount);
+
+        public long MissCount => System.Threading.Interlocked.Read(ref _missCount);
+
+        public long EvictionCount => System.Threading.Interlocked.Read(ref _evictionCount);
 
         public void Put(string partition, string url, T value)
         {
@@ -46,6 +57,7 @@ namespace FenBrowser.Core.Cache
                     if (last == null) break;
                     _map.Remove(last.Value.Key);
                     _lru.RemoveLast();
+                    System.Threading.Interlocked.Increment(ref _evictionCount);
                 }
             }
         }
@@ -60,10 +72,39 @@ namespace FenBrowser.Core.Cache
                     // Move to front (LRU)
                     _lru.Remove(node);
                     _lru.AddFirst(node);
+                    System.Threading.Interlocked.Increment(ref _hitCount);
                     value = node.Value.Value;
                     return true;
                 }
             }
+            System.Threading.Interlocked.Increment(ref _missCount);
+            value = default;
+            return false;
+        }
+
+        public bool Contains(string partition, string url)
+        {
+            var key = new CacheKey(partition, url);
+            lock (_lock)
+            {
+                return _map.ContainsKey(key);
+            }
+        }
+
+        public bool TryRemove(string partition, string url, out T value)
+        {
+            var key = new CacheKey(partition, url);
+            lock (_lock)
+            {
+                if (_map.TryGetValue(key, out var node))
+                {
+                    _lru.Remove(node);
+                    _map.Remove(key);
+                    value = node.Value.Value;
+                    return true;
+                }
+            }
+
             value = default;
             return false;
         }

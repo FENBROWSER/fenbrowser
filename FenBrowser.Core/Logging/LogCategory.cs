@@ -42,6 +42,30 @@ namespace FenBrowser.Core.Logging
         All          = int.MaxValue
     }
 
+    public static class LogCategoryFacts
+    {
+        public const LogCategory DefaultOperationalCategories =
+            LogCategory.Navigation |
+            LogCategory.Rendering |
+            LogCategory.Network |
+            LogCategory.Errors |
+            LogCategory.General |
+            LogCategory.Security |
+            LogCategory.ProcessIsolation |
+            LogCategory.Verification;
+
+        public static bool Includes(this LogCategory source, LogCategory category)
+        {
+            return category != LogCategory.None && (source & category) == category;
+        }
+
+        public static bool IsSingleCategory(this LogCategory category)
+        {
+            int value = (int)category;
+            return value > 0 && (value & (value - 1)) == 0;
+        }
+    }
+
     /// <summary>
     /// Log severity levels.
     /// </summary>

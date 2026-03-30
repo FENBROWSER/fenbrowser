@@ -13,9 +13,11 @@ namespace FenBrowser.Core.Cache
 
         public CacheKey(string partitionKey, string url)
         {
-            PartitionKey = partitionKey ?? "default";
-            Url = url ?? string.Empty;
+            PartitionKey = NormalizePartitionKey(partitionKey);
+            Url = NormalizeUrl(url);
         }
+
+        public bool IsEmpty => Url.Length == 0;
 
         public bool Equals(CacheKey other)
         {
@@ -32,16 +34,25 @@ namespace FenBrowser.Core.Cache
 
         public override int GetHashCode()
         {
-            // FNV-1a style combination or HashCode.Combine
-            unchecked
-            {
-                int hash = 17;
-                hash = hash * 31 + (PartitionKey?.GetHashCode() ?? 0);
-                hash = hash * 31 + (Url?.GetHashCode() ?? 0);
-                return hash;
-            }
+            return HashCode.Combine(
+                StringComparer.Ordinal.GetHashCode(PartitionKey),
+                StringComparer.Ordinal.GetHashCode(Url));
         }
 
+        public static bool operator ==(CacheKey left, CacheKey right) => left.Equals(right);
+
+        public static bool operator !=(CacheKey left, CacheKey right) => !left.Equals(right);
+
         public override string ToString() => $"[{PartitionKey}] {Url}";
+
+        private static string NormalizePartitionKey(string partitionKey)
+        {
+            return string.IsNullOrWhiteSpace(partitionKey) ? "default" : partitionKey.Trim();
+        }
+
+        private static string NormalizeUrl(string url)
+        {
+            return string.IsNullOrWhiteSpace(url) ? string.Empty : url.Trim();
+        }
     }
 }
