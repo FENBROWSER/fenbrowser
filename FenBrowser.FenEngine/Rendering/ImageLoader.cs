@@ -88,6 +88,9 @@ namespace FenBrowser.FenEngine.Rendering
         private static Timer _repaintDebounceTimer;
         private static readonly object _timerLock = new object();
         private static bool _repaintPending = false;
+        private static Timer _relayoutDebounceTimer;
+        private static readonly object _relayoutTimerLock = new object();
+        private static bool _relayoutPending = false;
         private const int DEBOUNCE_DELAY_MS = 100;
 
         // ========== Animated GIF Support ==========
@@ -275,6 +278,20 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             ClearLazyRegistry();
+
+            lock (_timerLock)
+            {
+                _repaintPending = false;
+                _repaintDebounceTimer?.Dispose();
+                _repaintDebounceTimer = null;
+            }
+
+            lock (_relayoutTimerLock)
+            {
+                _relayoutPending = false;
+                _relayoutDebounceTimer?.Dispose();
+                _relayoutDebounceTimer = null;
+            }
 
             // Animated GIF cleanup
             foreach (var anim in _animatedGifs.Values)
@@ -599,6 +616,27 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private static void RequestDebouncedRelayout()
+        {
+            lock (_relayoutTimerLock)
+            {
+                _relayoutPending = true;
+
+                _relayoutDebounceTimer?.Dispose();
+                _relayoutDebounceTimer = new Timer(_ =>
+                {
+                    lock (_relayoutTimerLock)
+                    {
+                        if (_relayoutPending)
+                        {
+                            _relayoutPending = false;
+                            RequestRelayout?.Invoke();
+                        }
+                    }
+                }, null, DEBOUNCE_DELAY_MS, Timeout.Infinite);
+            }
+        }
+
         /// <summary>
         /// Get image from cache, or trigger load. Supports lazy loading.
         /// </summary>
@@ -740,7 +778,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             RequestDebouncedRepaint();
-            RequestRelayout?.Invoke();
+            RequestDebouncedRelayout();
             return true;
         }
 
@@ -851,7 +889,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (TryStoreDecodedBitmap(url, bitmap, isLazy))
                     {
                         RequestDebouncedRepaint();
-                        RequestRelayout?.Invoke();
+                        RequestDebouncedRelayout();
                     }
                     else
                     {

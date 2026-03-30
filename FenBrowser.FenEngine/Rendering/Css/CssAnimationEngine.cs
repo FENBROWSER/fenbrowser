@@ -98,6 +98,17 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _isRunning = false;
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
+        private static readonly HashSet<string> _layoutAffectingProperties = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "width", "height", "min-width", "min-height", "max-width", "max-height",
+            "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+            "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+            "top", "right", "bottom", "left",
+            "font-size", "line-height", "letter-spacing", "word-spacing",
+            "border-width", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+            "flex", "flex-basis", "flex-grow", "flex-shrink",
+            "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows"
+        };
         
         /// <summary>
         /// Event raised when animation frame updates require repaint
@@ -339,7 +350,24 @@ namespace FenBrowser.FenEngine.Rendering
                     if (!_activeAnimations.ContainsKey(element))
                         _activeAnimations[element] = new List<ActiveAnimation>();
 
-                    // Remove existing animation with same name
+                    var existing = _activeAnimations[element].FirstOrDefault(a =>
+                        a.AnimationName == currentName &&
+                        !a.IsComplete);
+
+                    if (existing != null &&
+                        existing.Keyframes == keyframes &&
+                        Math.Abs(existing.DurationMs - animation.DurationMs) < 0.01 &&
+                        Math.Abs(existing.DelayMs - animation.DelayMs) < 0.01 &&
+                        existing.IterationCount == animation.IterationCount &&
+                        string.Equals(existing.Direction, animation.Direction, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(existing.FillMode, animation.FillMode, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(existing.TimingFunction, animation.TimingFunction, StringComparison.OrdinalIgnoreCase))
+                    {
+                        startedAny = true;
+                        continue;
+                    }
+
+                    // Remove existing animation with same name when the definition changed.
                     _activeAnimations[element].RemoveAll(a => a.AnimationName == currentName);
                     _activeAnimations[element].Add(animation);
                 }
@@ -445,6 +473,40 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 return _activeAnimations.ContainsKey(element) && _activeAnimations[element].Count > 0;
             }
+        }
+
+        public static InvalidationKind DetermineInvalidationKind(IEnumerable<string> properties)
+        {
+            if (properties == null)
+            {
+                return InvalidationKind.None;
+            }
+
+            var invalidation = InvalidationKind.None;
+            foreach (var property in properties)
+            {
+                invalidation |= ClassifyPropertyInvalidation(property);
+                if ((invalidation & InvalidationKind.Layout) != 0)
+                {
+                    break;
+                }
+            }
+
+            return invalidation == InvalidationKind.None
+                ? InvalidationKind.Paint
+                : invalidation;
+        }
+
+        public static InvalidationKind ClassifyPropertyInvalidation(string property)
+        {
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return InvalidationKind.None;
+            }
+
+            return _layoutAffectingProperties.Contains(property.Trim())
+                ? InvalidationKind.Layout | InvalidationKind.Paint
+                : InvalidationKind.Paint;
         }
         
         #endregion
