@@ -1005,13 +1005,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private void ResolveContainerDimensions(LayoutBox box, LayoutState state)
         {
             // Similar to ResolveWidth/Height in BlockContext
-            float rawAvailable = state.AvailableSize.Width;
-            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
-            float available = widthUnconstrained
-                ? (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth)
-                : rawAvailable;
-            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0)
-                available = 1920f;
+            var widthResolution = LayoutConstraintResolver.ResolveWidth(state, "Flex.ResolveContainerDimensions");
+            float rawAvailable = widthResolution.RawAvailable;
+            bool widthUnconstrained = widthResolution.IsUnconstrained;
+            float available = widthResolution.ResolvedAvailable;
             
             var padding = box.ComputedStyle?.Padding ?? new FenBrowser.Core.Thickness();
             var border = box.ComputedStyle?.BorderThickness ?? new FenBrowser.Core.Thickness();
