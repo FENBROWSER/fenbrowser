@@ -12,6 +12,9 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.DevTools; // Added this using statement
+using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Typography;
+using FenBrowser.FenEngine.Adapters;
 
 namespace FenBrowser.Host;
 
@@ -63,6 +66,7 @@ public class BrowserIntegration
     
     // Safety Net: Polls for DOM updates if events are missed
     private System.Threading.Timer _domPoller;
+    private EventLoopSliceTelemetry _lastEventLoopSliceTelemetry = EventLoopSliceTelemetry.Empty;
     
     public string CurrentUrl => _overrideUrl ?? _browser.CurrentUri?.AbsoluteUri ?? "";
     public bool IsLoading { get; private set; }
@@ -92,6 +96,27 @@ public class BrowserIntegration
     
     // --- Scroll Physics ---
     private readonly ScrollPhysics _scrollPhysics = new();
+
+    private readonly record struct EventLoopSliceTelemetry(
+        int ProcessedTaskCount,
+        int InteractiveTaskCount,
+        int UserVisibleTaskCount,
+        int BackgroundTaskCount,
+        int DeferredBackgroundTaskCount,
+        bool PrioritizedInteractive,
+        double ReservedRenderBudgetMs,
+        TaskQueueSnapshot QueueSnapshot)
+    {
+        public static EventLoopSliceTelemetry Empty => new(
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            new TaskQueueSnapshot(0, 0, 0, 0, 0));
+    }
     
     public FenBrowser.Host.Tabs.BrowserTab OwnerTab { get; }
     
@@ -260,6 +285,18 @@ public class BrowserIntegration
             : existing + "|" + source;
     }
 
+    private static bool ShouldEmitVerificationReport(RenderFrameInvalidationReason invalidationReasons)
+    {
+        var lowSignalReasons =
+            RenderFrameInvalidationReason.Timer |
+            RenderFrameInvalidationReason.Animation |
+            RenderFrameInvalidationReason.Scroll |
+            RenderFrameInvalidationReason.Input |
+            RenderFrameInvalidationReason.Overlay;
+
+        return (invalidationReasons & ~lowSignalReasons) != RenderFrameInvalidationReason.None;
+    }
+
     private void OnFrameReceivedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererFrameReadyPayload payload)
     {
         if (OwnerTab != null && OwnerTab.Id != tabId) return;
@@ -426,16 +463,17 @@ public class BrowserIntegration
             }
 
             // Stage 2: Pump JS event loop (budget-gated: reserve 8ms for render)
-            int sliceCount = PumpJSEventLoop(deadline, coordinator);
+            var sliceTelemetry = PumpJSEventLoop(deadline, coordinator);
+            _lastEventLoopSliceTelemetry = sliceTelemetry;
 
             // Stage 3: Style sync + Layout + Paint + Present
             bool rendered = SyncAndRender(deadline, coordinator);
 
             // Stage 4: Adaptive wait
-            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceCount > 0;
+            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceTelemetry.ProcessedTaskCount > 0;
             int waitMs;
             if (_needsRepaint) waitMs = 16;
-            else if (sliceCount > 0) waitMs = 1;
+            else if (sliceTelemetry.ProcessedTaskCount > 0) waitMs = 1;
             else if (hasWork) waitMs = 0;
             else waitMs = -1; // Block until woken
 
@@ -459,17 +497,67 @@ public class BrowserIntegration
     /// Stage 2: Pump JS tasks/microtasks, budget-gated to leave time for rendering.
     /// Returns the number of tasks processed.
     /// </summary>
-    private int PumpJSEventLoop(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
+    private EventLoopSliceTelemetry PumpJSEventLoop(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
     {
-        int sliceCount = 0;
-        // Reserve 8ms of the frame budget for render stages
-        while (!deadline.IsExpired && deadline.Remaining.TotalMilliseconds > 8.0)
+        var config = RenderPerformanceConfiguration.Current;
+        config.Normalize();
+
+        int processed = 0;
+        int interactive = 0;
+        int userVisible = 0;
+        int background = 0;
+        bool prioritizedInteractive = false;
+        double reservedRenderBudgetMs = _needsRepaint
+            ? config.BusyFrameReservedRenderBudgetMs
+            : config.DefaultReservedRenderBudgetMs;
+
+        while (!deadline.IsExpired &&
+               deadline.Remaining.TotalMilliseconds > reservedRenderBudgetMs &&
+               processed < config.MaxTasksPerFrame)
         {
             try
             {
-                if (!coordinator.ProcessNextTask())
+                var snapshotBefore = coordinator.GetTaskSnapshot();
+                bool interactivePending = snapshotBefore.InteractiveCount > 0;
+                int nonInteractiveProcessed = userVisible + background;
+
+                if (_needsRepaint &&
+                    background >= config.MaxBackgroundTasksPerBusyFrame &&
+                    snapshotBefore.BackgroundCount > 0 &&
+                    !interactivePending)
+                {
                     break;
-                sliceCount++;
+                }
+
+                if (_needsRepaint &&
+                    nonInteractiveProcessed >= config.MaxNonInteractiveTasksPerBusyFrame &&
+                    !interactivePending)
+                {
+                    break;
+                }
+
+                bool preferInteractive = _needsRepaint || interactivePending;
+                prioritizedInteractive |= preferInteractive;
+
+                var result = coordinator.ProcessNextTaskDetailed(preferInteractive);
+                if (!result.Processed)
+                {
+                    break;
+                }
+
+                processed++;
+                switch (result.PriorityGroup)
+                {
+                    case TaskPriorityGroup.Interactive:
+                        interactive++;
+                        break;
+                    case TaskPriorityGroup.UserVisible:
+                        userVisible++;
+                        break;
+                    default:
+                        background++;
+                        break;
+                }
             }
             catch (Exception ex)
             {
@@ -477,7 +565,17 @@ public class BrowserIntegration
                 break;
             }
         }
-        return sliceCount;
+
+        var snapshotAfter = coordinator.GetTaskSnapshot();
+        return new EventLoopSliceTelemetry(
+            processed,
+            interactive,
+            userVisible,
+            background,
+            _needsRepaint ? snapshotAfter.BackgroundCount : 0,
+            prioritizedInteractive,
+            reservedRenderBudgetMs,
+            snapshotAfter);
     }
 
     /// <summary>
@@ -910,7 +1008,7 @@ public class BrowserIntegration
                 HasBaseFrame = canReuseBaseFrame && reusableBaseFrame != null,
                 InvalidationReason = invalidationReasons,
                 RequestedBy = requestedBy,
-                EmitVerificationReport = (invalidationReasons & ~RenderFrameInvalidationReason.Timer) != RenderFrameInvalidationReason.None
+                EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
             });
 
             canvas.Restore();
@@ -982,6 +1080,49 @@ public class BrowserIntegration
                 ["watchdogReason"] = telemetry.WatchdogReason ?? string.Empty
             }
         };
+
+        var imageCache = ImageLoader.GetCacheSnapshot();
+        var fontCache = SkiaFontService.GetGlobalCacheSnapshot();
+        var textMeasureCache = SkiaTextMeasurer.GetGlobalCacheSnapshot();
+        var eventLoop = _lastEventLoopSliceTelemetry;
+
+        entry.Data["eventLoopProcessedTasks"] = eventLoop.ProcessedTaskCount;
+        entry.Data["eventLoopInteractiveTasks"] = eventLoop.InteractiveTaskCount;
+        entry.Data["eventLoopUserVisibleTasks"] = eventLoop.UserVisibleTaskCount;
+        entry.Data["eventLoopBackgroundTasks"] = eventLoop.BackgroundTaskCount;
+        entry.Data["eventLoopDeferredBackgroundTasks"] = eventLoop.DeferredBackgroundTaskCount;
+        entry.Data["eventLoopPrioritizedInteractive"] = eventLoop.PrioritizedInteractive;
+        entry.Data["eventLoopReservedRenderBudgetMs"] = Math.Round(eventLoop.ReservedRenderBudgetMs, 2);
+        entry.Data["eventLoopPendingInteractive"] = eventLoop.QueueSnapshot.InteractiveCount;
+        entry.Data["eventLoopPendingUserVisible"] = eventLoop.QueueSnapshot.UserVisibleCount;
+        entry.Data["eventLoopPendingBackground"] = eventLoop.QueueSnapshot.BackgroundCount;
+
+        entry.Data["imageCacheCount"] = imageCache.StaticImageCount + imageCache.AnimatedImageCount;
+        entry.Data["imageCacheStaticCount"] = imageCache.StaticImageCount;
+        entry.Data["imageCacheAnimatedCount"] = imageCache.AnimatedImageCount;
+        entry.Data["imageCacheAnimatedFrames"] = imageCache.AnimatedFrameCount;
+        entry.Data["imageCacheBytes"] = imageCache.ApproximateBytes;
+        entry.Data["imageCachePendingLoads"] = imageCache.PendingLoadCount;
+        entry.Data["imageCacheLazyPending"] = imageCache.LazyPendingCount;
+        entry.Data["imageCacheHits"] = imageCache.HitCount;
+        entry.Data["imageCacheMisses"] = imageCache.MissCount;
+        entry.Data["imageCacheEvictions"] = imageCache.EvictionCount;
+
+        entry.Data["fontCacheMetricsEntries"] = fontCache.MetricsEntries;
+        entry.Data["fontCacheWidthEntries"] = fontCache.WidthEntries;
+        entry.Data["fontCacheGlyphRunEntries"] = fontCache.GlyphRunEntries;
+        entry.Data["fontCacheTypefaceEntries"] = fontCache.TypefaceEntries;
+        entry.Data["fontCacheBytes"] = fontCache.ApproximateBytes;
+        entry.Data["fontCacheHits"] = fontCache.HitCount;
+        entry.Data["fontCacheMisses"] = fontCache.MissCount;
+        entry.Data["fontCacheEvictions"] = fontCache.EvictionCount;
+
+        entry.Data["textMeasureWidthEntries"] = textMeasureCache.WidthEntries;
+        entry.Data["textMeasureLineHeightEntries"] = textMeasureCache.LineHeightEntries;
+        entry.Data["textMeasureBytes"] = textMeasureCache.ApproximateBytes;
+        entry.Data["textMeasureHits"] = textMeasureCache.HitCount;
+        entry.Data["textMeasureMisses"] = textMeasureCache.MissCount;
+        entry.Data["textMeasureEvictions"] = textMeasureCache.EvictionCount;
 
         LogManager.Log(entry);
     }
