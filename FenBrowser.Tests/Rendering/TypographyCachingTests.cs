@@ -1,4 +1,5 @@
 using System.Reflection;
+using FenBrowser.Core;
 using FenBrowser.FenEngine.Adapters;
 using FenBrowser.FenEngine.Typography;
 using Xunit;
@@ -41,6 +42,53 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal(1, GetConcurrentDictionaryCount(fontService, "_metricsCache"));
             Assert.Equal(1, GetConcurrentDictionaryCount(fontService, "_widthCache"));
             Assert.Equal(1, GetConcurrentDictionaryCount(fontService, "_glyphRunCache"));
+        }
+
+        [Fact]
+        public void SkiaTextMeasurer_EvictsLeastRecentlyUsedEntries_WhenBudgetExceeded()
+        {
+            var config = new RenderPerformanceConfiguration
+            {
+                TextWidthCacheEntries = 2,
+                TextWidthCacheBytes = 256,
+                TextLineHeightCacheEntries = 2,
+                TextLineHeightCacheBytes = 256
+            };
+            var measurer = new SkiaTextMeasurer(config);
+
+            measurer.MeasureWidth("alpha", "Arial", 16);
+            measurer.MeasureWidth("beta", "Arial", 16);
+            measurer.MeasureWidth("gamma", "Arial", 16);
+
+            var snapshot = measurer.GetCacheSnapshot();
+            Assert.True(snapshot.WidthEntries <= 2);
+            Assert.True(snapshot.EvictionCount > 0);
+        }
+
+        [Fact]
+        public void SkiaFontService_EvictsLeastRecentlyUsedEntries_WhenBudgetExceeded()
+        {
+            var config = new RenderPerformanceConfiguration
+            {
+                FontWidthCacheEntries = 2,
+                FontWidthCacheBytes = 256,
+                FontGlyphRunCacheEntries = 2,
+                FontGlyphRunCacheBytes = 512,
+                FontMetricsCacheEntries = 2,
+                FontMetricsCacheBytes = 256
+            };
+            var fontService = new SkiaFontService(config);
+
+            fontService.MeasureTextWidth("alpha", "Arial", 16);
+            fontService.MeasureTextWidth("beta", "Arial", 16);
+            fontService.ShapeText("gamma", "Arial", 16);
+            fontService.ShapeText("delta", "Arial", 16);
+            fontService.ShapeText("epsilon", "Arial", 16);
+
+            var snapshot = fontService.GetCacheSnapshot();
+            Assert.True(snapshot.WidthEntries <= 2);
+            Assert.True(snapshot.GlyphRunEntries <= 2);
+            Assert.True(snapshot.EvictionCount > 0);
         }
 
         private static int GetConcurrentDictionaryCount(object target, string fieldName)
