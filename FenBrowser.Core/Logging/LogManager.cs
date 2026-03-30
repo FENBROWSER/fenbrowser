@@ -53,7 +53,7 @@ namespace FenBrowser.Core.Logging
             try
             {
                 var settings = BrowserSettings.Instance.Logging;
-                var logPath = settings.LogPath;
+                var logPath = ResolveLogPath(settings.LogPath);
                 
                 if (!Directory.Exists(logPath)) 
                     Directory.CreateDirectory(logPath);
@@ -83,6 +83,18 @@ namespace FenBrowser.Core.Logging
             {
                 System.Diagnostics.Debug.WriteLine($"[LogManager] Failed to initialize: {ex.Message}");
             }
+        }
+
+        private static string ResolveLogPath(string configuredPath)
+        {
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("FEN_DIAGNOSTICS_DIR")))
+            {
+                return DiagnosticPaths.GetLogsDirectory();
+            }
+
+            return !string.IsNullOrWhiteSpace(configuredPath)
+                ? configuredPath
+                : DiagnosticPaths.GetLogsDirectory();
         }
 
         /// <summary>

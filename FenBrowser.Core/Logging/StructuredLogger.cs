@@ -329,10 +329,10 @@ namespace FenBrowser.Core.Logging
         {
             try
             {
-                var cwd = Directory.GetCurrentDirectory();
-                if (!string.IsNullOrWhiteSpace(cwd))
+                var diagnosticsLogs = DiagnosticPaths.GetLogsDirectory();
+                if (!string.IsNullOrWhiteSpace(diagnosticsLogs))
                 {
-                    return Path.Combine(cwd, "logs");
+                    return diagnosticsLogs;
                 }
             }
             catch

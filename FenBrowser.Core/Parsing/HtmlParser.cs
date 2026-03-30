@@ -17,7 +17,7 @@ namespace FenBrowser.Core.Parsing
             _html = html;
             _baseUri = baseUri ?? new Uri("about:blank");
             _prefetcher = prefetcher;
-            _securityPolicy = securityPolicy ?? ParserSecurityPolicy.Default;
+            _securityPolicy = securityPolicy?.Clone() ?? ParserSecurityPolicy.Default;
         }
 
         public Document Parse()

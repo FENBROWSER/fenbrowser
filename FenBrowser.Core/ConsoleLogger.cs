@@ -5,23 +5,55 @@ namespace FenBrowser.Core;
 
 public class ConsoleLogger : ILogger
 {
+    private static readonly object Sync = new();
+
     public void Log(LogLevel level, string message)
     {
-        var color = Console.ForegroundColor;
-        switch (level)
+        string normalizedMessage = NormalizeMessage(message);
+        lock (Sync)
         {
-            case LogLevel.Debug: Console.ForegroundColor = ConsoleColor.Gray; break;
-            case LogLevel.Info: Console.ForegroundColor = ConsoleColor.White; break;
-            case LogLevel.Warn: Console.ForegroundColor = ConsoleColor.Yellow; break;
-            case LogLevel.Error: Console.ForegroundColor = ConsoleColor.Red; break;
+            var color = Console.ForegroundColor;
+            try
+            {
+                Console.ForegroundColor = level switch
+                {
+                    LogLevel.Debug => ConsoleColor.Gray,
+                    LogLevel.Info => ConsoleColor.White,
+                    LogLevel.Warn => ConsoleColor.Yellow,
+                    LogLevel.Error => ConsoleColor.Red,
+                    _ => color
+                };
+
+                Console.WriteLine($"{DateTime.UtcNow:O} [{level}] {normalizedMessage}");
+            }
+            finally
+            {
+                Console.ForegroundColor = color;
+            }
         }
-        Console.WriteLine($"[{level}] {message}");
-        Console.ForegroundColor = color;
     }
 
     public void LogError(string message, Exception ex)
     {
-        Log(LogLevel.Error, $"{message}: {ex.Message}");
-        Console.WriteLine(ex.StackTrace);
+        if (ex == null)
+        {
+            throw new ArgumentNullException(nameof(ex));
+        }
+
+        Log(LogLevel.Error, $"{NormalizeMessage(message)}: {ex.GetType().Name}: {NormalizeMessage(ex.Message)}");
+        if (string.IsNullOrWhiteSpace(ex.StackTrace))
+        {
+            return;
+        }
+
+        lock (Sync)
+        {
+            Console.WriteLine(ex.StackTrace);
+        }
+    }
+
+    private static string NormalizeMessage(string message)
+    {
+        return string.IsNullOrWhiteSpace(message) ? string.Empty : message.Trim();
     }
 }

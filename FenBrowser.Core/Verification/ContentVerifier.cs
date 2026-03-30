@@ -4,6 +4,14 @@ using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Verification
 {
+    internal enum ContentHealthDisposition
+    {
+        NotAvailable = 0,
+        Healthy = 1,
+        ToleratedLowRatio = 2,
+        SuspiciousLowRatio = 3
+    }
+
     /// <summary>
     /// Central component for verifying that the browser's rendered output matches the source content
     /// and that visual debugging artifacts (screenshots) are being generated.
@@ -179,10 +187,24 @@ namespace FenBrowser.Core.Verification
                 
                 if (_sourceLengthBytes > 0)
                 {
+                    double charsPerNode = _domNodeCount > 0
+                        ? (double)_renderedTextLength / _domNodeCount
+                        : 0;
+                    var healthDisposition = AssessContentHealth(_sourceLengthBytes, _renderedTextLength, _domNodeCount, _screenshotSaved, _cssRuleCount);
+
                     FenLogger.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
-                    if (ratio < 1.0)
+                    if (_domNodeCount > 0)
                     {
-                        FenLogger.Log("    - WARNING: Result text is less than 1% of source. Possible parsing failure.", LogCategory.Verification, LogLevel.Warn);
+                        FenLogger.Log($"    - Text Density: {charsPerNode:F2} chars/node", LogCategory.Verification, LogLevel.Info);
+                    }
+
+                    if (healthDisposition == ContentHealthDisposition.ToleratedLowRatio)
+                    {
+                        FenLogger.Log("    - Note: low text-to-source ratio tolerated for a script-heavy page because DOM, CSS, and screenshot evidence are present.", LogCategory.Verification, LogLevel.Info);
+                    }
+                    else if (healthDisposition == ContentHealthDisposition.SuspiciousLowRatio)
+                    {
+                        FenLogger.Log("    - WARNING: Low text-to-source ratio without enough corroborating render evidence. Investigate parsing, visibility, or layout.", LogCategory.Verification, LogLevel.Warn);
                     }
                 }
                 else
@@ -246,6 +268,37 @@ namespace FenBrowser.Core.Verification
         public static void RegisterZeroSizedCount(int count)
         {
             _lastZeroSizedCount = count;
+        }
+
+        internal static ContentHealthDisposition AssessContentHealth(long sourceLengthBytes, int renderedTextLength, int domNodeCount, bool screenshotSaved, int cssRuleCount)
+        {
+            if (sourceLengthBytes <= 0 || renderedTextLength <= 0)
+            {
+                return ContentHealthDisposition.NotAvailable;
+            }
+
+            var ratio = (double)renderedTextLength / sourceLengthBytes * 100.0;
+            if (ratio >= 1.0)
+            {
+                return ContentHealthDisposition.Healthy;
+            }
+
+            var charsPerNode = domNodeCount > 0
+                ? (double)renderedTextLength / domNodeCount
+                : 0;
+            var largeSourcePayload = sourceLengthBytes >= 262_144;
+            var populatedDom = domNodeCount >= 100;
+            var meaningfulRenderedText = renderedTextLength >= 128;
+            var corroboratedVisualSignals = screenshotSaved && cssRuleCount > 0;
+
+            if (meaningfulRenderedText &&
+                (largeSourcePayload || populatedDom) &&
+                (corroboratedVisualSignals || charsPerNode >= 0.25))
+            {
+                return ContentHealthDisposition.ToleratedLowRatio;
+            }
+
+            return ContentHealthDisposition.SuspiciousLowRatio;
         }
     }
 }
