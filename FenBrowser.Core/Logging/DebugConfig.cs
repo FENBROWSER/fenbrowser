@@ -7,24 +7,24 @@ namespace FenBrowser.Core.Logging
     public static class DebugConfig
     {
         // Toggle these flags to enable detailed subsystems
-        public static bool EnableDeepDebug = true;
+        public static bool EnableDeepDebug = false;
         public static bool LogAllClasses = false;
 
-        public static bool LogCssComputed = true;
-        public static bool LogDomTree = true;
-        public static bool LogLayoutConstraints = true; // Checking text issue
-        public static bool LogPaintCommands = true;
+        public static bool LogCssComputed = false;
+        public static bool LogDomTree = false;
+        public static bool LogLayoutConstraints = false;
+        public static bool LogPaintCommands = false;
         
         // Extended Logging Scopes (Phase 8)
-        public static bool LogResourceLoader = true;  // 1. Network/MIME
-        public static bool LogHtmlParse = true;      // 2. Recovery/Implied tags
+        public static bool LogResourceLoader = false;  // 1. Network/MIME
+        public static bool LogHtmlParse = false;      // 2. Recovery/Implied tags
         // LogDomTree already exists (3)
-        public static bool LogCssParse = true;       // 4. Ignored/Unsupported props
-        public static bool LogCssCascade = true;     // 5. Specificity/Winning rules
+        public static bool LogCssParse = false;       // 4. Ignored/Unsupported props
+        public static bool LogCssCascade = false;     // 5. Specificity/Winning rules
         // LogCssComputed already exists (6)
-        public static bool LogTextShaping = true;     // 7. Font/Glyphs
-        public static bool LogFlexLayout = true;      // 9. Flex decisions
-        public static bool LogEventWiring = true;     // 11. Events
+        public static bool LogTextShaping = false;     // 7. Font/Glyphs
+        public static bool LogFlexLayout = false;      // 9. Flex decisions
+        public static bool LogEventWiring = false;     // 11. Events
         public static bool LogFrameTiming = true;
         public static bool LogVerification = true;     // 12. Orchestrator
 
@@ -66,19 +66,19 @@ namespace FenBrowser.Core.Logging
 
         public static void ResetToDefaults()
         {
-            EnableDeepDebug = true;
+            EnableDeepDebug = false;
             LogAllClasses = false;
-            LogCssComputed = true;
-            LogDomTree = true;
-            LogLayoutConstraints = true;
-            LogPaintCommands = true;
-            LogResourceLoader = true;
-            LogHtmlParse = true;
-            LogCssParse = true;
-            LogCssCascade = true;
-            LogTextShaping = true;
-            LogFlexLayout = true;
-            LogEventWiring = true;
+            LogCssComputed = false;
+            LogDomTree = false;
+            LogLayoutConstraints = false;
+            LogPaintCommands = false;
+            LogResourceLoader = false;
+            LogHtmlParse = false;
+            LogCssParse = false;
+            LogCssCascade = false;
+            LogTextShaping = false;
+            LogFlexLayout = false;
+            LogEventWiring = false;
             LogFrameTiming = true;
             LogVerification = true;
             DebugClasses = new[] { "site-name", "site-link", "site-icon", "search-box", "container" };

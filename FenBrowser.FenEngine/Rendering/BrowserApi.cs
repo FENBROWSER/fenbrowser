@@ -429,7 +429,8 @@ namespace FenBrowser.FenEngine.Rendering
                 FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(
                     uri.AbsoluteUri,
                     domNodeCount,
-                    textContent?.Length ?? 0);
+                    textContent?.Length ?? 0,
+                    authoritative: true);
 
                 string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
                 if (!string.IsNullOrEmpty(renderedPath))
@@ -1056,6 +1057,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 _navigationLifecycle.MarkFetching(navigationId, url);
                 Console.WriteLine($"[NavigateAsync] Start: {url}");
+                FenBrowser.Core.Verification.ContentVerifier.ResetForNavigation(url);
 
                 _resources.ResetBlockedCount();
                 _resources.ActivePolicy = null; // Reset CSP for new page
@@ -1362,10 +1364,53 @@ pre {{
                     {
                         sb.AppendLine(n.TextContent.Trim());
                     }
+                    else if (n is Element element &&
+                             TryGetSupplementalRenderedText(element, out var supplementalText))
+                    {
+                        sb.AppendLine(supplementalText);
+                    }
                 }
                 return sb.ToString();
             }
             catch { return string.Empty; }
+        }
+
+        private static bool TryGetSupplementalRenderedText(Element element, out string text)
+        {
+            text = null;
+            if (element == null || ShouldSkipRenderedElementText(element))
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToUpperInvariant();
+            switch (tag)
+            {
+                case "INPUT":
+                    return TryGetRenderedInputText(element, out text);
+
+                case "TEXTAREA":
+                    text = FirstNonEmpty(element.GetAttribute("value"), element.GetAttribute("placeholder"));
+                    return !string.IsNullOrWhiteSpace(text);
+
+                case "BUTTON":
+                    if (HasRenderedTextDescendant(element))
+                    {
+                        return false;
+                    }
+
+                    text = FirstNonEmpty(element.GetAttribute("aria-label"), element.GetAttribute("value"));
+                    return !string.IsNullOrWhiteSpace(text);
+
+                default:
+                    if (HasRenderedTextDescendant(element))
+                    {
+                        return false;
+                    }
+
+                    text = FirstNonEmpty(element.GetAttribute("aria-label"));
+                    return !string.IsNullOrWhiteSpace(text);
+            }
         }
 
         private static bool ShouldSkipRenderedTextNode(Node node)
@@ -1403,6 +1448,90 @@ pre {{
             }
 
             return false;
+        }
+
+        private static bool ShouldSkipRenderedElementText(Element element)
+        {
+            if (element == null)
+            {
+                return true;
+            }
+
+            for (var current = element; current != null; current = current.ParentElement)
+            {
+                if (current.HasAttribute("hidden") ||
+                    string.Equals(current.ComputedStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var currentTag = current.TagName?.ToUpperInvariant();
+                if (currentTag == "HEAD" ||
+                    currentTag == "SCRIPT" ||
+                    currentTag == "STYLE" ||
+                    currentTag == "META" ||
+                    currentTag == "LINK" ||
+                    currentTag == "TITLE" ||
+                    currentTag == "NOSCRIPT" ||
+                    currentTag == "TEMPLATE" ||
+                    currentTag == "IFRAME")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryGetRenderedInputText(Element element, out string text)
+        {
+            text = null;
+            var type = element.GetAttribute("type")?.ToLowerInvariant();
+            if (type == "hidden" || type == "password" || type == "checkbox" || type == "radio" || type == "file")
+            {
+                return false;
+            }
+
+            text = FirstNonEmpty(
+                element.GetAttribute("value"),
+                element.GetAttribute("placeholder"),
+                element.GetAttribute("aria-label"));
+
+            return !string.IsNullOrWhiteSpace(text);
+        }
+
+        private static bool HasRenderedTextDescendant(Element element)
+        {
+            foreach (var descendant in element.SelfAndDescendants())
+            {
+                if (!ReferenceEquals(descendant, element) &&
+                    descendant.NodeType == NodeType.Text &&
+                    !string.IsNullOrWhiteSpace(descendant.TextContent) &&
+                    !ShouldSkipRenderedTextNode(descendant))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            if (values == null)
+            {
+                return null;
+            }
+
+            foreach (var value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value.Trim();
+                }
+            }
+
+            return null;
         }
 
         public async Task<string> GetTitleAsync()

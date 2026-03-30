@@ -31,16 +31,55 @@ namespace FenBrowser.Core.Verification
         private static string _sourceDumpPath;
         private static string _engineDumpPath;
         private static string _renderedDumpPath;
+        private static bool _hasAuthoritativeSource;
+        private static bool _hasAuthoritativeRendered;
 
-        public static void RegisterSource(string url, long length, int hash)
+        public static void ResetForNavigation(string url = null)
         {
             _lastUrl = url;
-            _sourceLengthBytes = length;
-            _sourceHash = hash;
+            _sourceLengthBytes = 0;
+            _sourceHash = 0;
+            _renderedTextLength = 0;
+            _domNodeCount = 0;
+            _screenshotSaved = false;
+            _screenshotPath = null;
+            _cssTimedOut = false;
+            _cssRuleCount = 0;
+            _sourceDumpPath = null;
+            _engineDumpPath = null;
+            _renderedDumpPath = null;
+            _lastZeroSizedCount = 0;
+            _hasAuthoritativeSource = false;
+            _hasAuthoritativeRendered = false;
+        }
+
+        public static void RegisterSource(string url, long length, int hash, bool authoritative = false)
+        {
+            if (authoritative)
+            {
+                _lastUrl = url;
+                _sourceLengthBytes = Math.Max(0, length);
+                _sourceHash = hash;
+                _hasAuthoritativeSource = true;
+            }
+            else
+            {
+                if (_hasAuthoritativeSource)
+                {
+                    return;
+                }
+
+                _lastUrl = url;
+                if (length > _sourceLengthBytes)
+                {
+                    _sourceLengthBytes = Math.Max(0, length);
+                    _sourceHash = hash;
+                }
+            }
 
             if (DebugConfig.LogVerification)
             {
-                FenLogger.Log($"[Source] URL: {url}, Size: {length} bytes, Hash: {hash:X}", LogCategory.Verification, LogLevel.Info);
+                FenLogger.Log($"[Source] URL: {url}, Size: {Math.Max(0, length)} bytes, Hash: {hash:X}", LogCategory.Verification, LogLevel.Info);
             }
         }
 
@@ -62,10 +101,26 @@ namespace FenBrowser.Core.Verification
         /// <summary>
         /// Registers the state of the rendered DOM.
         /// </summary>
-        public static void RegisterRendered(string url, int nodeCount, int textLength)
+        public static void RegisterRendered(string url, int nodeCount, int textLength, bool authoritative = false)
         {
-            _domNodeCount = Math.Max(_domNodeCount, nodeCount);
-            _renderedTextLength = Math.Max(_renderedTextLength, textLength);
+            if (authoritative)
+            {
+                _lastUrl = url;
+                _domNodeCount = Math.Max(0, nodeCount);
+                _renderedTextLength = Math.Max(0, textLength);
+                _hasAuthoritativeRendered = true;
+            }
+            else
+            {
+                if (_hasAuthoritativeRendered)
+                {
+                    return;
+                }
+
+                _lastUrl = url;
+                _domNodeCount = Math.Max(_domNodeCount, nodeCount);
+                _renderedTextLength = Math.Max(_renderedTextLength, textLength);
+            }
 
             if (DebugConfig.LogVerification)
             {
