@@ -56,7 +56,7 @@ public class BookmarksBarWidget : Widget
         bool show = BrowserSettings.Instance.ShowFavoritesBar;
         try {
             System.IO.File.AppendAllText(
-                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log"),
+                FenBrowser.Core.Logging.DiagnosticPaths.GetLogArtifactPath("click_debug.log"),
                 $"[BookmarksBar] OnMeasure - ShowFavoritesBar={show}, Count={_buttons.Count}\n");
         } catch {}
         

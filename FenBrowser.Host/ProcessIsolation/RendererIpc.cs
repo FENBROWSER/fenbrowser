@@ -211,7 +211,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void SendInput(RendererInputEvent inputEvent)
         {
-            if (inputEvent == null)
+            if (inputEvent == null || !inputEvent.IsMeaningful)
             {
                 return;
             }

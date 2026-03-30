@@ -206,11 +206,11 @@ public class ContextMenuWidget : Widget
         if (index >= 0 && index < _items.Count)
         {
             var item = _items[index];
-            if (!item.IsSeparator && item.IsEnabled)
+            if (item.CanInvoke)
             {
                 try
                 {
-                    item.OnClick?.Invoke();
+                    item.Invoke();
                 }
                 catch { }
                 Hide();
@@ -288,9 +288,9 @@ public class ContextMenuWidget : Widget
         if (_hoveredIndex >= 0 && _hoveredIndex < _items.Count)
         {
             var item = _items[_hoveredIndex];
-            if (!item.IsSeparator && item.IsEnabled)
+            if (item.CanInvoke)
             {
-                item.OnClick?.Invoke();
+                item.Invoke();
                 Hide();
             }
         }
