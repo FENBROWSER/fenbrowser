@@ -239,6 +239,23 @@ The Omnibox implementation.
   - Privacy settings UI keeps runtime-wired controls visible (`Safe Browsing`, `Block pop-ups`).
   - `ImproveBrowser` remains hidden in privacy UI until broader UX policy for telemetry controls is finalized.
 
+### 6.9 Render/Perf P1 Host Closure (2026-03-30)
+
+- `BrowserIntegration` now routes animation pulses, host repaint requests, and render commits through explicit frame-request semantics instead of opportunistic raw renderer calls.
+- Host frame telemetry now mirrors renderer commit truth into structured logs, including:
+  - invalidation reason
+  - request source
+  - damage region count
+  - damage area ratio
+  - raster mode
+  - watchdog outcome
+- The host-side Google closure run proved the new steady-state contract:
+  - first navigation commit remained heavy at `557.24ms`
+  - later converged animation frames settled to `2.64ms` to `3.15ms`
+  - those tail frames carried `usedDamageRasterization=true` and `layoutUpdated=false`
+- `BrowserHost` rendered-text capture now includes visible control fallback text such as placeholders and accessible labels when those labels are actually the visible affordance, while avoiding duplicate aria-label fallback when visible text already exists.
+- Image-loader repaint and relayout callbacks now align with active-DOM semantics, and burst image prewarm no longer causes one host relayout event per decoded asset.
+
 ### 6.9 Remaining Findings Tranche - Navigation Intent Split (2026-02-19)
 
 - `BrowserIntegration.cs`
@@ -786,3 +803,51 @@ _End of Volume IV_
   - P2 required the remaining thin host traces to obey the same diagnostics contract as the rest of the browser.
 - Verification:
   - required clean-state host run on `2026-03-30` emitted `logs/click_debug.log` under the workspace root, and the host Debug log directory remained empty after the run.
+
+### 6.41 Host Render Request Ownership And Committed-Frame Telemetry (2026-03-30)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Host frame recording now routes through the formal renderer contract (`RenderFrameRequest`) instead of calling the renderer's raw paint path directly.
+  - `BrowserIntegration` now owns a pending invalidation-reason/source accumulator so frame requests retain why the frame was asked for:
+    - navigation
+    - viewport
+    - DOM/style mutation
+    - animation/timer
+    - diagnostics
+    - interaction
+  - `RecordFrame(...)` now seeds the last committed frame into the renderer when `BaseFrameReusePolicy` says reuse is safe, which turns reusable-frame behavior into a real steady-state production path.
+  - The committed page frame is now kept separate from transient overlays/highlights:
+    - the page frame stays reusable
+    - overlays are drawn in the host presentation path
+    - screenshot capture now composites through the same presentation path so operator evidence still matches what the user sees
+  - Host-side frame commits now emit structured `[FRAME] Commit` entries containing:
+    - requested-by source
+    - invalidation reason
+    - raster mode
+    - base-frame seeded flag
+    - layout/paint/raster timings
+    - DOM/box/paint counts
+    - watchdog state
+
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+- `FenBrowser.Host/Program.cs`
+  - Renderer child frame requests now use the same render-frame contract and return the same telemetry surface to the host.
+  - Frame-ready payloads now include requested-by source, invalidation reason, raster mode, staged timing data, and layout/paint-tree state so brokered paths stop being opaque relative to the in-process path.
+
+- Net effect:
+  - The host and renderer now agree on why a frame was produced.
+  - Reusable committed frames are no longer nominal state that only exists inside the renderer.
+  - The live host path can distinguish expensive first/full commits from cheap preserved-base-frame steady-state commits in operator-visible logs.
+
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderWatchdogTests|FullyQualifiedName~LayoutConstraintResolverTests"`: pass (`7/7`) on `2026-03-30`.
+  - required clean-state host run on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_123307.html`
+    - `logs/fenbrowser_20260330_123306.log`
+    - `logs/fenbrowser_20260330_123306.jsonl`
+  - Runtime outcome:
+    - the first Google commit was still expensive and fully rastered.
+    - subsequent animation-driven commits were logged as `PreservedBaseFrame` with the same committed frame reused, and later steady-state frames dropped to near-zero total cost.

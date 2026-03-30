@@ -318,6 +318,22 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 
 - **NewPaintTreeBuilder**: Converts layout boxes into a flat list of draw commands, sorted by CSS `z-index` and painting order rules (background -> border -> content -> outline).
 
+### 3.3 Render/Perf P1 Closure (2026-03-30)
+
+- `SkiaDomRenderer` now treats paint-only invalidation as a real hot path. After an initial committed frame exists, converged animation frames can stay out of layout and commit through damage rasterization instead of repeated full-frame work.
+- `CssAnimationEngine.DetermineInvalidationKind(...)` now separates paint-only animation properties from geometry-changing properties. The focused regression slice explicitly proves that opacity-class animation churn does not force layout while width-affecting changes still escalate correctly.
+- `SkiaTextMeasurer` now caches stable width and line-height inputs, and `SkiaFontService` now reuses metrics, width, and glyph-run results for repeated text requests. This reduces repeated shaping/measurement cost in small interactive frames.
+- `ImageLoader.PrewarmImageAsync(...)` now batches burst relayout signals so image-heavy warmup does not emit one host relayout per decoded asset.
+- `BrowserApi` now records authoritative rendered-text snapshots and resets verification state on navigation boundaries, which keeps render diagnostics aligned with what the active page actually painted.
+- The clean-state Google runtime proof that closed P1 showed:
+  - first navigation commit still expensive at `557.24ms` (`layout=236.28ms`, `paint=211.22ms`, `raster=105.21ms`)
+  - converged animation tail at `2.64ms` to `3.15ms`
+  - `rasterMode=Damage`
+  - `layoutUpdated=false`
+  - `usedDamageRasterization=true`
+  - `watchdogTriggered=false`
+- Isolated over-budget convergence spikes still exist, which is why render/perf P2 remains open. P1 closed because the steady-state path is now measurably bounded and reusable under the live Google-class repro.
+
 #### 3.2.1 Rendering Updates (2026-02-16)
 - Gradient backgrounds are parsed into `SKShader` instances during paint-node creation (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs:1440-1570`), enabling linear/radial gradients in the new pipeline.
 - Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
@@ -5887,3 +5903,62 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Verification:
   - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass on `2026-03-30`.
   - required clean-state host run on `2026-03-30` remained visibly painted and emitted the full diagnostics set under workspace-root `logs`.
+
+## 2.195 Render/Perf P0 Frame Ownership, Base-Frame Reuse, And Constraint Source Resolution (2026-03-30)
+
+- `FenBrowser.FenEngine/Rendering/Core/IRenderFramePipeline.cs`
+  - Formalized the render-frame contract around production-facing frame decisions:
+    - `RenderFrameInvalidationReason`
+    - `RenderFrameRasterMode`
+    - `RenderFrameTelemetry`
+  - `RenderFrameRequest` now carries caller identity, invalidation reason, base-frame availability, and whether the current request should emit a verification report.
+  - `RenderFrameResult` now returns the same invalidation/raster decision plus per-frame telemetry instead of leaving that information implicit inside `SkiaDomRenderer`.
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - `RenderFrame(...)` is now the authoritative frame entrypoint for the live host path and returns a stable telemetry-bearing `RenderFrameResult`.
+  - Added frame-stage timing and counters:
+    - layout duration
+    - paint duration
+    - raster duration
+    - total duration
+    - DOM node count
+    - box count
+    - paint node count
+    - overlay count
+  - Verification/report emission is now gated to meaningful frames instead of running unconditionally on every frame opportunity.
+  - When a caller seeds a reusable base frame and the current frame has no remaining damage, the raster path now stays in `PreservedBaseFrame` mode instead of forcing a fresh full render.
+  - The renderer now reports whether layout actually changed and whether the paint tree was rebuilt, which makes steady-state cheap-frame behavior externally observable.
+
+- `FenBrowser.FenEngine/Layout/Contexts/LayoutConstraintResolver.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - Added a shared source-side width resolver used by block, flex, grid, and inline contexts.
+  - Width resolution now follows an explicit source order:
+    - finite available width
+    - finite containing-block width
+    - finite viewport width
+    - emergency fallback
+  - Layout diagnostics now record the chosen source instead of silently rewriting unbounded or invalid widths deep in individual context helpers.
+
+- Why this mattered:
+  - The new rendering/performance P0 was about making the steady-state frame model truthful, not just painted.
+  - A production renderer cannot optimize safely if invalidation reason, caller identity, raster mode, and width-source ownership are all implicit or duplicated.
+  - This pass closes the frame-pipeline blockers by making base-frame reuse and source-side constraint resolution real runtime behavior.
+
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderWatchdogTests|FullyQualifiedName~LayoutConstraintResolverTests"`: pass (`7/7`) on `2026-03-30`.
+  - required clean-state host run on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_123307.html`
+    - `logs/engine_source_20260330_123329.html`
+    - `logs/rendered_text_20260330_123329.txt`
+    - `logs/fenbrowser_20260330_123306.log`
+    - `logs/fenbrowser_20260330_123306.jsonl`
+  - Runtime outcome:
+    - first navigation commit still exceeded budget and rastered in `Full` mode.
+    - follow-up steady-state frames switched to `PreservedBaseFrame` mode with committed-frame reuse and near-zero frame cost (`0.07ms` to `0.19ms`).
+    - layout logs now show explicit width-source resolution such as `Raw=8 Resolved=8 Source=available` and `Raw=∞ Resolved=1908 Source=containing-block`.
