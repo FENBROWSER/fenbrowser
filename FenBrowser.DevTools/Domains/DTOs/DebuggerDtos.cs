@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json.Serialization;
 
 namespace FenBrowser.DevTools.Domains.DTOs;
@@ -45,6 +46,53 @@ public record ScriptParsedEvent
 
     [JsonPropertyName("length")]
     public int Length { get; init; }
+
+    public static ScriptParsedEvent Create(
+        string scriptId,
+        string? url,
+        int startLine,
+        int startColumn,
+        int endLine,
+        int endColumn,
+        string hash,
+        bool hasSourceUrl,
+        bool isModule,
+        int length,
+        int executionContextId = 1,
+        bool isLiveEdit = false,
+        string? sourceMapUrl = null)
+    {
+        int normalizedStartLine = Math.Max(0, startLine);
+        int normalizedStartColumn = Math.Max(0, startColumn);
+        int normalizedEndLine = Math.Max(normalizedStartLine, endLine);
+
+        return new ScriptParsedEvent
+        {
+            ScriptId = NormalizeText(scriptId),
+            Url = NormalizeText(url),
+            StartLine = normalizedStartLine,
+            StartColumn = normalizedStartColumn,
+            EndLine = normalizedEndLine,
+            EndColumn = Math.Max(0, endColumn),
+            ExecutionContextId = executionContextId > 0 ? executionContextId : 1,
+            Hash = NormalizeText(hash),
+            IsLiveEdit = isLiveEdit,
+            SourceMapUrl = NormalizeTextOrNull(sourceMapUrl),
+            HasSourceUrl = hasSourceUrl && !string.IsNullOrWhiteSpace(url),
+            IsModule = isModule,
+            Length = Math.Max(0, length)
+        };
+    }
+
+    private static string NormalizeText(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+    }
+
+    private static string? NormalizeTextOrNull(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
 }
 
 /// <summary>
@@ -54,4 +102,12 @@ public record GetScriptSourceResult
 {
     [JsonPropertyName("scriptSource")]
     public required string ScriptSource { get; init; }
+
+    public static GetScriptSourceResult Create(string? scriptSource)
+    {
+        return new GetScriptSourceResult
+        {
+            ScriptSource = scriptSource ?? string.Empty
+        };
+    }
 }

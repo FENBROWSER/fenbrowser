@@ -73,10 +73,7 @@ public class DebuggerDomain : IProtocolHandler
                 return Task.FromResult(ProtocolResponse.Failure(request.Id, "Script not found"));
             }
 
-            return Task.FromResult(ProtocolResponse.Success(request.Id, new GetScriptSourceResult
-            {
-                ScriptSource = source.Content
-            }));
+            return Task.FromResult(ProtocolResponse.Success(request.Id, GetScriptSourceResult.Create(source.Content)));
         }
         catch (Exception ex)
         {
@@ -91,22 +88,21 @@ public class DebuggerDomain : IProtocolHandler
             return;
         }
 
-        var lines = script.Content?.Replace("\r\n", "\n").Split('\n') ?? Array.Empty<string>();
+        string content = script.Content ?? string.Empty;
+        var lines = content.Replace("\r\n", "\n").Split('\n');
         var lastLineLength = lines.Length == 0 ? 0 : lines[^1].Length;
 
-        _broadcastEvent("Debugger.scriptParsed", new ScriptParsedEvent
-        {
-            ScriptId = script.ScriptId,
-            Url = script.Url ?? string.Empty,
-            StartLine = script.StartLine,
-            StartColumn = script.StartColumn,
-            EndLine = Math.Max(0, lines.Length - 1),
-            EndColumn = lastLineLength,
-            Hash = ComputeContentHash(script.Content ?? string.Empty),
-            HasSourceUrl = !string.IsNullOrWhiteSpace(script.Url),
-            IsModule = false,
-            Length = script.Content?.Length ?? 0
-        });
+        _broadcastEvent("Debugger.scriptParsed", ScriptParsedEvent.Create(
+            script.ScriptId,
+            script.Url,
+            script.StartLine,
+            script.StartColumn,
+            Math.Max(0, lines.Length - 1),
+            lastLineLength,
+            ComputeContentHash(content),
+            !string.IsNullOrWhiteSpace(script.Url),
+            isModule: false,
+            length: content.Length));
     }
 
     private static string ComputeContentHash(string content)
