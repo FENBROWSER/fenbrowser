@@ -7,6 +7,12 @@
     <Nullable>disable</Nullable>
     <AssemblyName>webidlgen</AssemblyName>
     <RootNamespace>FenBrowser.WebIdlGen</RootNamespace>
+    <Company>FenBrowser</Company>
+    <Product>FenBrowser</Product>
+    <Authors>FenBrowser</Authors>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <!-- Pack as dotnet tool so it can be invoked via dotnet tool run -->
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>webidlgen</ToolCommandName>
