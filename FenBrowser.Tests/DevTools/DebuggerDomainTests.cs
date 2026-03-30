@@ -45,6 +45,44 @@ public class DebuggerDomainTests
         Assert.Equal("console.log('fen');", result.ScriptSource);
     }
 
+    [Fact]
+    public async Task EnableAsync_NormalizesNegativeScriptMetadata_AndEmptyContent()
+    {
+        var host = new StubDevToolsHost();
+        host.ScriptSources.Add(new ScriptSourceInfo(" https://example.com/app.js ", null!, false, "script-3", -4, -2));
+
+        var events = new List<(string Method, object Payload)>();
+        var domain = new DebuggerDomain(host, (method, payload) => events.Add((method, payload)));
+
+        var response = await domain.HandleAsync("enable", CreateRequest("Debugger.enable", "{}"));
+
+        Assert.True(response.IsSuccess);
+        var payload = Assert.IsType<ScriptParsedEvent>(Assert.Single(events).Payload);
+        Assert.Equal("https://example.com/app.js", payload.Url);
+        Assert.Equal(0, payload.StartLine);
+        Assert.Equal(0, payload.StartColumn);
+        Assert.Equal(0, payload.EndLine);
+        Assert.Equal(0, payload.EndColumn);
+        Assert.Equal(0, payload.Length);
+        Assert.True(payload.HasSourceUrl);
+        Assert.Equal(64, payload.Hash.Length);
+    }
+
+    [Fact]
+    public async Task GetScriptSourceAsync_NormalizesNullSourceContentToEmptyString()
+    {
+        var host = new StubDevToolsHost();
+        host.ScriptSources.Add(new ScriptSourceInfo("https://example.com/app.js", null!, false, "script-4"));
+
+        var domain = new DebuggerDomain(host);
+
+        var response = await domain.HandleAsync("getScriptSource", CreateRequest("Debugger.getScriptSource", "{\"scriptId\":\"script-4\"}"));
+
+        Assert.True(response.IsSuccess);
+        var result = Assert.IsType<GetScriptSourceResult>(response.Result);
+        Assert.Equal(string.Empty, result.ScriptSource);
+    }
+
     private static ProtocolRequest CreateRequest(string method, string jsonParams)
     {
         using var doc = JsonDocument.Parse(jsonParams);
