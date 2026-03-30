@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume V: Developer Tools
 
-**State as of:** 2026-03-28
+**State as of:** 2026-03-30
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -412,5 +412,27 @@ Net effect:
 
 - `FenBrowser.Tests/DevTools/MessageRouterTests.cs`
   - Added regressions proving malformed JSON is returned as a protocol parse error and that duplicate domain registration is rejected.
+
+### 5.16 DevTools Project Determinism (2026-03-30)
+
+- `FenBrowser.DevTools/FenBrowser.DevTools.csproj`
+  - The DevTools project now declares explicit assembly/product metadata and deterministic build settings instead of inheriting partially implicit packaging defaults.
+  - Portable PDBs and CI-aware deterministic mode are now part of the project contract, which matters because remote-debug artifacts and symbols need stable identity across machines and CI agents.
+- Why this mattered:
+  - DevTools is operator-facing infrastructure. Reproducible binaries and explicit metadata are part of production-quality tooling, not optional polish.
+  - This keeps the P2 packaging hardening work aligned with the same architectural standards applied to Host and WebDriver.
+
+### 5.17 Debugger DTO Normalization And Script-Metadata Guarding (2026-03-30)
+
+- `FenBrowser.DevTools/Domains/DTOs/DebuggerDtos.cs`
+- `FenBrowser.DevTools/Domains/DebuggerDomain.cs`
+  - Debugger DTO creation now normalizes script URLs/source-map URLs, clamps negative line/column metadata, defaults empty script-source payloads safely, and keeps execution-context defaults explicit.
+  - `DebuggerDomain` now routes both `Debugger.scriptParsed` and `Debugger.getScriptSource` through those DTO factories instead of open-coding payload assembly.
+- Why this mattered:
+  - Protocol DTO files are thin by design, but they still define what external tools see. Negative positions and null-script payload drift are contract bugs, not harmless DTO shortcuts.
+  - This keeps the protocol surface deterministic for Sources/debugger tooling even when upstream script metadata is incomplete.
+- Verification:
+  - `FenBrowser.Tests/DevTools/DebuggerDomainTests.cs`
+  - focused regression slice on `2026-03-30`: pass.
 
 _End of Volume V_

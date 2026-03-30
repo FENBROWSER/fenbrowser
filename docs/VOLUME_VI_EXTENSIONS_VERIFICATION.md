@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume VI: Extensions & Verification
 
-**State as of:** 2026-02-18
+**State as of:** 2026-03-30
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -1667,3 +1667,92 @@ _End of Volume VI_
     - engine DOM snapshot,
     - rendered text snapshot,
     - structured log correlation.
+
+## 6.50 P2 Thin-Contract Verification And Tooling Determinism (2026-03-30)
+
+- `FenBrowser.Tests/Core/ThinContractTests.cs`
+  - Added focused regression coverage for:
+    - `CertificateInfo` normalization and trust/date state
+    - `CacheKey` whitespace/default-partition normalization
+    - `ShardedCache<T>` hit/miss/eviction counters and removal semantics
+    - `CornerRadius` / `Thickness` final-state helpers and non-negative clamping
+- `FenBrowser.WebDriver/FenBrowser.WebDriver.csproj`
+- `FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj`
+  - Both tooling-facing projects now declare explicit assembly/product metadata plus deterministic build settings, portable PDBs, and CI-aware deterministic mode.
+  - `FenBrowser.WebIdlGen` remains packaged as the `webidlgen` tool; the important P2 change is that its packaging identity is now explicit and reproducible.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests"`: pass (`8/8`).
+  - required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_102529.html`
+    - `logs/engine_source_20260330_102551.html`
+    - `logs/rendered_text_20260330_102551.txt`
+    - `logs/fenbrowser_20260330_102527.log`
+    - `logs/fenbrowser_20260330_102527.jsonl`
+- Why this mattered:
+  - P2 hardening is only credible if the new thin-contract guarantees are backed by direct regressions rather than inferred from broader solution behavior.
+  - Deterministic packaging for WebDriver and `webidlgen` keeps automation and generation surfaces reproducible instead of depending on incidental machine state.
+
+## 6.51 P2 Thin-Contract Regression Expansion Across Host And DevTools (2026-03-30)
+
+- Added focused regression coverage:
+  - `FenBrowser.Tests/Core/ThinContractTests.cs`
+    - `ConsoleLogger` normalization/output contract
+    - `CssCornerRadius` percent/negative clamp semantics
+  - `FenBrowser.Tests/Host/HostThinContractTests.cs`
+    - `RendererInputEvent` normalization and meaningful-state rules
+    - `ContextMenuItem` safe invocation rules
+    - `ContextMenuBuilder` disabled-command truthfulness
+  - `FenBrowser.Tests/DevTools/DebuggerDomainTests.cs`
+    - negative debugger metadata normalization
+    - empty/null script-source normalization
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests"`: pass (`14/14`).
+  - required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_104208.html`
+    - `logs/engine_source_20260330_104230.html`
+    - `logs/rendered_text_20260330_104230.txt`
+    - `logs/fenbrowser_20260330_104207.log`
+    - `logs/fenbrowser_20260330_104207.jsonl`
+- Runtime note:
+  - the live host path stayed painted and preserved the diagnostics contract.
+  - the verification report still warns about very low rendered-text health on Google and over-budget raster/watchdog events, which remain broader runtime debt outside this thin-contract closure slice.
+
+## 6.52 P2 Closure Verification And Diagnostics-Root Convergence (2026-03-30)
+
+- `FenBrowser.Tests/Core/P2ClosureContractTests.cs`
+  - Added direct closure coverage for:
+    - `DebugConfig` filter normalization and reset behavior
+    - `ParserSecurityPolicy` clone/normalization semantics
+    - `FrameDeadline` invariant enforcement
+    - `LogCategoryFacts` operational-mask helpers
+    - `RendererSafetyPolicy`, `RenderContext`, `BaseFrameReusePolicy`, `HistoryEntry`, `PositionedGlyph`, and `SkiaTextMeasurer` final thin-contract behavior
+    - diagnostics-root routing through `DiagnosticPaths` and `StructuredLogger`
+    - `ContentVerifier` low-ratio classification for corroborated script-heavy pages versus real failure shapes
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass (`811` warnings, `0` errors).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests|FullyQualifiedName~P2ClosureContractTests"`: pass (`29/29`).
+  - required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/click_debug.log`
+    - `logs/raw_source_20260330_111455.html`
+    - `logs/engine_source_20260330_111516.html`
+    - `logs/rendered_text_20260330_111516.txt`
+    - `logs/network.log`
+    - `logs/rendering.log`
+    - `logs/fenbrowser_20260330_111454.log`
+    - `logs/fenbrowser_20260330_111454.jsonl`
+  - runtime outcome:
+    - the screenshot remained visibly painted with the Google homepage shell, search chrome, top navigation, language strip, and footer.
+    - all primary diagnostics converged under workspace-root `logs`.
+    - the content-health line now emits `Text Density` and an informational note for script-heavy pages instead of a misleading parser-failure warning.
+    - watchdog/raster budget warnings still occur on Google, but they are now clearly separated from the closed P2 thin-contract scope.
+- Closure status:
+  - P2 is complete for the audit-derived workstreams in `NEW_AUDIT_WORK.md`.
+  - broader solution warning debt and deeper render/performance work remain separate post-P2 backlog items.
