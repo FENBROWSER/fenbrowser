@@ -11,6 +11,7 @@ using FenBrowser.Tooling.Host;
 using FenBrowser.Host;
 using FenBrowser.Host.Tabs;
 using FenBrowser.Host.WebDriver;
+using FenBrowser.FenEngine.Rendering.Performance;
 
 namespace FenBrowser.Tooling
 {
@@ -49,6 +50,9 @@ namespace FenBrowser.Tooling
                     return;
                 case "webdriver":
                     await RunWebDriverAsync(args).ConfigureAwait(false);
+                    return;
+                case "render-perf":
+                    await RunRenderPerfAsync().ConfigureAwait(false);
                     return;
                 case "debug-css":
                     RunCssDebug();
@@ -336,6 +340,16 @@ namespace FenBrowser.Tooling
             File.WriteAllText("css_debug.txt", sb.ToString());
         }
 
+        private static async Task RunRenderPerfAsync()
+        {
+            var runner = new RenderPerformanceBenchmarkRunner();
+            var report = await runner.RunDefaultSuiteAsync().ConfigureAwait(false);
+            var artifactPath = await runner.WriteReportAsync(report).ConfigureAwait(false);
+            Console.WriteLine(RenderPerformanceBenchmarkRunner.FormatSummary(report));
+            Console.WriteLine($"artifact={artifactPath}");
+            Console.WriteLine($"failureGatePassed={report.FailureGatePassed}");
+        }
+
         private static void WireToolingConsoleCapture()
         {
             void AttachTab(BrowserTab tab)
@@ -365,6 +379,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  wpt <test_file_or_category> [root]");
             Console.WriteLine("  acid2");
             Console.WriteLine("  webdriver [--port=4444] [--headless]");
+            Console.WriteLine("  render-perf");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
         }
