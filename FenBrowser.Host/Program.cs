@@ -358,7 +358,7 @@ namespace FenBrowser.Host
                     if (string.Equals(envelope.Type, RendererIpcMessageType.Input.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
                         var input = RendererIpc.DeserializePayload<RendererInputEvent>(envelope);
-                        if (input != null)
+                        if (input != null && input.IsMeaningful)
                         {
                             switch (input.Type)
                             {
@@ -367,7 +367,7 @@ namespace FenBrowser.Host
                                     break;
                                 case RendererInputEventType.MouseUp:
                                     browser.OnMouseUp(input.X, input.Y, input.Button);
-                                    if (input.EmitClick && input.Button == 0)
+                                    if (input.ShouldEmitClick)
                                     {
                                         browser.OnClick(input.X, input.Y, input.Button);
                                     }

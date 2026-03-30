@@ -67,9 +67,7 @@ public class WebContentWidget : Widget
         FenLogger.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
         try
         {
-            string logDir = System.IO.Path.Combine(Environment.CurrentDirectory, "logs");
-            System.IO.Directory.CreateDirectory(logDir);
-            string logPath = System.IO.Path.Combine(logDir, "click_debug.log");
+            string logPath = DiagnosticPaths.GetLogArtifactPath("click_debug.log");
             System.IO.File.AppendAllText(logPath, $"[WebContentWidget.OnArrange] finalRect={finalRect}, this.Bounds={Bounds}\n");
         }
         catch (Exception ex)

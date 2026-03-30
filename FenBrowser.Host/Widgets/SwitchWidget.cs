@@ -64,7 +64,7 @@ public class SwitchWidget : Widget
         
         // Debug: Log paint position and canvas matrix
         var matrix = canvas.TotalMatrix;
-        string logPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FenBrowser", "click_debug.log");
+        string logPath = DiagnosticPaths.GetLogArtifactPath("click_debug.log");
         System.IO.File.AppendAllText(logPath, $"[SwitchPaint] Bounds={Bounds}, Matrix=({matrix.TransX:F0},{matrix.TransY:F0}) Scale=({matrix.ScaleX:F2},{matrix.ScaleY:F2})\n");
         
         // Update animation

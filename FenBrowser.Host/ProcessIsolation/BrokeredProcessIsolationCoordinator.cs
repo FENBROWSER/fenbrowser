@@ -149,7 +149,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent)
         {
-            if (tab == null || inputEvent == null)
+            if (tab == null || inputEvent == null || !inputEvent.IsMeaningful)
                 return;
 
             if (_tabStates.TryGetValue(tab.Id, out var state))
