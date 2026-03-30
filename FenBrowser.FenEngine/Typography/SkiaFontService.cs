@@ -1,25 +1,64 @@
-using SkiaSharp;
-using FenBrowser.FenEngine.Layout;
+using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using FenBrowser.Core;
+using FenBrowser.Core.Cache;
+using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Typography
 {
+    public readonly record struct FontServiceCacheSnapshot(
+        int MetricsEntries,
+        int WidthEntries,
+        int GlyphRunEntries,
+        int TypefaceEntries,
+        long ApproximateBytes,
+        long HitCount,
+        long MissCount,
+        long EvictionCount);
+
     /// <summary>
     /// Skia-based implementation of IFontService.
-    /// 
+    ///
     /// RULE 2: This provides Skia data, but NormalizedFontMetrics controls the final values.
     /// </summary>
     public class SkiaFontService : IFontService
     {
-        // Cache for resolved typefaces
+        private static readonly object s_instancesLock = new();
+        private static readonly List<WeakReference<SkiaFontService>> s_instances = new();
+
         private readonly ConcurrentDictionary<string, SKTypeface> _typefaceCache = new();
-        private readonly ConcurrentDictionary<MetricsCacheKey, NormalizedFontMetrics> _metricsCache = new();
-        private readonly ConcurrentDictionary<MeasureCacheKey, float> _widthCache = new();
-        private readonly ConcurrentDictionary<MeasureCacheKey, GlyphRun> _glyphRunCache = new();
-        private const int MaxWidthCacheEntries = 4096;
-        private const int MaxGlyphRunCacheEntries = 2048;
-        private const int MaxMetricsCacheEntries = 512;
-        
+        private readonly BoundedLruCache<MetricsCacheKey, NormalizedFontMetrics> _metricsCache;
+        private readonly BoundedLruCache<MeasureCacheKey, float> _widthCache;
+        private readonly BoundedLruCache<MeasureCacheKey, GlyphRun> _glyphRunCache;
+
+        public SkiaFontService(RenderPerformanceConfiguration configuration = null)
+        {
+            var config = (configuration ?? RenderPerformanceConfiguration.Current).Clone();
+            config.Normalize();
+
+            _metricsCache = new BoundedLruCache<MetricsCacheKey, NormalizedFontMetrics>(
+                config.FontMetricsCacheEntries,
+                config.FontMetricsCacheBytes,
+                static (_, _) => 96);
+
+            _widthCache = new BoundedLruCache<MeasureCacheKey, float>(
+                config.FontWidthCacheEntries,
+                config.FontWidthCacheBytes,
+                static (key, _) => 80 + (key.Text?.Length ?? 0) * 2 + (key.FontFamily?.Length ?? 0) * 2);
+
+            _glyphRunCache = new BoundedLruCache<MeasureCacheKey, GlyphRun>(
+                config.FontGlyphRunCacheEntries,
+                config.FontGlyphRunCacheBytes,
+                static (key, run) => 128 + (key.Text?.Length ?? 0) * 2 + (run?.Glyphs?.Length ?? 0) * 24);
+
+            lock (s_instancesLock)
+            {
+                s_instances.Add(new WeakReference<SkiaFontService>(this));
+            }
+        }
+
         public NormalizedFontMetrics GetMetrics(string fontFamily, float fontSize, int fontWeight = 400, float? cssLineHeight = null)
         {
             var cacheKey = new MetricsCacheKey(fontFamily ?? string.Empty, fontSize, fontWeight, cssLineHeight);
@@ -29,45 +68,45 @@ namespace FenBrowser.FenEngine.Typography
             }
 
             var typeface = ResolveTypeface(fontFamily, fontWeight);
-            
+
             using var font = new SKFont(typeface, fontSize);
             var metrics = font.Metrics;
-            
-            // Convert raw Skia metrics to normalized CSS-semantic metrics
-            // FenEngine controls line height, not Skia
             var normalized = NormalizedFontMetrics.FromSkia(metrics, fontSize, cssLineHeight);
-            StoreMetrics(cacheKey, normalized);
+            _metricsCache.Set(cacheKey, normalized);
             return normalized;
         }
-        
+
         public float MeasureTextWidth(string text, string fontFamily, float fontSize, int fontWeight = 400)
         {
-            if (string.IsNullOrEmpty(text)) return 0;
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
 
             var cacheKey = new MeasureCacheKey(text, fontFamily ?? string.Empty, fontSize, fontWeight);
             if (_widthCache.TryGetValue(cacheKey, out var cachedWidth))
             {
                 return cachedWidth;
             }
-            
+
             var typeface = ResolveTypeface(fontFamily, fontWeight);
-            
+
             using var paint = new SKPaint
             {
                 TextSize = fontSize,
                 Typeface = typeface,
                 IsAntialias = true
             };
-            
+
             var width = paint.MeasureText(text);
             if (text.Length <= 256)
             {
-                StoreWidth(cacheKey, width);
+                _widthCache.Set(cacheKey, width);
             }
 
             return width;
         }
-        
+
         public GlyphRun ShapeText(string text, string fontFamily, float fontSize, int fontWeight = 400)
         {
             if (string.IsNullOrEmpty(text))
@@ -86,37 +125,34 @@ namespace FenBrowser.FenEngine.Typography
             {
                 return cachedRun;
             }
-            
+
             var typeface = ResolveTypeface(fontFamily, fontWeight);
             var metrics = GetMetrics(fontFamily, fontSize, fontWeight);
-            
+
             using var paint = new SKPaint
             {
                 TextSize = fontSize,
                 Typeface = typeface,
                 IsAntialias = true
             };
-            
-            // Get glyph IDs
+
             var glyphIds = paint.GetGlyphs(text);
             var widths = paint.GetGlyphWidths(text);
-            
-            // Build positioned glyphs
             var glyphs = new PositionedGlyph[glyphIds.Length];
             float x = 0;
-            
+
             for (int i = 0; i < glyphIds.Length; i++)
             {
                 glyphs[i] = new PositionedGlyph
                 {
                     GlyphId = glyphIds[i],
                     X = x,
-                    Y = 0, // Baseline-relative
+                    Y = 0,
                     AdvanceX = widths[i]
                 };
                 x += widths[i];
             }
-            
+
             var glyphRun = new GlyphRun
             {
                 Glyphs = glyphs,
@@ -129,57 +165,92 @@ namespace FenBrowser.FenEngine.Typography
 
             if (text.Length <= 256)
             {
-                StoreGlyphRun(cacheKey, glyphRun);
+                _glyphRunCache.Set(cacheKey, glyphRun);
             }
 
             return glyphRun;
         }
-        
+
         public SKTypeface ResolveTypeface(string fontFamily, int fontWeight = 400, SKFontStyleSlant fontStyle = SKFontStyleSlant.Upright)
         {
-            // Create cache key
             string cacheKey = $"{fontFamily ?? "default"}|{fontWeight}|{fontStyle}";
-            
+
             if (_typefaceCache.TryGetValue(cacheKey, out var cached))
             {
                 return cached;
             }
-            
-            // Use TextLayoutHelper's existing resolution logic
-            var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, "", fontWeight, fontStyle);
-            
+
+            var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, string.Empty, fontWeight, fontStyle);
             _typefaceCache[cacheKey] = typeface;
             return typeface;
         }
 
-        private void StoreMetrics(MetricsCacheKey key, NormalizedFontMetrics metrics)
+        public FontServiceCacheSnapshot GetCacheSnapshot()
         {
-            if (_metricsCache.Count >= MaxMetricsCacheEntries)
-            {
-                _metricsCache.Clear();
-            }
+            var metrics = _metricsCache.GetSnapshot("metrics");
+            var widths = _widthCache.GetSnapshot("widths");
+            var glyphRuns = _glyphRunCache.GetSnapshot("glyph-runs");
 
-            _metricsCache[key] = metrics;
+            return new FontServiceCacheSnapshot(
+                metrics.EntryCount,
+                widths.EntryCount,
+                glyphRuns.EntryCount,
+                _typefaceCache.Count,
+                metrics.ApproximateBytes + widths.ApproximateBytes + glyphRuns.ApproximateBytes,
+                metrics.HitCount + widths.HitCount + glyphRuns.HitCount,
+                metrics.MissCount + widths.MissCount + glyphRuns.MissCount,
+                metrics.EvictionCount + widths.EvictionCount + glyphRuns.EvictionCount);
         }
 
-        private void StoreWidth(MeasureCacheKey key, float width)
+        public static FontServiceCacheSnapshot GetGlobalCacheSnapshot()
         {
-            if (_widthCache.Count >= MaxWidthCacheEntries)
+            var liveInstances = new List<SkiaFontService>();
+            lock (s_instancesLock)
             {
-                _widthCache.Clear();
+                for (int i = s_instances.Count - 1; i >= 0; i--)
+                {
+                    if (s_instances[i].TryGetTarget(out var instance))
+                    {
+                        liveInstances.Add(instance);
+                    }
+                    else
+                    {
+                        s_instances.RemoveAt(i);
+                    }
+                }
             }
 
-            _widthCache[key] = width;
-        }
+            int metricsEntries = 0;
+            int widthEntries = 0;
+            int glyphEntries = 0;
+            int typefaceEntries = 0;
+            long bytes = 0;
+            long hits = 0;
+            long misses = 0;
+            long evictions = 0;
 
-        private void StoreGlyphRun(MeasureCacheKey key, GlyphRun run)
-        {
-            if (_glyphRunCache.Count >= MaxGlyphRunCacheEntries)
+            foreach (var instance in liveInstances)
             {
-                _glyphRunCache.Clear();
+                var snapshot = instance.GetCacheSnapshot();
+                metricsEntries += snapshot.MetricsEntries;
+                widthEntries += snapshot.WidthEntries;
+                glyphEntries += snapshot.GlyphRunEntries;
+                typefaceEntries += snapshot.TypefaceEntries;
+                bytes += snapshot.ApproximateBytes;
+                hits += snapshot.HitCount;
+                misses += snapshot.MissCount;
+                evictions += snapshot.EvictionCount;
             }
 
-            _glyphRunCache[key] = run;
+            return new FontServiceCacheSnapshot(
+                metricsEntries,
+                widthEntries,
+                glyphEntries,
+                typefaceEntries,
+                bytes,
+                hits,
+                misses,
+                evictions);
         }
 
         private readonly record struct MeasureCacheKey(string Text, string FontFamily, float FontSize, int FontWeight);

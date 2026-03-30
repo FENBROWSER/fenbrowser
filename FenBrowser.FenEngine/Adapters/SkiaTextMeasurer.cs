@@ -1,22 +1,54 @@
-using SkiaSharp;
-using FenBrowser.FenEngine.Layout;
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
+using FenBrowser.Core;
+using FenBrowser.Core.Cache;
+using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Adapters
 {
+    public readonly record struct TextMeasurerCacheSnapshot(
+        int WidthEntries,
+        int LineHeightEntries,
+        long ApproximateBytes,
+        long HitCount,
+        long MissCount,
+        long EvictionCount);
+
     /// <summary>
     /// SkiaSharp-based implementation of ITextMeasurer.
     /// This is a simple implementation that doesn't use RichTextKit.
-    /// 
+    ///
     /// RULE 5: If we need RichTextKit, create RichTextKitMeasurer as an alternative.
     /// </summary>
     public class SkiaTextMeasurer : ITextMeasurer
     {
-        private readonly ConcurrentDictionary<TextMeasureCacheKey, float> _widthCache = new();
-        private readonly ConcurrentDictionary<FontMetricsCacheKey, float> _lineHeightCache = new();
-        private const int MaxWidthCacheEntries = 4096;
-        private const int MaxLineHeightCacheEntries = 512;
+        private static readonly object s_instancesLock = new();
+        private static readonly List<WeakReference<SkiaTextMeasurer>> s_instances = new();
+
+        private readonly BoundedLruCache<TextMeasureCacheKey, float> _widthCache;
+        private readonly BoundedLruCache<FontMetricsCacheKey, float> _lineHeightCache;
+
+        public SkiaTextMeasurer(RenderPerformanceConfiguration configuration = null)
+        {
+            var config = (configuration ?? RenderPerformanceConfiguration.Current).Clone();
+            config.Normalize();
+
+            _widthCache = new BoundedLruCache<TextMeasureCacheKey, float>(
+                config.TextWidthCacheEntries,
+                config.TextWidthCacheBytes,
+                static (key, _) => 80 + (key.Text?.Length ?? 0) * 2 + (key.FontFamily?.Length ?? 0) * 2);
+
+            _lineHeightCache = new BoundedLruCache<FontMetricsCacheKey, float>(
+                config.TextLineHeightCacheEntries,
+                config.TextLineHeightCacheBytes,
+                static (_, _) => 64);
+
+            lock (s_instancesLock)
+            {
+                s_instances.Add(new WeakReference<SkiaTextMeasurer>(this));
+            }
+        }
 
         public float MeasureWidth(string text, string fontFamily, float fontSize, int fontWeight = 400)
         {
@@ -31,25 +63,25 @@ namespace FenBrowser.FenEngine.Adapters
             {
                 return cachedWidth;
             }
-            
+
             var typeface = TextLayoutHelper.ResolveTypeface(normalizedFamily, text, fontWeight, SKFontStyleSlant.Upright);
-            
+
             using var paint = new SKPaint
             {
                 TextSize = fontSize,
                 Typeface = typeface,
                 IsAntialias = true
             };
-            
+
             var width = paint.MeasureText(text);
             if (text.Length <= 256)
             {
-                StoreWidth(widthKey, width);
+                _widthCache.Set(widthKey, width);
             }
 
             return width;
         }
-        
+
         public float GetLineHeight(string fontFamily, float fontSize, int fontWeight = 400)
         {
             if (!IsUsableFontSize(fontSize))
@@ -64,38 +96,67 @@ namespace FenBrowser.FenEngine.Adapters
                 return cachedLineHeight;
             }
 
-            var typeface = TextLayoutHelper.ResolveTypeface(normalizedFamily, "", fontWeight, SKFontStyleSlant.Upright);
-            
+            var typeface = TextLayoutHelper.ResolveTypeface(normalizedFamily, string.Empty, fontWeight, SKFontStyleSlant.Upright);
+
             using var font = new SKFont(typeface, fontSize);
             var metrics = font.Metrics;
-            
-            // FenEngine's standard line-height: 1.2x font size
-            // This is WE decide, not what Skia suggests
             float resolved = fontSize * 1.2f;
             float metricsHeight = Math.Max(0, metrics.Descent - metrics.Ascent + metrics.Leading);
             float lineHeight = Math.Max(resolved, metricsHeight);
-            StoreLineHeight(metricsKey, lineHeight);
+            _lineHeightCache.Set(metricsKey, lineHeight);
             return lineHeight;
         }
 
-        private void StoreWidth(TextMeasureCacheKey key, float width)
+        public TextMeasurerCacheSnapshot GetCacheSnapshot()
         {
-            if (_widthCache.Count >= MaxWidthCacheEntries)
-            {
-                _widthCache.Clear();
-            }
-
-            _widthCache[key] = width;
+            var widths = _widthCache.GetSnapshot("widths");
+            var lineHeights = _lineHeightCache.GetSnapshot("line-heights");
+            return new TextMeasurerCacheSnapshot(
+                widths.EntryCount,
+                lineHeights.EntryCount,
+                widths.ApproximateBytes + lineHeights.ApproximateBytes,
+                widths.HitCount + lineHeights.HitCount,
+                widths.MissCount + lineHeights.MissCount,
+                widths.EvictionCount + lineHeights.EvictionCount);
         }
 
-        private void StoreLineHeight(FontMetricsCacheKey key, float lineHeight)
+        public static TextMeasurerCacheSnapshot GetGlobalCacheSnapshot()
         {
-            if (_lineHeightCache.Count >= MaxLineHeightCacheEntries)
+            var liveInstances = new List<SkiaTextMeasurer>();
+            lock (s_instancesLock)
             {
-                _lineHeightCache.Clear();
+                for (int i = s_instances.Count - 1; i >= 0; i--)
+                {
+                    if (s_instances[i].TryGetTarget(out var instance))
+                    {
+                        liveInstances.Add(instance);
+                    }
+                    else
+                    {
+                        s_instances.RemoveAt(i);
+                    }
+                }
             }
 
-            _lineHeightCache[key] = lineHeight;
+            int widthEntries = 0;
+            int lineHeightEntries = 0;
+            long bytes = 0;
+            long hits = 0;
+            long misses = 0;
+            long evictions = 0;
+
+            foreach (var instance in liveInstances)
+            {
+                var snapshot = instance.GetCacheSnapshot();
+                widthEntries += snapshot.WidthEntries;
+                lineHeightEntries += snapshot.LineHeightEntries;
+                bytes += snapshot.ApproximateBytes;
+                hits += snapshot.HitCount;
+                misses += snapshot.MissCount;
+                evictions += snapshot.EvictionCount;
+            }
+
+            return new TextMeasurerCacheSnapshot(widthEntries, lineHeightEntries, bytes, hits, misses, evictions);
         }
 
         private static bool IsUsableFontSize(float fontSize)

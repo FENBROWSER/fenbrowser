@@ -6,10 +6,18 @@ using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Core.EventLoop
 {
+    public readonly record struct TaskProcessingResult(
+        bool Processed,
+        TaskSource Source,
+        TaskPriorityGroup PriorityGroup)
+    {
+        public static TaskProcessingResult None => new TaskProcessingResult(false, TaskSource.Other, TaskPriorityGroup.Background);
+    }
+
     /// <summary>
     /// Coordinates the main execution loop of the browser engine.
     /// Implements the execution order defined in EventLoopSemantics.md:
-    /// Task → JSExecution → Microtasks → DOM Flush → Layout → Paint → Observers → Animation
+    /// Task -> JSExecution -> Microtasks -> DOM Flush -> Layout -> Paint -> Observers -> Animation
     /// </summary>
     public class EventLoopCoordinator
     {
@@ -20,9 +28,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly MicrotaskQueue _microtaskQueue = new();
         private readonly Queue<Action> _animationFrameCallbacks = new();
         private readonly object _animationLock = new();
-
-        // WHATWG §4.7.3 — MutationObserver notify steps queue
-        private readonly Queue<Action> _mutationObserverCallbacks = new Queue<Action>();
+        private readonly Queue<Action> _mutationObserverCallbacks = new();
         private readonly object _moLock = new object();
 
         private bool _layoutDirty = false;
@@ -30,32 +36,19 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private Action _renderCallback = null;
         private Action _observerCallback = null;
 
-        /// <summary>
-        /// Current engine phase for assertions
-        /// </summary>
         public EnginePhase CurrentPhase => EngineContext.Current.CurrentPhase;
 
-        /// <summary>
-        /// Fired when new work is added to any queue (Task, Microtask, Animation, Layout).
-        /// Used to wake the host event loop.
-        /// </summary>
         public event Action OnWorkEnqueued;
 
         #region Task Scheduling
 
-        /// <summary>
-        /// Schedule a task for execution
-        /// </summary>
         public void ScheduleTask(Action callback, TaskSource source, string description = null)
         {
-            if (callback  == null) return;
+            if (callback == null) return;
             _taskQueue.Enqueue(callback, source, description);
             OnWorkEnqueued?.Invoke();
         }
 
-        /// <summary>
-        /// Legacy method - enqueue a task (backward compatible)
-        /// </summary>
         public void EnqueueTask(Action task)
         {
             ScheduleTask(task, TaskSource.Other, "Legacy Task");
@@ -65,19 +58,13 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Microtask Scheduling
 
-        /// <summary>
-        /// Schedule a microtask for execution at next checkpoint
-        /// </summary>
         public void ScheduleMicrotask(Action callback)
         {
-            if (callback  == null) return;
+            if (callback == null) return;
             _microtaskQueue.Enqueue(callback);
             OnWorkEnqueued?.Invoke();
         }
 
-        /// <summary>
-        /// Legacy method - enqueue a microtask (backward compatible)
-        /// </summary>
         public void EnqueueMicrotask(Action microtask)
         {
             ScheduleMicrotask(microtask);
@@ -85,12 +72,8 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #endregion
 
-        #region MutationObserver Batch Delivery (WHATWG §4.7.3)
+        #region MutationObserver Batch Delivery
 
-        /// <summary>
-        /// Queue a MutationObserver notify callback for delivery at the next microtask checkpoint.
-        /// Per WHATWG HTML §4.7.3 "notify mutation observers" steps.
-        /// </summary>
         public void QueueMutationObserverMicrotask(Action callback)
         {
             if (callback == null) return;
@@ -100,10 +83,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
         }
 
-        /// <summary>
-        /// Deliver all pending MutationObserver records, then drain microtasks again.
-        /// Called after each microtask checkpoint per WHATWG spec §4.7.3.
-        /// </summary>
         private void DeliverMutationObserverRecords()
         {
             List<Action> toDeliver;
@@ -116,14 +95,16 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
             foreach (var cb in toDeliver)
             {
-                try { cb(); }
+                try
+                {
+                    cb();
+                }
                 catch (Exception ex)
                 {
                     FenLogger.Warn($"[EventLoop] MutationObserver callback error: {ex.Message}", LogCategory.DOM);
                 }
             }
 
-            // Per spec: perform another microtask checkpoint after MO delivery
             _microtaskQueue.DrainAll();
         }
 
@@ -131,12 +112,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Animation Frame
 
-        /// <summary>
-        /// Schedule a requestAnimationFrame callback
-        /// </summary>
         public void ScheduleAnimationFrame(Action callback)
         {
-            if (callback  == null) return;
+            if (callback == null) return;
             lock (_animationLock)
             {
                 _animationFrameCallbacks.Enqueue(callback);
@@ -148,26 +126,17 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Rendering Integration
 
-        /// <summary>
-        /// Mark layout as dirty - will trigger render on next checkpoint
-        /// </summary>
         public void NotifyLayoutDirty()
         {
             _layoutDirty = true;
             OnWorkEnqueued?.Invoke();
         }
 
-        /// <summary>
-        /// Set the render callback to be invoked during rendering phase
-        /// </summary>
         public void SetRenderCallback(Action callback)
         {
             _renderCallback = callback;
         }
 
-        /// <summary>
-        /// Set the observer callback to be invoked after rendering
-        /// </summary>
         public void SetObserverCallback(Action callback)
         {
             _observerCallback = callback;
@@ -177,26 +146,20 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Event Loop Execution
 
-        /// <summary>
-        /// Process the next task according to spec ordering:
-        /// 1. Dequeue and execute task
-        /// 2. Microtask checkpoint (drain all)
-        /// 3. DOM flush (if needed)
-        /// 4. Rendering update (if layout dirty)
-        /// 5. Observer evaluation
-        /// 6. Animation frames
-        /// </summary>
         public bool ProcessNextTask()
         {
-            var task = _taskQueue.Dequeue();
-            if (task  == null)
+            return ProcessNextTaskDetailed().Processed;
+        }
+
+        public TaskProcessingResult ProcessNextTaskDetailed(bool prioritizeInteractive = false)
+        {
+            var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
+            if (task == null)
             {
-                // No task, but might still have animation frames or rendering to do
                 ProcessRenderingUpdate();
-                return false;
+                return TaskProcessingResult.None;
             }
 
-            // STEP 1-2: Execute task
             EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
             try
             {
@@ -212,34 +175,19 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 EngineContext.Current.EndPhase();
             }
 
-            // STEP 3: Microtask checkpoint
             PerformMicrotaskCheckpoint();
-
-            // STEP 4-6: Rendering update
             ProcessRenderingUpdate();
-
             EnsureIdlePhase();
-            return true;
+            return new TaskProcessingResult(true, task.Source, priorityGroup);
         }
 
-        /// <summary>
-        /// Perform a microtask checkpoint - drains ALL microtasks
-        /// </summary>
         public void PerformMicrotaskCheckpoint()
         {
-            // CRITICAL: Ensure we are not re-entering Microtask phase recursively
             EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
 
             EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
-                // DRAIN LOOP: Keep draining until empty.
-                // NOTE: DrainAll() inside MicrotaskQueue should ideally handle the loop,
-                // but if new microtasks are queued during execution, we must ensure they run
-                // in the SAME checkpoint, without leaving/re-entering the phase.
-                // Assuming _microtaskQueue.DrainAll() handles internal looping.
-                // If not, we would wrap it: while (_microtaskQueue.HasPendingMicrotasks) _microtaskQueue.DrainAll();
-
                 _microtaskQueue.DrainAll();
             }
             finally
@@ -247,29 +195,20 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 EngineContext.Current.EndPhase();
             }
 
-            // WHATWG §4.7.3: After draining microtasks, deliver pending MutationObserver records.
-            // DeliverMutationObserverRecords() is called outside Microtasks phase to avoid phase re-entrancy.
             DeliverMutationObserverRecords();
         }
 
-        /// <summary>
-        /// Process rendering update per WHATWG HTML §8.1.7.3:
-        /// 1. Run rAF callbacks (JS execution with microtask checkpoints)
-        /// 2. Run ResizeObserver / IntersectionObserver callbacks
-        /// 3. Style recalc → Layout → Paint (if dirty)
-        /// </summary>
         public void ProcessRenderingUpdate()
         {
-            // Step 1: Check if we have a rendering opportunity (throttle idle work to ~60fps).
             var now = Environment.TickCount64;
             bool hasRenderingOpportunity = (now - _lastRenderTime) >= 16 || _layoutDirty;
             if (!hasRenderingOpportunity)
+            {
                 return;
+            }
 
-            // Step 2: Run requestAnimationFrame callbacks before rendering.
             ProcessAnimationFrames();
 
-            // Step 3: Style recalc + layout + paint (if dirty).
             if (_layoutDirty && _renderCallback != null)
             {
                 _lastRenderTime = now;
@@ -290,7 +229,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
             }
 
-            // Step 4: Run observer callbacks after layout, then checkpoint microtasks.
             if (_observerCallback != null)
             {
                 EngineContext.Current.BeginPhase(EnginePhase.Observers);
@@ -313,29 +251,25 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             EnsureIdlePhase();
         }
 
-        /// <summary>
-        /// Process all pending requestAnimationFrame callbacks
-        /// </summary>
         private void ProcessAnimationFrames()
         {
             Queue<Action> callbacks;
             lock (_animationLock)
             {
                 if (_animationFrameCallbacks.Count == 0)
+                {
                     return;
+                }
 
-                // Swap to new queue so callbacks can schedule more
                 callbacks = new Queue<Action>(_animationFrameCallbacks);
                 _animationFrameCallbacks.Clear();
             }
 
             while (callbacks.Count > 0)
             {
-                // Mark animation processing phase for this RAF slot.
                 EngineContext.Current.BeginPhase(EnginePhase.Animation);
                 try
                 {
-                    // No-op body: this phase marks RAF slot advancement.
                 }
                 finally
                 {
@@ -357,7 +291,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     EngineContext.Current.EndPhase();
                 }
 
-                // Microtask checkpoint after each RAF callback (outside JSExecution phase)
                 PerformMicrotaskCheckpoint();
             }
         }
@@ -373,9 +306,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
         }
 
-        /// <summary>
-        /// Run the event loop until no more tasks
-        /// </summary>
         public void RunUntilEmpty()
         {
             while (_taskQueue.HasPendingTasks ||
@@ -388,7 +318,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     continue;
                 }
 
-                // No macro tasks left, but pending microtasks still need to run.
                 PerformMicrotaskCheckpoint();
             }
         }
@@ -397,9 +326,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Utility
 
-        /// <summary>
-        /// Clear all queues (for navigation/reset)
-        /// </summary>
         public void Clear()
         {
             _taskQueue.Clear();
@@ -417,19 +343,17 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             FenLogger.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
         }
 
-        /// <summary>
-        /// Reset singleton (for testing)
-        /// </summary>
         public static void ResetInstance()
         {
             _instance = new EventLoopCoordinator();
         }
 
-        // For Testing
         public int TaskCount => _taskQueue.Count;
         public int MicrotaskCount => _microtaskQueue.Count;
         public bool HasPendingTasks => _taskQueue.HasPendingTasks;
         public bool HasPendingMicrotasks => _microtaskQueue.HasPendingMicrotasks;
+        public TaskQueueSnapshot GetTaskSnapshot() => _taskQueue.GetSnapshot();
+        public bool HasPendingTasksFor(TaskPriorityGroup group) => _taskQueue.HasPendingTasksFor(group);
 
         #endregion
     }

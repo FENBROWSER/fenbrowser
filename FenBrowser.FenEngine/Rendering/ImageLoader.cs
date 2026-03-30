@@ -42,10 +42,13 @@ namespace FenBrowser.FenEngine.Rendering
         public int[] Durations; // ms per frame
         public int TotalDuration;
         public long StartTick;
+        public long ByteSize;
+        public DateTime LastAccessed;
 
         public SKBitmap GetCurrentFrame()
         {
             if (Frames == null || Frames.Length == 0) return null;
+            LastAccessed = DateTime.UtcNow;
             if (Frames.Length == 1) return Frames[0];
             long elapsed = Environment.TickCount64 - StartTick;
             int pos = (int)(elapsed % TotalDuration);
@@ -58,6 +61,17 @@ namespace FenBrowser.FenEngine.Rendering
             return Frames[Frames.Length - 1];
         }
     }
+
+    public readonly record struct ImageCacheSnapshot(
+        int StaticImageCount,
+        int AnimatedImageCount,
+        int AnimatedFrameCount,
+        long ApproximateBytes,
+        int PendingLoadCount,
+        int LazyPendingCount,
+        long HitCount,
+        long MissCount,
+        long EvictionCount);
 
     public static class ImageLoader
     {
@@ -79,6 +93,9 @@ namespace FenBrowser.FenEngine.Rendering
         
         // ========== Memory Management ==========
         private static long _currentCacheBytes = 0;
+        private static long _cacheHitCount = 0;
+        private static long _cacheMissCount = 0;
+        private static long _cacheEvictionCount = 0;
         private static readonly object _cacheLock = new object();
         private static readonly ConcurrentQueue<SKBitmap> _pendingBitmapDisposals = new ConcurrentQueue<SKBitmap>();
         private static int _disposeWorkerActive = 0;
@@ -132,7 +149,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Number of images currently cached
         /// </summary>
-        public static int CacheCount => _memoryCache.Count + _legacyCache.Count;
+        public static int CacheCount => _memoryCache.Count + _animatedGifs.Count;
 
         public static bool ContainsCachedImage(string url)
         {
@@ -173,7 +190,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrEmpty(url)) return;
             
             // Already cached? No need to register as lazy
-            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
+            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url)) return;
             
             _lazyRegistry[url] = new LazyImageInfo
             {
@@ -275,6 +292,9 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_cacheLock)
             {
                 _currentCacheBytes = 0;
+                _cacheHitCount = 0;
+                _cacheMissCount = 0;
+                _cacheEvictionCount = 0;
             }
 
             ClearLazyRegistry();
@@ -316,30 +336,70 @@ namespace FenBrowser.FenEngine.Rendering
             var config = NetworkConfiguration.Instance;
             var maxBytes = config.MaxImageCacheBytes;
             var maxCount = config.MaxImageCacheCount;
-            
-            if (_currentCacheBytes <= maxBytes && _memoryCache.Count <= maxCount) return;
-            
-            // Sort by last accessed time and evict oldest
-            var toEvict = _memoryCache
-                .OrderBy(kvp => kvp.Value.LastAccessed)
-                .Take(Math.Max(1, _memoryCache.Count / 4)) // Evict 25%
-                .ToList();
-            
-            foreach (var kvp in toEvict)
+
+            lock (_cacheLock)
             {
-                if (_memoryCache.TryRemove(kvp.Key, out var entry))
+                if (_currentCacheBytes <= maxBytes && CacheCount <= maxCount)
                 {
-                    // CRITICAL FIX: Also remove from legacy cache to prevent returning disposed bitmaps
-                    _legacyCache.TryRemove(kvp.Key, out _);
+                    return;
+                }
+            }
+
+            var candidates = new List<(string Key, DateTime LastAccessed, long Bytes, bool IsAnimated)>();
+            candidates.AddRange(_memoryCache.Select(kvp => (kvp.Key, kvp.Value.LastAccessed, kvp.Value.ByteSize, false)));
+            candidates.AddRange(_animatedGifs.Select(kvp => (kvp.Key, kvp.Value.LastAccessed, kvp.Value.ByteSize, true)));
+
+            foreach (var candidate in candidates.OrderBy(entry => entry.LastAccessed))
+            {
+                bool withinBudget;
+                lock (_cacheLock)
+                {
+                    withinBudget = _currentCacheBytes <= maxBytes && CacheCount <= maxCount;
+                }
+
+                if (withinBudget)
+                {
+                    break;
+                }
+
+                if (candidate.IsAnimated)
+                {
+                    if (_animatedGifs.TryRemove(candidate.Key, out var animated))
+                    {
+                        if (animated?.Frames != null)
+                        {
+                            foreach (var frame in animated.Frames)
+                            {
+                                ScheduleBitmapDispose(frame);
+                            }
+                        }
+
+                        lock (_cacheLock)
+                        {
+                            _currentCacheBytes -= candidate.Bytes;
+                            _cacheEvictionCount++;
+                        }
+
+                        FenLogger.Debug($"[ImageLoader] Evicted animated image: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                            LogCategory.Rendering);
+                    }
+
+                    continue;
+                }
+
+                if (_memoryCache.TryRemove(candidate.Key, out var entry))
+                {
+                    _legacyCache.TryRemove(candidate.Key, out _);
 
                     lock (_cacheLock)
                     {
                         _currentCacheBytes -= entry.ByteSize;
+                        _cacheEvictionCount++;
                     }
+
                     ScheduleBitmapDispose(entry.Bitmap);
-                    
-                    FenLogger.Debug($"[ImageLoader] Evicted: {kvp.Key.Substring(0, Math.Min(40, kvp.Key.Length))}...", 
-                                   LogCategory.Rendering);
+                    FenLogger.Debug($"[ImageLoader] Evicted: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                        LogCategory.Rendering);
                 }
             }
         }
@@ -419,8 +479,37 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static string GetCacheStats()
         {
-            return $"Images: {CacheCount}, Memory: {_currentCacheBytes / (1024 * 1024)}MB, " +
-                   $"Lazy Pending: {_lazyRegistry.Count(x => !x.Value.LoadStarted)}";
+            var snapshot = GetCacheSnapshot();
+            return $"Images: {snapshot.StaticImageCount + snapshot.AnimatedImageCount}, Memory: {snapshot.ApproximateBytes / (1024 * 1024)}MB, " +
+                   $"Animated: {snapshot.AnimatedImageCount}, Lazy Pending: {snapshot.LazyPendingCount}, Pending Loads: {snapshot.PendingLoadCount}, " +
+                   $"Hits: {snapshot.HitCount}, Misses: {snapshot.MissCount}, Evictions: {snapshot.EvictionCount}";
+        }
+
+        public static ImageCacheSnapshot GetCacheSnapshot()
+        {
+            long bytes;
+            long hits;
+            long misses;
+            long evictions;
+            lock (_cacheLock)
+            {
+                bytes = _currentCacheBytes;
+                hits = _cacheHitCount;
+                misses = _cacheMissCount;
+                evictions = _cacheEvictionCount;
+            }
+
+            var animatedFrameCount = _animatedGifs.Values.Sum(anim => anim?.Frames?.Length ?? 0);
+            return new ImageCacheSnapshot(
+                _memoryCache.Count,
+                _animatedGifs.Count,
+                animatedFrameCount,
+                bytes,
+                PendingLoadCount,
+                _lazyRegistry.Count(x => !x.Value.LoadStarted),
+                hits,
+                misses,
+                evictions);
         }
         
         /// <summary>
@@ -651,6 +740,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Animated GIF: return the current frame based on elapsed time
             if (_animatedGifs.TryGetValue(url, out var anim))
             {
+                RegisterCacheHit();
                 return anim.GetCurrentFrame();
             }
 
@@ -659,15 +749,19 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 FenLogger.Debug($"[ImageLoader] Found in memory cache: {url}", LogCategory.Rendering);
                 entry.LastAccessed = DateTime.UtcNow;
+                RegisterCacheHit();
                 return entry.Bitmap;
             }
             
             // Check legacy cache
             if (_legacyCache.TryGetValue(url, out var bitmap))
             {
-                 FenLogger.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
+                FenLogger.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
+                RegisterCacheHit();
                 return bitmap;
             }
+
+            RegisterCacheMiss();
 
             // For lazy images, check if we should defer loading
             if (isLazy && elementBounds.HasValue && NetworkConfiguration.Instance.EnableLazyLoading)
@@ -708,6 +802,7 @@ namespace FenBrowser.FenEngine.Rendering
                     _memoryCache[url] = dataEntry;
                     _legacyCache[url] = dataBitmap;
                     lock (_cacheLock) { _currentCacheBytes += dataBitmap.ByteCount; }
+                    EvictIfNeeded();
                     
                     return dataBitmap;
                 }
@@ -969,8 +1064,14 @@ namespace FenBrowser.FenEngine.Rendering
                         var animated = DecodeAnimatedGif(codec, data);
                         if (animated != null && animated.Frames?.Length > 0)
                         {
+                            animated.LastAccessed = DateTime.UtcNow;
                             _animatedGifs[url] = animated;
+                            lock (_cacheLock)
+                            {
+                                _currentCacheBytes += animated.ByteSize;
+                            }
                             bitmap = animated.Frames[0];
+                            EvictIfNeeded();
                             EnsureGifAnimationTimer();
                             FenLogger.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
                         }
@@ -999,6 +1100,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(url) || bitmap == null || bitmap.IsNull || bitmap.Width <= 0 || bitmap.Height <= 0)
             {
                 return false;
+            }
+
+            if (_animatedGifs.ContainsKey(url))
+            {
+                _lazyRegistry.TryRemove(url, out _);
+                return true;
             }
 
             if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url))
@@ -1144,13 +1251,37 @@ namespace FenBrowser.FenEngine.Rendering
             int totalDuration = durations.Sum();
             if (totalDuration <= 0) totalDuration = frames.Length * 100; // fallback 100ms each
 
+            long byteSize = 0;
+            foreach (var frame in frames)
+            {
+                byteSize += frame?.ByteCount ?? 0;
+            }
+
             return new AnimatedImage
             {
                 Frames = frames,
                 Durations = durations,
                 TotalDuration = totalDuration,
-                StartTick = Environment.TickCount64
+                StartTick = Environment.TickCount64,
+                ByteSize = byteSize,
+                LastAccessed = DateTime.UtcNow
             };
+        }
+
+        private static void RegisterCacheHit()
+        {
+            lock (_cacheLock)
+            {
+                _cacheHitCount++;
+            }
+        }
+
+        private static void RegisterCacheMiss()
+        {
+            lock (_cacheLock)
+            {
+                _cacheMissCount++;
+            }
         }
 
         private static void EnsureGifAnimationTimer()
