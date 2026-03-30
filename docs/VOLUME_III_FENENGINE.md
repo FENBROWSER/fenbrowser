@@ -6011,3 +6011,37 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `steady-state-damage-animation`: `5.54ms`
     - `dense-text-flow`: `35.82ms`
     - `failureGatePassed=True`
+
+## 2.197 WIMB Diagnostics Snapshot Promotion And Document-Scoped Engine Source Dumps (2026-03-30)
+
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Engine-source capture now prefers the owning `Document` when the active DOM entrypoint is the `<html>` element, so diagnostics serialize the full document instead of a partial active node snapshot.
+  - Navigation diagnostics no longer freeze the first acceptable snapshot for an entire navigation. The engine now upgrades `engine_source` and `rendered_text` artifacts when later DOM/text evidence is materially better during the same navigation.
+  - Snapshot readiness was tightened so small early bootstrap DOMs no longer satisfy the same gate as settled pages.
+  - `GetTextContent()` now falls back to normalized `document.body` text when the filtered rendered-text traversal produces nothing, which prevents visibly painted pages from emitting zero-length text diagnostics.
+
+- `FenBrowser.Tests/Core/BrowserHostDiagnosticsTests.cs`
+  - Added direct coverage for:
+    - document-scoped engine-source serialization when the active node is the `<html>` element
+    - stricter diagnostics readiness gating
+    - rendered-text body fallback behavior
+
+- Why this mattered:
+  - `whatismybrowser.com` exposed a real diagnostics integrity bug: the browser had a live DOM and a painted frame, but the saved `engine_source` artifact was head-only and `rendered_text` froze almost empty because the first provisional snapshot won.
+  - A production debug surface must converge toward the best available truth during navigation, not preserve the first incomplete signal.
+
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass on `2026-03-30`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~BrowserHostDiagnosticsTests|FullyQualifiedName~ContentVerifierStateTests"`: pass (`5/5`) on `2026-03-30`.
+  - required clean-state host run against `https://www.whatismybrowser.com/` on `2026-03-30` emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_160946.html`
+    - `logs/engine_source_20260330_160950.html`
+    - `logs/rendered_text_20260330_160948.txt`
+    - `logs/fenbrowser_20260330_160944.log`
+    - `logs/fenbrowser_20260330_160944.jsonl`
+  - runtime outcome:
+    - `engine_source` grew from an early provisional snapshot to a full-document artifact (`77422` bytes) with the settled DOM.
+    - `rendered_text` upgraded during the same navigation to `8198` characters with a healthy `10.53%` content-health ratio instead of freezing at an almost-empty stub.
+    - the screenshot still shows WIMB layout/paint defects, which remain a separate rendering-fidelity issue.

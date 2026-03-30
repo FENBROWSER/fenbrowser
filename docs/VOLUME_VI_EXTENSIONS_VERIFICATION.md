@@ -1872,3 +1872,37 @@ _End of Volume VI_
 - Closure status:
   - render/perf `P2` is complete for the ledger tracked in `NEW_AUDIT_WORK.md`
   - remaining work after this point is post-audit optimization and warning-debt cleanup, not an open ledger blocker
+
+## 6.55 WhatIsMyBrowser Diagnostics Integrity Repro (2026-03-30)
+
+- Purpose:
+  - reproduce a clean real-site diagnostics run on `https://www.whatismybrowser.com/` and verify that the saved artifacts converge with the live page state instead of freezing an early bootstrap snapshot.
+
+- Code coverage added:
+  - `FenBrowser.Tests/Core/BrowserHostDiagnosticsTests.cs`
+    - full-document engine-source serialization when diagnostics start from the `<html>` element
+    - stricter snapshot-readiness gating for navigation diagnostics
+    - rendered-text fallback to normalized `document.body` text when the filtered traversal is temporarily empty
+
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo`: pass (`680` warnings, `0` errors)
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-build --filter "FullyQualifiedName~BrowserHostDiagnosticsTests|FullyQualifiedName~ContentVerifierStateTests"`: pass (`5/5`)
+
+- Required clean-state WIMB host cycle emitted:
+  - `debug_screenshot.png`
+  - `dom_dump.txt`
+  - `logs/raw_source_20260330_160946.html`
+  - `logs/engine_source_20260330_160950.html`
+  - `logs/rendered_text_20260330_160948.txt`
+  - `logs/fenbrowser_20260330_160944.log`
+  - `logs/fenbrowser_20260330_160944.jsonl`
+
+- Runtime outcome:
+  - diagnostics upgraded multiple times during the same navigation instead of freezing the first provisional snapshot:
+    - rendered text: `53` -> `128` -> `257` -> `619` -> `8198`
+    - engine source: `139` DOM-node provisional capture -> settled full-document artifact (`77422` bytes)
+  - the verification report now records:
+    - `Text Path: rendered_text_20260330_160948.txt`
+    - `Engine Path: engine_source_20260330_160950.html`
+    - `Content Health: 10.53% (Source -> Result)`
+  - `debug_screenshot.png` still shows real layout/paint defects on WIMB, so diagnostics integrity is fixed but rendering fidelity is not yet fixed.

@@ -202,6 +202,8 @@ namespace FenBrowser.FenEngine.Rendering
         private long _activeRenderNavigationId;
         private long _engineDiagnosticsCapturedNavigationId;
         private long _renderedDiagnosticsCapturedNavigationId;
+        private int _engineDiagnosticsCapturedNodeCount;
+        private int _renderedDiagnosticsCapturedTextLength;
         private bool _disposed;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
@@ -260,6 +262,21 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
         }
 
+        private static Document ResolveSnapshotDocument(Node activeNode)
+        {
+            if (activeNode == null)
+            {
+                return null;
+            }
+
+            if (activeNode is Document document)
+            {
+                return document;
+            }
+
+            return activeNode.OwnerDocument;
+        }
+
         private static string BuildEngineSourceSnapshot(Node activeNode, Uri uri)
         {
             if (activeNode == null)
@@ -269,7 +286,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             try
             {
-                if (activeNode is Document document)
+                var document = ResolveSnapshotDocument(activeNode);
+                if (document != null)
                 {
                     var documentElementHtml = document.DocumentElement?.OuterHTML;
                     if (!string.IsNullOrWhiteSpace(documentElementHtml))
@@ -365,7 +383,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            TryCaptureEngineSourceSnapshot(navigationId, uri, activeNode);
+            TryCaptureEngineSourceSnapshot(navigationId, uri, activeNode, domNodeCount);
             TryCaptureRenderedTextSnapshot(navigationId, uri, textContent, domNodeCount);
         }
 
@@ -376,27 +394,40 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            if (domNodeCount >= 64)
+            if (domNodeCount >= 128)
             {
                 return true;
             }
 
-            if (!string.IsNullOrWhiteSpace(textContent) && textContent.Length >= 32)
+            if (!string.IsNullOrWhiteSpace(textContent) && textContent.Length >= 96)
             {
                 return true;
             }
 
-            if (activeNode is Document document && document.Body != null && domNodeCount >= 24)
+            var document = ResolveSnapshotDocument(activeNode);
+            if (document?.Body != null)
             {
-                return true;
+                var bodyTextLength = document.Body.TextContent?.Trim().Length ?? 0;
+                if (bodyTextLength >= 96)
+                {
+                    return true;
+                }
+
+                var bodyNodeCount = document.Body.SelfAndDescendants()?.Count() ?? 0;
+                if (bodyNodeCount >= 64)
+                {
+                    return true;
+                }
             }
 
             return false;
         }
 
-        private void TryCaptureEngineSourceSnapshot(long navigationId, Uri uri, Node activeNode)
+        private void TryCaptureEngineSourceSnapshot(long navigationId, Uri uri, Node activeNode, int domNodeCount)
         {
-            if (Interlocked.Read(ref _engineDiagnosticsCapturedNavigationId) == navigationId)
+            var capturedNavigationId = Interlocked.Read(ref _engineDiagnosticsCapturedNavigationId);
+            if (capturedNavigationId == navigationId &&
+                domNodeCount <= Volatile.Read(ref _engineDiagnosticsCapturedNodeCount))
             {
                 return;
             }
@@ -409,6 +440,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
                     Interlocked.Exchange(ref _engineDiagnosticsCapturedNavigationId, navigationId);
+                    Volatile.Write(ref _engineDiagnosticsCapturedNodeCount, domNodeCount);
                 }
             }
             catch (Exception ex)
@@ -419,7 +451,10 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void TryCaptureRenderedTextSnapshot(long navigationId, Uri uri, string textContent, int domNodeCount)
         {
-            if (Interlocked.Read(ref _renderedDiagnosticsCapturedNavigationId) == navigationId)
+            var renderedTextLength = textContent?.Length ?? 0;
+            var capturedNavigationId = Interlocked.Read(ref _renderedDiagnosticsCapturedNavigationId);
+            if (capturedNavigationId == navigationId &&
+                renderedTextLength <= Volatile.Read(ref _renderedDiagnosticsCapturedTextLength))
             {
                 return;
             }
@@ -429,7 +464,7 @@ namespace FenBrowser.FenEngine.Rendering
                 FenBrowser.Core.Verification.ContentVerifier.RegisterRendered(
                     uri.AbsoluteUri,
                     domNodeCount,
-                    textContent?.Length ?? 0,
+                    renderedTextLength,
                     authoritative: true);
 
                 string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
@@ -437,6 +472,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
                     Interlocked.Exchange(ref _renderedDiagnosticsCapturedNavigationId, navigationId);
+                    Volatile.Write(ref _renderedDiagnosticsCapturedTextLength, renderedTextLength);
                 }
             }
             catch (Exception ex)
@@ -1370,9 +1406,33 @@ pre {{
                         sb.AppendLine(supplementalText);
                     }
                 }
-                return sb.ToString();
+
+                var renderedText = sb.ToString();
+                if (!string.IsNullOrWhiteSpace(renderedText))
+                {
+                    return renderedText;
+                }
+
+                var document = ResolveSnapshotDocument(root);
+                var bodyText = document?.Body?.TextContent;
+                return NormalizeFallbackRenderedText(bodyText);
             }
             catch { return string.Empty; }
+        }
+
+        private static string NormalizeFallbackRenderedText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            var lines = text
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line));
+
+            return string.Join(Environment.NewLine, lines);
         }
 
         private static bool TryGetSupplementalRenderedText(Element element, out string text)
