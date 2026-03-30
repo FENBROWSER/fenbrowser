@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume IV: The Host Application
 
-**State as of:** 2026-02-18
+**State as of:** 2026-03-30
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -736,3 +736,53 @@ _End of Volume IV_
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -nologo`
   - `dotnet build FenBrowser.sln -nologo`
   - both completed successfully on `2026-03-29`.
+
+### 6.38 Host Packaging Determinism And Manifest Hygiene (2026-03-30)
+
+- `FenBrowser.Host/FenBrowser.Host.csproj`
+  - The host project now declares explicit assembly/product metadata (`AssemblyName`, `Company`, `Product`, `Authors`) instead of leaving packaging identity partially implicit.
+  - Build output is now deterministic by default with portable PDBs and CI-aware deterministic mode, which reduces machine-specific binary drift and keeps crash/debug symbol expectations stable.
+- `FenBrowser.Host/app.manifest`
+  - The Windows manifest now declares `longPathAware=true` and an explicit supported Windows compatibility target.
+  - Existing `asInvoker` privilege posture and Per-Monitor-V2 DPI declarations remain intact; the change here is that Fen's packaging posture is now explicit rather than relying on ambient OS defaults.
+- Why this mattered:
+  - Host packaging is part of the production surface. If manifest/build metadata drifts by machine or toolchain, reproducibility and operator expectations drift with it.
+  - P2 requires these surfaces to be deliberate even when the files themselves stay small.
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass on `2026-03-30`.
+  - required clean-state host run on `2026-03-30` completed and emitted the expected workspace-root diagnostics set, including a painted `debug_screenshot.png`.
+
+### 6.39 Host Input And Context-Menu Thin-Contract Hardening (2026-03-30)
+
+- `FenBrowser.Host/ProcessIsolation/RendererInputEvent.cs`
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+- `FenBrowser.Host/Program.cs`
+  - `RendererInputEvent` now normalizes non-finite coordinates and trims keyboard/text payloads at the contract boundary.
+  - Brokered IPC send/receive paths now drop meaningless keyboard events rather than serializing empty payload churn into the renderer child.
+  - Mouse-up click dispatch now routes through explicit `ShouldEmitClick` semantics instead of repeating ad hoc `EmitClick && Button == 0` checks.
+- `FenBrowser.Host/Context/ContextMenuItem.cs`
+- `FenBrowser.Host/Context/ContextMenuBuilder.cs`
+- `FenBrowser.Host/Widgets/ContextMenuWidget.cs`
+  - Context-menu items now normalize labels and shortcut text, expose safe invocation state, and separators are explicitly non-invokable.
+  - Builder-generated commands are now disabled when the corresponding handler is absent instead of presenting enabled no-op entries to the user.
+  - The widget activation path now uses the item-level invocation contract instead of reaching directly into raw delegates.
+- Why this mattered:
+  - Host interaction surfaces are user-facing contracts. Thin files here still need deterministic normalization and truthful enablement state.
+  - A production browser should not serialize NaN input coordinates across a process boundary or show enabled context-menu items that cannot actually execute.
+- Verification:
+  - `FenBrowser.Tests/Host/HostThinContractTests.cs`
+  - focused regression slice on `2026-03-30`: pass.
+
+### 6.40 Host Widget Debug-Trace Routing Unification (2026-03-30)
+
+- `FenBrowser.Host/Widgets/WebContentWidget.cs`
+- `FenBrowser.Host/Widgets/SwitchWidget.cs`
+- `FenBrowser.Host/Widgets/BookmarksBarWidget.cs`
+  - The host's ad hoc click-debug traces now route through `DiagnosticPaths.GetLogArtifactPath("click_debug.log")` instead of writing to a mix of `bin/Debug/net8.0/logs` and LocalAppData.
+  - This keeps widget-level evidence in the same workspace-root diagnostics tree as the structured logs, raw source, engine dumps, and rendered text snapshots.
+- Why this mattered:
+  - When the host shell misroutes even "small" debug traces, production incident review turns into directory archaeology.
+  - P2 required the remaining thin host traces to obey the same diagnostics contract as the rest of the browser.
+- Verification:
+  - required clean-state host run on `2026-03-30` emitted `logs/click_debug.log` under the workspace root, and the host Debug log directory remained empty after the run.

@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-03-20
+**State as of:** 2026-03-30
 **Codex Version:** 1.2
 
 ## 1. Overview
@@ -5874,3 +5874,16 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - the engine snapshot is now full-sized (`190552` bytes) instead of the earlier truncated partial shell.
     - the verification report now records `Raw Path`, `Engine Path`, and `Text Path` in the same live run.
     - This closes the final open P1 blocker.
+
+## 2.194 P2 Border-Radius Guarding In Live Paint And Clip Paths (2026-03-30)
+
+- `FenBrowser.FenEngine/Rendering/Painting/BoxPainter.cs`
+- `FenBrowser.FenEngine/Rendering/Painting/Painter.cs`
+  - The live paint and clip paths now clamp `CssCornerRadius` to non-negative values before drawing rounded boxes or clip paths.
+  - Zero-radius checks now route through the value-contract helpers instead of repeating open-coded corner-field comparisons at each call site.
+- Why this mattered:
+  - Thin value-contract work only becomes real runtime hardening when the renderer actually consumes the finalized semantics.
+  - This avoids negative-radius drift leaking into Skia drawing/clip behavior through permissive style values.
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass on `2026-03-30`.
+  - required clean-state host run on `2026-03-30` remained visibly painted and emitted the full diagnostics set under workspace-root `logs`.

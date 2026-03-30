@@ -7,9 +7,11 @@ It is not a summary. It is the production-grade work ledger for every area that 
 
 ## Status
 P0 was implemented on `2026-03-29`.
+P1 was completed on `2026-03-30`.
+P2 was completed on `2026-03-30` for the audit/workstream scope defined in this ledger.
 
-The `7` P0 workstreams are now closed in code and synchronized into the volume docs.
-Remaining work in this ledger is P1 and P2 completion, plus warning-debt cleanup discovered during solution builds.
+The `7` P0 workstreams are closed in code and synchronized into the volume docs.
+Remaining work after this ledger is broader solution warning debt plus rendering/performance depth work that sits outside the audit-derived P0/P1/P2 closure scope.
 
 ### 2026-03-29 P1 Progress Snapshot
 
@@ -72,6 +74,87 @@ Remaining work in this ledger is P1 and P2 completion, plus warning-debt cleanup
 - P1 status:
   - `completed` for the audit/workstream scope defined in this ledger.
   - Remaining work after this point is P2 hardening plus general warning-debt cleanup, not an open P1 blocker.
+
+### 2026-03-30 P2 Progress Snapshot
+
+- Advanced `Harden thin value/config/contract files without bloating them` with deliberate finalization work instead of code-volume inflation:
+  - `CertificateInfo` now normalizes certificate identity fields, deduplicates SAN entries, exposes explicit date-range and trust-state helpers, and reports invalid date ranges instead of silently presenting ambiguous validity.
+  - `CacheKey` now trims inputs, defaults blank partitions to `default`, exposes `IsEmpty`, and uses stable ordinal equality/hash semantics.
+  - `ShardedCache<T>` now exposes capacity, hit/miss/eviction counters, `Contains(...)`, and `TryRemove(...)`, which turns a previously opaque utility into an observable cache contract without changing its thin ownership.
+  - `CornerRadius` and `Thickness` now expose `Empty`, zero/negative-state helpers, and non-negative clamping so geometry/value semantics stop depending on ad hoc caller-side checks.
+- Advanced `Packaging and deterministic tooling cleanup`:
+  - `FenBrowser.Host.csproj`, `FenBrowser.DevTools.csproj`, `FenBrowser.WebDriver.csproj`, and `FenBrowser.WebIdlGen.csproj` now declare explicit assembly/product metadata, deterministic build output, portable PDBs, and CI-aware deterministic mode.
+  - `FenBrowser.Host/app.manifest` now declares `longPathAware` plus an explicit supported Windows compatibility target instead of leaving packaging posture implicit.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests"`: pass (`8/8`).
+  - Required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_102529.html`
+    - `logs/engine_source_20260330_102551.html`
+    - `logs/rendered_text_20260330_102551.txt`
+    - `logs/fenbrowser_20260330_102527.log`
+    - `logs/fenbrowser_20260330_102527.jsonl`
+- P2 status after this tranche:
+  - still `in progress`.
+  - this closes the first hardening/package-determinism tranche, but P2 still includes the remaining thin-surface cleanup across Core, FenEngine, Host, DevTools, and WebDriver that has not yet been re-audited and closed.
+
+### 2026-03-30 P2 Progress Snapshot II
+
+- Advanced the next thin-contract tranche across runtime-facing small surfaces instead of leaving them as permissive glue:
+  - `ConsoleLogger` now serializes console writes through one synchronization gate, normalizes messages, timestamps output, and reports exception type/message explicitly on error paths.
+  - `CssLength` and `CssCornerRadius` now expose final value semantics (`Zero`, equality/hash/operators, zero/negative/percent state, non-negative clamping), and the live paint/clip path now clamps border radii before drawing instead of trusting raw style values.
+  - `RendererInputEvent` now normalizes non-finite coordinates and empty keyboard payloads at the contract boundary; brokered send/receive paths now drop meaningless keyboard events and use explicit `ShouldEmitClick` semantics instead of open-coded click checks.
+  - `ContextMenuItem` and `ContextMenuBuilder` now normalize labels/shortcuts, expose safe invocation semantics, and disable unavailable commands instead of presenting inert enabled actions in the host context menu.
+  - DevTools debugger DTOs now normalize script URLs/source content and clamp negative script position metadata before the protocol surface sees them.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests"`: pass (`14/14`).
+  - Required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260330_104208.html`
+    - `logs/engine_source_20260330_104230.html`
+    - `logs/rendered_text_20260330_104230.txt`
+    - `logs/fenbrowser_20260330_104207.log`
+    - `logs/fenbrowser_20260330_104207.jsonl`
+  - Runtime outcome:
+    - the browser remained visibly painted and the verification report still recorded `Raw Path`, `Engine Path`, and `Text Path`.
+    - Google still reports an extremely low source-to-rendered-text health ratio and occasional watchdog budget warnings, which are broader rendering/performance debt and not introduced by this thin-contract tranche.
+- P2 status after this tranche:
+  - still `in progress`.
+  - the thin-contract surface is materially tighter, but P2 still has remaining small-contract cleanup and warning-debt reduction work before it can be called fully complete.
+
+### 2026-03-30 P2 Closure Snapshot
+
+- Closed the final P2 thin-surface and diagnostics-routing gaps instead of leaving logging truth split across multiple directories:
+  - `DebugConfig`, `DebugHelper`, `LogCategoryFacts`, `ParserSecurityPolicy`, `FrameDeadline`, `RenderContext`, `RendererSafetyPolicy`, `BaseFrameReusePolicy`, `PositionedGlyph`, `HistoryEntry`, and `SkiaTextMeasurer` now expose explicit normalization, cloning, invariant, and introspection contracts rather than leaving thin runtime helpers permissive.
+  - `DiagnosticPaths`, `LogManager`, and `StructuredLogger` now honor the active diagnostics root consistently, which means structured logs, raw/engine/rendered dumps, and widget click-debug traces converge on the same workspace-root `logs` tree during operator-driven runs.
+  - `ContentVerifier` now reports `Text Density` and distinguishes a genuinely suspicious low-text result from a script-heavy but visibly corroborated page, so fen stops emitting a misleading parser-failure warning when the DOM, CSS, and screenshot evidence already say the page is alive.
+  - Host widget debug traces (`WebContentWidget`, `SwitchWidget`, `BookmarksBarWidget`) now write through `DiagnosticPaths` instead of drifting between `bin/Debug` and LocalAppData.
+- Verification on `2026-03-30`:
+  - `dotnet build FenBrowser.sln -c Debug -v minimal`: pass (`811` warnings, `0` errors).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~ThinContractTests|FullyQualifiedName~ShardedCacheTests|FullyQualifiedName~HostThinContractTests|FullyQualifiedName~DebuggerDomainTests|FullyQualifiedName~P2ClosureContractTests"`: pass (`29/29`).
+  - Required clean-state host cycle emitted:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/click_debug.log`
+    - `logs/raw_source_20260330_111455.html`
+    - `logs/engine_source_20260330_111516.html`
+    - `logs/rendered_text_20260330_111516.txt`
+    - `logs/network.log`
+    - `logs/rendering.log`
+    - `logs/fenbrowser_20260330_111454.log`
+    - `logs/fenbrowser_20260330_111454.jsonl`
+  - Runtime outcome:
+    - `debug_screenshot.png` remains visibly painted with the Google homepage shell, search chrome, language strip, footer, and top navigation.
+    - the workspace-root `logs` directory now contains the full diagnostics set and the host Debug log directory remains empty after the run.
+    - the verification report now logs `Text Density` plus an informational note for script-heavy pages instead of a false-positive parsing-failure warning.
+    - raster/frame watchdog warnings can still occur on Google, but that broader performance debt is now clearly separated from the closed P2 thin-contract scope.
+- P2 status:
+  - `completed` for the audit/workstream scope defined in this ledger.
+  - Remaining work after this point is broader warning-debt cleanup and deeper rendering/performance improvement, not an open P2 blocker.
 
 All work below is guided by the FenBrowser mandate:
 - Security is first-class.

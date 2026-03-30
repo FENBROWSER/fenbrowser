@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume II: The Core Foundation
 
-**State as of:** 2026-02-20
+**State as of:** 2026-03-30
 **Codex Version:** 1.0
 
 ## 1. Overview
@@ -907,4 +907,65 @@ _End of Volume II_
     - `logs/rendered_text_20260330_003123.txt`
     - `logs/fenbrowser_20260330_003121.log`
     - `logs/fenbrowser_20260330_003121.jsonl`
+
+### 1.46 Thin Contract Hardening For Certificate, Cache, And Geometry Primitives (2026-03-30)
+- `FenBrowser.Core/CertificateInfo.cs`
+  - Certificate identity fields now normalize whitespace aggressively, thumbprints normalize to uppercase no-separator form, and SAN entries are trimmed, deduplicated, and stored as a stable read-only snapshot.
+  - Added explicit `HasPolicyErrors`, `IsDateRangeValid`, `IsCurrentlyValid`, and invalid-date-range handling in `ExpiryStatus` so security/UI call sites stop inferring trust state from partially normalized raw fields.
+- `FenBrowser.Core/Cache/CacheKey.cs`
+  - Cache keys now trim inputs, default blank partition keys to `default`, expose `IsEmpty`, and use stable ordinal equality/hash semantics.
+  - This closes ambiguity around cross-site partition ownership for callers that were previously allowed to pass whitespace-shaped partitions.
+- `FenBrowser.Core/Cache/ShardedCache.cs`
+  - The LRU cache remains intentionally small, but it now exposes explicit `Capacity`, `HitCount`, `MissCount`, `EvictionCount`, `Contains(...)`, and `TryRemove(...)`.
+  - Evictions and lookup outcomes are now observable instead of being hidden inside a private utility path, which matters for production cache diagnostics and policy debugging.
+- `FenBrowser.Core/Math/CornerRadius.cs`
+- `FenBrowser.Core/Math/Thickness.cs`
+  - Geometry/value primitives now expose `Empty`, zero-state and negative-state helpers, plus `ClampNonNegative()` so layout/paint code can enforce final value invariants without spreading ad hoc clamping logic across hot paths.
+  - `CornerRadius` now also carries full equality/hash/operator semantics consistent with its value-type role.
+- Why this mattered:
+  - P2 is not about making thin files bigger; it is about making them final, explicit, and safe to depend on across the browser.
+  - Cache keys, certificate summaries, and geometry primitives sit on frequently reused call paths, so ambiguity here becomes systemic drift quickly.
+- Verification:
+  - `FenBrowser.Tests/Core/ThinContractTests.cs`
+  - `FenBrowser.Tests/Core/ShardedCacheTests.cs`
+  - focused test run on `2026-03-30`: pass (`8/8`).
+
+### 1.47 Console Logger And CSS Radius Value-Contract Hardening (2026-03-30)
+- `FenBrowser.Core/ConsoleLogger.cs`
+  - Console logging now serializes writes through a single synchronization gate so color state and line output stop racing each other when multiple callers log concurrently.
+  - Messages are normalized before emission, timestamps are explicit, and `LogError(...)` now records exception type/message consistently instead of only concatenating a raw message fragment.
+- `FenBrowser.Core/Css/CssCornerRadius.cs`
+  - `CssLength` and `CssCornerRadius` remain intentionally small, but their value semantics are now explicit:
+    - stable equality/hash/operators
+    - `Zero` / `Empty`
+    - zero/negative/percent-state helpers
+    - non-negative clamping
+  - This turns the radius value types into deliberate contracts instead of anonymous field bags.
+- Why this mattered:
+  - Logging and CSS values both sit on hot or high-fanout paths. Thin files in these areas need final semantics, not permissive convenience behavior.
+  - A production renderer should not depend on every call site open-coding message normalization or radius-state checks.
+- Verification:
+  - `FenBrowser.Tests/Core/ThinContractTests.cs`
+  - focused regression slice on `2026-03-30` included console logger and CSS radius contract coverage.
+
+### 1.48 Diagnostics Routing And Verification Signal Hardening (2026-03-30)
+- `FenBrowser.Core/Logging/DiagnosticPaths.cs`
+- `FenBrowser.Core/Logging/LogManager.cs`
+- `FenBrowser.Core/Logging/StructuredLogger.cs`
+  - Diagnostics routing now treats `FEN_DIAGNOSTICS_DIR` as an authoritative workspace-root override for both the main structured log stream and the raw/engine/rendered artifact dumps.
+  - This closes the earlier split where `StructuredLogger` and `LogManager` could still fall back to the host execution directory even when the operator explicitly requested a workspace-root diagnostics run.
+- `FenBrowser.Core/Verification/ContentVerifier.cs`
+  - The verification summary now records `Text Density` (`chars/node`) and classifies low text-to-source ratios into:
+    - normal healthy output,
+    - tolerated low-ratio output for script-heavy but otherwise corroborated pages,
+    - suspicious low-ratio output when render evidence is weak.
+  - The net effect is that verification stops emitting a false parser-failure warning when the screenshot, DOM size, and matched-rule evidence already prove the page is alive.
+- Why this mattered:
+  - First-class diagnostics require one artifact root and truthful severity. A production browser cannot claim incident-grade logging if the path contract drifts by host working directory or if a healthy page is mislabeled as a likely parser failure.
+  - P2 closure needed the logging/verification surface itself to become final, not just the surrounding value objects.
+- Verification:
+  - `FenBrowser.Tests/Core/P2ClosureContractTests.cs`
+    - added direct coverage for `DiagnosticPaths`, `StructuredLogger`, and `ContentVerifier` health classification.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --no-restore --filter "FullyQualifiedName~P2ClosureContractTests"`: pass on `2026-03-30`.
+  - required host runtime check on `2026-03-30` emitted the full diagnostics set under workspace-root `logs`.
 
