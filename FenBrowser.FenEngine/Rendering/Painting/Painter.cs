@@ -282,8 +282,8 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public void BeginClip(SKCanvas canvas, SKRect clipRect, CssComputed style)
         {
-            var radius = style?.BorderRadius ?? new CssCornerRadius(0);
-            if (radius.TopLeft.Value > 0 || radius.TopRight.Value > 0 || radius.BottomRight.Value > 0 || radius.BottomLeft.Value > 0)
+            var radius = (style?.BorderRadius ?? CssCornerRadius.Empty).ClampNonNegative();
+            if (!radius.IsZero)
             {
                 using var path = new SKPath();
                 var r = (float)radius.TopLeft.Value;
