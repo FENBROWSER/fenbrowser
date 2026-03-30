@@ -229,13 +229,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             style ??= new CssComputed();
 
-            float rawAvailable = state.AvailableSize.Width;
-            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
-            float available = widthUnconstrained ? state.ViewportWidth : rawAvailable;
-            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0f)
-            {
-                available = 1920f;
-            }
+            var widthResolution = LayoutConstraintResolver.ResolveWidth(state, "Grid.ResolveContainerWidth");
+            float rawAvailable = widthResolution.RawAvailable;
+            bool widthUnconstrained = widthResolution.IsUnconstrained;
+            float available = widthResolution.ResolvedAvailable;
 
             box.Geometry.Padding = style.Padding;
             box.Geometry.Border = style.BorderThickness;

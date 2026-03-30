@@ -1062,13 +1062,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private void ResolveContextWidth(LayoutBox box, LayoutState state)
         {
-            float rawAvailable = state.AvailableSize.Width;
-            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
-            float available = widthUnconstrained
-                ? (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth)
-                : rawAvailable;
-            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0)
-                available = 800f;
+            var widthResolution = LayoutConstraintResolver.ResolveWidth(state, "Inline.ResolveContextWidth", 800f);
+            float rawAvailable = widthResolution.RawAvailable;
+            bool widthUnconstrained = widthResolution.IsUnconstrained;
+            float available = widthResolution.ResolvedAvailable;
 
             float finalW = available;
             

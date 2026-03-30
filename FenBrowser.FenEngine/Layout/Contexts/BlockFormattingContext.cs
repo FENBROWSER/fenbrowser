@@ -554,13 +554,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private void ResolveWidth(LayoutBox box, LayoutState state)
         {
-            float rawAvailable = state.AvailableSize.Width;
-            bool widthUnconstrained = float.IsInfinity(rawAvailable) || float.IsNaN(rawAvailable);
-            float available = widthUnconstrained ? state.ViewportWidth : rawAvailable;
-            if (float.IsInfinity(available) || float.IsNaN(available) || available <= 0)
-                available = 1920f; // Fallback if viewport is invalid.
+            var widthResolution = LayoutConstraintResolver.ResolveWidth(state, "BFC.ResolveWidth");
+            float rawAvailable = widthResolution.RawAvailable;
+            bool widthUnconstrained = widthResolution.IsUnconstrained;
+            float available = widthResolution.ResolvedAvailable;
             
-            FenLogger.Info($"[BFC-RESOLVE-START] Avail={state.AvailableSize.Width} Sanitized={available} VP={state.ViewportWidth}", LogCategory.Layout);
+            FenLogger.Info(
+                $"[BFC-RESOLVE-START] Avail={rawAvailable} Resolved={available} Source={widthResolution.Source} CB={state.ContainingBlockWidth} VP={state.ViewportWidth}",
+                LogCategory.Layout);
 
             // 1. Initial values from computed style
             var style = box.ComputedStyle;
