@@ -417,6 +417,7 @@ namespace FenBrowser.Host
                         float actualWidth = vpWidth;
                         float actualHeight = vpHeight;
                         uint seqNum = 0;
+                        FenBrowser.FenEngine.Rendering.Core.RenderFrameResult frameResult = null;
 
                         // Lazily create the shared memory writer on first FrameRequest.
                         if (frameSharedMemory == null)
@@ -440,12 +441,19 @@ namespace FenBrowser.Host
 
                                     var viewport = new SkiaSharp.SKRect(0, 0, vpWidth, vpHeight);
                                     var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
-                                    childRenderer.Render(
-                                        domRoot,
-                                        canvas,
-                                        styles != null ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles) : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
-                                        viewport,
-                                        browser.CurrentUri?.AbsoluteUri);
+                                    frameResult = childRenderer.RenderFrame(new FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+                                    {
+                                        Root = domRoot,
+                                        Canvas = canvas,
+                                        Styles = styles != null
+                                            ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles)
+                                            : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
+                                        Viewport = viewport,
+                                        BaseUrl = browser.CurrentUri?.AbsoluteUri,
+                                        InvalidationReason = FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
+                                        RequestedBy = "RendererChild.FrameRequest",
+                                        EmitVerificationReport = false
+                                    });
                                     canvas.Flush();
 
                                     // GetPixelSpan() is a ref struct; copy to byte[] to avoid
@@ -478,7 +486,20 @@ namespace FenBrowser.Host
                             SurfaceHeight = actualHeight,
                             DirtyRegionCount = 1,
                             HasDamage = true,
-                            FrameSequenceNumber = seqNum
+                            FrameSequenceNumber = seqNum,
+                            RequestedBy = frameResult?.RequestedBy ?? "RendererChild.FrameRequest",
+                            InvalidationReason = frameResult?.InvalidationReason.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation.ToString(),
+                            RasterMode = frameResult?.RasterMode.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameRasterMode.Full.ToString(),
+                            UsedDamageRasterization = frameResult?.UsedDamageRasterization ?? false,
+                            DamageAreaRatio = frameResult?.DamageAreaRatio ?? 0f,
+                            LayoutUpdated = frameResult?.Telemetry?.LayoutUpdated ?? false,
+                            PaintTreeRebuilt = frameResult?.Telemetry?.PaintTreeRebuilt ?? false,
+                            WatchdogTriggered = frameResult?.WatchdogTriggered ?? false,
+                            WatchdogReason = frameResult?.WatchdogReason ?? string.Empty,
+                            TotalDurationMs = frameResult?.Telemetry?.TotalDurationMs ?? 0d,
+                            DomNodeCount = frameResult?.Telemetry?.DomNodeCount ?? 0,
+                            BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
+                            PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0
                         };
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
