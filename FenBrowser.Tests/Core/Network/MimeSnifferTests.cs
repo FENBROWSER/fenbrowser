@@ -77,5 +77,13 @@ namespace FenBrowser.Tests.Core.Network
             var mp3 = new byte[] { 0x49, 0x44, 0x33, 0x03 };
             Assert.Equal("audio/mpeg", MimeSniffer.SniffMimeType(mp3, null)); // Currently fails
         }
+
+        [Fact]
+        public void Sniff_Detects_JavaScript_After_Whitespace_And_Comments()
+        {
+            var data = Encoding.UTF8.GetBytes("  /* prelude */\nwindow.WIMB.detect();");
+            var mime = MimeSniffer.SniffMimeType(data, null);
+            Assert.Equal("application/javascript", mime);
+        }
     }
 }

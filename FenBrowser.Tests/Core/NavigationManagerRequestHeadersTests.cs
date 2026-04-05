@@ -25,6 +25,11 @@ namespace FenBrowser.Tests.Core
             string? secFetchUser = null;
             string? upgradeInsecureRequests = null;
             string? userAgent = null;
+            string? secChUa = null;
+            string? secChUaPlatform = null;
+            string? secChUaPlatformVersion = null;
+            string? secChUaFullVersion = null;
+            string? secChUaFullVersionList = null;
 
             resources.NetworkRequestStarting += (_, request) =>
             {
@@ -34,6 +39,11 @@ namespace FenBrowser.Tests.Core
                 secFetchUser = GetHeader(request, "Sec-Fetch-User");
                 upgradeInsecureRequests = GetHeader(request, "Upgrade-Insecure-Requests");
                 userAgent = GetHeader(request, "User-Agent");
+                secChUa = GetHeader(request, "Sec-CH-UA");
+                secChUaPlatform = GetHeader(request, "Sec-CH-UA-Platform");
+                secChUaPlatformVersion = GetHeader(request, "Sec-CH-UA-Platform-Version");
+                secChUaFullVersion = GetHeader(request, "Sec-CH-UA-Full-Version");
+                secChUaFullVersionList = GetHeader(request, "Sec-CH-UA-Full-Version-List");
             };
 
             var navigation = new NavigationManager(resources);
@@ -47,6 +57,18 @@ namespace FenBrowser.Tests.Core
             Assert.Equal("1", upgradeInsecureRequests);
             Assert.Contains("Windows NT 10.0", userAgent);
             Assert.DoesNotContain("Android", userAgent);
+            Assert.Contains("Microsoft Edge", secChUa);
+            Assert.Contains(" Not;A Brand", secChUa);
+            Assert.Equal("\"Windows\"", secChUaPlatform);
+            Assert.Equal(
+                BrowserSettings.GetSecChUaPlatformVersion(BrowserSettings.Instance.SelectedUserAgent),
+                secChUaPlatformVersion);
+            Assert.Equal(
+                BrowserSettings.GetSecChUaFullVersion(BrowserSettings.Instance.SelectedUserAgent),
+                secChUaFullVersion);
+            Assert.Equal(
+                BrowserSettings.GetSecChUaFullVersionList(BrowserSettings.Instance.SelectedUserAgent),
+                secChUaFullVersionList);
         }
 
         private static string? GetHeader(HttpRequestMessage request, string name)
