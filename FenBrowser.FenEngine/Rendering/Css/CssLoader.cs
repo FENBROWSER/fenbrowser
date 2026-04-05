@@ -310,7 +310,7 @@ namespace FenBrowser.FenEngine.Rendering
                         FenLogger.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
                         _cachedUaCss = @"
                             html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
-                            body{margin:8px;font-family:serif;}
+                            body{margin:8px;}
                             h1{font-size:2em;margin:0.67em 0;font-weight:bold;}
                             h2{font-size:1.5em;margin:0.83em 0;font-weight:bold;}
                             h3{font-size:1.17em;margin:1em 0;font-weight:bold;}
@@ -3443,6 +3443,21 @@ private static double? ExtractPx(string text, string prop)
             else if (ta == "justify") css.TextAlign = SKTextAlign.Left; // Skia doesn't support justify natively
 
             css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
+
+            // Preserve typed projections for inherited text properties so layout/paint
+            // can rely on strongly-typed values even when the property came from the parent.
+            if (!css.TextAlign.HasValue && parentCss?.TextAlign.HasValue == true)
+                css.TextAlign = parentCss.TextAlign;
+            if (string.IsNullOrEmpty(css.TextDecoration) && !string.IsNullOrEmpty(parentCss?.TextDecoration))
+                css.TextDecoration = parentCss.TextDecoration;
+            if (string.IsNullOrEmpty(css.FontFamilyName) && !string.IsNullOrEmpty(parentCss?.FontFamilyName))
+                css.FontFamilyName = parentCss.FontFamilyName;
+            if (!css.FontWeight.HasValue && parentCss?.FontWeight.HasValue == true)
+                css.FontWeight = parentCss.FontWeight;
+            if (!css.FontStyle.HasValue && parentCss?.FontStyle.HasValue == true)
+                css.FontStyle = parentCss.FontStyle;
+            if (!css.LineHeight.HasValue && parentCss?.LineHeight.HasValue == true)
+                css.LineHeight = parentCss.LineHeight;
 
             double opacityVal;
             if (TryDouble(DictGet(css.Map, "opacity"), out opacityVal))
