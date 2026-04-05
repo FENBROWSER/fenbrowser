@@ -53,6 +53,9 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _windowObject;
         private FenObject _locationObject;
         private FenObject _historyObject;
+        private BrowserSurfaceProfile _browserSurface;
+        private readonly List<MediaQueryListRegistration> _mediaQueryLists = new List<MediaQueryListRegistration>();
+        private readonly object _mediaQueryLock = new object();
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
@@ -90,6 +93,15 @@ namespace FenBrowser.FenEngine.Core
             public int Index { get; set; }
             public int ByteOffset { get; set; }
             public bool IsBigInt { get; set; }
+        }
+
+        private sealed class MediaQueryListRegistration
+        {
+            public string Query { get; set; }
+            public FenObject Object { get; set; }
+            public List<FenValue> EventListeners { get; } = new List<FenValue>();
+            public List<FenValue> LegacyListeners { get; } = new List<FenValue>();
+            public bool Matches { get; set; }
         }
 
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
@@ -211,6 +223,345 @@ namespace FenBrowser.FenEngine.Core
         public void SetModuleLoader(FenBrowser.FenEngine.Core.Interfaces.IModuleLoader loader)
         {
             _context.ModuleLoader = loader;
+        }
+
+        public void ApplyBrowserSurface(BrowserSurfaceProfile surface)
+        {
+            if (surface == null)
+            {
+                return;
+            }
+
+            _browserSurface = surface;
+
+            var navigatorValue = GetGlobal("navigator");
+            var navigator = navigatorValue.IsObject ? navigatorValue.AsObject() as FenObject : null;
+            if (navigator != null)
+            {
+                navigator.Set("userAgent", FenValue.FromString(surface.UserAgent));
+                navigator.Set("appVersion", FenValue.FromString(surface.AppVersion));
+                navigator.Set("appName", FenValue.FromString(surface.AppName));
+                navigator.Set("appCodeName", FenValue.FromString(surface.AppCodeName));
+                navigator.Set("product", FenValue.FromString(surface.Product));
+                navigator.Set("productSub", FenValue.FromString(surface.ProductSub));
+                navigator.Set("vendor", FenValue.FromString(surface.Vendor));
+                navigator.Set("vendorSub", FenValue.FromString(surface.VendorSub));
+                navigator.Set("platform", FenValue.FromString(surface.PlatformToken));
+                navigator.Set("oscpu", FenValue.FromString(surface.OsCpu));
+                navigator.Set("language", FenValue.FromString(surface.Language));
+                navigator.Set("languages", FenValue.FromObject(CreateArray(surface.Languages?.ToArray() ?? new[] { surface.Language })));
+                navigator.Set("cookieEnabled", FenValue.FromBoolean(surface.CookieEnabled));
+                navigator.Set("onLine", FenValue.FromBoolean(surface.Online));
+                navigator.Set("pdfViewerEnabled", FenValue.FromBoolean(surface.PdfViewerEnabled));
+                navigator.Set("webdriver", FenValue.FromBoolean(surface.WebDriver));
+                navigator.Set("hardwareConcurrency", FenValue.FromNumber(surface.HardwareConcurrency));
+                navigator.Set("deviceMemory", FenValue.FromNumber(surface.DeviceMemory));
+                navigator.Set("doNotTrack", FenValue.FromString(surface.DoNotTrack));
+                navigator.Set("userAgentData", FenValue.FromObject(BuildUserAgentDataObject(surface)));
+            }
+
+            var screenValue = GetGlobal("screen");
+            var screen = screenValue.IsObject ? screenValue.AsObject() as FenObject : null;
+            if (screen != null)
+            {
+                screen.Set("width", FenValue.FromNumber(surface.Viewport.ScreenWidth));
+                screen.Set("height", FenValue.FromNumber(surface.Viewport.ScreenHeight));
+                screen.Set("availWidth", FenValue.FromNumber(surface.Viewport.AvailableScreenWidth));
+                screen.Set("availHeight", FenValue.FromNumber(surface.Viewport.AvailableScreenHeight));
+                screen.Set("colorDepth", FenValue.FromNumber(24));
+                screen.Set("pixelDepth", FenValue.FromNumber(24));
+            }
+
+            if (_windowObject != null)
+            {
+                if (navigator != null)
+                {
+                    _windowObject.Set("navigator", FenValue.FromObject(navigator));
+                }
+
+                if (screen != null)
+                {
+                    _windowObject.Set("screen", FenValue.FromObject(screen));
+                }
+
+                _windowObject.Set("innerWidth", FenValue.FromNumber(surface.Viewport.WindowWidth));
+                _windowObject.Set("innerHeight", FenValue.FromNumber(surface.Viewport.WindowHeight));
+                _windowObject.Set("outerWidth", FenValue.FromNumber(surface.Viewport.OuterWidth));
+                _windowObject.Set("outerHeight", FenValue.FromNumber(surface.Viewport.OuterHeight));
+                _windowObject.Set("devicePixelRatio", FenValue.FromNumber(surface.Viewport.DevicePixelRatio));
+                _windowObject.Set("screenX", FenValue.FromNumber(surface.Viewport.ScreenX));
+                _windowObject.Set("screenY", FenValue.FromNumber(surface.Viewport.ScreenY));
+                _windowObject.Set("pageXOffset", _windowObject.Get("scrollX"));
+                _windowObject.Set("pageYOffset", _windowObject.Get("scrollY"));
+            }
+
+            if (navigator != null)
+            {
+                SetGlobal("navigator", FenValue.FromObject(navigator));
+            }
+
+            if (screen != null)
+            {
+                SetGlobal("screen", FenValue.FromObject(screen));
+            }
+
+            SetGlobal("innerWidth", FenValue.FromNumber(surface.Viewport.WindowWidth));
+            SetGlobal("innerHeight", FenValue.FromNumber(surface.Viewport.WindowHeight));
+            SetGlobal("outerWidth", FenValue.FromNumber(surface.Viewport.OuterWidth));
+            SetGlobal("outerHeight", FenValue.FromNumber(surface.Viewport.OuterHeight));
+            SetGlobal("devicePixelRatio", FenValue.FromNumber(surface.Viewport.DevicePixelRatio));
+            NotifyMediaQueryChanges();
+        }
+
+        private void NotifyMediaQueryChanges()
+        {
+            List<(MediaQueryListRegistration Registration, bool Matches)> changes = null;
+
+            lock (_mediaQueryLock)
+            {
+                foreach (var registration in _mediaQueryLists)
+                {
+                    bool matches = _browserSurface?.MatchesMediaQuery(registration.Query) == true;
+                    if (matches == registration.Matches)
+                    {
+                        continue;
+                    }
+
+                    registration.Matches = matches;
+                    registration.Object?.Set("matches", FenValue.FromBoolean(matches));
+                    changes ??= new List<(MediaQueryListRegistration, bool)>();
+                    changes.Add((registration, matches));
+                }
+            }
+
+            if (changes == null)
+            {
+                return;
+            }
+
+            foreach (var change in changes)
+            {
+                DispatchMediaQueryChange(change.Registration, change.Matches);
+            }
+        }
+
+        private void DispatchMediaQueryChange(MediaQueryListRegistration registration, bool matches)
+        {
+            if (registration?.Object == null)
+            {
+                return;
+            }
+
+            var evt = new FenObject();
+            evt.Set("type", FenValue.FromString("change"));
+            evt.Set("matches", FenValue.FromBoolean(matches));
+            evt.Set("media", FenValue.FromString(registration.Query));
+            var evtValue = FenValue.FromObject(evt);
+
+            var onchange = registration.Object.Get("onchange");
+            if (onchange.IsFunction)
+            {
+                onchange.AsFunction()?.Invoke(new[] { evtValue }, _context);
+            }
+
+            InvokeMediaQueryListeners(registration.EventListeners, evtValue, registration.Object, _context);
+            InvokeMediaQueryListeners(registration.LegacyListeners, evtValue, registration.Object, _context);
+        }
+
+        private static void InvokeMediaQueryListeners(List<FenValue> listeners, FenValue evtValue, FenObject mediaQueryListObject, IExecutionContext executionContext)
+        {
+            if (listeners == null || listeners.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var listener in listeners.ToArray())
+            {
+                if (!listener.IsFunction)
+                {
+                    continue;
+                }
+
+                listener.AsFunction()?.Invoke(new[] { evtValue }, executionContext, FenValue.FromObject(mediaQueryListObject));
+            }
+        }
+
+        private FenObject BuildUserAgentDataObject(BrowserSurfaceProfile surface)
+        {
+            var uaData = new FenObject();
+            var lowEntropyBrands = CreateBrandArray(surface.UserAgentData.Brands);
+            var fullVersionBrands = CreateBrandArray(surface.UserAgentData.FullVersionList);
+            var lowEntropySnapshot = BuildUserAgentDataLowEntropySnapshot(surface, lowEntropyBrands);
+
+            uaData.Set("brands", FenValue.FromObject(lowEntropyBrands));
+            uaData.Set("mobile", FenValue.FromBoolean(surface.UserAgentData.Mobile));
+            uaData.Set("platform", FenValue.FromString(surface.UserAgentData.Platform));
+            uaData.Set("toJSON", FenValue.FromFunction(new FenFunction("toJSON", (args, thisVal) =>
+            {
+                return FenValue.FromObject(lowEntropySnapshot);
+            })));
+            uaData.Set("getHighEntropyValues", FenValue.FromFunction(new FenFunction("getHighEntropyValues", (args, thisVal) =>
+            {
+                var requestedHints = GetRequestedUserAgentDataHints(args);
+                return FenValue.FromObject(ResolvedThenable.Resolved(
+                    FenValue.FromObject(BuildUserAgentDataHighEntropySnapshot(surface, lowEntropyBrands, fullVersionBrands, requestedHints)),
+                    _context));
+            })));
+            return uaData;
+        }
+
+        private FenObject BuildUserAgentDataLowEntropySnapshot(BrowserSurfaceProfile surface, FenObject lowEntropyBrands)
+        {
+            var snapshot = new FenObject();
+            snapshot.Set("brands", FenValue.FromObject(lowEntropyBrands));
+            snapshot.Set("mobile", FenValue.FromBoolean(surface.UserAgentData.Mobile));
+            snapshot.Set("platform", FenValue.FromString(surface.UserAgentData.Platform));
+            return snapshot;
+        }
+
+        private FenObject BuildUserAgentDataHighEntropySnapshot(
+            BrowserSurfaceProfile surface,
+            FenObject lowEntropyBrands,
+            FenObject fullVersionBrands,
+            IReadOnlyCollection<string> requestedHints)
+        {
+            var snapshot = BuildUserAgentDataLowEntropySnapshot(surface, lowEntropyBrands);
+
+            if (requestedHints.Contains("architecture", StringComparer.Ordinal))
+            {
+                snapshot.Set("architecture", FenValue.FromString(surface.UserAgentData.Architecture));
+            }
+
+            if (requestedHints.Contains("bitness", StringComparer.Ordinal))
+            {
+                snapshot.Set("bitness", FenValue.FromString(surface.UserAgentData.Bitness));
+            }
+
+            if (requestedHints.Contains("formFactors", StringComparer.Ordinal))
+            {
+                snapshot.Set("formFactors", FenValue.FromObject(CreateArray(new string[0])));
+            }
+
+            if (requestedHints.Contains("fullVersionList", StringComparer.Ordinal))
+            {
+                snapshot.Set("fullVersionList", FenValue.FromObject(fullVersionBrands));
+            }
+
+            if (requestedHints.Contains("model", StringComparer.Ordinal))
+            {
+                snapshot.Set("model", FenValue.FromString(surface.UserAgentData.Model ?? string.Empty));
+            }
+
+            if (requestedHints.Contains("platformVersion", StringComparer.Ordinal))
+            {
+                snapshot.Set("platformVersion", FenValue.FromString(surface.UserAgentData.PlatformVersion));
+            }
+
+            if (requestedHints.Contains("uaFullVersion", StringComparer.Ordinal))
+            {
+                snapshot.Set("uaFullVersion", FenValue.FromString(GetPrimaryUserAgentDataFullVersion(surface.UserAgentData)));
+            }
+
+            if (requestedHints.Contains("wow64", StringComparer.Ordinal))
+            {
+                snapshot.Set("wow64", FenValue.FromBoolean(surface.UserAgentData.Wow64));
+            }
+
+            return snapshot;
+        }
+
+        private static IReadOnlyCollection<string> GetRequestedUserAgentDataHints(FenValue[] args)
+        {
+            if (args == null || args.Length == 0 || !args[0].IsObject)
+            {
+                return Array.Empty<string>();
+            }
+
+            var hintArray = args[0].AsObject();
+            if (hintArray == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var lengthValue = hintArray.Get("length");
+            var length = lengthValue.IsNumber ? Math.Max(0, (int)lengthValue.ToNumber()) : 0;
+            if (length == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var hints = new HashSet<string>(StringComparer.Ordinal);
+            for (int index = 0; index < length; index++)
+            {
+                var hintValue = hintArray.Get(index.ToString());
+                if (!hintValue.IsString)
+                {
+                    continue;
+                }
+
+                var hint = hintValue.ToString();
+                if (!string.IsNullOrWhiteSpace(hint))
+                {
+                    hints.Add(hint);
+                }
+            }
+
+            return hints;
+        }
+
+        private static string GetPrimaryUserAgentDataFullVersion(BrowserUserAgentDataProfile userAgentData)
+        {
+            if (userAgentData?.FullVersionList == null || userAgentData.FullVersionList.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var preferredBrand = userAgentData.FullVersionList.LastOrDefault(brand =>
+                brand != null &&
+                !IsGreaseBrand(brand.Brand) &&
+                !string.Equals(brand.Brand, "Chromium", StringComparison.Ordinal));
+            if (!string.IsNullOrWhiteSpace(preferredBrand?.Version))
+            {
+                return preferredBrand.Version;
+            }
+
+            var nonGreaseBrand = userAgentData.FullVersionList.FirstOrDefault(brand =>
+                brand != null &&
+                !IsGreaseBrand(brand.Brand));
+            if (!string.IsNullOrWhiteSpace(nonGreaseBrand?.Version))
+            {
+                return nonGreaseBrand.Version;
+            }
+
+            return userAgentData.FullVersionList[0]?.Version ?? string.Empty;
+        }
+
+        private static bool IsGreaseBrand(string brand)
+        {
+            return string.IsNullOrWhiteSpace(brand) ||
+                   brand.Contains("Not;A Brand", StringComparison.Ordinal) ||
+                   brand.StartsWith(" Not", StringComparison.Ordinal);
+        }
+
+        private FenObject CreateBrandArray(IReadOnlyList<BrowserClientHintBrand> brands)
+        {
+            var arr = FenObject.CreateArray();
+            if (brands == null)
+            {
+                arr.Set("length", FenValue.FromNumber(0));
+                return arr;
+            }
+
+            for (int i = 0; i < brands.Count; i++)
+            {
+                var brandObj = new FenObject();
+                brandObj.Set("brand", FenValue.FromString(brands[i].Brand));
+                brandObj.Set("version", FenValue.FromString(brands[i].Version));
+                arr.Set(i.ToString(), FenValue.FromObject(brandObj));
+            }
+
+            arr.Set("length", FenValue.FromNumber(brands.Count));
+            return arr;
         }
 
         /// <summary>
@@ -6187,36 +6538,37 @@ namespace FenBrowser.FenEngine.Core
             FenObject.DefaultPrototype = objectProto;
             FenObject.DefaultArrayPrototype = arrayProto;
 
+            var defaultSurface = BrowserSettings.GetBrowserSurface(BrowserSettings.Instance.SelectedUserAgent);
+            _browserSurface = defaultSurface;
 
-            // navigator object - Privacy-focused (generic values to prevent fingerprinting)
+            // navigator object - initialized from the shared browser surface and updated again
+            // when the host provides authoritative viewport metrics.
             var navigator = new FenObject();
-            var navigatorUa = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
-            navigator.Set("userAgent", FenValue.FromString(navigatorUa));
-            navigator.Set("platform", FenValue.FromString("Win32"));
-            navigator.Set("language", FenValue.FromString("en-US"));
-            navigator.Set("languages", FenValue.FromObject(CreateArray(new[] { "en-US", "en" })));
-            navigator.Set("cookieEnabled", FenValue.FromBoolean(true));
-            navigator.Set("onLine", FenValue.FromBoolean(true));
-            navigator.Set("doNotTrack", FenValue.FromString(BrowserSettings.Instance.SendDoNotTrack ? "1" : "0"));
-            // Privacy: Use generic values to prevent fingerprinting (unlike Chrome/Firefox)
-            navigator.Set("hardwareConcurrency", FenValue.FromNumber(4)); // Generic, not actual CPU cores
-            navigator.Set("deviceMemory", FenValue.FromNumber(8)); // Generic, not actual RAM
+            navigator.Set("userAgent", FenValue.FromString(defaultSurface.UserAgent));
+            navigator.Set("platform", FenValue.FromString(defaultSurface.PlatformToken));
+            navigator.Set("language", FenValue.FromString(defaultSurface.Language));
+            navigator.Set("languages", FenValue.FromObject(CreateArray(defaultSurface.Languages.ToArray())));
+            navigator.Set("cookieEnabled", FenValue.FromBoolean(defaultSurface.CookieEnabled));
+            navigator.Set("onLine", FenValue.FromBoolean(defaultSurface.Online));
+            navigator.Set("doNotTrack", FenValue.FromString(defaultSurface.DoNotTrack));
+            navigator.Set("hardwareConcurrency", FenValue.FromNumber(defaultSurface.HardwareConcurrency));
+            navigator.Set("deviceMemory", FenValue.FromNumber(defaultSurface.DeviceMemory));
             navigator.Set("maxTouchPoints", FenValue.FromNumber(0));
-            navigator.Set("vendor", FenValue.FromString("FenBrowser")); // Our vendor, not Google
-            navigator.Set("vendorSub", FenValue.FromString(""));
-            navigator.Set("product", FenValue.FromString("Gecko"));
-            navigator.Set("productSub", FenValue.FromString("20100101"));
-            navigator.Set("appCodeName", FenValue.FromString("Mozilla"));
-            navigator.Set("appName", FenValue.FromString("Netscape"));
-            navigator.Set("appVersion", FenValue.FromString("5.0 (Windows)"));
-            navigator.Set("oscpu", FenValue.FromString("Windows NT 10.0; Win64; x64"));
+            navigator.Set("vendor", FenValue.FromString(defaultSurface.Vendor));
+            navigator.Set("vendorSub", FenValue.FromString(defaultSurface.VendorSub));
+            navigator.Set("product", FenValue.FromString(defaultSurface.Product));
+            navigator.Set("productSub", FenValue.FromString(defaultSurface.ProductSub));
+            navigator.Set("appCodeName", FenValue.FromString(defaultSurface.AppCodeName));
+            navigator.Set("appName", FenValue.FromString(defaultSurface.AppName));
+            navigator.Set("appVersion", FenValue.FromString(defaultSurface.AppVersion));
+            navigator.Set("oscpu", FenValue.FromString(defaultSurface.OsCpu));
             // Privacy: Empty plugins array (prevents plugin fingerprinting)
             navigator.Set("plugins", FenValue.FromObject(CreateArray(new string[0])));
             navigator.Set("mimeTypes", FenValue.FromObject(CreateArray(new string[0])));
 
             // Anti-Bot / Anti-Fingerprinting extras
-            navigator.Set("webdriver", FenValue.FromBoolean(false)); // Explicitly deny automation
-            navigator.Set("pdfViewerEnabled", FenValue.FromBoolean(false));
+            navigator.Set("webdriver", FenValue.FromBoolean(defaultSurface.WebDriver));
+            navigator.Set("pdfViewerEnabled", FenValue.FromBoolean(defaultSurface.PdfViewerEnabled));
 
             // javaEnabled() method - Standard requires it to exist and return false (mostly)
             navigator.Set("javaEnabled",
@@ -6421,13 +6773,14 @@ namespace FenBrowser.FenEngine.Core
 
             SetGlobal("history", FenValue.FromObject(history));
 
-            // screen object - Privacy-focused (use common resolution to prevent fingerprinting)
+            // screen object - synchronized again via ApplyBrowserSurface(...) once host viewport
+            // metrics are known.
             var screen = new FenObject();
-            screen.Set("width", FenValue.FromNumber(1920)); // Common resolution
-            screen.Set("height", FenValue.FromNumber(1080)); // Common resolution
-            screen.Set("availWidth", FenValue.FromNumber(1920));
-            screen.Set("availHeight", FenValue.FromNumber(1040)); // Minus taskbar
-            screen.Set("colorDepth", FenValue.FromNumber(24)); // Standard 24-bit color
+            screen.Set("width", FenValue.FromNumber(defaultSurface.Viewport.ScreenWidth));
+            screen.Set("height", FenValue.FromNumber(defaultSurface.Viewport.ScreenHeight));
+            screen.Set("availWidth", FenValue.FromNumber(defaultSurface.Viewport.AvailableScreenWidth));
+            screen.Set("availHeight", FenValue.FromNumber(defaultSurface.Viewport.AvailableScreenHeight));
+            screen.Set("colorDepth", FenValue.FromNumber(24));
             screen.Set("pixelDepth", FenValue.FromNumber(24));
             screen.Set("orientation", FenValue.FromObject(CreateScreenOrientation()));
             SetGlobal("screen", FenValue.FromObject(screen));
@@ -6452,12 +6805,11 @@ namespace FenBrowser.FenEngine.Core
             window.Set("localStorage", FenValue.FromObject(localStorage));
             window.Set("sessionStorage", FenValue.FromObject(sessionStorage));
             window.Set("history", FenValue.FromObject(history));
-            // Viewport properties - Privacy: use common resolution
-            window.Set("innerWidth", FenValue.FromNumber(1920));
-            window.Set("innerHeight", FenValue.FromNumber(1080));
-            window.Set("outerWidth", FenValue.FromNumber(1920));
-            window.Set("outerHeight", FenValue.FromNumber(1080));
-            window.Set("devicePixelRatio", FenValue.FromNumber(1)); // Privacy: always 1
+            window.Set("innerWidth", FenValue.FromNumber(defaultSurface.Viewport.WindowWidth));
+            window.Set("innerHeight", FenValue.FromNumber(defaultSurface.Viewport.WindowHeight));
+            window.Set("outerWidth", FenValue.FromNumber(defaultSurface.Viewport.OuterWidth));
+            window.Set("outerHeight", FenValue.FromNumber(defaultSurface.Viewport.OuterHeight));
+            window.Set("devicePixelRatio", FenValue.FromNumber(defaultSurface.Viewport.DevicePixelRatio));
             window.Set("scrollX", FenValue.FromNumber(0));
             window.Set("scrollY", FenValue.FromNumber(0));
             window.Set("pageXOffset", FenValue.FromNumber(0));
@@ -7018,6 +7370,7 @@ namespace FenBrowser.FenEngine.Core
 
             _windowObject = window;
             SetGlobal("window", FenValue.FromObject(window));
+            ApplyBrowserSurface(defaultSurface);
             // Bridge DOM EventTarget static dispatch to FenRuntime top-level listener storage.
             FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = _ => window;
             FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = _ =>
@@ -9847,52 +10200,68 @@ namespace FenBrowser.FenEngine.Core
             window.Set("getComputedStyle", getComputedStyleFn);
 
             // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ matchMedia ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
-            HostApiSurfaceCatalog.TraceUsage("window.matchMedia");
             var matchMediaFn = FenValue.FromFunction(new FenFunction("matchMedia", (args, thisVal) =>
             {
                 var query = args.Length > 0 ? args[0].ToString() : "";
-                var mql = new FenObject();
-                // Evaluate common media queries
-                bool matches = false;
-                if (query.Contains("prefers-color-scheme: dark")) matches = false; // light mode
-                else if (query.Contains("prefers-color-scheme: light")) matches = true;
-                else if (query.Contains("prefers-reduced-motion")) matches = false;
-                else if (query.Contains("min-width"))
+                var registration = new MediaQueryListRegistration
                 {
-                    // Parse min-width value and compare against 1920
-                    var match = System.Text.RegularExpressions.Regex.Match(query, @"min-width:\s*(\d+)");
-                    if (match.Success && int.TryParse(match.Groups[1].Value, out int minW))
-                        matches = 1920 >= minW;
-                }
-                else if (query.Contains("max-width"))
-                {
-                    var match = System.Text.RegularExpressions.Regex.Match(query, @"max-width:\s*(\d+)");
-                    if (match.Success && int.TryParse(match.Groups[1].Value, out int maxW))
-                        matches = 1920 <= maxW;
-                }
-                else if (query.Contains("(pointer: fine)")) matches = true;
-                else if (query.Contains("(hover: hover)")) matches = true;
-                else if (query.Contains("screen")) matches = true;
+                    Query = query,
+                    Object = new FenObject(),
+                    Matches = _browserSurface?.MatchesMediaQuery(query) == true
+                };
 
-                mql.Set("matches", FenValue.FromBoolean(matches));
-                mql.Set("media", FenValue.FromString(query));
-                var mqlListeners = new List<FenValue>();
-                mql.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) =>
+                registration.Object.Set("matches", FenValue.FromBoolean(registration.Matches));
+                registration.Object.Set("media", FenValue.FromString(query));
+                registration.Object.Set("onchange", FenValue.Null);
+                registration.Object.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (eArgs, eThis) =>
                 {
-                    if (eArgs.Length >= 2) mqlListeners.Add(eArgs[1]);
+                    if (eArgs.Length >= 2 &&
+                        string.Equals(eArgs[0].ToString(), "change", StringComparison.OrdinalIgnoreCase) &&
+                        eArgs[1].IsFunction)
+                    {
+                        registration.EventListeners.Add(eArgs[1]);
+                    }
+
                     return FenValue.Undefined;
                 })));
-                mql.Set("removeEventListener",
+                registration.Object.Set("removeEventListener",
                     FenValue.FromFunction(new FenFunction("removeEventListener",
-                        (eArgs, eThis) => FenValue.Undefined)));
-                mql.Set("addListener", FenValue.FromFunction(new FenFunction("addListener", (eArgs, eThis) =>
+                        (eArgs, eThis) =>
+                        {
+                            if (eArgs.Length >= 2 && eArgs[1].IsFunction)
+                            {
+                                registration.EventListeners.RemoveAll(existing => existing.IsFunction && existing.AsFunction() == eArgs[1].AsFunction());
+                            }
+
+                            return FenValue.Undefined;
+                        })));
+                registration.Object.Set("addListener", FenValue.FromFunction(new FenFunction("addListener", (eArgs, eThis) =>
                 {
-                    if (eArgs.Length >= 1 && eArgs[0].IsFunction) mqlListeners.Add(eArgs[0]);
+                    if (eArgs.Length >= 1 && eArgs[0].IsFunction)
+                    {
+                        registration.LegacyListeners.Add(eArgs[0]);
+                    }
+
                     return FenValue.Undefined;
                 })));
-                mql.Set("removeListener",
-                    FenValue.FromFunction(new FenFunction("removeListener", (eArgs, eThis) => FenValue.Undefined)));
-                return FenValue.FromObject(mql);
+                registration.Object.Set("removeListener",
+                    FenValue.FromFunction(new FenFunction("removeListener", (eArgs, eThis) =>
+                    {
+                        if (eArgs.Length >= 1 && eArgs[0].IsFunction)
+                        {
+                            registration.LegacyListeners.RemoveAll(existing => existing.IsFunction && existing.AsFunction() == eArgs[0].AsFunction());
+                        }
+
+                        return FenValue.Undefined;
+                    })));
+                registration.Object.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (eArgs, eThis) => FenValue.FromBoolean(false))));
+
+                lock (_mediaQueryLock)
+                {
+                    _mediaQueryLists.Add(registration);
+                }
+
+                return FenValue.FromObject(registration.Object);
             }));
             SetGlobal("matchMedia", matchMediaFn);
             window.Set("matchMedia", matchMediaFn);
@@ -9910,9 +10279,15 @@ namespace FenBrowser.FenEngine.Core
                         {
                             var deadline = new FenObject();
                             deadline.Set("didTimeout", FenValue.FromBoolean(false));
+                            var idleBudgetMs = Math.Max(1d, Math.Min(50d, (_browserSurface?.Viewport?.WindowHeight ?? 50d) / 20d));
+                            var callbackStarted = DateTime.UtcNow;
                             deadline.Set("timeRemaining",
                                 FenValue.FromFunction(new FenFunction("timeRemaining",
-                                    (a, t) => FenValue.FromNumber(50))));
+                                    (a, t) =>
+                                    {
+                                        var elapsed = (DateTime.UtcNow - callbackStarted).TotalMilliseconds;
+                                        return FenValue.FromNumber(Math.Max(0d, idleBudgetMs - elapsed));
+                                    })));
                             cb?.Invoke(new FenValue[] { FenValue.FromObject(deadline) }, _context);
                         }, EventLoop.TaskSource.Other, "requestIdleCallback");
                         return FenValue.FromNumber(1);

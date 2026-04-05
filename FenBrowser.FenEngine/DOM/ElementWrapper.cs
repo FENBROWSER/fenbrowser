@@ -1154,14 +1154,19 @@ namespace FenBrowser.FenEngine.DOM
                 try
                 {
                     var parsed = new FenBrowser.Core.Parsing.HtmlParser(htmlString).Parse();
-                    if (parsed?.ChildNodes != null)
+                    ContainerNode source = null;
+                    if (parsed != null)
                     {
-                        foreach (var child in parsed.ChildNodes.ToArray()) // Copy to avoid modification of source collection during iteration if active
+                        source = parsed.GetElementsByTagName("body").FirstOrDefault();
+                        source ??= parsed.FirstElementChild ?? (ContainerNode)parsed;
+                    }
+
+                    if (source?.ChildNodes != null)
+                    {
+                        foreach (var child in source.ChildNodes.ToArray()) // Copy to avoid modification of source collection during iteration if active
                         {
-                            // Detach from parsed root? Or Copy?
-                            // builder returns a tree. We can probably just reparent.
-                            // But checking if child is Element
-                            if(child is Node n) {
+                            if (child is Node n)
+                            {
                                 _element.AppendChild(n);
                                 added.Add(n);
                             }
@@ -1175,6 +1180,8 @@ namespace FenBrowser.FenEngine.DOM
                     added.Add(textNode);
                 }
             }
+
+            _element.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
             _context.RequestRender?.Invoke();
 
             _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.V2.MutationRecord

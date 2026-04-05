@@ -844,6 +844,7 @@ namespace FenBrowser.FenEngine.Scripting
             
             winObj.Set("screen", FenValue.FromObject(screenObj));
             _fenRuntime.SetGlobal("screen", FenValue.FromObject(screenObj));
+            ApplyBrowserSurfaceToRuntime();
             InstallWimbCapabilities(winObj);
             InstallClipboardJsStub(winObj);
             
@@ -959,11 +960,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private Dictionary<string, string> BuildBrowserCapabilitiesSnapshot()
         {
-            var currentLanguage = CultureInfo.CurrentCulture.Name;
-            if (string.IsNullOrWhiteSpace(currentLanguage))
-            {
-                currentLanguage = "en-US";
-            }
+            var surface = BuildBrowserSurface();
 
             return new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -973,14 +970,38 @@ namespace FenBrowser.FenEngine.Scripting
                 ["window_height"] = FormatCapabilityNumber(WindowHeight),
                 ["screen_width"] = FormatCapabilityNumber(ScreenWidth),
                 ["screen_height"] = FormatCapabilityNumber(ScreenHeight),
-                ["device_pixel_ratio"] = "1",
+                ["device_pixel_ratio"] = FormatCapabilityNumber(surface.Viewport.DevicePixelRatio),
                 ["local_storage"] = "1",
                 ["session_storage"] = "1",
                 ["java"] = "0",
-                ["language"] = currentLanguage,
-                ["platform"] = "Win32",
-                ["user_agent"] = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent),
+                ["language"] = surface.Language,
+                ["platform"] = surface.PlatformToken,
+                ["user_agent"] = surface.UserAgent,
             };
+        }
+
+        private BrowserSurfaceProfile BuildBrowserSurface()
+        {
+            var metrics = BrowserViewportMetrics.Create(
+                WindowWidth,
+                WindowHeight,
+                ScreenWidth,
+                ScreenHeight,
+                ScreenWidth,
+                ScreenHeight > 40 ? ScreenHeight - 40 : ScreenHeight,
+                devicePixelRatio: 1);
+
+            return BrowserSettings.GetBrowserSurface(BrowserSettings.Instance.SelectedUserAgent, metrics);
+        }
+
+        private void ApplyBrowserSurfaceToRuntime()
+        {
+            if (_fenRuntime == null)
+            {
+                return;
+            }
+
+            _fenRuntime.ApplyBrowserSurface(BuildBrowserSurface());
         }
 
         private static Dictionary<string, string> ReadCapabilityMap(FenObject capabilities)
@@ -1030,10 +1051,50 @@ namespace FenBrowser.FenEngine.Scripting
             return Math.Round(value).ToString(CultureInfo.InvariantCulture);
         }
 
-        public double WindowWidth { get; set; } = 1024;
-        public double WindowHeight { get; set; } = 768;
-        public double ScreenWidth { get; set; } = 1920;
-        public double ScreenHeight { get; set; } = 1080;
+        private double _windowWidth = 1280;
+        private double _windowHeight = 720;
+        private double _screenWidth = 1920;
+        private double _screenHeight = 1080;
+
+        public double WindowWidth
+        {
+            get => _windowWidth;
+            set
+            {
+                _windowWidth = value;
+                ApplyBrowserSurfaceToRuntime();
+            }
+        }
+
+        public double WindowHeight
+        {
+            get => _windowHeight;
+            set
+            {
+                _windowHeight = value;
+                ApplyBrowserSurfaceToRuntime();
+            }
+        }
+
+        public double ScreenWidth
+        {
+            get => _screenWidth;
+            set
+            {
+                _screenWidth = value;
+                ApplyBrowserSurfaceToRuntime();
+            }
+        }
+
+        public double ScreenHeight
+        {
+            get => _screenHeight;
+            set
+            {
+                _screenHeight = value;
+                ApplyBrowserSurfaceToRuntime();
+            }
+        }
 
 
         // timers
@@ -1343,40 +1404,37 @@ namespace FenBrowser.FenEngine.Scripting
                 () => FenBrowser.FenEngine.WebAPIs.StorageApi.BuildSessionScope(_sessionStoragePartitionId, OriginKey(_ctx?.BaseUri)),
                 _fenRuntime.Context)));
             
+            var surface = BuildBrowserSurface();
+
             // Basic navigator properties for detection
             navObj.Set("javaEnabled", FenValue.FromFunction(new FenFunction("javaEnabled", (args, ctx) => FenValue.FromBoolean(false))));
-            navObj.Set("cookieEnabled", FenValue.FromBoolean(true));
-            // Detection Logic: 
-            // Chrome: appName="Netscape", vendor="Google Inc.", product="Gecko", appVersion="5.0 (...)"
-            navObj.Set("userAgent", FenValue.FromString(BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent)));
-            navObj.Set("appName", FenValue.FromString("Netscape")); // Standard for modern browsers
-            
-            // appVersion usually matches UA but without "Mozilla/" prefix
-            var fullUa = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
-            var appVer = fullUa.StartsWith("Mozilla/") ? fullUa.Substring(8) : fullUa;
-            navObj.Set("appVersion", FenValue.FromString(appVer));
-            
-            navObj.Set("platform", FenValue.FromString("Win32"));
-            navObj.Set("vendor", FenValue.FromString("Google Inc.")); // Required for Chrome detection
-            navObj.Set("product", FenValue.FromString("Gecko"));      // Historical artifact required by many sites
-            navObj.Set("language", FenValue.FromString(CultureInfo.CurrentCulture.Name));
-            
+            navObj.Set("cookieEnabled", FenValue.FromBoolean(surface.CookieEnabled));
+            navObj.Set("userAgent", FenValue.FromString(surface.UserAgent));
+            navObj.Set("appName", FenValue.FromString(surface.AppName));
+            navObj.Set("appVersion", FenValue.FromString(surface.AppVersion));
+            navObj.Set("platform", FenValue.FromString(surface.PlatformToken));
+            navObj.Set("vendor", FenValue.FromString(surface.Vendor));
+            navObj.Set("product", FenValue.FromString(surface.Product));
+            navObj.Set("language", FenValue.FromString(surface.Language));
+
             var langsObj = new FenBrowser.FenEngine.Core.FenObject();
-            langsObj.Set("0", FenValue.FromString(CultureInfo.CurrentCulture.Name));
-            langsObj.Set("length", FenValue.FromNumber(1));
+            for (int index = 0; index < surface.Languages.Count; index++)
+            {
+                langsObj.Set(index.ToString(), FenValue.FromString(surface.Languages[index]));
+            }
+
+            langsObj.Set("length", FenValue.FromNumber(surface.Languages.Count));
             navObj.Set("languages", FenValue.FromObject(langsObj));
 
-            navObj.Set("hardwareConcurrency", FenValue.FromNumber(Environment.ProcessorCount));
-            navObj.Set("deviceMemory", FenValue.FromNumber(8));
-            navObj.Set("onLine", FenValue.FromBoolean(true));
-            navObj.Set("pdfViewerEnabled", FenValue.FromBoolean(true));
-            navObj.Set("webdriver", FenValue.FromBoolean(false)); 
-            
-            // [Compliance] userAgentData (Client Hints) - Simplified mock
-            var uaData = new FenBrowser.FenEngine.Core.FenObject();
-            uaData.Set("mobile", FenValue.FromBoolean(false));
-            uaData.Set("platform", FenValue.FromString("Windows"));
-            navObj.Set("userAgentData", FenValue.FromObject(uaData));
+            navObj.Set("hardwareConcurrency", FenValue.FromNumber(surface.HardwareConcurrency));
+            navObj.Set("deviceMemory", FenValue.FromNumber(surface.DeviceMemory));
+            navObj.Set("onLine", FenValue.FromBoolean(surface.Online));
+            navObj.Set("pdfViewerEnabled", FenValue.FromBoolean(surface.PdfViewerEnabled));
+            navObj.Set("webdriver", FenValue.FromBoolean(surface.WebDriver)); 
+
+            navObj.Set("userAgentData", _fenRuntime.GetGlobal("navigator").IsObject
+                ? _fenRuntime.GetGlobal("navigator").AsObject().Get("userAgentData")
+                : FenValue.Undefined);
             HostApiSurfaceCatalog.TraceUsage("navigator.userAgentData");
 
             // [Compliance] Log Client-Side Identity
@@ -1428,6 +1486,8 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 _fenRuntime.SetGlobal("Notification", FenValue.FromObject(notificationCtor));
             }
+
+            ApplyBrowserSurfaceToRuntime();
         }
 
         private async Task<string> FetchThroughNetworkHandlerAsync(Uri uri)
@@ -1597,6 +1657,8 @@ namespace FenBrowser.FenEngine.Scripting
 
         // Optional bridge supplied by host to provide a CookieContainer for managed HttpClient fallbacks.
         public Func<Uri, System.Net.CookieContainer> CookieBridge { get; set; }
+        public Func<Uri, string> CookieReadBridge { get; set; }
+        public Action<Uri, string> CookieWriteBridge { get; set; }
         
         // --- lightweight fields that may be missing in some merge states ---
         // DOM visual registry
@@ -2168,6 +2230,12 @@ namespace FenBrowser.FenEngine.Scripting
             if (!SandboxAllows(SandboxFeature.Storage, "document.cookie set")) return;
             try
             {
+                if (CookieWriteBridge != null && scope != null && !string.IsNullOrWhiteSpace(cookieString))
+                {
+                    CookieWriteBridge(scope, cookieString);
+                    return;
+                }
+
                 if (CookieBridge  == null || scope  == null || string.IsNullOrWhiteSpace(cookieString)) return;
                 var jar = CookieBridge(scope);
                 if (jar  == null) return;
@@ -2181,6 +2249,11 @@ namespace FenBrowser.FenEngine.Scripting
             if (!SandboxAllows(SandboxFeature.Storage, "document.cookie get")) return string.Empty;
             try
             {
+                if (CookieReadBridge != null && scope != null)
+                {
+                    return CookieReadBridge(scope) ?? string.Empty;
+                }
+
                 if (CookieBridge  == null || scope  == null) return "";
                 var jar = CookieBridge(scope);
                 if (jar  == null) return "";
@@ -3351,16 +3424,17 @@ namespace FenBrowser.FenEngine.Scripting
         {
             private JavaScriptEngine _engine;
             public HostNavigator(JavaScriptEngine engine) { _engine = engine; }
-            public string userAgent => BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
+            private BrowserSurfaceProfile Surface => _engine.BuildBrowserSurface();
+            public string userAgent => Surface.UserAgent;
             public string appName => "Fenbrowser";
             public string appVersion => "1.0.0";
             public string product => "FenEngine";
-            public string vendor => "Fenbrowser Project";
+            public string vendor => Surface.Vendor;
             public object userAgentData => new Dictionary<string, object>
             {
-                { "brands", new [] { new { brand = "Fenbrowser", version = "1.0" }, new { brand = "FenEngine", version = "1.0" } } },
-                { "mobile", false },
-                { "platform", "Windows" }
+                { "brands", Surface.UserAgentData.Brands.Select(brand => new { brand = brand.Brand, version = brand.Version }).ToArray() },
+                { "mobile", Surface.UserAgentData.Mobile },
+                { "platform", Surface.UserAgentData.Platform }
             };
         }
 

@@ -48,9 +48,9 @@ namespace FenBrowser.FenEngine.Compatibility
             {
                 ["navigator.userAgentData"] = new HostApiSurfaceDescriptor(
                     "navigator.userAgentData",
-                    HostApiImplementationClass.CompatibilityShim,
-                    "Scripting/JavaScriptEngine.cs",
-                    "Client hints surface is a simplified object, not a full browser client-hints implementation."),
+                    HostApiImplementationClass.ProductionImplementation,
+                    "Core/FenRuntime.cs",
+                    "FenRuntime exposes coherent low-entropy and high-entropy UA-CH data, including brands, platform, and getHighEntropyValues snapshots for the active browser surface."),
                 ["crypto.subtle"] = new HostApiSurfaceDescriptor(
                     "crypto.subtle",
                     HostApiImplementationClass.CompatibilityShim,
@@ -63,9 +63,9 @@ namespace FenBrowser.FenEngine.Compatibility
                     "Popup orchestration still falls back to same-window navigation until real browsing-context creation exists."),
                 ["window.matchMedia"] = new HostApiSurfaceDescriptor(
                     "window.matchMedia",
-                    HostApiImplementationClass.CompatibilityShim,
+                    HostApiImplementationClass.ProductionImplementation,
                     "Core/FenRuntime.cs",
-                    "Media query evaluation is currently hard-coded to a fixed environment instead of a live media feature pipeline."),
+                    "FenRuntime evaluates media queries against the active browser surface and keeps MediaQueryList objects synchronized as viewport and theme data change."),
                 ["window.requestIdleCallback"] = new HostApiSurfaceDescriptor(
                     "window.requestIdleCallback",
                     HostApiImplementationClass.CompatibilityShim,

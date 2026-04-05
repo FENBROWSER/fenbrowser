@@ -1,5 +1,6 @@
 using SkiaSharp;
 using System;
+using FenBrowser.Core;
 
 namespace FenBrowser.Host.Theme;
 
@@ -29,10 +30,15 @@ public static class ThemeManager
 
     static ThemeManager()
     {
-        SetTheme(false); // Default to Light
+        ApplyTheme(BrowserSettings.Instance.Theme == ThemePreference.Dark, persist: false);
     }
 
     public static void SetTheme(bool dark)
+    {
+        ApplyTheme(dark, persist: true);
+    }
+
+    private static void ApplyTheme(bool dark, bool persist)
     {
         IsDark = dark;
         if (dark)
@@ -64,6 +70,12 @@ public static class ThemeManager
                 Accent = new SKColor(0, 120, 215), // Edge Blue
                 AccentMuted = new SKColor(0, 120, 215, 30)
             };
+        }
+
+        if (persist)
+        {
+            BrowserSettings.Instance.Theme = dark ? ThemePreference.Dark : ThemePreference.Light;
+            BrowserSettings.Instance.Save();
         }
 
         ThemeChanged?.Invoke();
