@@ -23,6 +23,25 @@ namespace FenBrowser.Core.Network.Handlers
             "Accept", "Accept-Language", "Content-Language", "Content-Type"
         };
 
+        private static readonly HashSet<string> BrowserManagedHeaders = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "User-Agent",
+            "Sec-Fetch-Dest",
+            "Sec-Fetch-Mode",
+            "Sec-Fetch-Site",
+            "Sec-Fetch-User",
+            "Sec-CH-UA",
+            "Sec-CH-UA-Mobile",
+            "Sec-CH-UA-Platform",
+            "Sec-CH-UA-Platform-Version",
+            "Sec-CH-UA-Full-Version",
+            "Sec-CH-UA-Full-Version-List",
+            "Sec-CH-UA-Arch",
+            "Sec-CH-UA-Bitness",
+            "Sec-CH-UA-Model",
+            "DNT"
+        };
+
         /// <summary>
         /// Check if a cross-origin request is allowed based on CORS headers.
         /// </summary>
@@ -265,7 +284,8 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             if (string.Equals(name, "Origin", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, "Referer", StringComparison.OrdinalIgnoreCase))
+                string.Equals(name, "Referer", StringComparison.OrdinalIgnoreCase) ||
+                BrowserManagedHeaders.Contains(name))
             {
                 return false;
             }

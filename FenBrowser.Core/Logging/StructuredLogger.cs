@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Logging
@@ -280,7 +281,11 @@ namespace FenBrowser.Core.Logging
             {
                 var fileName = $"rendered_text_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"URL: {url}\nDumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n----------------------------------\n{textContent}");
+                string normalizedText = NormalizeRenderedText(textContent);
+                File.WriteAllText(
+                    filePath,
+                    $"URL: {url}\nDumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n----------------------------------\n{normalizedText}",
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
                 Info("Rendering", $"Rendered text dumped to: {filePath}");
                 return filePath;
             }
@@ -289,6 +294,19 @@ namespace FenBrowser.Core.Logging
                 Error("Rendering", "Failed to dump rendered text", ex);
                 return null;
             }
+        }
+
+        private static string NormalizeRenderedText(string textContent)
+        {
+            if (string.IsNullOrEmpty(textContent))
+            {
+                return string.Empty;
+            }
+
+            return textContent
+                .Replace("\u00E2\u0153\u201C", "\u2713", StringComparison.Ordinal)
+                .Replace("\u00E2\u0153\u201D", "\u2714", StringComparison.Ordinal)
+                .Replace("\u00E2\u0153\u02DC", "\u2718", StringComparison.Ordinal);
         }
         
         /// <summary>

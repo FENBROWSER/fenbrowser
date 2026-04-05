@@ -71,29 +71,31 @@ namespace FenBrowser.Core.Network
         private static string SniffFromMagicBytes(byte[] bytes)
         {
             int len = bytes.Length;
+            int offset = SkipInsignificantPrefix(bytes, len);
+            if (offset >= len)
+            {
+                return null;
+            }
 
             // HTML signatures
-            if (len >= 5 && StartsWithIgnoreCase(bytes, "<!DOC")) return "text/html";
-            if (len >= 5 && StartsWithIgnoreCase(bytes, "<html")) return "text/html";
-            if (len >= 5 && StartsWithIgnoreCase(bytes, "<head")) return "text/html";
-            if (len >= 6 && StartsWithIgnoreCase(bytes, "<body")) return "text/html";
-            if (len >= 15 && StartsWithIgnoreCase(bytes, "<!DOCTYPE html")) return "text/html";
+            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<!DOC")) return "text/html";
+            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<html")) return "text/html";
+            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<head")) return "text/html";
+            if (len - offset >= 6 && StartsWithIgnoreCase(bytes, offset, "<body")) return "text/html";
+            if (len - offset >= 15 && StartsWithIgnoreCase(bytes, offset, "<!DOCTYPE html")) return "text/html";
 
             // XML
-            if (len >= 5 && StartsWithIgnoreCase(bytes, "<?xml")) return "application/xml";
+            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<?xml")) return "application/xml";
 
             // JSON (starts with { or [)
-            if (len >= 1 && (bytes[0] == '{' || bytes[0] == '[')) return "application/json";
+            if (len - offset >= 1 && (bytes[offset] == '{' || bytes[offset] == '[')) return "application/json";
 
             // JavaScript (common patterns)
-            if (len >= 8 && StartsWithIgnoreCase(bytes, "function")) return "application/javascript";
-            if (len >= 4 && StartsWithIgnoreCase(bytes, "var ")) return "application/javascript";
-            if (len >= 5 && StartsWithIgnoreCase(bytes, "const")) return "application/javascript";
-            if (len >= 3 && StartsWithIgnoreCase(bytes, "let")) return "application/javascript";
+            if (LooksLikeJavaScript(bytes, offset, len)) return "application/javascript";
 
             // CSS
-            if (len >= 1 && bytes[0] == '@') return "text/css"; // @charset, @import, etc.
-            if (len >= 4 && ContainsPattern(bytes, 0, 100, "{") && ContainsPattern(bytes, 0, 100, ":")) 
+            if (len - offset >= 1 && bytes[offset] == '@') return "text/css"; // @charset, @import, etc.
+            if (len - offset >= 4 && ContainsPattern(bytes, offset, 100, "{") && ContainsPattern(bytes, offset, 100, ":")) 
                 return "text/css"; // Likely CSS ruleset
 
             // Images
@@ -107,7 +109,7 @@ namespace FenBrowser.Core.Network
                 if (len >= 12 && bytes[8] == 0x57 && bytes[9] == 0x41 && bytes[10] == 0x56 && bytes[11] == 0x45)
                     return "audio/wav";
             }
-            if (len >= 4 && StartsWithIgnoreCase(bytes, "<svg")) return "image/svg+xml";
+            if (len - offset >= 4 && StartsWithIgnoreCase(bytes, offset, "<svg")) return "image/svg+xml";
 
             // Audio/Video
             // Ogg (OggS)
@@ -136,10 +138,15 @@ namespace FenBrowser.Core.Network
 
         private static bool StartsWithIgnoreCase(byte[] bytes, string pattern)
         {
-            if (bytes.Length < pattern.Length) return false;
+            return StartsWithIgnoreCase(bytes, 0, pattern);
+        }
+
+        private static bool StartsWithIgnoreCase(byte[] bytes, int offset, string pattern)
+        {
+            if (bytes.Length - offset < pattern.Length) return false;
             for (int i = 0; i < pattern.Length; i++)
             {
-                byte b = bytes[i];
+                byte b = bytes[offset + i];
                 char c = pattern[i];
                 if (char.ToLowerInvariant((char)b) != char.ToLowerInvariant(c))
                     return false;
@@ -164,6 +171,74 @@ namespace FenBrowser.Core.Network
                 if (match) return true;
             }
             return false;
+        }
+
+        private static int SkipInsignificantPrefix(byte[] bytes, int len)
+        {
+            int index = 0;
+
+            if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            {
+                index = 3;
+            }
+
+            while (index < len)
+            {
+                while (index < len && char.IsWhiteSpace((char)bytes[index]))
+                {
+                    index++;
+                }
+
+                if (index + 1 < len && bytes[index] == '/' && bytes[index + 1] == '/')
+                {
+                    index += 2;
+                    while (index < len && bytes[index] != '\n' && bytes[index] != '\r')
+                    {
+                        index++;
+                    }
+                    continue;
+                }
+
+                if (index + 1 < len && bytes[index] == '/' && bytes[index + 1] == '*')
+                {
+                    index += 2;
+                    while (index + 1 < len && !(bytes[index] == '*' && bytes[index + 1] == '/'))
+                    {
+                        index++;
+                    }
+
+                    if (index + 1 < len)
+                    {
+                        index += 2;
+                    }
+
+                    continue;
+                }
+
+                break;
+            }
+
+            return index;
+        }
+
+        private static bool LooksLikeJavaScript(byte[] bytes, int offset, int len)
+        {
+            return StartsWithIgnoreCase(bytes, offset, "function")
+                   || StartsWithIgnoreCase(bytes, offset, "var ")
+                   || StartsWithIgnoreCase(bytes, offset, "let ")
+                   || StartsWithIgnoreCase(bytes, offset, "const ")
+                   || StartsWithIgnoreCase(bytes, offset, "window.")
+                   || StartsWithIgnoreCase(bytes, offset, "document.")
+                   || StartsWithIgnoreCase(bytes, offset, "self.")
+                   || StartsWithIgnoreCase(bytes, offset, "this.")
+                   || StartsWithIgnoreCase(bytes, offset, "(()=>")
+                   || StartsWithIgnoreCase(bytes, offset, "(function")
+                   || StartsWithIgnoreCase(bytes, offset, "!function")
+                   || StartsWithIgnoreCase(bytes, offset, ";(function")
+                   || StartsWithIgnoreCase(bytes, offset, "if(")
+                   || StartsWithIgnoreCase(bytes, offset, "if (")
+                   || StartsWithIgnoreCase(bytes, offset, "for(")
+                   || StartsWithIgnoreCase(bytes, offset, "for (");
         }
 
         /// <summary>
