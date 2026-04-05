@@ -159,7 +159,8 @@ public class BrowserIntegration
             // Do NOT sync _styles here: ComputedStyles may be null mid-cascade (e.g. after
             // incremental parse checkpoints set LastComputedStyles = null). EngineLoop
             // re-fetches styles from _browser before every RecordFrame call.
-            _root = _browser.GetDomRoot();
+            var snapshot = _browser.GetRenderSnapshot();
+            _root = snapshot.Root;
 
             FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
 
@@ -189,8 +190,9 @@ public class BrowserIntegration
             try
             {
                 if (_browser == null) return;
-                var actualDom = _browser.GetDomRoot();
-                var actualStyles = _browser.ComputedStyles;
+                var snapshot = _browser.GetRenderSnapshot();
+                var actualDom = snapshot.Root;
+                var actualStyles = snapshot.Styles;
                 
                 bool needsSync = false;
                 
@@ -594,8 +596,9 @@ public class BrowserIntegration
             }
 
             // Sync latest state from browser host
-            _root = _browser.GetDomRoot();
-            _styles = _browser.ComputedStyles;
+            var snapshot = _browser.GetRenderSnapshot();
+            _root = snapshot.Root;
+            _styles = snapshot.Styles;
 
             // Gate: wait for CSS before first styled render
             if (!_hasFirstStyledRender && _root != null)
