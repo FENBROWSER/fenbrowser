@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-03-30
+**State as of:** 2026-04-02
 **Codex Version:** 1.2
 
 ## 1. Overview
@@ -108,6 +108,32 @@ flowchart TD
 ### 2.5 Runtime Hardening (2026-03-04)
 
 - `ImageLoader` asynchronous load path now uses `Task` instead of `async void`, and call sites explicitly discard returned tasks, improving exception observability and execution discipline (`FenBrowser.FenEngine/Rendering/ImageLoader.cs`).
+
+### 2.6 Layout/Cascade Fidelity Hardening (2026-04-02)
+
+- `SelectorMatcher` and `Element.ComputeFeatureHash()` now normalize ancestor bloom-filter tag/id inputs to the same case, closing a false fast-reject path for valid descendant selectors such as `nav#site #top-logo-and-name` (`FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`, `FenBrowser.Core/Dom/V2/Element.cs`).
+- `MinimalLayoutComputer.MeasureNode(...)` now measures text nodes before inherited `display:flex` / `display:grid` branches, preventing text labels inside flex items from collapsing to zero when they inherit container display values (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
+- `MinimalLayoutComputer.MeasureNode(...)` now resolves percentage widths only against finite containing-block widths, preventing `NaN` geometry when `%`-sized flex items are probed with indefinite main-axis constraints (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
+- `CssFlexLayout.Measure(...)` / `Arrange(...)` now treat container-relative main sizes (`width:100%`, `calc(...)`) as explicit `flex-basis:auto` probes and avoid pinning `min-width:auto` to the probe width, restoring shrink/grow behavior for WhatIsMyBrowser-style settings rows (`FenBrowser.FenEngine/Rendering/Css/CssFlexLayout.cs`).
+- Added regression coverage:
+  - `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
+  - `FenBrowser.Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
+
+### 2.7 Internal Surface Hardening (2026-04-04)
+
+- `NewTabRenderer.Render()` now emits a viewport-stable internal page that uses deterministic block layout, a single visible search surface, explicit sizing, and ASCII-safe copy, avoiding the engine-visible collapse modes that made the old flex-heavy new tab render tiny, left-shifted, or visually double-framed (`FenBrowser.FenEngine/Rendering/NewTabRenderer.cs`).
+- The internal start surface now exposes a centered hero shell, primary search surface, and stable quick-link cards without depending on incomplete centered-column flex behavior in the engine (`FenBrowser.FenEngine/Rendering/NewTabRenderer.cs`).
+- `LayoutEngine` absolute box materialization now trusts the box tree's document-space geometry instead of heuristically re-applying parent content origins during post-layout flattening; this closes the double-shift path that detached new-tab panel borders/backgrounds from their centered content and produced ghost right-side shells in the final frame (`FenBrowser.FenEngine/Layout/LayoutEngine.cs`).
+- `BlockFormattingContext` now seeds child placement from the parent's content-box origin instead of the margin-box origin, closing the residual Y-origin drift that made the new-tab search surface paint above its own panel even after the X-space double-shift was fixed (`FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`).
+- `FormattingContext.Resolve(...)` now keeps block-level atomic controls/replaced elements (`input`, `textarea`, `select`, `img`, `svg`, etc.) on the block formatting path instead of routing empty block boxes through inline layout; this preserves authored block-level percentage sizing such as the internal new-tab `input.search-box { width: 100% }` case (`FenBrowser.FenEngine/Layout/Contexts/FormattingContext.cs`).
+- `InlineFormattingContext.TryGetIntrinsicSize(...)` now honors percentage-based used widths/heights before falling back to intrinsic control defaults, so atomic inline controls keep spec-sized dimensions instead of regressing to `150px` / `24px` fallbacks whenever they are measured through inline atomic probes (`FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`).
+- `UAStyleProvider` and `NewPaintTreeBuilder.BuildBackgroundNode(...)` now treat authored background shorthand as a real background declaration and recover color from shorthand-carried values before applying form-control defaults, preventing CSS-styled controls from being repainted with fallback white chrome during final paint-tree construction (`FenBrowser.FenEngine/Rendering/UserAgent/UAStyleProvider.cs`, `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`).
+- `CascadeEngine.ComputeCascadedValues(...)` now applies shorthand expansion at declaration-cascade time instead of selecting winners first and expanding later. This restores standards-correct precedence when a higher-origin shorthand must override a lower-origin longhand, which is the path that previously let the UA `input { background-color: white; }` rule beat the authored new-tab `background: rgba(...)` search-box style (`FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`).
+- `ImmutablePaintTree` damage diffing now compares node-type visual state for backgrounds, borders, text, images, shadows, stacking-context filters, scroll offsets, and sticky offsets instead of only geometry/opacity/hover/focus flags; pure visual restyles such as `background-color` changes on stable boxes now generate localized damage instead of silently reusing stale seeded base frames (`FenBrowser.FenEngine/Rendering/PaintTree/ImmutablePaintTree.cs`).
+- `SkiaDomRenderer` now upgrades rebuilt paint trees with zero localized damage to full-viewport damage before raster selection, preserving correctness when paint invalidation occurred but the diff could not safely localize the region (`FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`).
+- Regression coverage now exercises the full `LayoutEngine` path for the internal new-tab surface so centered block boxes cannot silently pass `MinimalLayoutComputer` tests while still drifting during renderer-facing absolute box export (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
+- Added regression coverage:
+  - `FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`
 - `ImageLoader` SVG header sniff fallback now logs diagnostics on parse/sniff failures instead of silent swallow (`FenBrowser.FenEngine/Rendering/ImageLoader.cs`).
 - `JavaScriptEngine` localStorage API wrappers (`setItem/getItem/removeItem/clear`) now log warning diagnostics on failure paths instead of silent catches (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
 - Legacy localStorage persistence stub in `JavaScriptEngine` was converted from `async void` to a `Task`-returning method (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
@@ -344,11 +370,12 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Paint/Compositing tranche PC-1 (2026-02-20):
   - `RenderPipeline` now enforces strict transition invariants (`Idle -> Layout -> LayoutFrozen -> Paint -> Composite -> Present -> Idle`) and records frame-budget telemetry.
   - `SkiaDomRenderer` now explicitly enters `Present` phase before frame close and integrates invalidation-burst stabilization for paint-tree rebuild decisions.
-  - `PaintDamageTracker` computes viewport-clamped damage regions from paint-tree deltas with bounded region-collapse policy.
-  - Regression suites added:
-    - `FenBrowser.Tests/Rendering/RenderPipelineInvariantTests.cs`
-    - `FenBrowser.Tests/Rendering/PaintCompositingStabilityControllerTests.cs`
-    - `FenBrowser.Tests/Rendering/PaintDamageTrackerTests.cs`.
+- `PaintDamageTracker` computes viewport-clamped damage regions from paint-tree deltas with bounded region-collapse policy.
+- Paint-tree diff coverage now includes pure visual restyles on stable geometry, so damage tracking no longer misses same-bounds control/background repaint work.
+- Regression suites added:
+  - `FenBrowser.Tests/Rendering/RenderPipelineInvariantTests.cs`
+  - `FenBrowser.Tests/Rendering/PaintCompositingStabilityControllerTests.cs`
+  - `FenBrowser.Tests/Rendering/PaintDamageTrackerTests.cs`.
 - Paint/Compositing tranche PC-1.1 regression hardening (2026-02-20):
   - `FontRegistry` now evaluates full `@font-face` source fallback chains (`local(...)` entries first, then `url(...)` entries in order), stabilizing local-font resolution in rendering paths.
   - Pseudo generated-content flow now keeps pseudo text content synchronized when pseudo instances are reused (`Layout/MinimalLayoutComputer.cs`, `Core/Dom/V2/PseudoElement.cs`).
@@ -486,6 +513,8 @@ The implementation of the User Agent CSS and Layout Algorithms.
 - **Lines 1536-1833**: **`ArrangeBlockInternal`**: The core Block formatting context algorithm.
 - **Lines 2373-2404**: **`MeasureBlock`**: Determines intrinsic sizes.
 - **Lines 2661-2765**: **`ShouldHide`**: Visibility logic (`display: none`, `visibility: hidden`).
+- `MeasureNode(...)` now short-circuits text-node measurement before flex/grid dispatch so inherited container display values do not zero out text runs.
+- Percentage width resolution now requires a finite available width during measure, preventing `%`-based flex probes from emitting `NaN` widths into later arrange passes.
 
 #### `GridLayoutComputer.cs` (Lines 1-1011)
 
@@ -618,6 +647,7 @@ Runtime selector matcher used by cascade matching and selector specificity selec
 - Parser hardening tranche CSS-2 (2026-02-26):
   - selector-chain parser now force-advances on malformed tokens to guarantee progress under random/hostile selector input.
   - selector parsing now applies recursion-depth, selector-list, and selector-length caps to prevent runaway nested pseudo-selector parsing.
+- Ancestor bloom-filter matching now hashes tag/id probes with the same normalization used by `Element.ComputeFeatureHash()`, preventing false negatives for valid mixed tag/id descendant selectors in large site stylesheets.
 
 #### `Compatibility/WebCompatibilityInterventions.cs` (Lines 1-290)
 
@@ -1297,6 +1327,12 @@ So you want to add `border-radius`? Follow these steps:
     - line baseline aggregation,
     - per-item baseline placement.
   - Eliminates inconsistent `0.8 * height` heuristic-only alignment for element-backed flex items.
+  - Flex auto-basis probing now preserves container-relative main sizes (`width:100%`, `height:100%`, expression-backed sizes) during measurement and does not convert those probe widths into an over-constraining `min-width:auto`.
+
+- `Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
+  - Added focused cascade/layout regressions for:
+    - WIMB navigation descendants staying on one flex row
+    - WIMB settings rows keeping the middle detection column expanded instead of collapsing to intrinsic-text width
 
 ### 6.31 JavaScript Bytecode Core Parity Tranche JS-BC-1 (2026-02-26)
 
@@ -5436,6 +5472,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added an explicit catalog that classifies approximate browser-host surfaces as `CompatibilityShim` or `ProductionImplementation` and exposes trace hooks for runtime use.
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
   - Added host-surface tracing for `Intl`, `window.open`, `window.matchMedia`, and `window.requestIdleCallback` so approximated APIs are no longer silent or implicit.
+  - `navigator.userAgentData` now stays on the real browser-surface path instead of the old shim classification: `toJSON()` is limited to low-entropy fields, `getHighEntropyValues(...)` returns the requested high-entropy UA-CH keys, and `uaFullVersion` now resolves from the active browser brand instead of the grease brand.
 - `FenBrowser.Tests/Workers/WorkerTests.cs`
   - Added regression coverage proving `importScripts()` resolves dynamic specifiers at runtime and ignores comment/string false positives.
 - `FenBrowser.Tests/Engine/JavaScriptEngineCleanupTests.cs`
@@ -6045,3 +6082,80 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `engine_source` grew from an early provisional snapshot to a full-document artifact (`77422` bytes) with the settled DOM.
     - `rendered_text` upgraded during the same navigation to `8198` characters with a healthy `10.53%` content-health ratio instead of freezing at an almost-empty stub.
     - the screenshot still shows WIMB layout/paint defects, which remain a separate rendering-fidelity issue.
+
+## 2.198 Text Paint-Node Glyph Population For Late-Bound Verdict Rows (2026-04-04)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Text paint-node construction now materializes positioned glyph runs through the shared font-shaping service instead of relying on string-only fallback payloads for these paths.
+  - Both multiline text-node construction and the single-line fallback path now populate `TextPaintNode.Glyphs`, using the resolved font family, weight, size, and baseline origin.
+
+- `FenBrowser.Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
+  - Added a regression assertion that the WhatIsMyBrowser JavaScript/cookie verdict rows produce text paint nodes with real glyph payloads, not empty text-node shells.
+
+- Why this mattered:
+  - `whatismybrowser.com` exposed a browser-path defect where the DOM and layout boxes existed for late-populated settings verdicts, but the renderer still skipped visible text because the paint nodes never received shaped glyph data.
+  - Text that exists only as diagnostic strings is not a rendered browser feature; the paint tree must carry final glyph geometry into the renderer.
+
+- Verification:
+  - focused regression slice on `2026-04-04` kept the WIMB verdict-row assertions green after the glyph-path change.
+  - clean-state host repro on `2026-04-04` showed `WIMB-TEXT-BUILD` events for:
+    - `Yes - JavaScript is enabled`
+    - `Yes - Cookies are enabled`
+    - `No - Third-Party Cookies are not enabled`
+  - root diagnostics now track the settled live frame instead of only the first parse frame:
+    - `SkiaDomRenderer` overwrites `dom_dump.txt` from the current styled DOM plus layout boxes after live layout passes.
+    - `SkiaRenderer` refreshes `debug_screenshot.png` whenever the paint-tree node count changes or the last capture has aged out, which prevents WIMB screenshot drift where early placeholder frames survived past later script-driven updates.
+
+## 2.199 Browser-Surface Live Media Queries, Shared DOM Cookies, And UA Typography Parity (2026-04-04)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `window.matchMedia(...)` is no longer a traced compatibility shim. The runtime now creates live `MediaQueryList` objects that expose:
+    - `matches`
+    - `media`
+    - `onchange`
+    - `addEventListener` / `removeEventListener`
+    - legacy `addListener` / `removeListener`
+  - Media-query registrations are synchronized whenever the browser surface changes, so viewport/theme updates can trigger listener callbacks with the media-query list object as `this`.
+
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Reclassified `window.matchMedia` from compatibility-shim status to a production implementation backed by the active browser surface.
+
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - `CustomHtmlEngine`, the JavaScript bridge, and the browser host now share one browser cookie jar instead of maintaining an engine-only fallback cookie dictionary.
+  - `document.cookie` reads/writes now route through the same jar used by network requests, which gives script-visible cookie state the same partitioning and third-party policy as fetch/navigation traffic.
+  - CSS/media configuration now reads the real browser surface and threads viewport, DPR, `prefers-color-scheme`, reduced motion, hover, pointer, scripting, and display-mode values into the parser.
+
+- `FenBrowser.FenEngine/Assets/ua.css`
+- `FenBrowser.FenEngine/Resources/ua.css`
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Removed the legacy UA `body { font-family: serif; }` override from both shipped UA stylesheets and the fallback UA stylesheet literal.
+  - The browser now lets author styles on `html/body` control page typography unless standards UA rules explicitly need to intervene.
+
+- Why this mattered:
+  - the remaining `whatismybrowser.com` parity gap was not a single-site hack problem. The engine still had three browser-level defects:
+    - `matchMedia` was not a live standards surface
+    - DOM cookies and network cookies did not share one browser authority
+    - the UA stylesheet forced serif body typography that distorted author sizing, badge wrapping, and button metrics
+  - production compatibility required fixing those surfaces at the engine boundary rather than layering site-specific exceptions into cascade or layout.
+
+- Verification:
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-04-04`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~BrowserCookieJarTests|FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges" --no-restore`: pass (`9/9`) on `2026-04-04`.
+
+## 2.200 Shrink-To-Fit Relayout Width Guard For Inline Badge Content (2026-04-04)
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Shrink-to-fit relayout now rounds the probed intrinsic width upward with a small guard band before the final constrained pass is re-entered.
+  - This prevents subpixel loss between the intrinsic probe and the second layout pass from turning an exact-fit inline badge/button line into a wrapped final render.
+
+- `FenBrowser.Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
+  - Added `Layout_Keeps_WimbVersionBadge_OnSingleLine` to lock the WIMB-style inline badge structure onto one text line under the generic shrink-to-fit path.
+
+- Why this mattered:
+  - the WIMB header badge is an `inline-block` with nested inline content, which is exactly the kind of UI that exposes probe-to-relayout width loss.
+  - This is layout-engine hardening, not a site rule: intrinsic probes must preserve enough width for the final pass to paint the same line the probe already proved would fit.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~WhatIsMyBrowserLayoutRegressionTests.Layout_Keeps_WimbVersionBadge_OnSingleLine|FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~BrowserCookieJarTests|FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges" --no-restore`: pass (`10/10`) on `2026-04-04`.

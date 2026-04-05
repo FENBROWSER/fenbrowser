@@ -1002,3 +1002,69 @@ _End of Volume II_
   - `FenBrowser.Tests/Rendering/TypographyCachingTests.cs`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --no-build --filter "FullyQualifiedName~TypographyCachingTests"`: pass on `2026-03-30`.
 
+### 1.50 Browser Surface Request-Header Unification And Client-Hint Consistency (2026-04-04)
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/BrowserSurfaceProfile.cs`
+- `FenBrowser.Core/ResourceManager.cs`
+- `FenBrowser.Core/NetworkService.cs`
+- `FenBrowser.Tests/Core/BrowserSettingsTests.cs`
+- `FenBrowser.Tests/Core/NavigationManagerRequestHeadersTests.cs`
+  - Added `BrowserSettings.ApplyBrowserRequestHeaders(...)` as the canonical browser identity helper for outbound requests that should present a first-class browser surface.
+  - `ResourceManager` and `NetworkService` now apply the same browser request surface instead of mixing ad hoc `User-Agent` assignment with partial client-hint emission.
+  - Chromium-family browser profiles now separate low-entropy brands from full-version brands:
+    - `Sec-CH-UA` carries the major-version browser brands plus a standards-shaped GREASE brand.
+    - `Sec-CH-UA-Full-Version-List` carries the full browser and Chromium versions instead of repeating the low-entropy values.
+    - `Sec-CH-UA-Full-Version` now resolves to the actual browser brand full version rather than the GREASE placeholder version.
+- Why this mattered:
+  - the old request surface could advertise `Edg/146...` in `User-Agent` while still leaking `99` through the full-version client-hint path, which produced contradictory browser-version detection on live sites.
+  - browser identity needs one source of truth across navigation, subresource fetches, and compatibility APIs.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~BrowserSettingsTests"`: pass on `2026-04-04`.
+  - live host navigation to `https://httpbin.org/headers` on `2026-04-04` confirmed:
+    - `Sec-CH-UA: " Not;A Brand";v="99", "Chromium";v="146", "Microsoft Edge";v="146"`
+    - `Sec-CH-UA-Full-Version: "146.0.7800.12"`
+    - `Sec-CH-UA-Full-Version-List: " Not;A Brand";v="99.0.0.0", "Chromium";v="146.0.7800.12", "Microsoft Edge";v="146.0.7800.12"`
+
+### 1.51 Rendered-Text Artifact Normalization (2026-04-04)
+- `FenBrowser.Core/Logging/StructuredLogger.cs`
+  - Rendered-text artifact export now normalizes a small set of recurring mojibake sequences before the text snapshot is written to disk.
+- Why this mattered:
+  - diagnostics should not report fake text regressions purely because a known symbol sequence was serialized through an inconsistent encoding path.
+  - this is an artifact-quality hardening step for operator evidence, not a replacement for upstream text shaping or entity-decoding fixes.
+
+### 1.52 Browser Surface Media Evaluation And Shared Cookie-Jar Routing (2026-04-04)
+- `FenBrowser.Core/Storage/BrowserCookieJar.cs`
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/BrowserSurfaceProfile.cs`
+- `FenBrowser.Core/ResourceManager.cs`
+- `FenBrowser.Tests/Core/BrowserCookieJarTests.cs`
+- `FenBrowser.Tests/Core/BrowserSettingsTests.cs`
+  - Added `BrowserCookieJar` as the shared browser-level cookie authority for both network traffic and `document.cookie` bridges.
+  - The jar enforces production cookie semantics instead of ad hoc dictionaries:
+    - `Secure`
+    - `HttpOnly`
+    - `SameSite`
+    - `Partitioned`
+    - `__Secure-` / `__Host-` prefixes
+    - third-party read/write blocking through the same policy path used by the browser
+  - `ResourceManager` now attaches request cookies and stores response cookies across text, image, byte, and generic send paths, which closes the earlier split where third-party script detection could set cookies without later replaying them.
+  - `BrowserSettings.GetBrowserSurface(...)` now derives `preferred-color-scheme` from the actual host theme setting, and `BrowserSurfaceProfile.MatchesMediaQuery(...)` now evaluates real browser-facing conditions instead of the earlier string-fragment approximation.
+  - Media-query evaluation now supports:
+    - comma-separated OR groups
+    - `and` / `not` / `only`
+    - media types
+    - width / height constraints
+    - orientation
+    - `prefers-color-scheme`
+    - `prefers-reduced-motion`
+    - `pointer`
+    - `hover`
+- Why this mattered:
+  - `whatismybrowser.com` exposed two production gaps at once:
+    - browser-surface media queries were too weak to drive correct style parity
+    - cookie state was split between network and DOM paths, so third-party cookie detection could not behave like a real browser
+  - A browser cannot claim compatibility parity while request cookies, `document.cookie`, and media features disagree about the active page state.
+- Verification:
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-04-04`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~BrowserCookieJarTests|FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges" --no-restore`: pass (`9/9`) on `2026-04-04`.
+

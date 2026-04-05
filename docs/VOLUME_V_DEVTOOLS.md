@@ -435,4 +435,23 @@ Net effect:
   - `FenBrowser.Tests/DevTools/DebuggerDomainTests.cs`
   - focused regression slice on `2026-03-30`: pass.
 
+### 5.18 DevTools Server Reset Hardening For Tab Churn (2026-04-02)
+
+- `FenBrowser.DevTools/Core/Protocol/MessageRouter.cs`
+  - Added `ClearHandlers()` so a host-owned DevTools session can discard all registered protocol domains without tearing down event subscriptions.
+
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+  - `Reset()` now clears the node registry, drops all registered protocol handlers from the shared router, and nulls cached domain references.
+  - This makes `Reset()` a real target-change boundary instead of a partial registry-only cleanup.
+
+- Why this mattered:
+  - The host reuses one `DevToolsServer` across active-tab changes.
+  - Before this fix, opening a second tab re-entered `InitializeDom(...)` on the same `MessageRouter`, which threw `Protocol handler already registered for domain 'DOM'` and crashed the host on the new-tab path.
+
+- Verification:
+  - `FenBrowser.Tests/DevTools/DevToolsServerTests.cs`
+    - added a regression proving `Reset()` allows DOM, CSS, Runtime, Network, and Debugger domains to be reinitialized for another tab.
+  - `FenBrowser.Tests/DevTools/MessageRouterTests.cs`
+    - existing duplicate-domain guard remains in force for non-reset paths.
+
 _End of Volume V_
