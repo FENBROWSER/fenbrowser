@@ -12,6 +12,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Security;
+using FenBrowser.Core.Storage;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.FenEngine.Scripting; // For IJsHost
 using FenBrowser.FenEngine.Core; // Corrected namespace
@@ -98,6 +99,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const int ImagePrewarmEagerCandidateLimit = 6;
         private const int ImagePrewarmQueueBudget = 32;
         private const int ImagePrewarmMaxConcurrency = 6;
+        private readonly object _renderStateLock = new();
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
@@ -121,6 +123,35 @@ namespace FenBrowser.FenEngine.Rendering
         public LayoutResult LastLayout { get; private set; }
         public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
+
+        private void SetActiveDom(Node dom)
+        {
+            lock (_renderStateLock)
+            {
+                _activeDom = dom;
+            }
+        }
+
+        private void SetComputedStyles(Dictionary<Node, CssComputed> styles)
+        {
+            lock (_renderStateLock)
+            {
+                LastComputedStyles = styles;
+            }
+        }
+
+        private void UpdateRenderState(Node dom, Dictionary<Node, CssComputed> styles)
+        {
+            lock (_renderStateLock)
+            {
+                if (dom != null)
+                {
+                    _activeDom = dom;
+                }
+
+                LastComputedStyles = styles;
+            }
+        }
 
         private static Task RunDetachedAsync(Func<Task> operation)
         {
@@ -219,7 +250,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public void ClearAllCookies()
         {
-            _jsCookieJar = new CookieContainer();
+            CookieJar.ClearAll();
         }
 
         public object Evaluate(string script)
@@ -244,9 +275,10 @@ namespace FenBrowser.FenEngine.Rendering
         private Func<Uri, Task<Stream>> _activeImageLoader;
         private Action<Uri> _activeOnNavigate;
         private double? _activeViewportWidth;
+        private double? _activeViewportHeight;
         private Action<object> _activeFixedBackground;
         private JavaScriptEngine _activeJs;
-        private CookieContainer _jsCookieJar = new CookieContainer();
+        public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
         private int _repaintScheduled;
         private readonly object _uiDispatcher;
@@ -514,7 +546,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _repaintGate.Dispose();
                 // _activeJs does not implement IDisposable, just clear ref
                 _activeJs = null;
-                _activeDom = null;
+                SetActiveDom(null);
                 // _cachedView = null;
                 _cachedRenderer = null;
                 JavaScriptEngine.SetVisualRectProvider(null);
@@ -883,15 +915,17 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth,
+            double? viewportHeight,
             Action<object> onFixedBackground,
             JavaScriptEngine js)
         {
-            _activeDom = dom;
+            SetActiveDom(dom);
             _activeBaseUri = baseUri;
             _activeFetchCss = fetchExternalCssAsync;
             _activeImageLoader = imageLoader;
             _activeOnNavigate = onNavigate;
             _activeViewportWidth = viewportWidth;
+            _activeViewportHeight = viewportHeight;
             _activeFixedBackground = onFixedBackground;
             // Only update _activeJs if a new engine is provided; preserve existing during repaints
             if (js != null) _activeJs = js;
@@ -941,14 +975,28 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private void ConfigureMedia(double? viewportWidth)
+        private void ConfigureMedia(double? viewportWidth, double? viewportHeight)
         {
             try
             {
-                CssParser.MediaViewportWidth = viewportWidth;
-                try { CssParser.MediaViewportHeight = (double?)GetPrimaryWindowHeight(); } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed setting media viewport height: {ex.Message}", LogCategory.Rendering); }
-                try { CssParser.MediaDppx = 1.0; } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed setting media dppx: {ex.Message}", LogCategory.Rendering); }
-                try { CssParser.MediaPrefersColorScheme = "light"; } catch { CssParser.MediaPrefersColorScheme = "light"; }
+                var surface = BrowserSettings.GetBrowserSurface(
+                    BrowserSettings.Instance.SelectedUserAgent,
+                    BrowserViewportMetrics.Create(
+                        viewportWidth ?? 1280,
+                        viewportHeight ?? 720));
+
+                CssParser.MediaViewportWidth = surface.Viewport.WindowWidth;
+                CssParser.MediaViewportHeight = surface.Viewport.WindowHeight;
+                try { CssParser.MediaDppx = surface.Viewport.DevicePixelRatio; } catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Failed setting media dppx: {ex.Message}", LogCategory.Rendering); }
+                CssParser.MediaPrefersColorScheme = surface.Viewport.PreferredColorScheme;
+                CssParser.PrefersDarkMode = string.Equals(surface.Viewport.PreferredColorScheme, "dark", StringComparison.OrdinalIgnoreCase);
+                CssParser.MediaPrefersReducedMotion = surface.Viewport.ReducedMotion ? "reduce" : "no-preference";
+                CssParser.MediaHover = surface.Viewport.Hover ? "hover" : "none";
+                CssParser.MediaAnyHover = CssParser.MediaHover;
+                CssParser.MediaPointer = surface.Viewport.FinePointer ? "fine" : "coarse";
+                CssParser.MediaAnyPointer = CssParser.MediaPointer;
+                CssParser.MediaScripting = EnableJavaScript ? "enabled" : "none";
+                CssParser.MediaDisplayMode = "browser";
             }
             catch (Exception ex)
             {
@@ -971,7 +1019,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (dom == null) return null;
             var _buildTreeStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            ConfigureMedia(viewportWidth);
+            ConfigureMedia(viewportWidth, viewportHeight);
 
             var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
             
@@ -997,7 +1045,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var cssEngine = CssEngineFactory.GetEngine();
                     FenLogger.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
 
-                    LastComputedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
+                    SetComputedStyles(await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight));
                     FenLogger.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                     // Assign computed styles to nodes so Layout Engine can see them
@@ -1018,7 +1066,7 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 FenLogger.Error($"[CustomHtmlEngine] CssLoader CRASH: {ex}", LogCategory.Rendering);
-                LastComputedStyles = new Dictionary<Node, CssComputed>();
+                SetComputedStyles(new Dictionary<Node, CssComputed>());
             }
 
             // var computed = result.Computed; // Use LastComputedStyles instead
@@ -1092,7 +1140,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _activeOnNavigate,
                 _activeJs,
                 _activeViewportWidth,
-                (double?)GetPrimaryWindowHeight(),
+                _activeViewportHeight ?? GetPrimaryWindowHeight(),
                 _activeFixedBackground,
                 includeDiagnosticsBanner).ConfigureAwait(false);
         }
@@ -1261,7 +1309,8 @@ namespace FenBrowser.FenEngine.Rendering
                  else
                  {
                      // CRITICAL FIX: Actually store the computed styles!
-                     LastComputedStyles = await cssTask;
+                     var computedStyles = await cssTask;
+                     UpdateRenderState(dom, computedStyles);
                      FenLogger.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
 
@@ -1278,7 +1327,6 @@ namespace FenBrowser.FenEngine.Rendering
                      // are the keys in LastComputedStyles.  Without this fix _activeDom would
                      // still point to a stale incremental-parse clone, causing every style
                      // lookup to miss and producing a blank frame.
-                     if (dom != null) _activeDom = dom;
                      Console.WriteLine($"[DBG-CSS] CSS done. Styles={LastComputedStyles?.Count ?? 0}, _activeDom={_activeDom?.GetType().Name ?? "NULL"}:{(_activeDom as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?"}");
 
                      // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
@@ -1392,29 +1440,17 @@ namespace FenBrowser.FenEngine.Rendering
             if (dirtyRoots.Count == 0)
             {
                 // No dirty nodes — still fire repaint in case layout changed
-                OnRepaintReady(_activeDom);
+                FenLogger.Warn(
+                    "[CustomHtmlEngine] Incremental recascade found no dirty roots; routing through full recascade to avoid stale inline-style state.",
+                    LogCategory.CSS);
+                await RecascadeAsync().ConfigureAwait(false);
                 return;
             }
 
-            FenLogger.Info($"[CustomHtmlEngine] Incremental recascade: {dirtyRoots.Count} dirty subtrees out of {totalElements} elements", LogCategory.CSS);
-
-            // Use the cached CascadeEngine (built from current stylesheets)
-            var cssEngine = Rendering.Css.CssEngineFactory.GetEngine();
-            foreach (var dirtyRoot in dirtyRoots)
-            {
-                // Compute styles for the dirty subtree: cascade each element, set node.ComputedStyle
-                try
-                {
-                    var parentStyle = dirtyRoot.ParentElement?.ComputedStyle;
-                    RecascadeSubtree(dirtyRoot, parentStyle);
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Warn($"[CustomHtmlEngine] Incremental recascade error on <{dirtyRoot.TagName}>: {ex.Message}", LogCategory.CSS);
-                }
-            }
-
-            OnRepaintReady(_activeDom);
+            FenLogger.Warn(
+                $"[CustomHtmlEngine] Incremental recascade requested for {dirtyRoots.Count} dirty subtree(s); routing through full recascade to preserve selector correctness.",
+                LogCategory.CSS);
+            await RecascadeAsync().ConfigureAwait(false);
         }
 
         /// <summary>
@@ -1455,35 +1491,6 @@ namespace FenBrowser.FenEngine.Rendering
         /// Re-cascades a single dirty subtree: recomputes ComputedStyle for each element
         /// using its inline styles and inherited parent style. Clears StyleDirty flags.
         /// </summary>
-        private static void RecascadeSubtree(Element root, CssComputed parentStyle)
-        {
-            var stack = new Stack<(Element el, CssComputed parent)>();
-            stack.Push((root, parentStyle));
-            while (stack.Count > 0)
-            {
-                var (el, inherited) = stack.Pop();
-
-                // Recompute: merge inherited values with element's existing computed style
-                var current = el.ComputedStyle ?? new CssComputed();
-                if (inherited != null)
-                {
-                    current.InheritFrom(inherited);
-                }
-                el.ComputedStyle = current;
-
-                // Clear dirty flag on this node
-                el.ClearStyleDirty();
-
-                // Process children
-                var children = el.ChildNodes;
-                for (int i = children.Length - 1; i >= 0; i--)
-                {
-                    if (children[i] is Element childEl)
-                        stack.Push((childEl, current));
-                }
-            }
-        }
-
         private static bool NeedsPostScriptStyleRefresh(
             Node root,
             IReadOnlyDictionary<Node, CssComputed> computedStyles)
@@ -1541,7 +1548,9 @@ namespace FenBrowser.FenEngine.Rendering
              Uri baseUri,
              Action<Uri> onNavigate, 
              bool allowJs, 
-             Func<Uri, Task<string>> fetchExternalCssAsync)
+             Func<Uri, Task<string>> fetchExternalCssAsync,
+             double? viewportWidth,
+             double? viewportHeight)
         {
              if (!allowJs) return null;
 
@@ -1627,7 +1636,9 @@ namespace FenBrowser.FenEngine.Rendering
                  return false;
              };
 
-             js.CookieBridge = scope => _jsCookieJar;
+             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope);
+             js.CookieWriteBridge = (scope, cookieString) =>
+                 CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
 
              if (fetchExternalCssAsync != null)
@@ -1657,9 +1668,9 @@ namespace FenBrowser.FenEngine.Rendering
              {
                  js.FetchHandler = FetchHandler;
                  // [Compliance] Inject Window Dimensions
-                 if (_activeViewportWidth.HasValue) js.WindowWidth = _activeViewportWidth.Value;
-                 js.WindowHeight = GetPrimaryWindowHeight();
-             }
+                if (viewportWidth.HasValue) js.WindowWidth = viewportWidth.Value;
+                if (viewportHeight.HasValue) js.WindowHeight = viewportHeight.Value;
+            }
 
              return js;
         }
@@ -1740,6 +1751,7 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
             double? viewportWidth = null,
+            double? viewportHeight = null,
             Action<object>? onFixedBackground = null,
             bool? forceJavascript = null,
             bool disableAutoFallback = false)
@@ -1753,7 +1765,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, onFixedBackground, forceJavascript, disableAutoFallback);
+                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback);
                         tcs.SetResult(result);
                     }
                     catch (Exception ex)
@@ -1814,7 +1826,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var parseResult = await RunDomParseAsync(html);
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;
-                _activeDom = dom;
+                SetActiveDom(dom);
                 tokenizingMs = Math.Max(0, parseResult?.TokenizingMs ?? 0);
                 parsingMs = Math.Max(0, parseResult?.ParsingMs ?? 0);
                 parseTokenCount = Math.Max(0, parseResult?.TokenCount ?? 0);
@@ -1833,7 +1845,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // CRITICAL FIX: Invalidate old styles immediately so the renderer stops using them.
                 // This forces BrowserIntegration to wait (showing previous frame or spinner) until new styles are ready.
-                LastComputedStyles = null;
+                SetComputedStyles(null);
                 
                 var elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 tokenizingAndParsingMs = Math.Max(0, tokenizingMs + parsingMs);
@@ -1999,15 +2011,15 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync);
+                _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
                 if (_activeJs != null && _historyBridge != null) _activeJs.SetHistoryBridge(_historyBridge);
                 FenLogger.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-                await CaptureActiveContextAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, onFixedBackground, _activeJs).ConfigureAwait(false);
+                await CaptureActiveContextAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, _activeJs).ConfigureAwait(false);
 
                 FenLogger.Debug("[CustomHtmlEngine] Calling BuildVisualTreeAsync...", LogCategory.Rendering);
-                var vh = (double?)GetPrimaryWindowHeight();
+                var vh = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                 var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                 elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 initialVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
@@ -2033,7 +2045,7 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
                     try
                     {
-                        var vh2 = (double?)GetPrimaryWindowHeight();
+                        var vh2 = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                         element = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                         elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                         postScriptVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
@@ -2152,7 +2164,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             repaintCount++;
-            _activeDom = snapshotRoot;
+            SetActiveDom(snapshotRoot);
             // Do NOT null out LastComputedStyles here. The engine loop polls for styles
             // and nulling them causes hundreds of wasted render frames with Styles=NULL
             // before the CSS cascade completes. Keep previous styles visible so layout
@@ -2193,7 +2205,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             incrementalRepaintCount++;
-            _activeDom = snapshotRoot;
+            SetActiveDom(snapshotRoot);
             // Do NOT null out LastComputedStyles — see TryEmitStreamingParseRepaint comment.
             OnRepaintReady(snapshotRoot);
         }
@@ -2298,14 +2310,26 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             Action<object>? onFixedBackground = null)
         {
-            try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, onFixedBackground); }
+            try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, null, onFixedBackground); }
             catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Fire-and-forget render launch failed: {ex.Message}", LogCategory.Rendering); }
         }
 
         /// <summary>Expose the current active Lite DOM (last parsed).</summary>
         public Node GetActiveDom()
         {
-            return _activeDom;
+            lock (_renderStateLock)
+            {
+                return _activeDom;
+            }
+        }
+
+        public BrowserRenderSnapshot GetRenderSnapshot()
+        {
+            lock (_renderStateLock)
+            {
+                var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+                return new BrowserRenderSnapshot(root, LastComputedStyles);
+            }
         }
 
         /// <summary>Get the raw HTML source that was last rendered.</summary>
@@ -2321,13 +2345,9 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 var u = scope ?? _activeBaseUri; if (u == null) return dict;
-                var coll = _jsCookieJar.GetCookies(u);
-                if (coll != null)
+                foreach (var entry in CookieJar.Snapshot(u, _activeBaseUri ?? u))
                 {
-                    foreach (System.Net.Cookie c in coll)
-                    {
-                        if (!dict.ContainsKey(c.Name)) dict[c.Name] = c.Value ?? string.Empty;
-                    }
+                    if (!dict.ContainsKey(entry.Key)) dict[entry.Key] = entry.Value ?? string.Empty;
                 }
             }
             catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] Cookie snapshot failed: {ex.Message}", LogCategory.Rendering); }
@@ -2339,8 +2359,11 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 var u = scope ?? _activeBaseUri; if (u == null) return;
-                var cookie = new System.Net.Cookie(name ?? string.Empty, value ?? string.Empty, path ?? "/", u.Host);
-                _jsCookieJar.Add(u, cookie);
+                CookieJar.SetDocumentCookie(
+                    u,
+                    $"{name ?? string.Empty}={value ?? string.Empty}; Path={path ?? "/"}",
+                    _activeBaseUri ?? u,
+                    BrowserSettings.Instance.BlockThirdPartyCookies);
             }
             catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] SetCookie failed: {ex.Message}", LogCategory.Rendering); }
         }
@@ -2350,9 +2373,7 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 var u = scope ?? _activeBaseUri; if (u == null) return;
-                // Overwrite with expired cookie
-                var expired = new System.Net.Cookie(name ?? string.Empty, string.Empty, "/", u.Host) { Expires = DateTime.UtcNow.AddDays(-1) };
-                _jsCookieJar.Add(u, expired);
+                CookieJar.DeleteDocumentCookie(u, name, _activeBaseUri ?? u);
             }
             catch (Exception ex) { FenLogger.Warn($"[CustomHtmlEngine] DeleteCookie failed: {ex.Message}", LogCategory.Rendering); }
         }

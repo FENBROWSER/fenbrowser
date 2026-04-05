@@ -24,6 +24,10 @@ using JsValueType = FenBrowser.FenEngine.Core.Interfaces.ValueType; // For IHist
 
 namespace FenBrowser.FenEngine.Rendering
 {
+    public readonly record struct BrowserRenderSnapshot(
+        Element Root,
+        Dictionary<Node, CssComputed> Styles);
+
     /// <summary>
     /// High-level facade wrapping existing engine pieces.
     /// C# 5.0 Compatible for Windows Phone 8.1 (No Newtonsoft dependency)
@@ -204,6 +208,7 @@ namespace FenBrowser.FenEngine.Rendering
         private long _renderedDiagnosticsCapturedNavigationId;
         private int _engineDiagnosticsCapturedNodeCount;
         private int _renderedDiagnosticsCapturedTextLength;
+        private int _renderedDiagnosticsCapturedContentHash;
         private bool _disposed;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
@@ -222,6 +227,24 @@ namespace FenBrowser.FenEngine.Rendering
         // instead of the stale _engine._cachedRenderer that never has Render() called on it.
         private SkiaDomRenderer _activeRenderer;
         public void SetActiveRenderer(SkiaDomRenderer renderer) { _activeRenderer = renderer; }
+
+        private (double? Width, double? Height) GetRenderViewportHint()
+        {
+            try
+            {
+                var context = _activeRenderer?.CreateRenderContext();
+                if (context != null && context.ViewportWidth > 0 && context.ViewportHeight > 0)
+                {
+                    return (context.ViewportWidth, context.ViewportHeight);
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserApi] Failed reading active renderer viewport: {ex.Message}", LogCategory.Rendering);
+            }
+
+            return (null, null);
+        }
 
         // Tracks whether the last dispatched click event allowed default action.
         // BrowserIntegration triggers DOM click first, then calls HandleElementClick for fallback activation.
@@ -452,8 +475,10 @@ namespace FenBrowser.FenEngine.Rendering
         private void TryCaptureRenderedTextSnapshot(long navigationId, Uri uri, string textContent, int domNodeCount)
         {
             var renderedTextLength = textContent?.Length ?? 0;
+            var renderedTextHash = textContent != null ? StringComparer.Ordinal.GetHashCode(textContent) : 0;
             var capturedNavigationId = Interlocked.Read(ref _renderedDiagnosticsCapturedNavigationId);
             if (capturedNavigationId == navigationId &&
+                renderedTextHash == Volatile.Read(ref _renderedDiagnosticsCapturedContentHash) &&
                 renderedTextLength <= Volatile.Read(ref _renderedDiagnosticsCapturedTextLength))
             {
                 return;
@@ -473,6 +498,7 @@ namespace FenBrowser.FenEngine.Rendering
                     FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
                     Interlocked.Exchange(ref _renderedDiagnosticsCapturedNavigationId, navigationId);
                     Volatile.Write(ref _renderedDiagnosticsCapturedTextLength, renderedTextLength);
+                    Volatile.Write(ref _renderedDiagnosticsCapturedContentHash, renderedTextHash);
                 }
             }
             catch (Exception ex)
@@ -621,6 +647,7 @@ namespace FenBrowser.FenEngine.Rendering
                           $"Version: {httpClient.DefaultRequestVersion}", LogCategory.Network);
             
             _resources = new ResourceManager(httpClient, isPrivate);
+            _engine.CookieJar = _resources.CookieJar;
 
             // Wire up Fetch API (Phase 8)
             _engine.FetchHandler = (req) => 
@@ -908,11 +935,15 @@ namespace FenBrowser.FenEngine.Rendering
         private System.Net.Security.SslPolicyErrors _lastSslErrors;
         public CertificateInfo CurrentCertificate => _lastCertificate;
 
+        public BrowserRenderSnapshot GetRenderSnapshot()
+        {
+            return _engine.GetRenderSnapshot();
+        }
+
 
         public Element GetDomRoot()
         {
-            var dom = _engine.GetActiveDom();
-            return (dom as Element) ?? (dom as Document)?.DocumentElement;
+            return _engine.GetRenderSnapshot().Root;
         }
 
         public string GetRawHtml()
@@ -1029,7 +1060,8 @@ namespace FenBrowser.FenEngine.Rendering
                     object elem = null;
                     try
                     {
-                        elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); });
+                        var viewportHint = GetRenderViewportHint();
+                        elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
                     }
                     finally
                     {
@@ -1273,7 +1305,8 @@ pre {{
                 object elem = null;
                 try
                 {
-                    elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); });
+                    var viewportHint = GetRenderViewportHint();
+                    elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
                 }
                 finally
                 {
