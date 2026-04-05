@@ -222,7 +222,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - `scripts/ci/verify-verification-guards.ps1`
   - Fails CI on placeholder assertions.
   - Fails CI on stale legacy WPT runner filename doc references.
-  - Fails CI when `docs/VERIFICATION_BASELINES.md` drifts from `docs/test_results.md` metrics.
+  - Fails CI when the Test262 source file declared in `docs/VERIFICATION_BASELINES.md` drifts from the canonical full-suite snapshot metrics (currently `docs/test_results.md`).
 
 ### 4.6 Phase-5 WebDriver Coverage Guard (2026-02-18)
 
@@ -607,7 +607,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 - Verification snapshot:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JavaScriptEngineModuleLoadingTests|FullyQualifiedName~ExecutionContextSchedulingTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
   - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -clp:ErrorsOnly`: pass.
-  - **Check**: `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:218-235` now centralizes background fault observation in `ObserveBackgroundTaskFailureAsync`, and `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4446-4451` routes the deprecated `SetDom(...)` wrapper through that helper instead of `Task.ContinueWith(...)`.
+  - **Check**: `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:213-220` now centralizes background fault observation in `ObserveBackgroundTaskFailureAsync`, and `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs:4075-4080` routes the deprecated `SetDom(...)` wrapper through that helper instead of `Task.ContinueWith(...)`.
 
 
 ### 4.33 JavaScriptEngine Geolocation Watch Verification (2026-03-06)

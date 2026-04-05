@@ -150,13 +150,9 @@ flowchart TD
 
 ### 2.8 Web Audio API Productionization (2026-03-06)
 
-- `WebAudioAPI` now provides a full `Audio` constructor (`new Audio(src)`) as a real constructor-capable `FenFunction`, replacing parser-gap behavior with runtime-backed semantics (`FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs`).
-- `Audio` instances now implement hardened source validation and constrained playback controls:
-  - allowed source classes: `http`, `https`, `blob`, and `data:audio/*` (bounded length),
-  - blocked classes: unsafe schemes (`javascript:`, `file:`), private/reserved host targets, and control-character payloads.
-- `Audio.play()` now returns `JsPromise` with deterministic resolve/reject paths, event dispatch (`play`, `playing`, `pause`, `ended`, `error`), and bounded concurrency protection to prevent unbounded playback fan-out.
-- `JavaScriptEngine.SetupPermissions` and `SetupWindowEvents` now expose `Audio`, `AudioContext`, and `webkitAudioContext` as function constructors on both global and `window` surfaces (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`).
-- Legacy parser fallback for `new Audio("...").play()` feature-gap tracing was removed from the retired `JavaScriptEngine` compatibility path, so execution now flows through the real runtime API.
+- Historical tranche note: this section originally documented a simulated Web Audio surface.
+- Current state is defined by `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` plus `FenBrowser.Tests/WebAPIs/AudioApiTests.cs`.
+- The simulation-only `Audio`, `AudioContext`, and `webkitAudioContext` globals were later removed from the live engine surface in section `2.176`, so they are now intentionally absent from both global and `window`.
 ### 2.9 Notifications API Productionization (2026-03-06)
 
 - `NotificationsAPI` now exposes `Notification` as a real constructor-capable `FenFunction` instead of a plain object surface (`FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`).
@@ -582,7 +578,7 @@ The public facade for the layout system.
 - **Lines 63-153**: **`ComputeLayout`**: Orchestrates the 2-pass Measure/Arrange protocol.
 - **Lines 296-360**: **`HitTest`**: Converts physical coordinates (x,y) back to DOM nodes.
 
-#### `BoxTreeBuilder.cs` (Lines 1-379)
+#### `BoxTreeBuilder.cs` (Lines 1-378)
 
 **Core Pipeline Stage**. Converts DOM Nodes to Layout Boxes.
 
@@ -612,7 +608,7 @@ Implements the complex CSS margin collapsing rules for Block contexts.
 
 Implements HTML Table layout (Auto and Fixed algorithms).
 
-#### `TextLayoutComputer.cs` (Lines 1-292)
+#### `TextLayoutComputer.cs` (Lines 1-280)
 
 Handles text measurement, shaping (via Skia), and line height calculations.
 
@@ -780,7 +776,7 @@ Bridge for the `<canvas>` 2D API.
 - **Lines 100-300**: **`DrawImage`**: Interop with SkiaSharp for bitmap rendering.
 - **Lines 400-500**: **`FillRect/StrokeRect`**: Geometry primitives.
 
-#### `Scripting/ModuleLoader.cs` (Lines 1-200)
+#### `Core/ModuleLoader.cs` (Lines 1-691)
 
 Handles `import` / `export` ES6 module resolution.
 
@@ -1187,14 +1183,14 @@ So you want to add `border-radius`? Follow these steps:
 - `Workers/WorkerConstructor.cs`
   - Worker `postMessage(...)` payload conversion now uses `ToNativeObject()` to preserve primitive data.
 
-- `HTML/HtmlTreeBuilder.cs`
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
   - Initial insertion-mode now sets document quirks mode from doctype detection logic.
 
 - `Interaction/FocusManager.cs`
   - Added tabindex-aware `FindNextFocusable(...)` traversal for keyboard focus movement.
 
-- `Scripting/JavaScriptRuntime.cs`
-  - Replaced placeholder wrapper with concrete forwarding runtime over `JavaScriptEngine`.
+- `Scripting/JavaScriptEngine.cs`
+  - Remains the canonical runtime entry point after the legacy `JavaScriptRuntime` wrapper was retired and deleted from the tree.
 
 ### 6.22 Pipeline Stage Coverage Hardening (2026-02-20)
 
@@ -2550,7 +2546,7 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - `Core/Types/JsIntl.cs`
   - `DOM/DocumentWrapper.cs`, `DOM/EventTarget.cs`
   - `Workers/ServiceWorkerManager.cs`
-  - `Scripting/CanvasRenderingContext2D.cs`, `Scripting/ModuleLoader.cs`
+  - `Scripting/CanvasRenderingContext2D.cs`, `Core/ModuleLoader.cs`
   - `Rendering/Css/CssAnimationEngine.cs`, `CssEngineFactory.cs`, `CssParser.cs`, `CssLoader.cs`
   - `Rendering/ElementStateManager.cs`, `FontRegistry.cs`, `ImageLoader.cs`, `NavigationManager.cs`, `SkiaDomRenderer.cs`, `SkiaRenderer.cs`, `WebGL/WebGLContextManager.cs`
   - `Testing/Test262Runner.cs`
@@ -3028,8 +3024,8 @@ Verification snapshot (2026-03-05):
 
 Verification snapshot (2026-03-05):
 - Static scan:
-  - `WebAudioAPI.cs` direct `Task.Run` count `1 -> 0`.
-  - `WebRTCAPI.cs` direct `Task.Run` count `1 -> 0`.
+  - legacy Web Audio surface direct `Task.Run` count `1 -> 0` before removal in section `2.176`.
+  - legacy WebRTC surface direct `Task.Run` count `1 -> 0` before removal in section `2.176`.
   - `Cache.cs` direct `Task.Run` count `1 -> 0`.
   - `CacheStorage.cs` direct `Task.Run` count `1 -> 0`.
   - `IndexedDBService.cs` direct `Task.Run` count `1 -> 0`.
@@ -3518,17 +3514,9 @@ Verification snapshot (2026-03-06):
 
 
 ### 2.80 WebRTC Constructorization and ICE Configuration Hardening (2026-03-06)
-- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs`
-  - `RTCPeerConnection` and `MediaStream` are now constructor-capable (`FenFunction` with constructor metadata + prototype linkage) instead of object-only exposure.
-  - Added explicit execution-context fallback and constructor-path configuration validation.
-  - Added bounded ICE configuration normalization with scheme allowlist (`stun`, `turn`, `turns`), array-size limits, URL-size limits, and private/reserved host rejection.
-  - Added `getConfiguration()` / `setConfiguration()` handling against normalized configuration state.
-  - Added instance-level event listener wiring (`addEventListener`, `removeEventListener`, `dispatchEvent`) and state-change event dispatch on `close()`.
-- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
-  - Runtime registration now exposes constructor-capable `RTCPeerConnection`, `webkitRTCPeerConnection`, and `MediaStream` on both global and `window`.
-- Net effect:
-  - WebRTC globals now behave as constructor APIs in runtime surface checks.
-  - ICE configuration acceptance is constrained to hardened bounds and safer endpoint classes.
+- Historical tranche note: this section originally described a simulated WebRTC constructor surface.
+- Current state is defined by `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` plus `FenBrowser.Tests/WebAPIs/WebRtcApiTests.cs`.
+- The simulation-only `RTCPeerConnection`, `webkitRTCPeerConnection`, and `MediaStream` globals were later removed in section `2.176`, so they are now intentionally absent from the runtime surface.
 
 ### 2.81 Observer API Constructor and Runtime Exposure Productionization (2026-03-06)
 - `FenBrowser.FenEngine/WebAPIs/IntersectionObserverAPI.cs`
@@ -3582,14 +3570,10 @@ Verification snapshot (2026-03-06):
 - XHR remains a baseline host-backed implementation: upload progress events, cookie credential plumbing, and full `document` response parsing are still outside this tranche.
 
 ### 2.48 WebRTC PeerConnection State Hardening (2026-03-07, tracked object tranche)
-- `FenBrowser.FenEngine/WebAPIs/WebRTCAPI.cs`
-- `RTCPeerConnection` now keeps live tracked collections for created data channels, RTP senders, RTP receivers, and transceivers instead of returning empty placeholder arrays from `getSenders()`, `getReceivers()`, and `getTransceivers()`.
-- `createDataChannel()` now persists created channels on the owning peer connection, assigns stable channel ids, accepts baseline channel options (`ordered`, `maxPacketLifeTime`, `maxRetransmits`, `protocol`, `negotiated`, `binaryType`), and advances peer-connection state toward negotiation instead of being an isolated detached object factory.
-- `RTCDataChannel.send()` now enforces `readyState === "open"`, tracks `bufferedAmount`, and emits `onbufferedamountlow` after asynchronous drain instead of remaining a no-op.
-- `addTrack()` / `removeTrack()` now build and maintain linked sender/receiver/transceiver objects and dispatch `negotiationneeded` when the transceiver set changes.
-- `getStats()` now returns a baseline peer-connection stats report with connection state, ICE state, and tracked object counts rather than an empty placeholder object.
-- `close()` is now idempotent, closes tracked data channels, emits close/state-change events, and converges `connectionState`, `iceConnectionState`, `iceGatheringState`, and `signalingState` on `closed`.
-- WebRTC remains a baseline implementation: SDP generation, ICE gathering, NAT traversal, and true peer transport establishment are still outside this tranche.
+- Archived note: the tracked-object WebRTC simulation documented here no longer exists in the active tree.
+- Current enforcement is the opposite boundary:
+  - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` does not register the simulated WebRTC globals.
+  - `FenBrowser.Tests/WebAPIs/WebRtcApiTests.cs` guards that absence so the removed surface does not regress back into the runtime.
 
 ### 2.49 Fetch Constructor Semantics Hardening (2026-03-07, Headers/Response tranche)
 - `FenBrowser.FenEngine/WebAPIs/FetchApi.cs`
@@ -3643,12 +3627,10 @@ Verification snapshot (2026-03-06):
 - Fetch body support remains buffered rather than streaming: readable streams, teeing, incremental consumption, and transport-level cancellation of the underlying host fetch are still outside this tranche.
 
 ### 2.55 Web Audio Node Runtime Hardening (2026-03-07, graph/analyser/buffer tranche)
-- `FenBrowser.FenEngine/WebAPIs/WebAudioAPI.cs`
-- `AudioContext.createOscillator()` / `createBufferSource()` now produce source nodes with baseline playback state, `onended` support, and scheduled start/stop completion instead of pure no-op `start()` / `stop()` functions.
-- Base audio nodes now track live connection counts through `connect()` / `disconnect()` rather than behaving as stateless passthrough shells.
-- `AnalyserNode` byte/float capture methods now populate provided array-like targets with deterministic waveform/frequency-domain data instead of returning without mutation.
-- `AudioBuffer` now stores per-channel sample arrays and supports meaningful `getChannelData()`, `copyFromChannel()`, and `copyToChannel()` behavior rather than empty array-like placeholders.
-- Web Audio remains a compatibility implementation rather than a real audio renderer: no actual mixer, hardware output, sample-accurate scheduling, or DSP graph processing is performed in this tranche.
+- Archived note: the simulated Web Audio node graph described here was later removed from the active runtime.
+- Current state is guarded by:
+  - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`, which no longer registers the Web Audio globals.
+  - `FenBrowser.Tests/WebAPIs/AudioApiTests.cs`, which verifies those globals stay absent.
 
 ### 2.56 String Well-Formed Unicode Built-ins (2026-03-07, runtime parity tranche)
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
@@ -5466,8 +5448,8 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `RunInline(...)` is now documented as the canonical inline-script host entry point and intentionally delegates through `Evaluate(...)` instead of implying a separate execution mode.
 - `FenBrowser.FenEngine/Scripting/JsRuntimeAbstraction.cs`
   - Clarified the runtime contract so `RunInline(...)` is treated as the shared host entry point, not as a second-class legacy runtime lane.
-- `FenBrowser.FenEngine/Scripting/JavaScriptRuntime.cs`
-  - Deleted the unused legacy wrapper class after confirming it was no longer referenced anywhere in the engine.
+- Legacy `JavaScriptRuntime` wrapper
+  - Deleted after confirming it was no longer referenced anywhere in the engine.
 - `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
   - Added an explicit catalog that classifies approximate browser-host surfaces as `CompatibilityShim` or `ProductionImplementation` and exposes trace hooks for runtime use.
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
@@ -5789,7 +5771,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - `FenBrowser.FenEngine/FenBrowser.FenEngine.csproj`
   - The shipped FenEngine assembly no longer compiles:
-    - `Program.cs`
+    - legacy Program.cs entrypoint (now absent from the tree)
     - `TestFenEngine.cs`
     - `Testing/**`
     - `WebAPIs/TestHarnessAPI.cs`
