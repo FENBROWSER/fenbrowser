@@ -467,6 +467,7 @@ namespace FenBrowser.FenEngine.Scripting
                             var clone = CloneTree(ch);
                             if (clone != null) ((ContainerNode)_node).AppendChild(clone);
                         }
+                        _node.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                         if (_e.ExecuteInlineScriptsOnInnerHTML)
                         {
                             try
@@ -1001,10 +1002,22 @@ namespace FenBrowser.FenEngine.Scripting
                      var html = value.ToString();
                      try {
                          var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
-                         _node.RemoveAllChildren();
-                         foreach(var ch in doc.Children) {
-                             _node.AppendChild(ch.CloneNode(true));
+                         ContainerNode source = null;
+                         if (doc != null)
+                         {
+                             source = doc.GetElementsByTagName("body").FirstOrDefault();
+                             source ??= doc.FirstElementChild ?? (ContainerNode)doc;
                          }
+
+                         _node.RemoveAllChildren();
+                         if (source?.ChildNodes != null)
+                         {
+                             foreach (var ch in source.ChildNodes.ToArray())
+                             {
+                                 _node.AppendChild(ch.CloneNode(true));
+                             }
+                         }
+                         _node.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                          _e.RequestRepaint();
                      } catch (Exception ex) { TryLogDomWarn($"[JsDomShadowRoot] Set innerHTML failed: {ex.Message}"); }
                      return;
