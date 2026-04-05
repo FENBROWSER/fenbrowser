@@ -18,6 +18,12 @@ function Parse-DoubleValue([string]$Content, [string]$Pattern, [string]$Label) {
     return [double]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
+function Parse-SourceFilePath([string]$Content) {
+    $m = [regex]::Match($Content, 'SourceFile:\s*`([^`]+)`', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+    if (-not $m.Success) { Fail "Missing SourceFile entry in docs/VERIFICATION_BASELINES.md." }
+    return $m.Groups[1].Value.Trim()
+}
+
 Write-Host "[verify] Checking for placeholder assertions..."
 $testFiles = Get-ChildItem FenBrowser.Tests -Recurse -File -Include *.cs
 $placeholder = Select-String -Path $testFiles.FullName -Pattern 'Assert\.True\(true\)|Assert\.False\(false\)' -CaseSensitive
@@ -35,13 +41,14 @@ if ($staleWptName) {
 }
 
 Write-Host "[verify] Checking Test262 baseline drift..."
-$sourcePath = "docs/test_results.md"
 $baselinePath = "docs/VERIFICATION_BASELINES.md"
-if (-not (Test-Path $sourcePath)) { Fail "Missing source benchmark file: $sourcePath" }
 if (-not (Test-Path $baselinePath)) { Fail "Missing baseline file: $baselinePath" }
 
-$source = Get-Content $sourcePath -Raw
 $baseline = Get-Content $baselinePath -Raw
+$sourcePath = Parse-SourceFilePath $baseline
+if (-not (Test-Path $sourcePath)) { Fail "Missing source benchmark file: $sourcePath" }
+
+$source = Get-Content $sourcePath -Raw
 
 $srcTotal = Parse-IntValue $source '\*\*Total Tests:\*\*\s*([0-9,]+)' "source total"
 $srcPassed = Parse-IntValue $source '\*\*Total Passed:\*\*\s*([0-9,]+)' "source passed"

@@ -2,6 +2,7 @@
 
 Date: 2026-02-18
 Policy: This file is the canonical benchmark snapshot used by CI drift checks.
+Note: `SourceFile` must point at a stable full-suite snapshot, not an ad-hoc progress report.
 
 ## Test262 Full Suite Baseline
 
