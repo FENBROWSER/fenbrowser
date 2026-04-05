@@ -131,6 +131,7 @@ Local operator runbook for FenBrowser's Test262 workflow.
 GitHub Actions regression subset runner for Test262.
 
 - Invokes `FenBrowser.Test262.exe run_category ... --format json --output ...` for a bounded stable subset.
+- Resolves the suite root from `TEST262_ROOT` or repo-root `test262/`, and CI now provisions a shallow upstream checkout before the subset run.
 - Uses JSON result artifacts under `Results/ci-regression/` as the runner contract instead of scraping human-readable console text.
 - Writes the job artifact summary to `test262-ci-results.json` and compares pass counts against `docs/test262_ci_baseline.json`.
 
