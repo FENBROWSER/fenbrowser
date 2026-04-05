@@ -1,6 +1,6 @@
 # Browser Engine Implementation Tasks
 
-This task ledger is derived from [browser_engine_csharp_no_compromises_guide.md](browser_engine_csharp_no_compromises_guide.md) and refreshed against the current repo state on 2026-03-08.
+This task ledger is derived from the browser-engine architecture guidance that informed the project plan and refreshed against the current repo state on 2026-03-08.
 
 Milestone sections below list only remaining work. Implemented baseline work stays in the status snapshot so the milestones remain focused on what is still open.
 

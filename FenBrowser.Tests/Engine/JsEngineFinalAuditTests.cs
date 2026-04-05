@@ -10,7 +10,7 @@ using Xunit;
 namespace FenBrowser.Tests.Engine
 {
     /// <summary>
-    /// Regression tests for JS_ENGINE_FINAL.md audit findings.
+    /// Regression tests for the JavaScript audit findings ledger.
     /// Covers: Symbol type (#5), JSON.stringify (#6), Regex parsing (#2),
     /// Bytecode compiler (#3), Reflect/Proxy (#21).
     /// </summary>
