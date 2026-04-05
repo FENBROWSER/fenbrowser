@@ -87,5 +87,39 @@ namespace FenBrowser.Tests.Core
                 }
             }
         }
+
+        [Fact]
+        public void BrowserSurface_EdgeClientHints_AreInternallyConsistent()
+        {
+            var surface = BrowserSettings.GetBrowserSurface(UserAgentType.Edge);
+
+            Assert.Contains("Edg/146.0.7800.12", surface.UserAgent);
+            Assert.Contains(surface.UserAgentData.Brands, brand => brand.Brand == "Microsoft Edge" && brand.Version == "146");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == "Microsoft Edge" && brand.Version == "146.0.7800.12");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == "Chromium" && brand.Version == "146.0.7800.12");
+            Assert.Contains(surface.UserAgentData.Brands, brand => brand.Brand == " Not;A Brand" && brand.Version == "99");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == " Not;A Brand" && brand.Version == "99.0.0.0");
+        }
+
+        [Fact]
+        public void BrowserSurface_UsesConfiguredThemeForPreferredColorScheme()
+        {
+            var previousTheme = BrowserSettings.Instance.Theme;
+
+            try
+            {
+                BrowserSettings.Instance.Theme = ThemePreference.Dark;
+
+                var darkSurface = BrowserSettings.GetBrowserSurface(UserAgentType.Edge);
+
+                Assert.Equal("dark", darkSurface.Viewport.PreferredColorScheme);
+                Assert.True(darkSurface.MatchesMediaQuery("(prefers-color-scheme: dark)"));
+                Assert.False(darkSurface.MatchesMediaQuery("(prefers-color-scheme: light)"));
+            }
+            finally
+            {
+                BrowserSettings.Instance.Theme = previousTheme;
+            }
+        }
     }
 }

@@ -156,7 +156,7 @@ public class NetworkService : INetworkService
             VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
 
-        request.Headers.TryAddWithoutValidation("User-Agent", GetCurrentUserAgent());
+        BrowserSettings.ApplyBrowserRequestHeaders(request);
         request.Headers.TryAddWithoutValidation("Accept-Encoding", configuration.GetAcceptEncodingHeader());
         return request;
     }

@@ -12,6 +12,7 @@ using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Security;
 using FenBrowser.Core.Security.Corb;
+using FenBrowser.Core.Storage;
 using System.Net.Http.Headers;
 
 namespace FenBrowser.Core
@@ -118,10 +119,12 @@ namespace FenBrowser.Core
         private static readonly CorbFilter SharedCorbFilter = new();
 
         public CspPolicy ActivePolicy { get; set; }
+        public BrowserCookieJar CookieJar { get; }
 
         public ResourceManager(HttpClient http, bool isPrivate = false)
         {
             _isPrivate = isPrivate;
+            CookieJar = new BrowserCookieJar();
             if (!_isPrivate)
             {
                 _cacheRoot = Path.Combine(AppContext.BaseDirectory, "Cache");
@@ -424,6 +427,44 @@ namespace FenBrowser.Core
             }
         }
 
+        private void AttachCookies(HttpRequestMessage request, Uri topLevelDocumentUri, string secFetchDest)
+        {
+            if (request?.RequestUri == null || CookieJar == null || request.Headers.Contains("Cookie"))
+            {
+                return;
+            }
+
+            bool isTopLevelNavigation = IsTopLevelDocumentRequest(secFetchDest);
+            var cookieHeader = CookieJar.GetRequestCookieHeader(
+                request.RequestUri,
+                topLevelDocumentUri,
+                isTopLevelNavigation,
+                request.Method?.Method ?? HttpMethod.Get.Method);
+
+            if (!string.IsNullOrWhiteSpace(cookieHeader))
+            {
+                request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            }
+        }
+
+        private void StoreResponseCookies(HttpResponseMessage response, Uri topLevelDocumentUri)
+        {
+            CookieJar?.StoreResponseCookies(
+                response,
+                topLevelDocumentUri,
+                BrowserSettings.Instance.BlockThirdPartyCookies);
+        }
+
+        private static string GetHeaderValue(HttpRequestHeaders headers, string name)
+        {
+            if (headers != null && headers.TryGetValues(name, out var values))
+            {
+                return values.FirstOrDefault();
+            }
+
+            return null;
+        }
+
         private static bool IsNavigationDestination(string secFetchDest)
         {
             var normalized = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
@@ -712,22 +753,7 @@ namespace FenBrowser.Core
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    // Preserve the user's configured desktop UA for top-level navigations.
-                    var useMobile = false;
-                    var settings = BrowserSettings.Instance;
-                    var selectedUserAgent = settings.SelectedUserAgent;
-                    var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
-                    
-                    AddHeaderSafe(req, "User-Agent", ua);
-                    
-                    // Add Client Hints for modern detection
-                    var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
-                    if (settings.ImproveBrowser && !string.IsNullOrEmpty(hints))
-                    {
-                        AddHeaderSafe(req, "Sec-CH-UA", hints);
-                        AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
-                        AddHeaderSafe(req, "Sec-CH-UA-Platform", BrowserSettings.GetSecChUaPlatform());
-                    }
+                    BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
                     
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
@@ -739,6 +765,7 @@ namespace FenBrowser.Core
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
                     AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
                     ApplyNavigationRequestHeaders(req, secFetchDest);
+                    AttachCookies(req, refererOriginal ?? current, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -755,6 +782,7 @@ namespace FenBrowser.Core
                         FenLogger.Error($"[Network] Request failed: {current} - {sendEx.Message}", LogCategory.Network);
                         resp = null;
                     }
+                    StoreResponseCookies(resp, refererOriginal ?? current);
                     
                     if (resp != null && resp.StatusCode == System.Net.HttpStatusCode.Forbidden && resp.ReasonPhrase == "Blocked by AdBlock")
                     {
@@ -967,22 +995,7 @@ namespace FenBrowser.Core
                     /* [PERF-REMOVED] */
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    // Preserve the user's configured desktop UA for top-level navigations.
-                    var useMobile = false;
-                    var selectedUserAgent = BrowserSettings.Instance.SelectedUserAgent;
-                    /* [PERF-REMOVED] */
-                    var ua = BrowserSettings.GetUserAgentString(selectedUserAgent, useMobile);
-                    
-                    AddHeaderSafe(req, "User-Agent", ua);
-
-                    // Add Client Hints
-                    var hints = BrowserSettings.GetClientHints(selectedUserAgent, useMobile);
-                    if (BrowserSettings.Instance.ImproveBrowser && !string.IsNullOrEmpty(hints))
-                    {
-                        AddHeaderSafe(req, "Sec-CH-UA", hints);
-                        AddHeaderSafe(req, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
-                        AddHeaderSafe(req, "Sec-CH-UA-Platform", BrowserSettings.GetSecChUaPlatform());
-                    }
+                    BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
 
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
                     
@@ -994,6 +1007,7 @@ namespace FenBrowser.Core
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
                     AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
                     ApplyNavigationRequestHeaders(req, secFetchDest);
+                    AttachCookies(req, refererOriginal ?? current, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -1058,6 +1072,7 @@ namespace FenBrowser.Core
                              RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
                          };
                     }
+                    StoreResponseCookies(resp, refererOriginal ?? current);
                     
                     if (resp != null)
                     {
@@ -1161,6 +1176,10 @@ namespace FenBrowser.Core
                     };
                 }
 
+                var effectiveMime = string.IsNullOrWhiteSpace(ct) || string.Equals(ct, "application/octet-stream", StringComparison.OrdinalIgnoreCase)
+                    ? MimeSniffer.SniffMimeType(bodyBytes, ct)
+                    : ct;
+
                 var text = DecodeTextResponse(bodyBytes, resp.Content?.Headers?.ContentType?.CharSet);
 
                 if (IsTopLevelDocumentRequest(secFetchDest))
@@ -1211,7 +1230,7 @@ namespace FenBrowser.Core
                         ErrorDetail = "Blocked by X-Frame-Options policy",
                         StatusCode = (int)resp.StatusCode,
                         FinalUri = finalUri,
-                        ContentType = ct,
+                        ContentType = effectiveMime,
                         Headers = resp.Headers,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
@@ -1227,7 +1246,7 @@ namespace FenBrowser.Core
                     Content = text,
                     StatusCode = (int)resp.StatusCode,
                     FinalUri = finalUri,
-                    ContentType = ct,
+                    ContentType = effectiveMime,
                     Headers = resp.Headers,
                     Redirected = redirectChain.Count > 1,
                     RedirectCount = Math.Max(0, redirectChain.Count - 1),
@@ -1272,10 +1291,12 @@ namespace FenBrowser.Core
                 ApplyRefererHeader(req, referer, url, ActiveReferrerPolicy);
                 AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, url));
                 ApplyNavigationRequestHeaders(req, secFetchDest);
+                AttachCookies(req, referer ?? url, secFetchDest);
                 var cts = new System.Threading.CancellationTokenSource();
                 try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
                 HttpResponseMessage resp = null;
                 try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
+                StoreResponseCookies(resp, referer ?? url);
                 if (resp == null || !resp.IsSuccessStatusCode)
                 { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
                 AdoptResponseReferrerPolicy(resp, secFetchDest);
@@ -1401,9 +1422,11 @@ namespace FenBrowser.Core
                     AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
+                    AttachCookies(req, refererOriginal ?? current, "image");
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
+                    StoreResponseCookies(resp, refererOriginal ?? current);
                     
                     if (resp != null)
                     {
@@ -1498,6 +1521,7 @@ namespace FenBrowser.Core
                     if (!string.IsNullOrWhiteSpace(secFetchDest)) AddHeaderSafe(req, "Sec-Fetch-Dest", secFetchDest);
                     AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
                     ApplyRefererHeader(req, referer, current, ActiveReferrerPolicy);
+                    AttachCookies(req, referer ?? current, secFetchDest);
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
@@ -1508,6 +1532,7 @@ namespace FenBrowser.Core
                     }
                     catch { }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
+                    StoreResponseCookies(resp, referer ?? current);
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -1580,9 +1605,11 @@ namespace FenBrowser.Core
                 // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
                 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var originUri = GetCorsOrigin(request);
+                AttachCookies(request, request.Headers.Referrer ?? request.RequestUri, GetHeaderValue(request.Headers, "Sec-Fetch-Dest"));
                 ApplyCorsOriginHeader(request, originUri);
                 await EnsureCorsPreflightAsync(request, originUri, cts.Token).ConfigureAwait(false);
                 var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
+                StoreResponseCookies(response, request.Headers.Referrer ?? request.RequestUri);
                 return response;
             }
             catch (Exception ex)

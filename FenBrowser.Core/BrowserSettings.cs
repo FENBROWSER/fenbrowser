@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text.Json;
 
 namespace FenBrowser.Core
@@ -10,7 +12,8 @@ namespace FenBrowser.Core
     {
         FenBrowser,
         Firefox,
-        Chrome
+        Chrome,
+        Edge
     }
 
     public enum ThemePreference
@@ -121,7 +124,7 @@ namespace FenBrowser.Core
             }
         }
 
-        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Chrome;
+        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Edge;
         public ThemePreference Theme { get; set; } = ThemePreference.System;
 
         private bool _showFavoritesBar = true;
@@ -185,41 +188,170 @@ namespace FenBrowser.Core
 
         public static string GetUserAgentString(UserAgentType type, bool useMobile = false)
         {
-            switch (type)
-            {
-                case UserAgentType.Chrome:
-                    return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Mobile Safari/537.36"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Safari/537.36";
-
-                case UserAgentType.Firefox:
-                    return useMobile
-                        ? "Mozilla/5.0 (Android 14; Mobile; rv:133.0) Gecko/133.0 Firefox/133.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
-
-                case UserAgentType.FenBrowser:
-                    return useMobile
-                        ? "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Mobile Safari/537.36 FenBrowser/1.0"
-                        : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7800.12 Safari/537.36 FenBrowser/1.0";
-
-                default:
-                    return GetUserAgentString(UserAgentType.Chrome, useMobile);
-            }
+            return GetBrowserSurface(type, null, useMobile).UserAgent;
         }
 
         public static string GetClientHints(UserAgentType type, bool useMobile = false)
         {
-            if (type == UserAgentType.Chrome || type == UserAgentType.FenBrowser)
-            {
-                return "\"Not A(Brand\";v=\"99\", \"Chromium\";v=\"146\", \"Google Chrome\";v=\"146\"";
-            }
-
-            return string.Empty;
+            return GetBrowserSurface(type, null, useMobile).UserAgentData.ToSecChUaHeader();
         }
 
-        public static string GetSecChUaPlatform()
+        public static string GetSecChUaPlatform(UserAgentType? type = null, bool useMobile = false)
         {
-            return "\"Windows\"";
+            return QuoteClientHintValue(GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile).UserAgentData.Platform);
+        }
+
+        public static string GetSecChUaPlatformVersion(UserAgentType? type = null, bool useMobile = false)
+        {
+            return QuoteClientHintValue(GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile).UserAgentData.PlatformVersion);
+        }
+
+        public static string GetSecChUaFullVersion(UserAgentType? type = null, bool useMobile = false)
+        {
+            var surface = GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile);
+            return QuoteClientHintValue(GetPrimaryBrowserFullVersion(surface.UserAgentData));
+        }
+
+        public static string GetSecChUaFullVersionList(UserAgentType? type = null, bool useMobile = false)
+        {
+            var surface = GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile);
+            return surface.UserAgentData.ToSecChUaHeader(surface.UserAgentData.FullVersionList);
+        }
+
+        public static string GetSecChUaArch(UserAgentType? type = null, bool useMobile = false)
+        {
+            return QuoteClientHintValue(GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile).UserAgentData.Architecture);
+        }
+
+        public static string GetSecChUaBitness(UserAgentType? type = null, bool useMobile = false)
+        {
+            return QuoteClientHintValue(GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile).UserAgentData.Bitness);
+        }
+
+        public static string GetSecChUaModel(UserAgentType? type = null, bool useMobile = false)
+        {
+            return QuoteClientHintValue(GetBrowserSurface(type ?? Instance.SelectedUserAgent, null, useMobile).UserAgentData.Model);
+        }
+
+        public static BrowserSurfaceProfile GetBrowserSurface(
+            UserAgentType type,
+            BrowserViewportMetrics metrics = null,
+            bool useMobile = false)
+        {
+            metrics = NormalizeViewportMetrics(metrics);
+            return BrowserSurfaceProfileFactory.Create(
+                type,
+                metrics,
+                useMobile,
+                CultureInfo.CurrentCulture,
+                Instance.SendDoNotTrack);
+        }
+
+        private static BrowserViewportMetrics NormalizeViewportMetrics(BrowserViewportMetrics metrics)
+        {
+            metrics ??= BrowserViewportMetrics.Create(1280, 720);
+
+            return new BrowserViewportMetrics
+            {
+                WindowWidth = metrics.WindowWidth,
+                WindowHeight = metrics.WindowHeight,
+                OuterWidth = metrics.OuterWidth,
+                OuterHeight = metrics.OuterHeight,
+                ScreenWidth = metrics.ScreenWidth,
+                ScreenHeight = metrics.ScreenHeight,
+                AvailableScreenWidth = metrics.AvailableScreenWidth,
+                AvailableScreenHeight = metrics.AvailableScreenHeight,
+                DevicePixelRatio = metrics.DevicePixelRatio,
+                ScreenX = metrics.ScreenX,
+                ScreenY = metrics.ScreenY,
+                Hover = metrics.Hover,
+                FinePointer = metrics.FinePointer,
+                ReducedMotion = metrics.ReducedMotion,
+                PreferredColorScheme = ResolvePreferredColorScheme()
+            };
+        }
+
+        internal static string ResolvePreferredColorScheme()
+        {
+            return Instance.Theme switch
+            {
+                ThemePreference.Dark => "dark",
+                ThemePreference.Light => "light",
+                _ => "light"
+            };
+        }
+
+        public static void ApplyBrowserRequestHeaders(
+            HttpRequestMessage request,
+            UserAgentType? type = null,
+            bool useMobile = false)
+        {
+            if (request == null)
+            {
+                return;
+            }
+
+            var selectedUserAgent = type ?? Instance.SelectedUserAgent;
+            var surface = GetBrowserSurface(selectedUserAgent, null, useMobile);
+            if (!string.IsNullOrWhiteSpace(surface.UserAgent))
+            {
+                TryAddRequestHeader(request, "User-Agent", surface.UserAgent);
+            }
+
+            var hints = surface.UserAgentData.ToSecChUaHeader();
+            if (string.IsNullOrWhiteSpace(hints))
+            {
+                return;
+            }
+
+            TryAddRequestHeader(request, "Sec-CH-UA", hints);
+            TryAddRequestHeader(request, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
+            TryAddRequestHeader(request, "Sec-CH-UA-Platform", QuoteClientHintValue(surface.UserAgentData.Platform));
+            TryAddRequestHeader(request, "Sec-CH-UA-Platform-Version", QuoteClientHintValue(surface.UserAgentData.PlatformVersion));
+            TryAddRequestHeader(request, "Sec-CH-UA-Full-Version", QuoteClientHintValue(GetPrimaryBrowserFullVersion(surface.UserAgentData)));
+            TryAddRequestHeader(request, "Sec-CH-UA-Full-Version-List", surface.UserAgentData.ToSecChUaHeader(surface.UserAgentData.FullVersionList));
+            TryAddRequestHeader(request, "Sec-CH-UA-Arch", QuoteClientHintValue(surface.UserAgentData.Architecture));
+            TryAddRequestHeader(request, "Sec-CH-UA-Bitness", QuoteClientHintValue(surface.UserAgentData.Bitness));
+            TryAddRequestHeader(request, "Sec-CH-UA-Model", QuoteClientHintValue(surface.UserAgentData.Model));
+        }
+
+        private static string GetPrimaryBrowserFullVersion(BrowserUserAgentDataProfile userAgentData)
+        {
+            if (userAgentData?.FullVersionList == null || userAgentData.FullVersionList.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var preferredBrand = userAgentData.FullVersionList.FirstOrDefault(brand =>
+                !IsGreaseBrand(brand?.Brand) &&
+                !string.Equals(brand?.Brand, "Chromium", StringComparison.OrdinalIgnoreCase));
+            if (preferredBrand != null)
+            {
+                return preferredBrand.Version ?? string.Empty;
+            }
+
+            var nonGreaseBrand = userAgentData.FullVersionList.FirstOrDefault(brand => !IsGreaseBrand(brand?.Brand));
+            return nonGreaseBrand?.Version ?? string.Empty;
+        }
+
+        private static bool IsGreaseBrand(string brand)
+        {
+            return string.Equals(brand, " Not;A Brand", StringComparison.Ordinal);
+        }
+
+        private static string QuoteClientHintValue(string value)
+        {
+            return $"\"{value ?? string.Empty}\"";
+        }
+
+        private static void TryAddRequestHeader(HttpRequestMessage request, string name, string value)
+        {
+            if (request.Headers.Contains(name) || string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            request.Headers.TryAddWithoutValidation(name, value);
         }
 
         public void Normalize()
@@ -228,7 +360,7 @@ namespace FenBrowser.Core
             Logging.Normalize();
 
             if (!Enum.IsDefined(typeof(UserAgentType), SelectedUserAgent))
-                SelectedUserAgent = UserAgentType.Chrome;
+                SelectedUserAgent = UserAgentType.Edge;
 
             if (!Enum.IsDefined(typeof(ThemePreference), Theme))
                 Theme = ThemePreference.System;
