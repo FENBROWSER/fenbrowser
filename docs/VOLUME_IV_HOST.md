@@ -881,3 +881,40 @@ _End of Volume IV_
     - `logs/fenbrowser_20260330_153454.log`
     - `logs/fenbrowser_20260330_153454.jsonl`
   - the structured frame stream now records `eventLoop*`, `imageCache*`, `fontCache*`, and `textMeasure*` fields on each commit.
+
+### 6.43 Host New-Tab DevTools Lifetime Fix (2026-04-02)
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - Active-tab DevTools setup still routes through a shared `DevToolsServer`, but that server reset is now safe for repeated tab creation.
+  - The host no longer crashes when the new-tab button or `Ctrl+T` switches inspection to a freshly created tab.
+
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - Existing host-adapter disposal remains the handoff boundary for repaint, console, network, and JSON relay detachment before a new tab is attached.
+  - The fix depended on honoring that disposal boundary and pairing it with a real server reset, rather than stacking a second protocol-domain registration on the previous tab session.
+
+- Runtime proof:
+  - Clean host verification on `2026-04-02` started on Google, then navigated the active tab to `fen://newtab` without a fatal shutdown.
+  - New-tab diagnostics were emitted under:
+    - `logs/raw_source_20260402_120945.html`
+    - `logs/engine_source_20260402_120945.html`
+    - `logs/rendered_text_20260402_120945.txt`
+    - `logs/fenbrowser_20260402_120934.log`
+    - `logs/fenbrowser_20260402_120934.jsonl`
+
+### 6.44 Host Theme Propagation Into Browser Surface Media Features (2026-04-04)
+
+- `FenBrowser.Host/Theme/ThemeManager.cs`
+  - Host theme application now synchronizes the browser-wide theme preference into `BrowserSettings` only for deliberate theme changes, instead of overwriting startup `System` mode during static initialization.
+  - Startup initialization now mirrors the stored browser preference into the host theme without collapsing `System` into an unconditional persisted `Light` or `Dark` write.
+
+- Runtime effect:
+  - the host theme and the browser surface now agree about `prefers-color-scheme`, which lets engine-side `matchMedia("(prefers-color-scheme: dark)")` and CSS media evaluation reflect the actual host-visible theme state.
+  - This closes the earlier drift where the UI theme could change while the browser-surface media contract still reported the wrong color scheme to the page.
+
+- Why this mattered:
+  - browser-surface media parity is a host-to-engine contract, not just an engine concern.
+  - Persisting the wrong theme at startup would have broken both user preference integrity and page-facing media-query correctness.
+
+- Verification:
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-04-04`.
+  - targeted browser-surface regression slice on `2026-04-04` kept `BrowserSettingsTests` and `JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges` green.

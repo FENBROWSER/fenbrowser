@@ -37,6 +37,7 @@ Standard xUnit tests covering internal components:
 - **Core**: DOM node logic, Attribute parsing.
 - **Engine**: CSS Parser correctness, Layout arithmetic.
 - **Html5lib**: Tests the Tokenizer against the tricky edge cases of the HTML5 spec.
+- Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 
 ### 3.2 Compliance Runners (`FenBrowser.FenEngine.Testing`, `FenBrowser.Test262`)
 
@@ -1906,3 +1907,134 @@ _End of Volume VI_
     - `Engine Path: engine_source_20260330_160950.html`
     - `Content Health: 10.53% (Source -> Result)`
   - `debug_screenshot.png` still shows real layout/paint defects on WIMB, so diagnostics integrity is fixed but rendering fidelity is not yet fixed.
+
+## 6.56 New-Tab Crash Regression Verification (2026-04-02)
+
+- Purpose:
+  - reproduce the host crash on tab creation and verify that new-tab creation no longer terminates the browser after the DevTools reset fix.
+
+- Bug reproduction evidence before the fix:
+  - clean host cycles on `2026-04-02` reproduced `System.InvalidOperationException: Protocol handler already registered for domain 'DOM'` from:
+    - `FenBrowser.DevTools/Core/Protocol/MessageRouter.cs`
+    - `FenBrowser.DevTools/Core/DevToolsServer.cs`
+    - `FenBrowser.Host/ChromeManager.cs`
+  - a fresh `debug_screenshot.png` captured the pre-fix Google state before the tab-open crash path was triggered.
+
+- Added regression coverage:
+  - `FenBrowser.Tests/DevTools/DevToolsServerTests.cs`
+    - proves `DevToolsServer.Reset()` clears domain registrations so DOM/CSS/Runtime/Network/Debugger can be initialized again for another tab
+
+- Focused verification on `2026-04-02`:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -v minimal -nologo --no-restore --filter "FullyQualifiedName~DevToolsServerTests|FullyQualifiedName~MessageRouterTests"`: pass (`4/4`)
+  - `dotnet build FenBrowser.sln -c Debug -v minimal -nologo --no-restore`: pass (`0` warnings, `0` errors)
+
+- Required clean-state host runtime cycle on `2026-04-02`:
+  - launched `FenBrowser.Host` on `https://www.google.com`
+  - waited for stabilization, then triggered tab creation via `Ctrl+T`
+  - host remained alive through the post-open observation window
+  - emitted:
+    - `debug_screenshot.png`
+    - `logs/raw_source_20260402_120935.html`
+    - `logs/raw_source_20260402_120945.html`
+    - `logs/engine_source_20260402_120945.html`
+    - `logs/rendered_text_20260402_120945.txt`
+    - `logs/fenbrowser_20260402_120934.log`
+    - `logs/fenbrowser_20260402_120934.jsonl`
+
+- Runtime outcome:
+  - the host now logs `Navigating to: fen://newtab` and `Rendered URL: fen://newtab/` instead of crashing during duplicate DOM-domain registration
+  - structured frame logs show committed new-tab frames after the tab-open action, which closes the original crash path rather than merely masking it
+
+## 6.57 WhatIsMyBrowser Flex/Selector Fidelity Regression (2026-04-02)
+
+- Purpose:
+  - close the reproduced WhatIsMyBrowser layout regressions where the site nav, settings rows, and supporting content diverged visibly from Edge because selector matching and shared flex-row sizing were both dropping valid layout information.
+
+- Root causes closed:
+  - ancestor bloom-filter hashing used mismatched tag/id normalization between:
+    - `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+    - `FenBrowser.Core/Dom/V2/Element.cs`
+  - `MinimalLayoutComputer.MeasureNode(...)` could treat inherited-display text nodes as empty flex containers before text measurement, collapsing navigation labels to `0x0`
+  - `%` width resolution against indefinite flex probe widths could poison flex sizing with `NaN`
+  - `CssFlexLayout` treated container-relative main sizes such as `width:100%` as intrinsic content during flex-auto basis probing, then pinned `min-width:auto` to that probe width
+
+- Added regression coverage:
+  - `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
+    - `DescendantSelector_WithTagAndIdAncestor_DoesNotFastRejectValidMatch`
+  - `FenBrowser.Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
+    - `Cascade_Applies_WimbFlexSelectors_ToHeaderAndSettingsRows`
+    - `Layout_Keeps_WimbHeaderAndSettingsControlsOnSingleRow`
+
+- Focused verification on `2026-04-02`:
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -nologo --no-restore --filter "FullyQualifiedName~WhatIsMyBrowserLayoutRegressionTests|FullyQualifiedName~SelectorMatcherConformanceTests.DescendantSelector_WithTagAndIdAncestor_DoesNotFastRejectValidMatch" --logger "console;verbosity=minimal"`: pass (`3/3`)
+
+## 6.58 Internal NewTab Layout Materialization Regression (2026-04-04)
+
+- Purpose:
+  - close the reproduced internal `fen://newtab` regression where the centered search panel and quick-link shell content rendered correctly but parent borders/backgrounds were exported with a second coordinate shift, leaving ghost rounded outlines on the right side of the screenshot.
+
+- Root causes closed:
+  - `FenBrowser.FenEngine/Layout/LayoutEngine.cs`
+    - renderer-facing box export (`CollectBoxesAbsolute(...)` and `FlattenBoxTreeAbsolute(...)`) heuristically re-applied parent content offsets to box-tree geometry that was already in document coordinates
+    - the same heuristic polluted document content-height accumulation, making post-layout absolute coordinate derivation internally inconsistent across parent and child boxes
+  - `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+    - child placement was still seeded from the parent margin-box origin, which kept the internal search input visually above its panel after the X-space double-shift was removed
+  - `FenBrowser.FenEngine/Layout/Contexts/FormattingContext.cs`
+    - authored `display:block` atomic controls such as the internal new-tab `<input>` were still routed through the inline formatting context whenever they had no block descendants, so `width:100%` collapsed back to the intrinsic `150px` control fallback
+  - `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+    - atomic inline/control probing ignored percentage used widths and heights before applying intrinsic fallbacks, which let overlay-backed controls diverge from authored CSS sizing
+  - `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+    - the paint-tree background builder still injected white UA input fills whenever `style.BackgroundColor` remained transparent, even if the author had already declared `background:` shorthand on the control
+  - `FenBrowser.FenEngine/Rendering/UserAgent/UAStyleProvider.cs`
+    - form-control UA defaults only recognized explicit `BackgroundColor` / raw-map hits, so shorthand-carried background values could still be misclassified as “no author background” and seeded with white before paint
+  - `FenBrowser.FenEngine/Rendering/PaintTree/ImmutablePaintTree.cs`
+    - paint-tree diffing only treated geometry/opacity/hover/focus changes as damage, so same-bounds visual restyles like the new-tab search input background change produced zero damage and let seeded base frames preserve stale white control chrome
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+    - a rebuilt paint tree with zero localized damage could still commit as `PreservedBaseFrame`, so correctness depended on the diff never missing a visual change
+
+- Added regression coverage:
+  - `FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`
+    - `Layout_Centers_NewTabShell_And_Keeps_Search_Surface_Usable`
+    - `LayoutEngine_Does_Not_DoubleShift_NewTab_Block_Boxes`
+  - `FenBrowser.Tests/Rendering/PaintDamageTrackerTests.cs`
+    - `BackgroundColorChange_ReturnsLocalizedDamageForAffectedBounds`
+  - `FenBrowser.Tests/Rendering/RenderFrameTelemetryTests.cs`
+    - `RenderFrame_StyleOnlyVisualChange_DoesNotPreserveStaleBaseFrame`
+
+- Clean host verification on `2026-04-04`:
+  - `dotnet clean FenBrowser.sln -c Debug -nologo`: pass
+  - `dotnet build FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj -c Debug -nologo -clp:ErrorsOnly`: pass
+  - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -nologo -clp:ErrorsOnly`: pass
+  - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug -nologo --filter NewTabPageLayoutTests --no-restore`: pass (`2/2`)
+  - launched `FenBrowser.Host\bin\Debug\net8.0\FenBrowser.Host.exe fen://newtab`, waited 30 seconds, then verified fresh artifacts:
+    - `debug_screenshot.png`
+    - `dom_dump.txt`
+    - `logs/raw_source_20260404_125949.html`
+    - `logs/fenbrowser_20260404_125948.log`
+    - `logs/fenbrowser_20260404_125948.jsonl`
+
+- Runtime outcome:
+  - the fresh `dom_dump.txt` no longer shows the previous double-shifted shell descendants (`x=1244/1317`); the centered shell/search/quick-link boxes stay in the expected `x=610-683` region on the 1920px viewport
+  - the first follow-up clean run at `2026-04-04 13:14` confirmed the deeper block-flow fix: `dom_dump.txt` places `#url-bar` inside `#newtab-form` (`panel y=558.1`, `search box y=559.1`) instead of above it, and quick links stay below the search region (`class='quick-links' y=720.0`)
+  - the second follow-up clean run at `2026-04-04 13:44` restored the real `<input>` path and confirmed the remaining width regression was in the engine, not the page: `debug_screenshot.png` showed a white native overlay only `150px` wide and `dom_dump.txt` reported `INPUT#url-bar [Box: 150.0x58.0 @ 704.0,572.1]` inside a `580px` search panel
+  - the final follow-up run after the control-sizing fix must also show the engine no longer painting white UA fallback chrome over the authored dark search input when `overlayCount: 1` is active
+  - the final renderer-path closure added a paint-diff fix plus a conservative full-damage fallback so style-only visual changes on stable geometry cannot commit as `PreservedBaseFrame`; this closes the stale-white-search-surface path without any site-specific override
+  - the final clean run for this tranche must show the restored real-input path at full authored width under native overlay participation, not a custom div-based search surface
+
+- Required clean-state WIMB host runtime cycle on `2026-04-02`:
+  - killed existing `FenBrowser*` processes
+  - cleared `logs`
+  - launched `FenBrowser.Host` on `https://www.whatismybrowser.com/`
+  - observed for `30` seconds before shutdown
+  - emitted:
+    - `debug_screenshot.png`
+    - `logs/raw_source_20260402_131455.html`
+    - `logs/engine_source_20260402_131459.html`
+    - `logs/rendered_text_20260402_131510.txt`
+    - `logs/fenbrowser_20260402_131453.log`
+    - `logs/fenbrowser_20260402_131453.jsonl`
+
+- Runtime outcome:
+  - the host stayed alive for the full observation window with no fatal exception
+  - fresh runtime text output now includes the WIMB navigation labels, browser verdict, unique URL block, and settings rows in one settled artifact instead of stalling at the early bootstrap snapshot
+  - the only logged runtime errors in this cycle were external WIMB third-party-cookie/CORS probes, not host or layout-engine crashes
