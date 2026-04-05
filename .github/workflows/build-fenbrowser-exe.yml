@@ -108,7 +108,7 @@ jobs:
 
       - name: Run Test262 CI regression subset
         shell: pwsh
-        run: ./scripts/ci/run-test262-ci.ps1
+        run: '& .\scripts\ci\run-test262-ci.ps1'
 
       - name: Upload Test262 results
         if: always()
