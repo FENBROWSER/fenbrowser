@@ -50,6 +50,17 @@ public class MessageRouter
             _handlers[handler.Domain] = handler;
         }
     }
+
+    /// <summary>
+    /// Remove all registered domain handlers while preserving event subscriptions.
+    /// </summary>
+    public void ClearHandlers()
+    {
+        lock (_lock)
+        {
+            _handlers.Clear();
+        }
+    }
     
     /// <summary>
     /// Subscribe to protocol events.
