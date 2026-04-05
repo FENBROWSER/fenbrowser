@@ -311,7 +311,9 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             // Check both BackgroundColor and the raw Map for explicit "background" or "background-color"
             bool cssSpecifiedBackground = style.Map != null && 
                 (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color"));
-            bool hasBackground = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0) || cssSpecifiedBackground;
+            bool hasBackground = (style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0) ||
+                                 cssSpecifiedBackground ||
+                                 !string.IsNullOrWhiteSpace(style.BackgroundImage);
             if (!hasBackground && tag != "FIELDSET")
             {
                 style.BackgroundColor = isButtonType 

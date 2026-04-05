@@ -7,172 +7,274 @@ namespace FenBrowser.FenEngine.Rendering
         public static string Render()
         {
             var searchUrl = FenBrowser.Core.BrowserSettings.Instance.SearchEngineUrl;
-            // Ensure searchUrl is JS-safe (basic escaping)
             searchUrl = searchUrl.Replace("'", "\\'");
 
             return $@"<!DOCTYPE html>
 <html>
 <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
     <title>New Tab</title>
     <style>
+        html {{
+            height: 100%;
+        }}
+
         body {{
-            font-family: Segoe UI, Arial, sans-serif;
-            background-color: #1e293b;
-            color: #f8fafc;
             margin: 0;
-            padding: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column; /* FIX: Column ensures width is constrained (Cross Axis) */
-            align-items: center;
-            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', 'Segoe UI Variable Text', Arial, sans-serif;
+            color: #e2e8f0;
+            background-color: #0f172a;
         }}
-        
-        .container {{
-            max-width: 600px;
-            width: 100%;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center; /* Fix: Restore text alignment for children */
+
+        .page {{
+            min-height: 100vh;
+            padding: 72px 24px 120px;
             box-sizing: border-box;
-            padding: 0 20px;
+            text-align: center;
         }}
-        
+
+        .shell {{
+            display: inline-block;
+            width: 700px;
+            max-width: 100%;
+            margin-top: 10vh;
+            text-align: center;
+        }}
+
+        .eyebrow {{
+            display: inline-block;
+            padding: 8px 14px;
+            box-sizing: border-box;
+            border-radius: 999px;
+            border: 1px solid #334155;
+            background: rgba(15, 23, 42, 0.64);
+            color: #93c5fd;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }}
+
         .logo {{
-            font-size: 42px;
-            font-weight: bold;
-            color: #3b82f6;
-            margin-bottom: 10px;
-            text-align: center; /* Fix: Explicit alignment */
-            width: 100%;
+            margin: 26px 0 0;
+            color: #f8fafc;
+            font-size: 68px;
+            font-weight: 700;
+            letter-spacing: -0.05em;
+            line-height: 1;
         }}
-        
+
+        .logo-accent {{
+            color: #60a5fa;
+        }}
+
         .tagline {{
-            font-size: 14px;
+            display: block;
+            width: 560px;
+            margin-top: 16px;
+            margin-left: 70px;
             color: #94a3b8;
-            margin-bottom: 40px;
-            text-align: center; /* Fix: Explicit alignment */
-            width: 100%;
+            font-size: 18px;
+            line-height: 1.6;
         }}
-        
+
+        .search-panel {{
+            display: block;
+            width: 580px;
+            margin-top: 34px;
+            margin-left: 60px;
+            padding: 12px;
+            box-sizing: border-box;
+            border-radius: 30px;
+            border: 1px solid #334155;
+            background: rgba(15, 23, 42, 0.74);
+        }}
+
         .search-box {{
             display: block;
             width: 100%;
-            max-width: 400px;
+            height: 58px;
+            padding: 0 20px;
+            line-height: 56px;
+            border-radius: 20px;
+            border: 1px solid #3b82f6;
+            background: rgba(15, 23, 42, 0.88);
+            color: #f8fafc;
+            font-size: 18px;
+            font-family: inherit;
             box-sizing: border-box;
-            padding: 12px 20px;
-            border-radius: 24px;
-            background-color: #334155;
+            text-align: left;
+            overflow: hidden;
+            white-space: nowrap;
+            outline: none;
+            appearance: none;
+        }}
+
+        .search-box::placeholder {{
+            color: #94a3b8;
+        }}
+
+        .search-box.is-focused {{
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
+        }}
+
+        .search-hint {{
+            margin-top: 14px;
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }}
+
+        .quick-links {{
+            display: block;
+            margin-top: 36px;
+        }}
+
+        .quick-link {{
+            display: block;
+            width: 100%;
+            margin: 12px 0 0;
+            padding: 18px 20px;
+            box-sizing: border-box;
+            border-radius: 18px;
+            border: 1px solid #334155;
+            background: #1e293b;
+            color: #e2e8f0;
+            text-decoration: none;
+            text-align: left;
+        }}
+
+        .quick-link-title {{
+            display: block;
             color: #f8fafc;
             font-size: 16px;
-            margin-bottom: 50px; /* Removed auto margins, relying on align-items: center */
-            text-align: center; /* Center text inside input */
-            height: 44px;
-            appearance: none;
-            border: none;
-            outline: 1px solid #475569;
+            font-weight: 600;
         }}
-        
-        .sites-grid {{
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 16px;
-            width: 100%;
-        }}
-        
-        .site-link {{
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center; /* Center content vertically in the box */
-            width: 100px;
-            height: 100px;
-            box-sizing: border-box;
-            padding: 10px;
-            text-decoration: none;
-            color: #e2e8f0; /* Brightened text color */
-            background-color: #334155;
-            border-radius: 12px;
-            transition: background-color 0.2s, transform 0.1s;
-        }}
-        
-        .site-link:hover {{
-            background-color: #475569;
-            transform: translateY(-2px); /* Subtle hover lift */
-        }}
-        
-        .site-icon {{
-            width: 44px; /* Slightly smaller to fit text better */
-            height: 44px;
-            border-radius: 8px; 
-            margin-bottom: 8px;
-            object-fit: cover;
-            background-color: transparent;
-        }}
-        
-        .site-name {{
-            font-size: 12px;
-            color: #e2e8f0; /* Match link color */
-            margin-top: 4px;
-            font-family: Segoe UI, Arial, sans-serif; /* Restore primary font */
-            text-align: center;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            width: 100%;
-            display: block; /* Ensure block layout */
+
+        .quick-link-copy {{
+            display: block;
+            margin-top: 8px;
+            color: #94a3b8;
+            font-size: 13px;
+            line-height: 1.45;
         }}
 
         .footer {{
-            position: fixed;
-            bottom: 20px;
-            left: 0;
-            width: 100%;
+            margin-top: 42px;
             font-size: 12px;
-            color: #475569;
+            color: #64748b;
             text-align: center;
-            pointer-events: none; /* Let clicks pass through if overlapping */
         }}
     </style>
 </head>
 <body id='fen-newtab'>
-    <div class='container'>
-        <div class='logo'>FenBrowser</div>
-        <div class='tagline'>SECURE • PRIVATE • FAST</div>
-        
-        <input type='text' id='url-bar' class='search-box' placeholder='Search the web or enter a URL...'>
-        
-        <div class='sites-grid'>
-             <!-- Empty default sites -->
+    <div class='page'>
+        <div class='shell'>
+            <div class='eyebrow'>Start Securely</div>
+            <div class='logo'><span class='logo-accent'>Fen</span>Browser</div>
+            <div class='tagline'>A focused start page built for quick search, direct navigation, and a calmer browsing surface.</div>
+
+            <div id='newtab-form' class='search-panel'>
+                <input id='url-bar' class='search-box' type='text' autocomplete='off' spellcheck='false' placeholder='Search the web or enter a URL'>
+                <div class='search-hint'>Press Enter to search, open a site, or jump straight to a domain</div>
+            </div>
+
+            <div class='quick-links'>
+                <a class='quick-link' href='fen://settings'>
+                    <span class='quick-link-title'>Settings</span>
+                    <span class='quick-link-copy'>Review privacy, appearance, and browser behavior.</span>
+                </a>
+                <a class='quick-link' href='https://www.whatismybrowser.com/'>
+                    <span class='quick-link-title'>Diagnostics</span>
+                    <span class='quick-link-copy'>Check browser identity and surface compatibility.</span>
+                </a>
+                <a class='quick-link' href='https://developer.mozilla.org/'>
+                    <span class='quick-link-title'>MDN</span>
+                    <span class='quick-link-copy'>Open reference docs for HTML, CSS, and JavaScript.</span>
+                </a>
+                <a class='quick-link' href='https://stackoverflow.com/'>
+                    <span class='quick-link-title'>Stack Overflow</span>
+                    <span class='quick-link-copy'>Jump into implementation details and debugging threads.</span>
+                </a>
+            </div>
+
+            <div class='footer'>FenBrowser | Secure private browsing with a faster start surface</div>
         </div>
-        
-        <div class='footer'>FenBrowser - Built for the modern web</div>
     </div>
     <script>
-        document.getElementById('url-bar').addEventListener('keydown', function(e) {{
-            if (e.key === 'Enter') {{
-                var val = this.value;
-                if (!val) return;
-                console.log('NewTab Input: ' + val);
-                
-                var isUrl = val.indexOf('.') > 0 && !val.includes(' ');
-                var searchBase = '{searchUrl}';
-                var url = isUrl ? val : searchBase + encodeURIComponent(val);
-                
-                if (isUrl && !url.startsWith('http')) {{
-                    url = 'https://' + url;
-                }}
-                
-                window.location.href = url;
+        function resolveInputTarget(value) {{
+            if (!value) {{
+                return '';
             }}
-        }});
-        // Autofocus
-        window.onload = function() {{ 
-            var el = document.getElementById('url-bar');
-            if(el) el.focus(); 
+
+            var isUrl = value.indexOf('.') > 0 && !value.includes(' ');
+            var searchBase = '{searchUrl}';
+            var url = isUrl ? value : searchBase + encodeURIComponent(value);
+
+            if (isUrl && !url.startsWith('http')) {{
+                url = 'https://' + url;
+            }}
+
+            return url;
+        }}
+
+        window.onload = function() {{
+            var input = document.getElementById('url-bar');
+            if (!input) {{
+                return;
+            }}
+
+            function focusInput() {{
+                input.className = 'search-box is-focused';
+                input.focus();
+            }}
+
+            function blurInput() {{
+                input.className = 'search-box';
+            }}
+
+            function submitValue() {{
+                var val = input.value.trim();
+                if (!val) {{
+                    return;
+                }}
+
+                var target = resolveInputTarget(val);
+                if (target) {{
+                    window.location.href = target;
+                }}
+            }}
+
+            input.addEventListener('click', function() {{
+                focusInput();
+            }});
+
+            input.addEventListener('focus', focusInput);
+            input.addEventListener('blur', blurInput);
+
+            input.addEventListener('keydown', function(e) {{
+                if (e.key === 'Enter') {{
+                    e.preventDefault();
+                    submitValue();
+                    return;
+                }}
+            }});
+
+            document.addEventListener('keydown', function(e) {{
+                if (document.activeElement !== input) {{
+                    if (e.key === '/') {{
+                        e.preventDefault();
+                        focusInput();
+                    }}
+                    return;
+                }}
+            }});
+            focusInput();
         }};
     </script>
 </body>

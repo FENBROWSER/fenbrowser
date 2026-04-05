@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public sealed class SkiaRenderer
     {
-        private static readonly TimeSpan DebugScreenshotMinimumInterval = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan DebugScreenshotMinimumInterval = TimeSpan.FromMilliseconds(500);
 
         // ═══════════════════════════════════════════════════════════════════
         // NO FIELDS - COMPLETELY STATELESS
@@ -173,7 +173,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
-                if (!ShouldCaptureDebugScreenshot(screenshotPath))
+                if (!ShouldCaptureDebugScreenshot(screenshotPath, tree.NodeCount))
                 {
                     return;
                 }
@@ -214,6 +214,7 @@ namespace FenBrowser.FenEngine.Rendering
                             using (var stream = File.Open(screenshotPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                             {
                                 data.SaveTo(stream);
+                                WriteDebugScreenshotMetadata(screenshotPath, tree.NodeCount);
                                 FenLogger.Debug($"[SkiaRenderer] Wrote debug_screenshot.png to {screenshotPath} ({viewport.Width}x{viewport.Height}, NodeCount={tree.NodeCount})", LogCategory.Rendering);
                                 FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(screenshotPath);
                             }
@@ -224,13 +225,25 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex) { FenLogger.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
         }
 
-        private static bool ShouldCaptureDebugScreenshot(string screenshotPath)
+        private static bool ShouldCaptureDebugScreenshot(string screenshotPath, int nodeCount)
         {
+            var metadataPath = screenshotPath + ".meta";
+
             try
             {
                 if (!File.Exists(screenshotPath))
                 {
                     return true;
+                }
+
+                if (TryReadDebugScreenshotMetadata(metadataPath, out var lastCapturedUtc, out var lastNodeCount))
+                {
+                    if (lastNodeCount != nodeCount)
+                    {
+                        return true;
+                    }
+
+                    return DateTime.UtcNow - lastCapturedUtc >= DebugScreenshotMinimumInterval;
                 }
 
                 var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(screenshotPath);
@@ -239,6 +252,52 @@ namespace FenBrowser.FenEngine.Rendering
             catch
             {
                 return true;
+            }
+        }
+
+        private static void WriteDebugScreenshotMetadata(string screenshotPath, int nodeCount)
+        {
+            try
+            {
+                File.WriteAllText(
+                    screenshotPath + ".meta",
+                    $"{DateTime.UtcNow.Ticks}|{nodeCount}");
+            }
+            catch
+            {
+                // Best-effort only.
+            }
+        }
+
+        private static bool TryReadDebugScreenshotMetadata(string metadataPath, out DateTime capturedUtc, out int nodeCount)
+        {
+            capturedUtc = default;
+            nodeCount = 0;
+
+            try
+            {
+                if (!File.Exists(metadataPath))
+                {
+                    return false;
+                }
+
+                var parts = File.ReadAllText(metadataPath)
+                    .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length != 2 ||
+                    !long.TryParse(parts[0], out var ticks) ||
+                    !int.TryParse(parts[1], out nodeCount))
+                {
+                    return false;
+                }
+
+                capturedUtc = new DateTime(ticks, DateTimeKind.Utc);
+                return true;
+            }
+            catch
+            {
+                capturedUtc = default;
+                nodeCount = 0;
+                return false;
             }
         }
         
@@ -702,64 +761,58 @@ namespace FenBrowser.FenEngine.Rendering
             // Fix: Access properties directly (node.Format doesn't exist)
             float fontSize = node.FontSize > 0 ? node.FontSize : 16f;
             var typeface = node.Typeface ?? SKTypeface.Default;
+            string cleanText = string.IsNullOrEmpty(node.FallbackText)
+                ? string.Empty
+                : node.FallbackText.Replace("\r", "").Replace("\n", "").Replace("\t", " ");
             
             float textWidth = 0;
-            
-            // Use glyphs if available (preferred)
-            if (node.Glyphs != null && node.Glyphs.Count > 0)
+
+            // Prefer direct text drawing when we still have the source string.
+            // Our current glyph-run path is a lightweight glyph-id transport, not a full shaping/fallback engine,
+            // so preserving the source text at the render backend is more reliable for browser content.
+            if (!string.IsNullOrWhiteSpace(cleanText))
             {
-                // Fix: Use object initializer for GlyphRun (no constructor)
-                // Convert List to Array and Map types (CS0029 mismatch fix)
-                // Mapping Rendering.PositionedGlyph -> Typography.PositionedGlyph
-                var glyphArray = System.Linq.Enumerable.ToArray(node.Glyphs.Select(g => new FenBrowser.FenEngine.Typography.PositionedGlyph 
+                // DEBUG: Log text rendering
+                if (cleanText.IndexOf("centered", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    cleanText.Contains("This text"))
+                {
+                    FenBrowser.Core.FenLogger.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
+                }
+
+                backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
+                textWidth = cleanText.Length * fontSize * 0.6f;
+            }
+            else if (node.Glyphs != null && node.Glyphs.Count > 0)
+            {
+                var glyphArray = System.Linq.Enumerable.ToArray(node.Glyphs.Select(g => new FenBrowser.FenEngine.Typography.PositionedGlyph
                 {
                     GlyphId = g.GlyphId,
                     X = g.X,
                     Y = g.Y,
-                    AdvanceX = 0 // Backend doesn't use AdvanceX for drawing
+                    AdvanceX = 0
                 }));
-                
+
                 var run = new FenBrowser.FenEngine.Typography.GlyphRun
                 {
                     Typeface = typeface,
                     FontSize = fontSize,
                     Glyphs = glyphArray
                 };
-                
-                // Estimate width for decorations from glyphs
+
                 if (glyphArray.Length > 0)
                 {
-                    float minX = float.MaxValue, maxX = float.MinValue;
+                    float minX = float.MaxValue;
+                    float maxX = float.MinValue;
                     foreach (var g in glyphArray)
                     {
-                         if (g.X < minX) minX = g.X;
-                         if (g.X > maxX) maxX = g.X;
+                        if (g.X < minX) minX = g.X;
+                        if (g.X > maxX) maxX = g.X;
                     }
+
                     textWidth = maxX - minX + fontSize * 0.6f;
                 }
-                
+
                 backend.DrawGlyphRun(SKPoint.Empty, run, node.Color);
-            }
-            // Fallback to raw text
-            else if (!string.IsNullOrEmpty(node.FallbackText))
-            {
-                // Sanitize text
-                string cleanText = node.FallbackText.Replace("\r", "").Replace("\n", "").Replace("\t", " ");
-                if (!string.IsNullOrWhiteSpace(cleanText))
-                {
-                    // DEBUG: Log text rendering
-                    // Log if text contains "centered" (case insensitive) or "This text"
-                    if (cleanText.IndexOf("centered", StringComparison.OrdinalIgnoreCase) >= 0 || 
-                        cleanText.Contains("This text"))
-                    {
-                        FenBrowser.Core.FenLogger.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
-                    }
-                    
-                    backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
-                    // Measure text logic would be needed for correct decoration width...
-                    // For fallback, we might skip precise decoration width or guess.
-                    textWidth = cleanText.Length * fontSize * 0.6f; // Rough estimate
-                }
             }
             
             // Draw text decorations
