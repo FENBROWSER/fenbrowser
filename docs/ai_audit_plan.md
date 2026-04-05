@@ -4,7 +4,7 @@ To elevate FenBrowser to a production-grade system, we must leverage the strengt
 
 ## 1. Engine Score Context
 
-Based on our recent `engine_analysis.md`, FenBrowser (FenEngine) currently holds an overall architectural score of **78.3**.
+Based on our recent engine architecture review, FenBrowser (FenEngine) currently holds an overall architectural score of **78.3**.
 
 | Engine                     |  Perf  | Security | Modularity | Standards | **Overall Score** |
 | :------------------------- | :----: | :------: | :--------: | :-------: | :---------------: |

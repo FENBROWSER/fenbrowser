@@ -1783,7 +1783,7 @@ _End of Volume VI_
     - the content-health line now emits `Text Density` and an informational note for script-heavy pages instead of a misleading parser-failure warning.
     - watchdog/raster budget warnings still occur on Google, but they are now clearly separated from the closed P2 thin-contract scope.
 - Closure status:
-  - P2 is complete for the audit-derived workstreams in `NEW_AUDIT_WORK.md`.
+  - P2 is complete for the audit-derived workstreams in the active audit work ledger.
   - broader solution warning debt and deeper render/performance work remain separate post-P2 backlog items.
 
 ## 6.53 Render/Perf P0 Closure Verification (2026-03-30)
@@ -1871,7 +1871,7 @@ _End of Volume VI_
   - the production benchmark gate now passes with a persisted artifact instead of existing only as compile-time scaffolding
 
 - Closure status:
-  - render/perf `P2` is complete for the ledger tracked in `NEW_AUDIT_WORK.md`
+  - render/perf `P2` is complete for the ledger tracked in the active audit work ledger
   - remaining work after this point is post-audit optimization and warning-debt cleanup, not an open ledger blocker
 
 ## 6.55 WhatIsMyBrowser Diagnostics Integrity Repro (2026-03-30)

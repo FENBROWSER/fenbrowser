@@ -281,7 +281,7 @@ flowchart TD
   - explicit-export precedence over star re-exports
   - ambiguity suppression for conflicting star graphs
 - Verification on 2026-03-20: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `22/22`.
-- Scope note: this tranche closes one concrete ES-module correctness hole in the active runtime path; full module-record/linking/live-binding semantics remain open and are tracked in `JS_ENGINE_FINAL.md` finding `1`.
+- Scope note: this tranche closes one concrete ES-module correctness hole in the active runtime path; full module-record/linking/live-binding semantics remain open and are tracked in the JavaScript audit backlog under finding `1`.
 
 ### 2.17 Dynamic Import Promise And Resolution Hardening (2026-03-20)
 
@@ -295,7 +295,7 @@ flowchart TD
   - relative-resolution correctness inside a module graph
   - rejected-promise behavior for missing modules with catch-observable failure
 - Verification on 2026-03-20: `dotnet test FenBrowser.Tests --filter ModuleLoaderTests --no-restore` passed `25/25`.
-- Scope note: this tranche fixes the active dynamic-import runtime path, but it does not close the broader ES-module finding. Module-record/linking/live-binding/cycle completeness remains tracked in `JS_ENGINE_FINAL.md` finding `1`.
+- Scope note: this tranche fixes the active dynamic-import runtime path, but it does not close the broader ES-module finding. Module-record/linking/live-binding/cycle completeness remains tracked in the JavaScript audit backlog under finding `1`.
 ---
 
 ## 3. The Rendering Pipeline (`FenBrowser.FenEngine.Rendering`)
@@ -5505,7 +5505,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - `FenBrowser.Tests/Engine/ProductionHardeningBatch2Tests.cs`
   - Added regression coverage for browser-default module resolution, removal of lexical DOM-id lookup, single global registration for `Promise` / `queueMicrotask` / `Intl`, and strict rejection of malformed parameter lists in execution mode.
 - Why this mattered:
-  - This tranche closes `JS_ENGINE_FINAL.md` findings `#11`, `#12`, `#13`, `#14`, and `#25`.
+  - This tranche closes JavaScript audit findings `#11`, `#12`, `#13`, `#14`, and `#25`.
   - The runtime no longer mixes browser semantics with permissive convenience fallbacks in core module resolution, global binding lookup, or parser entry points.
 - Verification:
   - `dotnet test FenBrowser.Tests --filter "ModuleLoaderTests|JavaScriptEngineCleanupTests|ProductionHardeningBatch2Tests" --no-restore`: pass (`47/47`).
@@ -5527,7 +5527,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - `FenBrowser.Tests/Engine/ProductionHardeningBatch3Tests.cs`
   - Added regression coverage proving the legacy promise/fetch helpers are gone from `FenRuntime`, `Promise.withResolvers()` returns a real `JsPromise`, `crypto.subtle.digest()` returns a real promise-backed `ArrayBuffer`, and runtime `fetch()` resolves through the canonical path.
 - Why this mattered:
-  - This tranche closes `JS_ENGINE_FINAL.md` findings `#1`, `#2`, `#3`, `#4`, and `#27`.
+  - This tranche closes JavaScript audit findings `#1`, `#2`, `#3`, `#4`, and `#27`.
   - The engine no longer exposes different promise/fetch semantics depending on whether code runs in raw runtime bootstrap or the browser-integrated host.
   - The Test262 CLI is now production-usable for larger evidence runs without manually forcing isolated mode on every invocation.
 - Verification:
@@ -5551,7 +5551,7 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added audit guards proving the runtime and window expose none of the removed media globals.
 - Why this mattered:
   - Production-grade means unsupported features fail honestly; they do not ship synthetic browser facades that imply real media, timing, or transport behavior.
-  - This tranche closes JS_ENGINE_FINAL.md findings #28 and #29.
+  - This tranche closes JavaScript audit findings `#28` and `#29`.
 - Verification:
   - dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore: pass.
   - dotnet test FenBrowser.Tests --no-build --filter "FullyQualifiedName~FenBrowser.Tests.WebAPIs.AudioApiTests" -v q: pass (2/2).
