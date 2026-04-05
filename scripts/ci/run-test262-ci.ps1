@@ -16,6 +16,7 @@ $BaselinePath = Join-Path $PSScriptRoot '..\..\docs\test262_ci_baseline.json'
 $RunnerExe = Join-Path $PSScriptRoot '..\..\FenBrowser.Test262\bin\Release\net8.0\FenBrowser.Test262.exe'
 $ResultsPath = Join-Path $PSScriptRoot '..\..\test262-ci-results.json'
 $CategoryResultsDir = Join-Path $PSScriptRoot '..\..\Results\ci-regression'
+$DefaultTest262Root = Join-Path $PSScriptRoot '..\..\test262'
 
 if (-not (Test-Path $BaselinePath)) {
     Fail "Test262 CI baseline not found at $BaselinePath. Run locally to generate."
@@ -24,10 +25,20 @@ if (-not (Test-Path $RunnerExe)) {
     Fail "Test262 runner executable not found at $RunnerExe. Ensure the Release runner build step completed."
 }
 
+$Test262Root = $env:TEST262_ROOT
+if ([string]::IsNullOrWhiteSpace($Test262Root)) {
+    $Test262Root = $DefaultTest262Root
+}
+
+if (-not (Test-Path (Join-Path $Test262Root 'harness')) -or -not (Test-Path (Join-Path $Test262Root 'test'))) {
+    Fail "Test262 root not found at $Test262Root. Set TEST262_ROOT or provision the suite at repo-root test262/."
+}
+
 New-Item -ItemType Directory -Force -Path $CategoryResultsDir | Out-Null
 
 $baseline = Get-Content $BaselinePath -Raw | ConvertFrom-Json
 Write-Host "Baseline: $($baseline.passing)/$($baseline.total) passing (subset: $($baseline.subset))"
+Write-Host "Test262 root: $Test262Root"
 
 $categories = @(
     @{ Name = 'language/expressions'; Max = 100 },
@@ -49,7 +60,7 @@ foreach ($cat in $categories) {
     $categoryResultsPath = Join-Path $CategoryResultsDir "$categorySlug.json"
     Remove-Item -LiteralPath $categoryResultsPath -ErrorAction SilentlyContinue
 
-    $output = & $RunnerExe run_category $cat.Name --max $cat.Max --format json --output $categoryResultsPath 2>&1
+    $output = & $RunnerExe run_category $cat.Name --root $Test262Root --max $cat.Max --format json --output $categoryResultsPath 2>&1
     $outputStr = $output -join "`n"
     $runnerExitCode = $LASTEXITCODE
 

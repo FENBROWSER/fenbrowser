@@ -103,6 +103,13 @@ jobs:
       - name: Build WebIdlGen prerequisite
         run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
 
+      - name: Provision Test262 suite
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .\test262\harness)) {
+            git clone --depth 1 https://github.com/tc39/test262.git test262
+          }
+
       - name: Build Test262 runner
         run: dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release
 
