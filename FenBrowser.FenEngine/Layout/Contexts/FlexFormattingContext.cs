@@ -26,6 +26,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // FenLogger.Debug($"[FLEX-CTX] Layout called for {box.SourceNode?.NodeName} ({(box.SourceNode as Element)?.TagName})");
             var container = box;
 
+            // Flex items are frequently relaid out during probing/stretching. Reset subtree
+            // coordinates before each pass so descendants don't retain stale absolute offsets.
+            LayoutBoxOps.ResetSubtreeToOrigin(container);
+
             // 1. Resolve Container Dimensions
             // Similar to Block, we need to determine our own width/height first (or at least available space).
             // For the root (body), width/height might be explicit (100vh).
@@ -41,9 +45,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             direction ??= "row";
             bool isRow = direction.Contains("row");
             bool isReverse = direction.Contains("reverse");
-            bool isWrap = style?.FlexWrap?.Contains("wrap") == true ||
-                          (style?.Map != null && style.Map.TryGetValue("flex-wrap", out var rawWrap) &&
-                           rawWrap?.IndexOf("wrap", StringComparison.OrdinalIgnoreCase) >= 0);
+            bool isWrap = IsWrapEnabled(style);
             string alignItems = style?.AlignItems?.ToLowerInvariant();
             if (string.IsNullOrEmpty(alignItems) && style?.Map != null && style.Map.TryGetValue("align-items", out var rawAlign))
             {
@@ -62,6 +64,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool hasExplicitMainSize = isRow
                 ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
                 : (style?.Height.HasValue == true || style?.HeightPercent.HasValue == true || !string.IsNullOrEmpty(style?.HeightExpression));
+            bool hasExplicitCrossSize = isRow
+                ? (style?.Height.HasValue == true ||
+                   style?.HeightPercent.HasValue == true ||
+                   !string.IsNullOrEmpty(style?.HeightExpression) ||
+                   (style?.Map != null && style.Map.ContainsKey("height")))
+                : (style?.Width.HasValue == true ||
+                   style?.WidthPercent.HasValue == true ||
+                   !string.IsNullOrEmpty(style?.WidthExpression) ||
+                   (style?.Map != null && style.Map.ContainsKey("width")));
             bool shrinkToContentMainAxis = !hasExplicitMainSize && (!isRow || mainAxisUnconstrained);
 
             // 2. Collect Flex Items (In-flow children)
@@ -608,16 +619,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float singleLineCross = isRow
                     ? container.Geometry.ContentBox.Height
                     : container.Geometry.ContentBox.Width;
-                if (singleLineCross <= 0)
+                float maxItemCross = 0f;
+                foreach (var item in items)
                 {
-                    foreach (var item in items)
-                    {
-                        float itemCross = isRow
-                            ? item.Geometry.MarginBox.Height
-                            : item.Geometry.MarginBox.Width;
-                        singleLineCross = Math.Max(singleLineCross, itemCross);
-                    }
+                    float itemCross = isRow
+                        ? item.Geometry.MarginBox.Height
+                        : item.Geometry.MarginBox.Width;
+                    maxItemCross = Math.Max(maxItemCross, itemCross);
                 }
+
+                if (!hasExplicitCrossSize)
+                {
+                    singleLineCross = Math.Max(singleLineCross, maxItemCross);
+                }
+                else if (singleLineCross <= 0)
+                {
+                    singleLineCross = maxItemCross;
+                }
+
                 lineCrossSizes.Add(singleLineCross > 0
                     ? singleLineCross
                     : ComputeFallbackCrossSize(items, isRow, container));
@@ -655,20 +674,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Resize auto-height container to fit all lines
             if (isRow)
             {
-                if (container.Geometry.ContentBox.Height <= 0)
+                bool shouldGrowAutoCross = !hasExplicitCrossSize && totalCrossSize > 0;
+                if (shouldGrowAutoCross || container.Geometry.ContentBox.Height <= 0)
                 {
-                    container.Geometry.ContentBox = new SKRect(0, 0, container.Geometry.ContentBox.Width, totalCrossSize);
-                    LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, totalCrossSize);
-                    containerCrossSize = totalCrossSize;
+                    float resolvedCross = shouldGrowAutoCross
+                        ? Math.Max(container.Geometry.ContentBox.Height, totalCrossSize)
+                        : totalCrossSize;
+
+                    container.Geometry.ContentBox = new SKRect(0, 0, container.Geometry.ContentBox.Width, resolvedCross);
+                    LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, resolvedCross);
+                    containerCrossSize = resolvedCross;
                 }
             }
             else
             {
-                if (container.Geometry.ContentBox.Width <= 0)
+                bool shouldGrowAutoCross = !hasExplicitCrossSize && totalCrossSize > 0;
+                if (shouldGrowAutoCross || container.Geometry.ContentBox.Width <= 0)
                 {
-                    container.Geometry.ContentBox = new SKRect(0, 0, totalCrossSize, container.Geometry.ContentBox.Height);
-                    LayoutBoxOps.ComputeBoxModelFromContent(container, totalCrossSize, container.Geometry.ContentBox.Height);
-                    containerCrossSize = totalCrossSize;
+                    float resolvedCross = shouldGrowAutoCross
+                        ? Math.Max(container.Geometry.ContentBox.Width, totalCrossSize)
+                        : totalCrossSize;
+
+                    container.Geometry.ContentBox = new SKRect(0, 0, resolvedCross, container.Geometry.ContentBox.Height);
+                    LayoutBoxOps.ComputeBoxModelFromContent(container, resolvedCross, container.Geometry.ContentBox.Height);
+                    containerCrossSize = resolvedCross;
                 }
             }
 
@@ -1014,10 +1043,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var border = box.ComputedStyle?.BorderThickness ?? new FenBrowser.Core.Thickness();
             var margin = box.ComputedStyle?.Margin ?? new FenBrowser.Core.Thickness();
 
-            box.Geometry.Padding = padding;
-            box.Geometry.Border = border;
-            box.Geometry.Margin = margin;
-
             // Width
             float width = 0;
             bool hasExplicitWidthFromMap = box.ComputedStyle?.Map != null &&
@@ -1177,6 +1202,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (height < minH) height = minH;
             if (height > maxH && float.IsFinite(maxH)) height = maxH;
 
+            float marginLeft = (float)margin.Left;
+            float marginRight = (float)margin.Right;
+            bool leftAuto = box.ComputedStyle?.MarginLeftAuto ?? false;
+            bool rightAuto = box.ComputedStyle?.MarginRightAuto ?? false;
+
+            if (!widthUnconstrained && (leftAuto || rightAuto))
+            {
+                float nonMarginWidth = width + (float)(padding.Left + padding.Right + border.Left + border.Right);
+                float remainingSpace = available - nonMarginWidth;
+
+                if (leftAuto && rightAuto)
+                {
+                    float share = Math.Max(0f, remainingSpace / 2f);
+                    marginLeft = share;
+                    marginRight = share;
+                }
+                else if (leftAuto)
+                {
+                    marginLeft = Math.Max(0f, remainingSpace - marginRight);
+                }
+                else if (rightAuto)
+                {
+                    marginRight = Math.Max(0f, remainingSpace - marginLeft);
+                }
+            }
+
             // Fallback for Root/Body if height is still 0 (implies auto/full-screen)
             // If it's body and display is flex/grid, we often want full viewport if not specified
             bool isRoot = (box.SourceNode as Element)?.TagName == "BODY" || (box.SourceNode as Element)?.TagName == "HTML";
@@ -1282,8 +1333,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
             
-            box.Geometry.ContentBox = new SKRect(0, 0, width, height);
-            
+            float contentLeft = marginLeft + (float)border.Left + (float)padding.Left;
+            box.Geometry.ContentBox = new SKRect(contentLeft, 0, contentLeft + width, height);
+            box.Geometry.Padding = padding;
+            box.Geometry.Border = border;
+            box.Geometry.Margin = new FenBrowser.Core.Thickness(marginLeft, margin.Top, marginRight, margin.Bottom);
+
             // Sync boxes (Content -> Padding -> Border -> Margin)
             LayoutBoxOps.ComputeBoxModelFromContent(box, width, height);
         }
@@ -1749,6 +1804,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return flexGrow;
             }
             return null;
+        }
+
+        private static bool IsWrapEnabled(CssComputed style)
+        {
+            string wrap = style?.FlexWrap;
+            if (string.IsNullOrWhiteSpace(wrap) &&
+                style?.Map != null &&
+                style.Map.TryGetValue("flex-wrap", out var rawWrap))
+            {
+                wrap = rawWrap;
+            }
+
+            if (string.IsNullOrWhiteSpace(wrap))
+            {
+                return false;
+            }
+
+            wrap = wrap.Trim();
+            return wrap.Equals("wrap", StringComparison.OrdinalIgnoreCase) ||
+                   wrap.Equals("wrap-reverse", StringComparison.OrdinalIgnoreCase);
         }
 
         private static double? ResolveFlexShrink(CssComputed style)

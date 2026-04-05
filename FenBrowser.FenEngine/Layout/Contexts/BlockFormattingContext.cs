@@ -21,6 +21,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
             var blockBox = box;
+
+            // Each layout pass should start from local coordinates.
+            // Without this, repeated relayouts can keep descendant positions from older
+            // passes and only move the parent box, producing mixed coordinate spaces.
+            LayoutBoxOps.ResetSubtreeToOrigin(blockBox);
             
             // DEBUG: Entry log
             string dbgTag = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?";
@@ -30,12 +35,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ResolveWidth(blockBox, state);
 
             // 2. Prepare for Child Layout
-            // In the new pipeline (BoxTreeBuilder -> FormattingContext), ContentBox starts at (0,0)
-            // and SyncBoxes extends padding/border outward. Children are placed at (0, currentY)
-            // relative to the ContentBox origin. No padding+border offset is needed here because
-            // CollectBoxesAbsolute already accounts for the ContentBox position.
-            float yOffset = 0;
-            float xOffset = 0;
+            // Child flow coordinates are relative to the parent's content box, not its
+            // margin box. We therefore seed child placement with the local content origin
+            // inside the parent subtree.
+            float yOffset = blockBox.Geometry.ContentBox.Top - blockBox.Geometry.MarginBox.Top;
+            float xOffset = blockBox.Geometry.ContentBox.Left - blockBox.Geometry.MarginBox.Left;
             float contentWidth = blockBox.Geometry.ContentBox.Width;
             bool shrinkToFitPass =
                 (blockBox.ComputedStyle == null ||
@@ -360,7 +364,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     maxWidth = Math.Max(maxWidth, childWidth);
                 }
-                
+
+                // Preserve enough inline headroom for the second shrink-to-fit pass.
+                // Without this, subpixel loss from the probe width can cause exact-fit
+                // inline content to wrap on relayout even though the intrinsic probe
+                // had already proven it fits on one line.
+                if (maxWidth > 0f)
+                {
+                    maxWidth = MathF.Ceiling(maxWidth + 1f);
+                }
+                 
                 // Update ContentBox width
                 blockBox.Geometry.ContentBox = new SKRect(
                     blockBox.Geometry.ContentBox.Left,
@@ -655,10 +668,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                  resolvedContentWidth = 0;
             }
 
+            var resolvedContentLeft = (float)(marginLeft + border.Left + padding.Left);
             box.Geometry.ContentBox = new SKRect(
-                box.Geometry.ContentBox.Left, 
-                box.Geometry.ContentBox.Top, 
-                box.Geometry.ContentBox.Left + resolvedContentWidth, 
+                resolvedContentLeft,
+                box.Geometry.ContentBox.Top,
+                resolvedContentLeft + resolvedContentWidth,
                 box.Geometry.ContentBox.Bottom);
             
             box.Geometry.Padding = padding;

@@ -383,12 +383,10 @@ namespace FenBrowser.FenEngine.Layout
 
                             // Start new pending
                             var newLine = item.TextLine;
-                            // SKIA FIX: DrawText expects Baseline position, not Top.
-                            // baseAlignY is the Top of the aligned item.
-                            // Add Ascent to get Baseline. currentY + maxAscent is the consistent baseline for the line.
-                            // But individual items might be aligned differently. 
-                            // baseAlignY + item.Ascent gives the baseline for THIS item.
-                            newLine.Origin = new SKPoint(finalX, baseAlignY + item.Ascent);
+                            // ComputedTextLine stores Origin as the top-left of the line box.
+                            // The paint path adds `Baseline` to that top origin to get the final text baseline.
+                            // Storing the baseline here causes it to be applied twice during paint.
+                            newLine.Origin = new SKPoint(finalX, finalY);
                             
                             pendingText = newLine;
                             pendingNode = item.Node;
