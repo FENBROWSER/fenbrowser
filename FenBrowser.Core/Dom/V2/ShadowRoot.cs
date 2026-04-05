@@ -205,10 +205,13 @@ namespace FenBrowser.Core.Dom.V2
 
                     while (source.FirstChild != null)
                         AppendChild(source.FirstChild);
+
+                    MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
                 catch
                 {
                     AppendChild(new Text(value, _ownerDocument));
+                    MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
             }
         }
