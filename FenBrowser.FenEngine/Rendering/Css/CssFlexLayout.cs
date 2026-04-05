@@ -95,7 +95,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 return !shouldHide(c, getStyle(c));
             }).ToList();
-            
+
             if (children.Count == 0) return new LayoutMetrics();
             
             // Sort children by CSS order property (stable sort preserves source order for equal values)
@@ -143,16 +143,35 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     var constraints = availableSize;
                     bool shrink = false;
                     
+                    bool hasExplicitMainSize = HasExplicitMainSize(cStyle, isRow);
+
                     if (isRow) 
                     {
-                        constraints.Width = float.PositiveInfinity;
-                        // Row implies we want the intrinsic content width (shrink-to-fit)
-                        // otherwise block-level items expand to fill viewport width (e.g. 1920px) which breaks the row.
-                        shrink = true; 
+                        if (hasExplicitMainSize &&
+                            !float.IsInfinity(availableSize.Width) &&
+                            !float.IsNaN(availableSize.Width) &&
+                            availableSize.Width > 0)
+                        {
+                            constraints.Width = availableSize.Width;
+                        }
+                        else
+                        {
+                            constraints.Width = float.PositiveInfinity;
+                            // Row implies we want the intrinsic content width (shrink-to-fit)
+                            // otherwise block-level items expand to fill viewport width (e.g. 1920px) which breaks the row.
+                            shrink = true;
+                        }
                     }
                     else 
                     {
-                        constraints.Height = float.PositiveInfinity;
+                        if (!(hasExplicitMainSize &&
+                              !float.IsInfinity(availableSize.Height) &&
+                              !float.IsNaN(availableSize.Height) &&
+                              availableSize.Height > 0))
+                        {
+                            constraints.Height = float.PositiveInfinity;
+                        }
+
                         // Cross-axis (width) must be constrained to container width
                         if (!float.IsInfinity(availableSize.Width) && availableSize.Width > 0)
                         {
@@ -207,6 +226,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     // "auto" means "min-content" if overflow is visible.
                     bool isMinAuto = !min.HasValue; 
                     bool overflowVisible = (isRow ? cStyle.OverflowX : cStyle.OverflowY) == "visible" || (cStyle.Overflow == "visible");
+                    bool hasContainerRelativeMainSize = HasContainerRelativeMainSize(cStyle, isRow);
                     
                     if (isMinAuto && overflowVisible)
                     {
@@ -215,10 +235,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         // min-content is essentially content size without wrapping? 
                         // Simplified: use measured content size as min-basis
                         float contentSize = isRow ? item.IntrinsicMetrics.MaxChildWidth : item.IntrinsicMetrics.ContentHeight;
-                        
-                        // We must ensure that we don't accidentally set this too high if user wanted it to shrink.
-                        // But spec says 'auto' implies min-content size constraint.
-                        item.MinMain = contentSize;
+
+                        // Container-relative main sizes such as width:100% should still be allowed
+                        // to shrink within the flex line instead of pinning the auto minimum to the
+                        // resolved container width from the probe measurement.
+                        if (!hasContainerRelativeMainSize)
+                        {
+                            item.MinMain = contentSize;
+                        }
                         
                         // BUT: If width is fixed, min-width:auto doesn't override it.
                         // logic: used size = max(min, min(max, clamp(size)))
@@ -428,12 +452,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     
                      bool isMinAuto = !min.HasValue; 
                     bool overflowVisible = (isRow ? cStyle.OverflowX : cStyle.OverflowY) == "visible" || (cStyle.Overflow == "visible");
+                    bool hasContainerRelativeMainSize = HasContainerRelativeMainSize(cStyle, isRow);
                     
                     if (isMinAuto && overflowVisible)
                     {
                          // Use DesiredSize which is result of Measure
                          float contentSize = isRow ? s.Width : s.Height;
-                         item.MinMain = contentSize;
+                         if (!hasContainerRelativeMainSize)
+                         {
+                             item.MinMain = contentSize;
+                         }
                     }
                 }
 
@@ -818,6 +846,30 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             // Block/replaced element fallback: baseline at lower border edge.
             return usedCross;
+        }
+
+        private static bool HasExplicitMainSize(CssComputed style, bool isRow)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            return isRow
+                ? style.Width.HasValue || style.WidthPercent.HasValue || !string.IsNullOrEmpty(style.WidthExpression)
+                : style.Height.HasValue || style.HeightPercent.HasValue || !string.IsNullOrEmpty(style.HeightExpression);
+        }
+
+        private static bool HasContainerRelativeMainSize(CssComputed style, bool isRow)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            return isRow
+                ? style.WidthPercent.HasValue || !string.IsNullOrEmpty(style.WidthExpression)
+                : style.HeightPercent.HasValue || !string.IsNullOrEmpty(style.HeightExpression);
         }
 
     }

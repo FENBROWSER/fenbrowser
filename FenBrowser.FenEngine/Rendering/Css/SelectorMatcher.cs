@@ -1127,13 +1127,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Tag
             if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*")
             {
-                hash |= FilterHash(seg.TagName);
+                hash |= FilterHash(NormalizeTagHashInput(seg.TagName));
             }
 
             // ID
             if (!string.IsNullOrEmpty(seg.Id))
             {
-                hash |= FilterHash("#" + seg.Id);
+                hash |= FilterHash("#" + seg.Id.ToUpperInvariant());
             }
 
             // Classes
@@ -1143,6 +1143,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return hash;
+        }
+
+        private static string NormalizeTagHashInput(string tagName)
+        {
+            return string.IsNullOrEmpty(tagName) ? tagName : tagName.ToUpperInvariant();
         }
 
         private static long FilterHash(string s)

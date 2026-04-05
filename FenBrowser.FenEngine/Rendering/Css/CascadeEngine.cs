@@ -183,16 +183,17 @@ namespace FenBrowser.FenEngine.Rendering
             results.Sort();
             deadline?.Check();
 
-            // 3. Apply standard cascade (Winner per property)
-            var computed = new Dictionary<string, CssDeclaration>();
+            // 3. Apply the cascade declaration-by-declaration so shorthand expansion
+            // participates in origin/specificity/order resolution. Expanding after
+            // selecting winners per declared property is incorrect because a higher-
+            // priority shorthand (for example author `background`) must override a
+            // lower-priority longhand (for example UA `background-color`).
+            var computed = new Dictionary<string, CssDeclaration>(StringComparer.OrdinalIgnoreCase);
             foreach (var match in results)
             {
                 deadline?.Check();
-                computed[match.Declaration.Property] = match.Declaration;
+                ApplyDeclaration(computed, match.Declaration);
             }
-
-            // 4. Expand shorthand properties into longhands
-            ExpandShorthands(computed);
 
             return computed;
         }
@@ -319,12 +320,322 @@ namespace FenBrowser.FenEngine.Rendering
                         Origin = styleRule.Origin,
                         Specificity = matchedChain.Specificity,
                         Order = styleRule.Order,
+                        DeclarationOrder = results.Count,
                         SelectorText = styleRule.Selector.ToString(),
                         LayerOrder = styleRule.LayerOrder,
                         ScopeProximity = scopeProximity
                     });
                 }
             }
+        }
+
+        private static void ApplyDeclaration(Dictionary<string, CssDeclaration> computed, CssDeclaration declaration)
+        {
+            if (declaration == null || string.IsNullOrEmpty(declaration.Property))
+            {
+                return;
+            }
+
+            var property = declaration.Property;
+            var value = declaration.Value?.Trim() ?? string.Empty;
+            computed[property] = CloneDeclaration(declaration, property, declaration.Value);
+
+            switch (property)
+            {
+                case "margin":
+                    ApplyBoxShorthand(computed, declaration, value, "margin-top", "margin-right", "margin-bottom", "margin-left");
+                    break;
+                case "padding":
+                    ApplyBoxShorthand(computed, declaration, value, "padding-top", "padding-right", "padding-bottom", "padding-left");
+                    break;
+                case "border":
+                    ApplyBorderShorthand(computed, declaration, value, null);
+                    break;
+                case "border-top":
+                case "border-right":
+                case "border-bottom":
+                case "border-left":
+                    ApplyBorderShorthand(computed, declaration, value, property);
+                    break;
+                case "background":
+                    ApplyBackgroundShorthand(computed, declaration, value);
+                    break;
+                case "flex-flow":
+                    ApplyFlexFlowShorthand(computed, declaration, value);
+                    break;
+                case "overflow":
+                    ApplyOverflowShorthand(computed, declaration, value);
+                    break;
+                case "outline":
+                    ApplyOutlineShorthand(computed, declaration, value);
+                    break;
+                case "list-style":
+                    ApplyListStyleShorthand(computed, declaration, value);
+                    break;
+                case "gap":
+                    ApplyGapShorthand(computed, declaration, value);
+                    break;
+                case "border-radius":
+                    ApplyBorderRadiusShorthand(computed, declaration, value);
+                    break;
+                case "inset":
+                    ApplyInsetShorthand(computed, declaration, value);
+                    break;
+            }
+        }
+
+        private static CssDeclaration CloneDeclaration(CssDeclaration source, string property, string value)
+        {
+            return new CssDeclaration
+            {
+                Property = property,
+                Value = value,
+                IsImportant = source?.IsImportant ?? false
+            };
+        }
+
+        private static void SetExpanded(Dictionary<string, CssDeclaration> computed, string property, string value, CssDeclaration source)
+        {
+            computed[property] = CloneDeclaration(source, property, value);
+        }
+
+        private static void ApplyBoxShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value,
+            string top, string right, string bottom, string left)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+
+            var parts = SplitCssValue(value);
+            if (parts.Length == 0) return;
+
+            string vTop, vRight, vBottom, vLeft;
+            switch (parts.Length)
+            {
+                case 1:
+                    vTop = vRight = vBottom = vLeft = parts[0];
+                    break;
+                case 2:
+                    vTop = vBottom = parts[0];
+                    vRight = vLeft = parts[1];
+                    break;
+                case 3:
+                    vTop = parts[0];
+                    vRight = vLeft = parts[1];
+                    vBottom = parts[2];
+                    break;
+                default:
+                    vTop = parts[0];
+                    vRight = parts[1];
+                    vBottom = parts[2];
+                    vLeft = parts[3];
+                    break;
+            }
+
+            SetExpanded(computed, top, vTop, source);
+            SetExpanded(computed, right, vRight, source);
+            SetExpanded(computed, bottom, vBottom, source);
+            SetExpanded(computed, left, vLeft, source);
+        }
+
+        private static void ApplyBorderShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value, string sideProperty)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+
+            if (value == "none" || value == "0")
+            {
+                if (string.IsNullOrEmpty(sideProperty))
+                {
+                    SetExpanded(computed, "border-top-width", "0", source);
+                    SetExpanded(computed, "border-right-width", "0", source);
+                    SetExpanded(computed, "border-bottom-width", "0", source);
+                    SetExpanded(computed, "border-left-width", "0", source);
+                    SetExpanded(computed, "border-top-style", "none", source);
+                    SetExpanded(computed, "border-right-style", "none", source);
+                    SetExpanded(computed, "border-bottom-style", "none", source);
+                    SetExpanded(computed, "border-left-style", "none", source);
+                }
+                else
+                {
+                    SetExpanded(computed, sideProperty + "-width", "0", source);
+                    SetExpanded(computed, sideProperty + "-style", "none", source);
+                }
+                return;
+            }
+
+            var parts = SplitCssValue(value);
+            string width = null, style = null, color = null;
+            foreach (var part in parts)
+            {
+                if (IsBorderStyle(part)) style = part;
+                else if (IsCssLength(part)) width = part;
+                else color = part;
+            }
+
+            if (string.IsNullOrEmpty(sideProperty))
+            {
+                if (width != null)
+                {
+                    SetExpanded(computed, "border-top-width", width, source);
+                    SetExpanded(computed, "border-right-width", width, source);
+                    SetExpanded(computed, "border-bottom-width", width, source);
+                    SetExpanded(computed, "border-left-width", width, source);
+                }
+                if (style != null)
+                {
+                    SetExpanded(computed, "border-top-style", style, source);
+                    SetExpanded(computed, "border-right-style", style, source);
+                    SetExpanded(computed, "border-bottom-style", style, source);
+                    SetExpanded(computed, "border-left-style", style, source);
+                }
+                if (color != null)
+                {
+                    SetExpanded(computed, "border-top-color", color, source);
+                    SetExpanded(computed, "border-right-color", color, source);
+                    SetExpanded(computed, "border-bottom-color", color, source);
+                    SetExpanded(computed, "border-left-color", color, source);
+                }
+            }
+            else
+            {
+                if (width != null) SetExpanded(computed, sideProperty + "-width", width, source);
+                if (style != null) SetExpanded(computed, sideProperty + "-style", style, source);
+                if (color != null) SetExpanded(computed, sideProperty + "-color", color, source);
+            }
+        }
+
+        private static void ApplyBackgroundShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+
+            if (value == "none" || value == "transparent")
+            {
+                SetExpanded(computed, "background-color", "transparent", source);
+                SetExpanded(computed, "background-image", "none", source);
+                return;
+            }
+
+            if (!value.Contains("url(") && !value.Contains("gradient("))
+            {
+                var parts = SplitCssValue(value);
+                foreach (var part in parts)
+                {
+                    if (IsBackgroundRepeat(part))
+                        SetExpanded(computed, "background-repeat", part, source);
+                    else if (IsBackgroundPosition(part))
+                        SetExpanded(computed, "background-position", part, source);
+                    else if (part == "fixed" || part == "scroll" || part == "local")
+                        SetExpanded(computed, "background-attachment", part, source);
+                    else
+                        SetExpanded(computed, "background-color", part, source);
+                }
+            }
+        }
+
+        private static void ApplyFlexFlowShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            foreach (var part in SplitCssValue(value))
+            {
+                if (part == "wrap" || part == "nowrap" || part == "wrap-reverse")
+                    SetExpanded(computed, "flex-wrap", part, source);
+                else
+                    SetExpanded(computed, "flex-direction", part, source);
+            }
+        }
+
+        private static void ApplyOverflowShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            var parts = SplitCssValue(value);
+            if (parts.Length == 1)
+            {
+                SetExpanded(computed, "overflow-x", parts[0], source);
+                SetExpanded(computed, "overflow-y", parts[0], source);
+            }
+            else if (parts.Length >= 2)
+            {
+                SetExpanded(computed, "overflow-x", parts[0], source);
+                SetExpanded(computed, "overflow-y", parts[1], source);
+            }
+        }
+
+        private static void ApplyOutlineShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            foreach (var part in SplitCssValue(value))
+            {
+                if (IsBorderStyle(part)) SetExpanded(computed, "outline-style", part, source);
+                else if (IsCssLength(part)) SetExpanded(computed, "outline-width", part, source);
+                else SetExpanded(computed, "outline-color", part, source);
+            }
+        }
+
+        private static void ApplyListStyleShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            foreach (var part in SplitCssValue(value))
+            {
+                if (part == "inside" || part == "outside")
+                    SetExpanded(computed, "list-style-position", part, source);
+                else if (part.StartsWith("url("))
+                    SetExpanded(computed, "list-style-image", part, source);
+                else
+                    SetExpanded(computed, "list-style-type", part, source);
+            }
+        }
+
+        private static void ApplyGapShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            var parts = SplitCssValue(value);
+            if (parts.Length == 1)
+            {
+                SetExpanded(computed, "row-gap", parts[0], source);
+                SetExpanded(computed, "column-gap", parts[0], source);
+            }
+            else if (parts.Length >= 2)
+            {
+                SetExpanded(computed, "row-gap", parts[0], source);
+                SetExpanded(computed, "column-gap", parts[1], source);
+            }
+        }
+
+        private static void ApplyBorderRadiusShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+
+            var slashIdx = value.IndexOf('/');
+            var mainPart = slashIdx >= 0 ? value.Substring(0, slashIdx).Trim() : value;
+            var parts = SplitCssValue(mainPart);
+            if (parts.Length == 0) return;
+
+            string tl, tr, br, bl;
+            switch (parts.Length)
+            {
+                case 1: tl = tr = br = bl = parts[0]; break;
+                case 2: tl = br = parts[0]; tr = bl = parts[1]; break;
+                case 3: tl = parts[0]; tr = bl = parts[1]; br = parts[2]; break;
+                default: tl = parts[0]; tr = parts[1]; br = parts[2]; bl = parts[3]; break;
+            }
+
+            SetExpanded(computed, "border-top-left-radius", tl, source);
+            SetExpanded(computed, "border-top-right-radius", tr, source);
+            SetExpanded(computed, "border-bottom-right-radius", br, source);
+            SetExpanded(computed, "border-bottom-left-radius", bl, source);
+        }
+
+        private static void ApplyInsetShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            var parts = SplitCssValue(value);
+            if (parts.Length == 0) return;
+
+            string vTop, vRight, vBottom, vLeft;
+            switch (parts.Length)
+            {
+                case 1: vTop = vRight = vBottom = vLeft = parts[0]; break;
+                case 2: vTop = vBottom = parts[0]; vRight = vLeft = parts[1]; break;
+                case 3: vTop = parts[0]; vRight = vLeft = parts[1]; vBottom = parts[2]; break;
+                default: vTop = parts[0]; vRight = parts[1]; vBottom = parts[2]; vLeft = parts[3]; break;
+            }
+
+            SetExpanded(computed, "top", vTop, source);
+            SetExpanded(computed, "right", vRight, source);
+            SetExpanded(computed, "bottom", vBottom, source);
+            SetExpanded(computed, "left", vLeft, source);
         }
 
         /// <summary>
@@ -696,6 +1007,7 @@ namespace FenBrowser.FenEngine.Rendering
         public CssOrigin Origin { get; set; }
         public Specificity Specificity { get; set; }
         public int Order { get; set; }
+        public int DeclarationOrder { get; set; }
         public string SelectorText { get; set; }
         public int LayerOrder { get; set; } // 0 for unlayered, >0 for layered
         public int ScopeProximity { get; set; } // 0 for no scope, >0 for scoped, smaller is closer
@@ -721,8 +1033,12 @@ namespace FenBrowser.FenEngine.Rendering
             int specDiff = Specificity.CompareTo(other.Specificity);
             if (specDiff != 0) return specDiff;
 
-            // 4. Order
-            return Order.CompareTo(other.Order);
+            // 4. Rule order
+            int orderDiff = Order.CompareTo(other.Order);
+            if (orderDiff != 0) return orderDiff;
+
+            // 5. Declaration order inside the stylesheet/rule.
+            return DeclarationOrder.CompareTo(other.DeclarationOrder);
         }
 
         private int GetWeight(CssOrigin origin, bool important, int layerOrder)
