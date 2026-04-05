@@ -63,6 +63,27 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public void BackgroundColorChange_ReturnsLocalizedDamageForAffectedBounds()
+        {
+            var source = new Element("div");
+            var bounds = new SKRect(24, 24, 144, 84);
+            var previous = new ImmutablePaintTree(new List<PaintNodeBase>
+            {
+                NewBackgroundNode(source, bounds, color: SKColors.White),
+            });
+            var current = new ImmutablePaintTree(new List<PaintNodeBase>
+            {
+                NewBackgroundNode(source, bounds, color: new SKColor(15, 23, 42, 224)),
+            });
+
+            var tracker = new PaintDamageTracker();
+            var damage = tracker.ComputeDamageRegions(previous, current, new SKRect(0, 0, 200, 200));
+
+            Assert.Single(damage);
+            Assert.Equal(bounds, damage[0]);
+        }
+
+        [Fact]
         public void ExcessiveRegions_CollapseToSingleUnionRegion()
         {
             var current = new ImmutablePaintTree(new List<PaintNodeBase>
@@ -79,13 +100,13 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal(new SKRect(0, 0, 50, 50), damage[0]);
         }
 
-        private static BackgroundPaintNode NewBackgroundNode(Element source, SKRect bounds, bool isHovered = false, bool isFocused = false)
+        private static BackgroundPaintNode NewBackgroundNode(Element source, SKRect bounds, bool isHovered = false, bool isFocused = false, SKColor? color = null)
         {
             return new BackgroundPaintNode
             {
                 SourceNode = source,
                 Bounds = bounds,
-                Color = SKColors.Black,
+                Color = color ?? SKColors.Black,
                 IsHovered = isHovered,
                 IsFocused = isFocused,
                 Children = new List<PaintNodeBase>()
