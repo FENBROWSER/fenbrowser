@@ -163,5 +163,11 @@ public class DevToolsServer
     public void Reset()
     {
         _registry.Clear();
+        _router.ClearHandlers();
+        _domDomain = null;
+        _runtimeDomain = null;
+        _networkDomain = null;
+        _debuggerDomain = null;
+        _cssDomain = null;
     }
 }
