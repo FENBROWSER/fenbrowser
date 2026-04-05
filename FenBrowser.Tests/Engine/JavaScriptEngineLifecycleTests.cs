@@ -1,6 +1,9 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
+using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
@@ -98,6 +101,56 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task NavigatorUserAgentData_ExposesLowAndHighEntropyValues()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>(async function(){ var values = await navigator.userAgentData.getHighEntropyValues(['platformVersion','uaFullVersion']); globalThis.__uaPlatformVersion = values.platformVersion; globalThis.__uaFullVersion = values.uaFullVersion; })();</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("object", engine.Evaluate("typeof navigator.userAgentData")?.ToString());
+            Assert.Equal("function", engine.Evaluate("typeof navigator.userAgentData.toJSON")?.ToString());
+            Assert.Equal("function", engine.Evaluate("typeof navigator.userAgentData.getHighEntropyValues")?.ToString());
+            Assert.Equal("Windows", engine.Evaluate("navigator.userAgentData.platform")?.ToString());
+            Assert.Equal("3", engine.Evaluate("String(navigator.userAgentData.brands.length)")?.ToString());
+            Assert.Equal("undefined", engine.Evaluate("typeof navigator.userAgentData.toJSON().platformVersion")?.ToString());
+            Assert.Equal("undefined", engine.Evaluate("typeof navigator.userAgentData.toJSON().uaFullVersion")?.ToString());
+            Assert.Equal("15.0.0", engine.Evaluate("globalThis.__uaPlatformVersion")?.ToString());
+            Assert.Equal("146.0.7800.12", engine.Evaluate("globalThis.__uaFullVersion")?.ToString());
+        }
+
+        [Fact]
+        public void MatchMedia_TracksThemeAndViewportSurfaceChanges()
+        {
+            var previousTheme = BrowserSettings.Instance.Theme;
+
+            try
+            {
+                BrowserSettings.Instance.Theme = ThemePreference.Dark;
+                var engine = new JavaScriptEngine(CreateHost());
+
+                Assert.Equal(true, engine.Evaluate("window.matchMedia('(prefers-color-scheme: dark)').matches"));
+                Assert.Equal(false, engine.Evaluate("window.matchMedia('(prefers-color-scheme: light)').matches"));
+                Assert.Equal(false, engine.Evaluate("window.matchMedia('(max-width: 600px)').matches"));
+
+                engine.Evaluate("var __mql = window.matchMedia('(max-width: 600px)'); __mql.addEventListener('change', function(e){ globalThis.__mqlChange = String(e.matches); });");
+                engine.WindowWidth = 500;
+
+                Assert.Equal(true, engine.Evaluate("window.matchMedia('(max-width: 600px)').matches"));
+                Assert.Equal("true", engine.Evaluate("globalThis.__mqlChange")?.ToString());
+            }
+            finally
+            {
+                BrowserSettings.Instance.Theme = previousTheme;
+            }
+        }
+
+        [Fact]
         public async Task ExternalScriptExecution_ExposesDocumentCurrentScript()
         {
             var baseUri = new Uri("https://example.com/index.html");
@@ -158,6 +211,18 @@ namespace FenBrowser.Tests.Engine
 
             Assert.Equal(true, engine.Evaluate("globalThis.__selectorFound"));
             Assert.Equal("Yes", engine.Evaluate("document.querySelector('#javascript-detection .detection-message').textContent")?.ToString());
+
+            var updatedSpan = doc
+                .Descendants()
+                .OfType<Element>()
+                .First(e => string.Equals(e.TagName, "SPAN", StringComparison.OrdinalIgnoreCase) &&
+                            e.ClassList.Contains("detection-message"));
+            Assert.Equal(1, updatedSpan.ChildNodes.Length);
+            Assert.IsType<Text>(updatedSpan.FirstChild);
+            Assert.DoesNotContain(
+                updatedSpan.Descendants().OfType<Element>(),
+                e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(e.TagName, "BODY", StringComparison.OrdinalIgnoreCase));
         }
 
         [Fact]

@@ -52,7 +52,7 @@ namespace FenBrowser.Tests.Engine
                 .Select(entry => entry.ToString())
                 .ToArray();
 
-            Assert.Contains(entries, value => value.Contains("navigator.userAgentData", StringComparison.Ordinal));
+            Assert.Contains(entries, value => value.Contains("navigator.userAgentData [ProductionImplementation]", StringComparison.Ordinal));
             Assert.Contains(entries, value => value.Contains("crypto.subtle", StringComparison.Ordinal));
             Assert.Contains(entries, value => value.Contains("window.open", StringComparison.Ordinal));
             Assert.Contains(entries, value => value.Contains("window.matchMedia", StringComparison.Ordinal));
