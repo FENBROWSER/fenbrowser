@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -131,7 +132,8 @@ namespace FenBrowser.FenEngine.Rendering
                 bool styleChanged = nodeA.Opacity != nodeB.Opacity
                     || nodeA.ClipRect != nodeB.ClipRect
                     || nodeA.IsHovered != nodeB.IsHovered
-                    || nodeA.IsFocused != nodeB.IsFocused;
+                    || nodeA.IsFocused != nodeB.IsFocused
+                    || !HasEquivalentVisualState(nodeA, nodeB);
                 
                 if (geomChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Geometry));
                 else if (styleChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Style));
@@ -170,6 +172,147 @@ namespace FenBrowser.FenEngine.Rendering
                     TraverseNode(child, action);
                 }
             }
+        }
+
+        private static bool HasEquivalentVisualState(PaintNodeBase previous, PaintNodeBase current)
+        {
+            if (previous == null || current == null)
+            {
+                return previous == current;
+            }
+
+            if (previous.GetType() != current.GetType())
+            {
+                return false;
+            }
+
+            return (previous, current) switch
+            {
+                (BackgroundPaintNode a, BackgroundPaintNode b) => Nullable.Equals(a.Color, b.Color)
+                    && (a.Gradient == null) == (b.Gradient == null)
+                    && HaveEqualPoints(a.BorderRadius, b.BorderRadius),
+                (BorderPaintNode a, BorderPaintNode b) => HaveEqualFloats(a.Widths, b.Widths)
+                    && HaveEqualColors(a.Colors, b.Colors)
+                    && HaveEqualStrings(a.Styles, b.Styles)
+                    && HaveEqualPoints(a.BorderRadius, b.BorderRadius),
+                (TextPaintNode a, TextPaintNode b) => a.Color == b.Color
+                    && a.FontSize.Equals(b.FontSize)
+                    && a.TextOrigin == b.TextOrigin
+                    && string.Equals(a.FallbackText, b.FallbackText, StringComparison.Ordinal)
+                    && string.Equals(a.WritingMode, b.WritingMode, StringComparison.Ordinal)
+                    && string.Equals(a.Typeface?.FamilyName, b.Typeface?.FamilyName, StringComparison.Ordinal)
+                    && HaveEqualStrings(a.TextDecorations, b.TextDecorations),
+                (ImagePaintNode a, ImagePaintNode b) => ReferenceEquals(a.Bitmap, b.Bitmap)
+                    && Nullable.Equals(a.SourceRect, b.SourceRect)
+                    && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal),
+                (BoxShadowPaintNode a, BoxShadowPaintNode b) => a.Blur.Equals(b.Blur)
+                    && a.Spread.Equals(b.Spread)
+                    && a.Offset == b.Offset
+                    && a.Color == b.Color
+                    && a.Inset == b.Inset
+                    && HaveEqualPoints(a.BorderRadius, b.BorderRadius),
+                (StackingContextPaintNode a, StackingContextPaintNode b) => a.ZIndex == b.ZIndex
+                    && string.Equals(a.Filter, b.Filter, StringComparison.Ordinal)
+                    && string.Equals(a.BackdropFilter, b.BackdropFilter, StringComparison.Ordinal),
+                (ScrollPaintNode a, ScrollPaintNode b) => a.ScrollX.Equals(b.ScrollX)
+                    && a.ScrollY.Equals(b.ScrollY),
+                (StickyPaintNode a, StickyPaintNode b) => a.StickyOffset == b.StickyOffset,
+                (MaskPaintNode a, MaskPaintNode b) => ReferenceEquals(a.MaskBitmap, b.MaskBitmap)
+                    && string.Equals(a.MaskSize, b.MaskSize, StringComparison.Ordinal),
+                _ => true
+            };
+        }
+
+        private static bool HaveEqualFloats(IReadOnlyList<float> left, IReadOnlyList<float> right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (!left[i].Equals(right[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool HaveEqualPoints(IReadOnlyList<SKPoint> left, IReadOnlyList<SKPoint> right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (left[i] != right[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool HaveEqualColors(IReadOnlyList<SKColor> left, IReadOnlyList<SKColor> right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (left[i] != right[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool HaveEqualStrings(IReadOnlyList<string> left, IReadOnlyList<string> right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (!string.Equals(left[i], right[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

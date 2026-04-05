@@ -4,6 +4,7 @@ using SkiaSharp;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core;
+using FenBrowser.FenEngine.Typography;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -35,27 +36,14 @@ namespace FenBrowser.FenEngine.Layout
             paint.Typeface = TextLayoutHelper.ResolveTypeface(style?.FontFamilyName, textNode.Data, style?.FontWeight ?? 400, (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
             paint.IsAntialias = true;
 
-            var fm = paint.FontMetrics;
-            float fontHeight = fm.Descent - fm.Ascent;
-            
-            // Standard browser "normal" line-height is typically around 1.2 * fontSize
-            // Skia's fontHeight (Descent - Ascent) can be significantly larger for some fonts, 
-            // causing excessive spacing. We enforce 1.2em as default to match Chrome/Edge.
             float fontSize = paint.TextSize;
-            float lineHeight = fontSize * 1.2f; 
-
-            if (style?.LineHeight.HasValue == true)
-            {
-                // If LineHeight is a multiplier (e.g. 1.5), multiply by fontSize (not fontHeight, to be consistent)
-                // Or standard CSS says multiplier is relative to font-size.
-                // But existing logic seemingly treated it relative to itself?
-                // If value < 5.0, assume multiplier.
-                lineHeight = (float)(style.LineHeight.Value < 5.0 ? style.LineHeight.Value * fontSize : style.LineHeight.Value);
-            }
-
-            // Recalculate leading to center the text content within the line box
-            float leading = (lineHeight - fontHeight) / 2;
-            float baselineOffset = -fm.Ascent + leading;
+            using var font = new SKFont(paint.Typeface, fontSize);
+            var normalizedMetrics = NormalizedFontMetrics.FromSkia(
+                font.Metrics,
+                fontSize,
+                style?.LineHeight.HasValue == true ? (float?)style.LineHeight.Value : null);
+            float lineHeight = normalizedMetrics.LineHeight;
+            float baselineOffset = normalizedMetrics.GetBaselineOffset();
 
             // 2. Resolve White-Space Mode
             string ws = style?.WhiteSpace?.ToLowerInvariant() ?? "normal";

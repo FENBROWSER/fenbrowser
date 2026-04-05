@@ -114,6 +114,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         return BlockFormattingContext.Instance;
                     }
+
+                    // Atomic controls/replaced elements can be block-level externally
+                    // without participating in inline line construction internally.
+                    // Routing authored display:block inputs through the inline formatter
+                    // collapses percent widths back to intrinsic control fallbacks.
+                    if (IsAtomicReplacedOrControlTag(rootTag))
+                    {
+                        return BlockFormattingContext.Instance;
+                    }
                 }
 
                 // Normal block or anonymous block
@@ -135,6 +144,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             // Default fallback
             return BlockFormattingContext.Instance;
+        }
+
+        private static bool IsAtomicReplacedOrControlTag(string tag)
+        {
+            return tag == "INPUT" ||
+                   tag == "SELECT" ||
+                   tag == "TEXTAREA" ||
+                   tag == "BUTTON" ||
+                   tag == "IMG" ||
+                   tag == "SVG" ||
+                   tag == "CANVAS" ||
+                   tag == "VIDEO" ||
+                   tag == "IFRAME" ||
+                   tag == "EMBED" ||
+                   tag == "OBJECT";
         }
 
     }

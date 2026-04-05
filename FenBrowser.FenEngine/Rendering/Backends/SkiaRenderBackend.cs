@@ -242,7 +242,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 Typeface = glyphs.Typeface,
                 IsAntialias = true,
                 SubpixelText = true,
-                LcdRenderText = true
+                LcdRenderText = false
             };
 
             using var builder = new SKTextBlobBuilder();
@@ -274,7 +274,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 Typeface = typeface ?? SKTypeface.Default,
                 IsAntialias = true,
                 SubpixelText = true,
-                LcdRenderText = true
+                LcdRenderText = false
             };
 
             _canvas.DrawText(text, origin.X, origin.Y, paint);

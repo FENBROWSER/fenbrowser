@@ -172,6 +172,103 @@ namespace FenBrowser.Tests.Engine
             Assert.True(textBox.Geometry.MarginBox.Left >= nudgedBox.Geometry.MarginBox.Left);
             Assert.True(textBox.Geometry.MarginBox.Top >= nudgedBox.Geometry.MarginBox.Top);
         }
+
+        [Fact]
+        public void FlexLayout_DirectTextFlexItem_ComputesIntrinsicTextGeometry()
+        {
+            var nav = new Element("nav");
+            var list = new Element("ul");
+            var item = new Element("li");
+            var link = new Element("a");
+            var text = new Text("Detect my settings");
+
+            nav.AppendChild(list);
+            list.AppendChild(item);
+            item.AppendChild(link);
+            link.AppendChild(text);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [nav] = new CssComputed { Display = "flex", Width = 500, Height = 60 },
+                [list] = new CssComputed { Display = "flex" },
+                [item] = new CssComputed { Display = "flex" },
+                [link] = new CssComputed { Display = "flex", FontSize = 16 },
+                [text] = new CssComputed { Display = "inline", FontSize = 16 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(nav);
+
+            var state = new LayoutState(
+                new SKSize(500, 60),
+                500,
+                60,
+                500,
+                60);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var linkBox = FindBox(rootBox, link);
+            var textBox = FindBox(rootBox, text);
+
+            Assert.NotNull(linkBox);
+            Assert.NotNull(textBox);
+            Assert.NotNull(textBox.Geometry);
+            Assert.NotNull(textBox.Geometry.Lines);
+            Assert.NotEmpty(textBox.Geometry.Lines);
+            Assert.True(textBox.Geometry.ContentBox.Width > 100f, $"Expected flex-item text to keep intrinsic width, got {textBox.Geometry.ContentBox.Width}.");
+            Assert.True(textBox.Geometry.ContentBox.Height > 10f, $"Expected flex-item text to keep line height, got {textBox.Geometry.ContentBox.Height}.");
+            Assert.True(linkBox.Geometry.ContentBox.Width >= textBox.Geometry.ContentBox.Width, $"Expected link to contain text width, got link={linkBox.Geometry.ContentBox} text={textBox.Geometry.ContentBox}.");
+        }
+
+        [Fact]
+        public void FlexLayout_AutoCrossSize_GrowsToFitTallestItem()
+        {
+            var row = new Element("div");
+            var left = new Element("div");
+            var middle = new Element("div");
+            var right = new Element("div");
+            var middleSpan = new Element("span");
+            var middleText = new Text("No - JavaScript is not enabled");
+
+            middleSpan.AppendChild(middleText);
+            middle.AppendChild(middleSpan);
+            row.AppendChild(left);
+            row.AppendChild(middle);
+            row.AppendChild(right);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [row] = new CssComputed { Display = "flex", Width = 728, Padding = new Thickness(0, 20, 0, 20) },
+                [left] = new CssComputed { Display = "block", Width = 156, Height = 17 },
+                [middle] = new CssComputed { Display = "flex", Width = 499, MinHeight = 56 },
+                [middleSpan] = new CssComputed { Display = "inline", FontSize = 16 },
+                [middleText] = new CssComputed { Display = "inline", FontSize = 16 },
+                [right] = new CssComputed { Display = "block", Width = 156, Height = 17 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(row);
+
+            var state = new LayoutState(
+                new SKSize(728, 400),
+                728,
+                400,
+                728,
+                400);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var rowBox = FindBox(rootBox, row);
+            var middleBox = FindBox(rootBox, middle);
+
+            Assert.NotNull(rowBox);
+            Assert.NotNull(middleBox);
+            Assert.True(middleBox.Geometry.MarginBox.Height >= 56f, $"Expected middle flex item min-height to hold, got {middleBox.Geometry.MarginBox.Height}.");
+            Assert.True(rowBox.Geometry.MarginBox.Height >= 96f, $"Expected row auto cross-size to include tallest item plus padding, got {rowBox.Geometry.MarginBox.Height}.");
+            Assert.True(rowBox.Geometry.MarginBox.Height >= middleBox.Geometry.MarginBox.Height + 40f - 1f, $"Expected row height to fit child height plus vertical padding, got row={rowBox.Geometry.MarginBox.Height} child={middleBox.Geometry.MarginBox.Height}.");
+        }
+
         [Fact]
         public void InlineLayout_EmptyLine_RespectsStrut()
         {

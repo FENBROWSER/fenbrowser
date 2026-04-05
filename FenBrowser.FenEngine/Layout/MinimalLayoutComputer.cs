@@ -451,8 +451,11 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else if (style.WidthPercent.HasValue)
                 {
-                    w = (float)style.WidthPercent.Value / 100f * availableSize.Width;
-                    isExplicitWidth = true;
+                    if (!float.IsInfinity(availableSize.Width) && !float.IsNaN(availableSize.Width))
+                    {
+                        w = (float)style.WidthPercent.Value / 100f * availableSize.Width;
+                        isExplicitWidth = true;
+                    }
                 }
 
                 if (style.Height.HasValue) 
@@ -681,6 +684,12 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureMeter(elem, childConstraint);
             else if (tag == "DETAILS")
                 m = MeasureDetails(elem, childConstraint, depth + 1);
+            else if (node.IsText())
+            {
+                // Text nodes inherit their parent's computed style, including `display`.
+                // They must still be measured as text runs, never as inherited flex/grid containers.
+                m = MeasureText(node, childConstraint);
+            }
             else if (display == "flex" || display == "inline-flex") 
             {
                 FenLogger.Debug($"[MEASURE-FLEX] Node={elem.TagName} Class={elem.GetAttribute("class")} is being measured as FLEX. Avail={availableSize}", LogCategory.Layout);
@@ -702,21 +711,6 @@ namespace FenBrowser.FenEngine.Layout
                 _tableStates.AddOrUpdate(elem, tableState);
             }
 
-            else if (node.IsText()) 
-            {
-                // DIAGNOSTIC: Trace text nodes containing 'ai'
-                if (node is Text textNode)
-                {
-                    string txt = textNode.Data?.ToLowerInvariant() ?? "";
-                    if (txt.Contains("ai"))
-                    {
-                         var parentEl = node.ParentNode as Element;
-                         bool isAiMode = txt.Contains("ai mode");
-                         FenLogger.Debug($"[AI-TRACE] Text='{txt}' Parent={parentEl?.TagName} Class={parentEl?.GetAttribute("class")}");
-                    }
-                }
-                m = MeasureText(node, childConstraint);
-            }
             else 
             {
                 // BFC MANAGEMENT
@@ -2529,47 +2523,43 @@ namespace FenBrowser.FenEngine.Layout
             // Simple approach: Iterate children of container. If found in ElementRects, arrange. 
             // If Text, call ArrangeText (which does nothing but is good for consistency).
             
-            void ProcessChildren(Node n, int currentDepth) {
-                if (currentDepth > 80) return;
-                if (n is Element e && e.Children != null) {
-                    foreach(var c in e.Children) {
-                        if (result.ElementRects.TryGetValue(c, out var r)) {
-                           // It's an atomic element we placed
-                           var absR = new SKRect(finalRect.Left + r.Left, finalRect.Top + r.Top, finalRect.Left + r.Right, finalRect.Top + r.Bottom);
-                           ArrangeNode(c, absR, currentDepth + 1);
-                        } else if (c is Text) {
-                           // Text lines are relative to result.Origin (0,0). 
-                           // In BoxModel, lines are relative to ContentBox.
-                           // So if we just passed the lines to _textLines, they are relative to (0,0) of the IFC container?
-                           
-                           // Wait: ComputedTextLine.Origin IS relative to ContentBox in the definition.
-                           // InlineLayoutComputer produced coords relative to the IFC start.
-                           // So if 'c' is a direct child of 'container', its ContentBox IS the IFC container?
-                           // No. Text nodes don't have boxes. They are just content.
-                           // ArrangeNode for Text creates a BoxModel with ContentBox = finalRect.
-                           
-                           // Let's call ArrangeNode with the full container rect?
-                           // Or dummy rect?
-                           // Text paint node uses box.ContentBox.Left + line.Origin.X.
-                           // If line.Origin is (10, 10) relative to IFC start.
-                           // And box.ContentBox is the IFC container absolute rect.
-                           // Then it works!
-                           ArrangeNode(c, finalRect, currentDepth + 1);
-                        } else if (c.NodeName == "BR") {
-                           // BR elements need a minimal box for rendering tree traversal
-                           // They don't occupy visual space but need to exist in the box tree
-                           // Give them a zero-width, zero-height box at the container position
-                           var brRect = new SKRect(finalRect.Left, finalRect.Top, finalRect.Left, finalRect.Top);
-                           ArrangeNode(c, brRect, currentDepth + 1);
-                        } else {
-                           // Nested inline (span, etc.).
-                           // Ensure the inline container itself gets a box so PaintTreeBuilder can traverse it.
-                           // We use the container's rect as a placeholder box.
-                           ArrangeNode(c, finalRect, currentDepth + 1);
-                           
-                           // Recursively visit children to ensure they also get processed (if they are atomic or text)
-                           ProcessChildren(c, currentDepth + 1);
-                        }
+            void ProcessChildren(Node n, int currentDepth)
+            {
+                if (currentDepth > 80 || n is not Element e)
+                {
+                    return;
+                }
+
+                foreach (var c in GetChildrenWithPseudos(e, e))
+                {
+                    if (c == null)
+                    {
+                        continue;
+                    }
+
+                    if (result.ElementRects.TryGetValue(c, out var r))
+                    {
+                        // It's an atomic element we placed.
+                        var absR = new SKRect(finalRect.Left + r.Left, finalRect.Top + r.Top, finalRect.Left + r.Right, finalRect.Top + r.Bottom);
+                        ArrangeNode(c, absR, currentDepth + 1);
+                    }
+                    else if (c is Text)
+                    {
+                        // Text paint node uses box.ContentBox.Left/Top plus line origins stored in _textLines.
+                        // Give direct text children the inline container box so those relative origins resolve correctly.
+                        ArrangeNode(c, finalRect, currentDepth + 1);
+                    }
+                    else if (c.NodeName == "BR")
+                    {
+                        // BR elements need a minimal box for rendering tree traversal.
+                        var brRect = new SKRect(finalRect.Left, finalRect.Top, finalRect.Left, finalRect.Top);
+                        ArrangeNode(c, brRect, currentDepth + 1);
+                    }
+                    else
+                    {
+                        // Nested inline container: ensure it participates in the tree, then recurse into its children.
+                        ArrangeNode(c, finalRect, currentDepth + 1);
+                        ProcessChildren(c, currentDepth + 1);
                     }
                 }
             }

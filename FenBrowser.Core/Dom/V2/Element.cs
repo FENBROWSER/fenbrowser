@@ -551,11 +551,11 @@ namespace FenBrowser.Core.Dom.V2
         internal long ComputeFeatureHash()
         {
             long hash = 0;
-            hash |= BloomHash(TagName);
+            hash |= BloomHash(TagName?.ToUpperInvariant());
 
             var id = Id;
             if (!string.IsNullOrEmpty(id))
-                hash |= BloomHash("#" + id);
+                hash |= BloomHash("#" + id.ToUpperInvariant());
 
             foreach (var cls in ClassList)
                 hash |= BloomHash("." + cls);
@@ -839,11 +839,14 @@ namespace FenBrowser.Core.Dom.V2
 
                     while (source.FirstChild != null)
                         AppendChild(source.FirstChild);
+
+                    MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
                 catch
                 {
                     // Keep behavior safe and non-throwing for malformed HTML fragments.
                     AppendChild(new Text(value, _ownerDocument));
+                    MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
             }
         }

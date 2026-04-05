@@ -52,6 +52,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             public int LineIndex; // Which line this segment is on
         }
 
+        private readonly record struct InlineTextMetrics(float Width, float LineHeight, float Baseline, float Descent);
+
         // Flatten inline tree to get all text boxes and atomic inlines in document order
         private void FlattenInlineChildren(LayoutBox box, List<LayoutBox> result)
         {
@@ -66,6 +68,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
+            // Formatting contexts should always compute local geometry from a clean origin.
+            // Repeated relayout passes otherwise preserve stale subtree offsets and can
+            // leave descendants in a previous coordinate space while the parent is moved.
+            LayoutBoxOps.ResetSubtreeToOrigin(box);
+
+            if (box is TextLayoutBox leafTextBox)
+            {
+                LayoutLeafTextBox(leafTextBox, state);
+                return;
+            }
+
             if (TryLayoutReplacedInlineBox(box, state))
             {
                 return;
@@ -139,10 +152,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         textBoxLines[textBox] = new List<TextLineInfo>();
 
                     // Measure once for height/baseline
-                    var metrics = MeasureString("Hg", textBox.ComputedStyle);
-                    float lineHeight = metrics.Height;
-                    float baseline = lineHeight * 0.8f; // Approximate baseline
-                    float descent = Math.Max(0f, lineHeight - baseline);
+                    var metrics = MeasureTextMetrics("Hg", textBox.ComputedStyle);
+                    float lineHeight = metrics.LineHeight;
+                    float baseline = metrics.Baseline;
+                    float descent = metrics.Descent;
 
                     // WORD FLOW - track segments for this textBox
                     int startIdx = 0;
@@ -341,6 +354,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         Baseline = seg.Baseline
                     });
                 }
+
+                var firstLine = textBox.Geometry.Lines[0];
+                textBox.Geometry.LineHeight = firstLine.Height;
+                textBox.Geometry.Baseline = firstLine.Origin.Y + firstLine.Baseline;
+                textBox.Geometry.Ascent = textBox.Geometry.Baseline;
+                textBox.Geometry.Descent = Math.Max(0f, firstLine.Height - firstLine.Baseline);
             }
 
             // Position non-text children (atomic inlines)
@@ -404,7 +423,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         itemHeight = line.Height;
                     }
 
-                    float itemBaseline = itemHeight;
+                    float itemBaseline = ResolveInlineItemBaseline(item, itemHeight);
                     float itemY = lineY + ComputeVerticalAlignOffset(line, itemHeight, itemBaseline, item.ComputedStyle?.VerticalAlign);
 
                     LayoutBoxOps.PositionSubtree(item, itemX, itemY, placementState);
@@ -466,6 +485,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 box.Geometry.ContentBox.Left + finalContentWidth,
                 box.Geometry.ContentBox.Top + finalContentHeight
             );
+
+            if (lines.Count > 0)
+            {
+                box.Geometry.LineHeight = lines[0].Height;
+                box.Geometry.Baseline = lines[0].Baseline;
+                box.Geometry.Ascent = lines[0].Ascent;
+                box.Geometry.Descent = lines[0].Descent;
+            }
             
             SyncBoxes(box.Geometry);
         }
@@ -484,7 +511,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return false;
             }
 
-            if (!TryGetIntrinsicSize(box, out var intrinsic))
+            if (!TryGetIntrinsicSize(box, state, out var intrinsic))
             {
                 return false;
             }
@@ -508,6 +535,49 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return true;
         }
 
+        private void LayoutLeafTextBox(TextLayoutBox textBox, LayoutState state)
+        {
+            if (textBox.Geometry == null)
+            {
+                textBox.Geometry = new BoxModel();
+            }
+
+            string text = NormalizeIsolatedText(textBox.TextContent);
+            if (text.Length == 0)
+            {
+                ResetTextBoxGeometry(textBox);
+                return;
+            }
+
+            var metrics = MeasureTextMetrics(text, textBox.ComputedStyle);
+            float contentWidth = metrics.Width;
+            float contentHeight = metrics.LineHeight;
+            ApplyMinMaxConstraints(textBox.ComputedStyle, state, ref contentWidth, ref contentHeight);
+
+            textBox.Geometry.ContentBox = new SKRect(0, 0, contentWidth, contentHeight);
+            textBox.Geometry.Padding = new Thickness();
+            textBox.Geometry.Border = new Thickness();
+            textBox.Geometry.Margin = new Thickness();
+            textBox.Geometry.Lines = new List<ComputedTextLine>
+            {
+                new ComputedTextLine
+                {
+                    Text = text,
+                    Origin = new SKPoint(0, 0),
+                    Width = contentWidth,
+                    Height = contentHeight,
+                    Baseline = Math.Min(contentHeight, Math.Max(0f, metrics.Baseline))
+                }
+            };
+
+            textBox.Geometry.LineHeight = contentHeight;
+            textBox.Geometry.Baseline = textBox.Geometry.Lines[0].Baseline;
+            textBox.Geometry.Ascent = textBox.Geometry.Baseline;
+            textBox.Geometry.Descent = Math.Max(0f, contentHeight - textBox.Geometry.Baseline);
+
+            SyncBoxes(textBox.Geometry);
+        }
+
         private SKSize MeasureInlineChild(LayoutBox child, LayoutState state)
         {
             if (TryMeasureAtomicInlineReplacedChild(child, state, out var replacedSize))
@@ -517,7 +587,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (child is TextLayoutBox textBox)
             {
-                return MeasureString(textBox.TextContent, textBox.ComputedStyle);
+                string text = NormalizeIsolatedText(textBox.TextContent);
+                if (text.Length == 0)
+                {
+                    return SKSize.Empty;
+                }
+
+                return MeasureString(text, textBox.ComputedStyle);
             }
             else if (child is InlineBox inlineBox)
             {
@@ -557,7 +633,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     float cw = (float)(inlineBox.ComputedStyle?.Width ?? 0);
                     float ch = (float)(inlineBox.ComputedStyle?.Height ?? 20);
-                    if (cw <= 0 && TryGetIntrinsicSize(inlineBox, out var intrinsic))
+                    if (cw <= 0 && TryGetIntrinsicSize(inlineBox, state, out var intrinsic))
                     {
                         cw = intrinsic.Width;
                         ch = Math.Max(ch, intrinsic.Height);
@@ -576,7 +652,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     h = Math.Max(h, sz.Height);
                 }
 
-                if (w <= 0 && TryGetIntrinsicSize(inlineBox, out var inlineIntrinsic))
+                if (w <= 0 && TryGetIntrinsicSize(inlineBox, state, out var inlineIntrinsic))
                 {
                     w = inlineIntrinsic.Width;
                     h = Math.Max(h, inlineIntrinsic.Height);
@@ -663,7 +739,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return false;
             }
 
-            if (!TryGetIntrinsicSize(child, out var intrinsic))
+            if (!TryGetIntrinsicSize(child, state, out var intrinsic))
             {
                 return false;
             }
@@ -715,6 +791,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             if (string.IsNullOrEmpty(text)) return string.Empty;
             return CollapsibleWhitespace.Replace(text, " ");
+        }
+
+        private static string NormalizeIsolatedText(string text)
+        {
+            return CollapseWhitespace(text).Trim(' ');
         }
 
         private static float ComputeVerticalAlignOffset(LineBox line, float itemHeight, float itemAscent, string verticalAlign)
@@ -843,7 +924,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return "inline";
         }
 
-        private bool TryGetIntrinsicSize(LayoutBox box, out SKSize size)
+        private bool TryGetIntrinsicSize(LayoutBox box, LayoutState state, out SKSize size)
         {
             size = SKSize.Empty;
 
@@ -855,6 +936,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             string tag = el.TagName?.ToUpperInvariant() ?? string.Empty;
             float w = (float)(box.ComputedStyle?.Width ?? 0);
             float h = (float)(box.ComputedStyle?.Height ?? 0);
+            float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+            float cbHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+            if (w <= 0f && box.ComputedStyle?.WidthPercent.HasValue == true && cbWidth > 0f)
+            {
+                w = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
+            }
+
+            if (h <= 0f && box.ComputedStyle?.HeightPercent.HasValue == true && cbHeight > 0f)
+            {
+                h = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * cbHeight);
+            }
+
             var padding = box.ComputedStyle?.Padding ?? new Thickness();
             bool hasPadding = padding.Left > 0 || padding.Right > 0 || padding.Top > 0 || padding.Bottom > 0;
             float defaultPaddingComp = hasPadding ? 0f : 24f;
@@ -987,7 +1080,107 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             textBox.Geometry.Border = new Thickness();
             textBox.Geometry.Margin = new Thickness();
             textBox.Geometry.Lines = new List<ComputedTextLine>();
+            textBox.Geometry.LineHeight = 0f;
+            textBox.Geometry.Baseline = 0f;
+            textBox.Geometry.Ascent = 0f;
+            textBox.Geometry.Descent = 0f;
             SyncBoxes(textBox.Geometry);
+        }
+
+        private static float ResolveInlineItemBaseline(LayoutBox item, float fallbackHeight)
+        {
+            if (item?.Geometry == null)
+            {
+                return fallbackHeight;
+            }
+
+            if (item.Geometry.Ascent > 0f)
+            {
+                float offset = item.Geometry.ContentBox.Top - item.Geometry.MarginBox.Top;
+                return offset + item.Geometry.Ascent;
+            }
+
+            if (TryResolveInlineBaselineFromLines(item.Geometry, out var lineBaseline))
+            {
+                return lineBaseline;
+            }
+
+            if (TryResolveInlineBaselineFromDescendants(item, out var descendantBaseline))
+            {
+                return descendantBaseline;
+            }
+
+            return fallbackHeight;
+        }
+
+        private static bool TryResolveInlineBaselineFromLines(BoxModel geometry, out float baseline)
+        {
+            baseline = 0f;
+            if (geometry?.Lines == null || geometry.Lines.Count == 0)
+            {
+                return false;
+            }
+
+            float contentOffset = geometry.ContentBox.Top - geometry.MarginBox.Top;
+            var lastLine = geometry.Lines[geometry.Lines.Count - 1];
+            baseline = contentOffset + lastLine.Origin.Y + lastLine.Baseline;
+            return float.IsFinite(baseline) && baseline >= 0f;
+        }
+
+        private static bool TryResolveInlineBaselineFromDescendants(LayoutBox item, out float baseline)
+        {
+            baseline = 0f;
+            if (item?.Children == null || item.Geometry == null)
+            {
+                return false;
+            }
+
+            float bestBaseline = float.MinValue;
+            float itemTop = item.Geometry.MarginBox.Top;
+
+            foreach (var child in item.Children)
+            {
+                if (child?.Geometry == null)
+                {
+                    continue;
+                }
+
+                float childBaseline;
+                bool found = false;
+
+                if (child.Geometry.Ascent > 0f)
+                {
+                    childBaseline = child.Geometry.ContentBox.Top - itemTop + child.Geometry.Ascent;
+                    found = true;
+                }
+                else if (TryResolveInlineBaselineFromLines(child.Geometry, out childBaseline))
+                {
+                    childBaseline += child.Geometry.MarginBox.Top - itemTop;
+                    found = true;
+                }
+                else if (TryResolveInlineBaselineFromDescendants(child, out childBaseline))
+                {
+                    childBaseline += child.Geometry.MarginBox.Top - itemTop;
+                    found = true;
+                }
+                else
+                {
+                    childBaseline = 0f;
+                }
+
+                if (found && float.IsFinite(childBaseline))
+                {
+                    bestBaseline = Math.Max(bestBaseline, childBaseline);
+                }
+            }
+
+            if (bestBaseline > float.MinValue)
+            {
+                baseline = bestBaseline;
+                return true;
+            }
+
+            return false;
         }
 
         private static bool TryGetLengthAttribute(Element element, string attributeName, out float value)
@@ -1030,6 +1223,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private SKSize MeasureString(string text, CssComputed style)
         {
+            var metrics = MeasureTextMetrics(text, style);
+            return new SKSize(metrics.Width, metrics.LineHeight);
+        }
+
+        private InlineTextMetrics MeasureTextMetrics(string text, CssComputed style)
+        {
             float fontSize = 16f;
             if (style?.FontSize != null) fontSize = (float)style.FontSize.Value;
             fontSize = Math.Max(fontSize, 10f);
@@ -1039,7 +1238,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (string.IsNullOrEmpty(text))
             {
-                return new SKSize(fontSize * 0.35f, fontSize * 1.2f);
+                var emptyLineHeight = fontSize * 1.2f;
+                var emptyBaseline = emptyLineHeight * 0.8f;
+                return new InlineTextMetrics(fontSize * 0.35f, emptyLineHeight, emptyBaseline, Math.Max(0f, emptyLineHeight - emptyBaseline));
             }
 
             float width = _fontService.MeasureTextWidth(text, fontFamily, fontSize, fontWeight);
@@ -1056,7 +1257,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 lineHeight = fontSize * 1.25f;
             }
 
-            return new SKSize(width, lineHeight);
+            float baseline = metrics.GetBaselineOffset();
+            if (!float.IsFinite(baseline) || baseline <= 0f)
+            {
+                baseline = lineHeight * 0.8f;
+            }
+
+            baseline = Math.Min(lineHeight, baseline);
+            float descent = Math.Max(0f, lineHeight - baseline);
+            return new InlineTextMetrics(width, lineHeight, baseline, descent);
         }
 
 

@@ -108,6 +108,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DescendantSelector_WithTagAndIdAncestor_DoesNotFastRejectValidMatch()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <nav id='site'>
+        <div id='top-logo-and-name'></div>
+    </nav>
+</body></html>");
+
+            var target = ById(doc, "top-logo-and-name");
+
+            Assert.True(SelectorMatcher.Matches(target, "nav#site #top-logo-and-name"));
+            Assert.True(SelectorMatcher.Matches(target, "#site #top-logo-and-name"));
+        }
+
+        [Fact]
         public async Task CascadeAppliesNthChildOfSelectorRules()
         {
             const string html = @"

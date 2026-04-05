@@ -151,6 +151,13 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
 
             if (node == null) return;
+
+            if (node is Text traceTextNode && ShouldTraceWhatIsMyBrowserText(traceTextNode.Data))
+            {
+                global::FenBrowser.Core.FenLogger.Info(
+                    $"[WIMB-TEXT-VISIT] Text='{traceTextNode.Data}' Parent=<{traceTextNode.ParentElement?.TagName ?? "null"}>",
+                    LogCategory.Rendering);
+            }
             
             // Process children for Document/Fragment even if they don't have boxes themselves
             if (node is Document || node is DocumentFragment)
@@ -178,6 +185,13 @@ namespace FenBrowser.FenEngine.Rendering
             // the parent wrapper is sized; synthesize a paint box from parent geometry in that case.
             if (!TryResolvePaintBox(node, style, out var box) || box == null)
             {
+                if (node is Text missingTextNode && ShouldTraceWhatIsMyBrowserText(missingTextNode.Data))
+                {
+                    global::FenBrowser.Core.FenLogger.Info(
+                        $"[WIMB-TEXT-MISS] Text='{missingTextNode.Data}' Parent=<{missingTextNode.ParentElement?.TagName ?? "null"}> HasStyle={(style != null)}",
+                        LogCategory.Rendering);
+                }
+
                 // If the element itself doesn't have a paint box, still allow its children to render.
                 // This prevents small inline wrappers (e.g., SPAN around SVG icons) from swallowing content.
                 if (node is Element && !ShouldHide(node, style))
@@ -705,6 +719,79 @@ namespace FenBrowser.FenEngine.Rendering
 
             box = Layout.BoxModel.FromContentBox(left, top, width, height);
             return true;
+        }
+
+        private static bool ShouldTraceWhatIsMyBrowserText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            return text.Contains("My browser", StringComparison.Ordinal) ||
+                   text.Contains("Guides", StringComparison.Ordinal) ||
+                   text.Contains("Detect my settings", StringComparison.Ordinal) ||
+                   text.Contains("Tools", StringComparison.Ordinal) ||
+                   text.Contains("Chrome 146 on Windows 10", StringComparison.Ordinal) ||
+                   text.Contains("Your web browser is up to date", StringComparison.Ordinal) ||
+                   text.Contains("Your Web Browser's Settings", StringComparison.Ordinal) ||
+                   text.Contains("Now that you know what browser you're using", StringComparison.Ordinal) ||
+                   text.Contains("How to enable JavaScript", StringComparison.Ordinal) ||
+                   text.Contains("No - JavaScript is not enabled", StringComparison.Ordinal) ||
+                   text.Contains("Could not be detected because Javascript is disabled", StringComparison.Ordinal) ||
+                   text.Contains("Yes - JavaScript is enabled", StringComparison.Ordinal) ||
+                   text.Contains("Yes - Cookies are enabled", StringComparison.Ordinal) ||
+                   text.Contains("Please wait...", StringComparison.Ordinal);
+        }
+
+        private static string NormalizeRenderableText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            return text
+                .Replace("âœ“", "✓", StringComparison.Ordinal)
+                .Replace("âœ”", "✔", StringComparison.Ordinal)
+                .Replace("âœ˜", "✘", StringComparison.Ordinal);
+        }
+
+        private static IReadOnlyList<PositionedGlyph> BuildPaintGlyphs(
+            string text,
+            string fontFamily,
+            float fontSize,
+            int fontWeight,
+            SKPoint origin)
+        {
+            if (string.IsNullOrWhiteSpace(text) || fontSize <= 0)
+            {
+                return null;
+            }
+
+            var glyphRun = _fontService.ShapeText(text, fontFamily ?? "Segoe UI", fontSize, fontWeight);
+            if (glyphRun.Glyphs == null || glyphRun.Glyphs.Length == 0)
+            {
+                return null;
+            }
+
+            var glyphs = new List<PositionedGlyph>(glyphRun.Glyphs.Length);
+            int renderableGlyphCount = 0;
+            foreach (var glyph in glyphRun.Glyphs)
+            {
+                var positioned = new PositionedGlyph(
+                    glyph.GlyphId,
+                    origin.X + glyph.X,
+                    origin.Y + glyph.Y);
+                if (positioned.IsRenderable)
+                {
+                    renderableGlyphCount++;
+                }
+
+                glyphs.Add(positioned);
+            }
+
+            return renderableGlyphCount > 0 ? glyphs : null;
         }
 
         private static bool TryParseSvgLengthAttribute(Element element, string attributeName, out float value)
@@ -1487,9 +1574,23 @@ namespace FenBrowser.FenEngine.Rendering
         private BackgroundPaintNode BuildBackgroundNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
         {
             SKColor? bgColor = style?.BackgroundColor;
+            bool cssSpecifiedBackground = style?.Map != null &&
+                                          (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color"));
+            bool hasAuthoredBackground = cssSpecifiedBackground || !string.IsNullOrWhiteSpace(style?.BackgroundImage);
+
+            if ((bgColor == null || bgColor.Value.Alpha == 0) &&
+                !string.IsNullOrWhiteSpace(style?.BackgroundImage) &&
+                !style.BackgroundImage.Contains("gradient", StringComparison.OrdinalIgnoreCase) &&
+                !style.BackgroundImage.Contains("url(", StringComparison.OrdinalIgnoreCase))
+            {
+                bgColor = CssLoader.TryColor(style.BackgroundImage);
+            }
             
-            // UA Defaults if transparent
-            if (bgColor == null || bgColor.Value.Alpha == 0)
+            // UA defaults must not override authored background declarations.
+            // Form controls frequently receive color through `background:` shorthand;
+            // if that shorthand is present but the computed color stayed transparent,
+            // the correct fallback is "no engine default fill", not a white UA repaint.
+            if (!hasAuthoredBackground && (bgColor == null || bgColor.Value.Alpha == 0))
             {
                 if (node is Element e)
                 {
@@ -2300,7 +2401,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     // Apply text-overflow: ellipsis if needed
-                    string lineDisplayText = line.Text;
+                    string lineDisplayText = NormalizeRenderableText(line.Text);
                     if (applyEllipsis && containerWidth > 0 && resolvedLineWidth > containerWidth)
                     {
                         using var measurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
@@ -2332,6 +2433,23 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // Origin for text drawing (Baseline)
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
+                    var glyphs = BuildPaintGlyphs(lineDisplayText, fontFamily, fontSize, weight, textOrigin);
+
+                    if (ShouldTraceWhatIsMyBrowserText(lineDisplayText))
+                    {
+                        string parentTag = textNode.ParentElement?.TagName ?? "null";
+                        string grandParentTag = textNode.ParentElement?.ParentElement?.TagName ?? "null";
+                        string boxSummary = $"Box=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1})";
+                        string parentSummary = "ParentBox=null";
+                        if (textNode.ParentNode != null && _boxes.TryGetValue(textNode.ParentNode, out var traceParentBox) && traceParentBox != null)
+                        {
+                            parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
+                        }
+
+                        global::FenBrowser.Core.FenLogger.Info(
+                            $"[WIMB-TEXT-BUILD] Text='{lineDisplayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} LineOrigin=({line.Origin.X:F1},{line.Origin.Y:F1}) LineSize=({resolvedLineWidth:F1}x{line.Height:F1}) Baseline={line.Baseline:F1} DrawOrigin=({textOrigin.X:F1},{textOrigin.Y:F1})",
+                            LogCategory.Rendering);
+                    }
 
                     list.Add(new TextPaintNode
                     {
@@ -2340,6 +2458,7 @@ namespace FenBrowser.FenEngine.Rendering
                         Color = color,
                         FontSize = fontSize,
                         Typeface = typeface,
+                        Glyphs = glyphs,
                         TextOrigin = textOrigin,
                         FallbackText = lineDisplayText,
                         TextDecorations = textDecorations,
@@ -2347,8 +2466,7 @@ namespace FenBrowser.FenEngine.Rendering
                         IsHovered = isHovered
                     });
                 }
-                if (list.Count == 0) return null;
-                return list;
+                if (list.Count > 0) return list;
             }
 
 
@@ -2367,6 +2485,7 @@ namespace FenBrowser.FenEngine.Rendering
                                          .Replace("&#x2718;", "✘");
             }
             if (displayText.Contains("&amp;")) displayText = displayText.Replace("&amp;", "&");
+            displayText = NormalizeRenderableText(System.Net.WebUtility.HtmlDecode(displayText));
             if (string.IsNullOrWhiteSpace(displayText))
             {
                 return null;
@@ -2445,6 +2564,22 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 FenBrowser.Core.FenLogger.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
             }
+
+            if (ShouldTraceWhatIsMyBrowserText(displayText))
+            {
+                string parentTag = textNode.ParentElement?.TagName ?? "null";
+                string grandParentTag = textNode.ParentElement?.ParentElement?.TagName ?? "null";
+                string boxSummary = $"Box=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1})";
+                string parentSummary = "ParentBox=null";
+                if (textNode.ParentNode != null && _boxes.TryGetValue(textNode.ParentNode, out var traceParentBox) && traceParentBox != null)
+                {
+                    parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
+                }
+
+                global::FenBrowser.Core.FenLogger.Info(
+                    $"[WIMB-TEXT-FALLBACK] Text='{displayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} DrawBounds=({drawBounds.Left:F1},{drawBounds.Top:F1},{drawBounds.Width:F1}x{drawBounds.Height:F1}) BaselineY={baselineY:F1}",
+                    LogCategory.Rendering);
+            }
             
             return new List<TextPaintNode> 
             {
@@ -2455,6 +2590,7 @@ namespace FenBrowser.FenEngine.Rendering
                     Color = color,
                     FontSize = fontSize,
                     Typeface = typeface,
+                    Glyphs = BuildPaintGlyphs(displayText, fontFamily, fontSize, weight, new SKPoint(drawBounds.Left, baselineY)),
                     TextOrigin = new SKPoint(drawBounds.Left, baselineY),
                     FallbackText = displayText,
                     TextDecorations = textDecorations,

@@ -217,6 +217,7 @@ namespace FenBrowser.FenEngine.Rendering
                 bool isLayoutDirty = forceLayout || (root.LayoutDirty || root.ChildLayoutDirty);
                 bool hasActiveAnimations = false;
                 var animationInvalidation = InvalidationKind.None;
+                bool paintInvalidationSignal = false;
 
                 // PHASE 0: Update Animations
                 // Integrate CSS Animation Engine
@@ -347,14 +348,20 @@ namespace FenBrowser.FenEngine.Rendering
                         // FenLogger.Debug($"[L-04 CHECK-LATE] RootHeight={rootBox.PaddingBox.Height} Viewport={_viewportHeight} Match={almostFullCheck}");
                     }
 
-                    // Debug: Dump DOM tree with Boxes
-                    if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
+                    try
                     {
-                        try { 
-                            var sb = new System.Text.StringBuilder();
-                            DumpDom(root, 0, sb, styles, _boxes);
+                        var sb = new System.Text.StringBuilder();
+                        DumpDom(root, 0, sb, styles, _boxes);
+                        System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
+
+                        if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
+                        {
                             FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
-                        } catch (Exception ex) { FenLogger.Warn($"[SkiaDomRenderer] DOM dump logging failed: {ex.Message}", LogCategory.Rendering); }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
                     }
                     
                     FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
@@ -386,12 +393,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                 paintStageWatchdog.Restart();
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
-                bool paintInvalidationSignal = isLayoutDirty
-                                               || root.PaintDirty
-                                               || root.ChildPaintDirty
-                                               || ImageLoader.HasActiveAnimatedImages
-                                               || scrollAnimationActive
-                                               || (animationInvalidation & InvalidationKind.Paint) != 0;
+                paintInvalidationSignal = isLayoutDirty
+                                          || root.PaintDirty
+                                          || root.ChildPaintDirty
+                                          || ImageLoader.HasActiveAnimatedImages
+                                          || scrollAnimationActive
+                                          || (animationInvalidation & InvalidationKind.Paint) != 0;
                 // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
                 bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
                 bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
@@ -451,6 +458,15 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         _lastDamageRegions = new[] { currentViewport };
                         FenLogger.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
+                    }
+                    else if (rebuiltPaintTree &&
+                             paintInvalidationSignal &&
+                             (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
+                    {
+                        _lastDamageRegions = new[] { currentViewport };
+                        FenLogger.Warn(
+                            "[SkiaDomRenderer] Paint tree rebuilt without localized damage; upgrading to full-viewport damage to avoid presenting a stale base frame.",
+                            LogCategory.Rendering);
                     }
 
                     // Clear Paint Dirty Flags
@@ -553,15 +569,17 @@ namespace FenBrowser.FenEngine.Rendering
 
                     LastDamageAreaRatio = damageAreaRatio;
                     LastFrameUsedDamageRasterization = useDamageRasterization;
+                    bool mustPresentFreshFrame = rebuiltPaintTree && paintInvalidationSignal;
 
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
                     {
                         LastFrameUsedDamageRasterization = false;
-                        rasterMode = hasBaseFrame
+                        bool preserveBaseFrame = hasBaseFrame && !mustPresentFreshFrame;
+                        rasterMode = preserveBaseFrame
                             ? RenderFrameRasterMode.PreservedBaseFrame
                             : RenderFrameRasterMode.Full;
 
-                        if (hasBaseFrame)
+                        if (preserveBaseFrame)
                         {
                             // Preserve the caller-seeded base frame instead of presenting a blank fallback.
                             FenLogger.Warn(
@@ -570,9 +588,9 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                         else
                         {
-                            // First/full frames must remain correct even under budget pressure.
+                            // DOM/layout/paint changes must present a fresh frame even under budget pressure.
                             FenLogger.Warn(
-                                "[SkiaDomRenderer] Watchdog budget exceeded before raster without a reusable base frame; forcing full raster to avoid blank presentation.",
+                                "[SkiaDomRenderer] Watchdog budget exceeded before raster on a fresh paint tree; forcing full raster to avoid presenting stale content.",
                                 LogCategory.Performance);
                             _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
                         }
