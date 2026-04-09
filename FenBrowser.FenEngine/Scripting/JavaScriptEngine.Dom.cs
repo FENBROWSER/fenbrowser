@@ -845,12 +845,19 @@ namespace FenBrowser.FenEngine.Scripting
                     case "innerHTML": return FenValue.FromString(innerHTML);
                     case "innerText": return FenValue.FromString(innerText);
                     case "textContent": return FenValue.FromString(textContent);
-                    // classList removed - JsDomTokenList doesn't implement IObject
+                    case "classList":
+                        return FenValue.FromObject(classList);
                     case "getAttribute": return FenValue.FromFunction(new FenFunction("getAttribute", (args, _) => 
                         FenValue.FromString(args.Length > 0 ? getAttribute(args[0].ToString()) : "")));
                     case "setAttribute": return FenValue.FromFunction(new FenFunction("setAttribute", (args, _) => { 
                         if (args.Length >= 2) setAttribute(args[0].ToString(), args[1].ToString()); 
                         return FenValue.Undefined; 
+                    }));
+                    case "toggleAttribute": return FenValue.FromFunction(new FenFunction("toggleAttribute", (args, _) => {
+                        if (!(_node is Element element) || args.Length == 0) return FenValue.FromBoolean(false);
+                        bool? force = null;
+                        if (args.Length > 1 && !args[1].IsUndefined) force = args[1].ToBoolean();
+                        return FenValue.FromBoolean(element.ToggleAttribute(args[0].ToString(), force));
                     }));
                     case "appendChild": return FenValue.FromFunction(new FenFunction("appendChild", (args, _) => { 
                         if (args.Length > 0) appendChild(args[0]); 
@@ -1517,6 +1524,10 @@ namespace FenBrowser.FenEngine.Scripting
                     }));
                     case "toString": return FenValue.FromFunction(new FenFunction("toString", (args, _) => FenValue.FromString(ToString())));
                     case "value": return FenValue.FromString(ToString()); // DOMTokenList.value
+                    case "[Symbol.toStringTag]":
+                    case "Symbol.toStringTag":
+                    case "Symbol(Symbol.toStringTag)":
+                        return FenValue.FromString("DOMTokenList");
                 }
                 return FenValue.Undefined;
             }
