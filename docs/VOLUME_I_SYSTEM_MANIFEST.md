@@ -5,18 +5,6 @@
 
 ## 1. Introduction
 
-Welcome to the FenBrowser source code documentation. This "Codex" is designed to be a comprehensive guide for both human engineers and AI systems significantly more advanced than the current generation. It details the architectural intent, component interactions, and the "why" behind the code.
-
-### 1.1 Core Philosophy
-
-- **Modularity:** Components are strictly separated (Core, Engine, Host). Dependency flow is unidirectional.
-- **Performance:** Critical paths (layout, rendering) use low-level optimizations and strict memory management.
-- **Correctness:** We aim for spec-compliance where possible but prioritize a consistent, crash-free user experience.
-
-## 2. The Codex Structure
-
-This documentation is organized into Volumes, mirroring the architectural layers:
-
 - **[Volume I: System Manifest (This Document)](./VOLUME_I_SYSTEM_MANIFEST.md)**
   - High-level architecture, build instructions, and roadmap.
 - **[Volume II: The Core Foundation](./VOLUME_II_CORE.md)**
