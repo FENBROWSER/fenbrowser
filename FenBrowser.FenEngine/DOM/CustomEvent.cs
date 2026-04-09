@@ -40,7 +40,7 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             // Per DOM: must be ignored while dispatching.
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -51,7 +51,7 @@ namespace FenBrowser.FenEngine.DOM
             Detail = args.Length >= 4 ? args[3] : FenValue.Null;
             Initialized = true;
 
-            ResetState();
+            ResetInternalStateForInitialization();
 
             Set("type", FenValue.FromString(Type));
             Set("bubbles", FenValue.FromBoolean(Bubbles));
@@ -60,6 +60,10 @@ namespace FenBrowser.FenEngine.DOM
             Set("defaultPrevented", FenValue.FromBoolean(false));
             Set("returnValue", FenValue.FromBoolean(true));
             Set("cancelBubble", FenValue.FromBoolean(false));
+            Set("target", FenValue.Null);
+            Set("currentTarget", FenValue.Null);
+            Set("srcElement", FenValue.Null);
+            Set("eventPhase", FenValue.FromNumber(NONE));
 
             return FenValue.Undefined;
         }

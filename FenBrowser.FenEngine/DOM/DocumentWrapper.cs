@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Dom.V2;
 using System;
 using System.Linq;
 using System.Collections.Generic;
@@ -49,6 +49,36 @@ namespace FenBrowser.FenEngine.DOM
                 case "queryselector":
                     return FenValue.FromFunction(new FenFunction("querySelector", QuerySelector));
 
+                case "nodetype":
+                    return FenValue.FromNumber((int)_root.NodeType);
+
+                case "nodename":
+                    return FenValue.FromString(_root.NodeName);
+
+                case "nodevalue":
+                    return FenValue.FromString(_root.NodeValue);
+
+                case "childnodes":
+                    return FenValue.FromObject(new NodeListWrapper(_root.ChildNodes, _context));
+
+                case "firstchild":
+                    return DomWrapperFactory.Wrap(_root.FirstChild, _context);
+
+                case "lastchild":
+                    return DomWrapperFactory.Wrap(_root.LastChild, _context);
+
+                case "previoussibling":
+                    return DomWrapperFactory.Wrap(_root.PreviousSibling, _context);
+
+                case "nextsibling":
+                    return DomWrapperFactory.Wrap(_root.NextSibling, _context);
+
+                case "ownerdocument":
+                    return DomWrapperFactory.Wrap(_root.OwnerDocument, _context);
+
+                case "textcontent":
+                    return FenValue.FromString(_root.TextContent);
+
                 case "createelement":
                     return FenValue.FromFunction(new FenFunction("createElement", CreateElement));
 
@@ -64,6 +94,12 @@ namespace FenBrowser.FenEngine.DOM
                 case "createcomment":
                     return FenValue.FromFunction(new FenFunction("createComment", CreateComment));
 
+                case "createattribute":
+                    return FenValue.FromFunction(new FenFunction("createAttribute", CreateAttribute));
+
+                case "createattributens":
+                    return FenValue.FromFunction(new FenFunction("createAttributeNS", CreateAttributeNS));
+
                 case "createprocessinginstruction":
                     return FenValue.FromFunction(new FenFunction("createProcessingInstruction", CreateProcessingInstruction));
 
@@ -72,6 +108,42 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "createrange":
                     return FenValue.FromFunction(new FenFunction("createRange", CreateRange));
+
+                case "appendchild":
+                    return FenValue.FromFunction(new FenFunction("appendChild", AppendChild));
+
+                case "append":
+                    return FenValue.FromFunction(new FenFunction("append", Append));
+
+                case "prepend":
+                    return FenValue.FromFunction(new FenFunction("prepend", Prepend));
+
+                case "importnode":
+                    return FenValue.FromFunction(new FenFunction("importNode", ImportNode));
+
+                case "removechild":
+                    return FenValue.FromFunction(new FenFunction("removeChild", RemoveChild));
+
+                case "replacechild":
+                    return FenValue.FromFunction(new FenFunction("replaceChild", ReplaceChild));
+
+                case "replacechildren":
+                    return FenValue.FromFunction(new FenFunction("replaceChildren", ReplaceChildren));
+
+                case "insertbefore":
+                    return FenValue.FromFunction(new FenFunction("insertBefore", InsertBefore));
+
+                case "clonenode":
+                    return FenValue.FromFunction(new FenFunction("cloneNode", CloneNode));
+
+                case "haschildnodes":
+                    return FenValue.FromFunction(new FenFunction("hasChildNodes", (args, thisVal) => FenValue.FromBoolean(_root.HasChildNodes)));
+
+                case "getrootnode":
+                    return FenValue.FromFunction(new FenFunction("getRootNode", GetRootNode));
+
+                case "evaluate":
+                    return FenValue.FromFunction(new FenFunction("evaluate", Evaluate));
 
                 case "queryselectorall":
                     return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
@@ -86,20 +158,25 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("getElementsByTagNameNS", GetElementsByTagNameNS));
 
                 case "body":
-                    var body = FindElementByTag(_root, "body");
+                    var body = (_root as Document)?.Body ?? FindElementByTag(_root, "body");
                     return body != null ? DomWrapperFactory.Wrap(body, _context) : FenValue.Null;
 
                 case "head":
-                    var head = FindElementByTag(_root, "head");
+                    var head = (_root as Document)?.Head ?? FindElementByTag(_root, "head");
                     return head != null ? DomWrapperFactory.Wrap(head, _context) : FenValue.Null;
 
                 case "title":
-                    // ... (existing title logic)
+                    var documentTitle = (_root as Document)?.Title;
+                    if (documentTitle != null)
+                    {
+                        return FenValue.FromString(documentTitle);
+                    }
+
                     var titleEl = FindElementByTag(_root, "title");
                     return FenValue.FromString(titleEl?.TextContent ?? "");
 
                 case "documentelement":
-                    var htmlEl = FindElementByTag(_root, "html");
+                    var htmlEl = (_root as Document)?.DocumentElement ?? FindElementByTag(_root, "html");
                     if (htmlEl != null)
                         return DomWrapperFactory.Wrap(htmlEl, _context);
                     if (_root is Element rootEl)
@@ -148,15 +225,24 @@ namespace FenBrowser.FenEngine.DOM
                     // DOMImplementation interface
                     var impl = new FenObject();
                     impl.Set("hasFeature", FenValue.FromFunction(new FenFunction("hasFeature", (args, _) => FenValue.FromBoolean(true))));
+                    impl.Set("createDocument", FenValue.FromFunction(new FenFunction("createDocument", (args, _) =>
+                    {
+                        var namespaceUri = args.Length > 0 && !args[0].IsNull && !args[0].IsUndefined ? args[0].ToString() : null;
+                        var qualifiedName = args.Length > 1 && !args[1].IsNull && !args[1].IsUndefined ? args[1].ToString() : null;
+                        var created = Document.CreateXmlDocument(namespaceUri, qualifiedName);
+                        return WrapDocument(created);
+                    })));
+                    impl.Set("createDocumentType", FenValue.FromFunction(new FenFunction("createDocumentType", (args, _) =>
+                    {
+                        var name = args.Length > 0 ? args[0].ToString() : string.Empty;
+                        var publicId = args.Length > 1 ? args[1].ToString() : string.Empty;
+                        var systemId = args.Length > 2 ? args[2].ToString() : string.Empty;
+                        var owner = _root as Document ?? _root.OwnerDocument ?? Document.CreateHtmlDocument();
+                        return DomWrapperFactory.Wrap(owner.CreateDocumentType(name, publicId, systemId), _context);
+                    })));
                     impl.Set("createHTMLDocument", FenValue.FromFunction(new FenFunction("createHTMLDocument", (args, _) => {
                          var title = args.Length > 0 ? args[0].ToString() : "";
-                         var newLite = new Element("html"); 
-                         // Minimal structure
-                         var head = new Element("head");
-                         if (!string.IsNullOrEmpty(title)) { var t = new Element("title") { TextContent = title }; head.AppendChild(t); }
-                         newLite.AppendChild(head);
-                         newLite.AppendChild(new Element("body"));
-                         return FenValue.FromObject(new DocumentWrapper(newLite, _context));
+                         return WrapDocument(Document.CreateHtmlDocument(title));
                     })));
                     return FenValue.FromObject(impl);
 
@@ -256,13 +342,6 @@ namespace FenBrowser.FenEngine.DOM
                 case "dir":
                     return FenValue.FromString("ltr");
 
-                case "nodetype":
-                    return FenValue.FromNumber(9); // DOCUMENT_NODE
-
-                case "nodevalue":
-                    return FenValue.Null;
-
-                case "childnodes":
                 case "children":
                     var childArr = new FenObject();
                     int ci = 0;
@@ -303,7 +382,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createAttribute", "createAttributeNS", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "evaluate", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation", "importNode", "prepend", "replaceChildren" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -400,6 +479,19 @@ namespace FenBrowser.FenEngine.DOM
             return DomWrapperFactory.Wrap(node, _context);
         }
 
+        private FenValue CreateAttribute(FenValue[] args, FenValue thisVal)
+        {
+            var name = args.Length > 0 ? args[0].ToString() : string.Empty;
+            return WrapAttribute(new Attr(name, string.Empty));
+        }
+
+        private FenValue CreateAttributeNS(FenValue[] args, FenValue thisVal)
+        {
+            var namespaceUri = args.Length > 0 && !args[0].IsNull && !args[0].IsUndefined ? args[0].ToString() : null;
+            var qualifiedName = args.Length > 1 ? args[1].ToString() : string.Empty;
+            return WrapAttribute(new Attr(namespaceUri, qualifiedName, string.Empty));
+        }
+
         private FenValue CreateProcessingInstruction(FenValue[] args, FenValue thisVal)
         {
             // ProcessingInstruction is not a first-class node type in the core; use Comment as backing storage.
@@ -416,6 +508,193 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.FromObject(new RangeWrapper(new Range(doc ?? new Document()), _context)); // Guard null doc
         }
 
+        private FenValue ImportNode(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull)
+            {
+                 throw new FenTypeError("TypeError: Failed to execute 'importNode': parameter 1 is not of type 'Node'.");
+            }
+
+            var nodeToImport = UnwrapNode(args[0].AsObject());
+            if (nodeToImport == null)
+            {
+                 throw new FenTypeError("TypeError: Failed to execute 'importNode': parameter 1 is not of type 'Node'.");
+            }
+            if (nodeToImport is Document)
+            {
+                 throw new DomException("NotSupportedError", "Document nodes cannot be imported.");
+            }
+
+            var deep = args.Length > 1 && args[1].ToBoolean();
+            var clone = nodeToImport.CloneNode(deep);
+            return DomWrapperFactory.Wrap(clone, _context);
+        }
+
+        private Node[] ParseNodeArgs(FenValue[] args)
+        {
+            var nodes = new List<Node>();
+            foreach (var arg in args)
+            {
+                if (arg.IsObject && !arg.IsNull && !arg.IsUndefined)
+                {
+                    var node = UnwrapNode(arg.AsObject());
+                    if (node != null) nodes.Add(node);
+                }
+                else
+                {
+                    var doc = _root as Document ?? _root.OwnerDocument ?? Document.CreateHtmlDocument();
+                    nodes.Add(doc.CreateTextNode(arg.ToString()));
+                }
+            }
+            return nodes.ToArray();
+        }
+
+        private FenValue Prepend(FenValue[] args, FenValue thisVal)
+        {
+            if (_root is IParentNode parentNode)
+            {
+                parentNode.Prepend(ParseNodeArgs(args));
+            }
+            return FenValue.Undefined;
+        }
+
+        private FenValue ReplaceChildren(FenValue[] args, FenValue thisVal)
+        {
+            if (_root is IParentNode parentNode)
+            {
+                parentNode.ReplaceChildren(ParseNodeArgs(args));
+            }
+            return FenValue.Undefined;
+        }
+
+        private FenValue AppendChild(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull)
+            {
+                return FenValue.Null;
+            }
+
+            var child = UnwrapNode(args[0].AsObject());
+            if (child == null)
+            {
+                return FenValue.Null;
+            }
+
+            if (_root is ContainerNode container)
+            {
+                container.AppendChild(child);
+                return args[0];
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        private FenValue Append(FenValue[] args, FenValue thisVal)
+        {
+            if (_root is not ContainerNode container)
+            {
+                return FenValue.Undefined;
+            }
+
+            foreach (var arg in args)
+            {
+                Node child;
+                if (arg.IsObject)
+                {
+                    child = UnwrapNode(arg.AsObject());
+                }
+                else
+                {
+                    var doc = _root as Document ?? _root.OwnerDocument ?? Document.CreateHtmlDocument();
+                    child = doc.CreateTextNode(arg.ToString());
+                }
+
+                if (child != null)
+                {
+                    container.AppendChild(child);
+                }
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private FenValue RemoveChild(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull)
+            {
+                return FenValue.Null;
+            }
+
+            var child = UnwrapNode(args[0].AsObject());
+            if (_root is ContainerNode container)
+            {
+                container.RemoveChild(child);
+                return args[0];
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        private FenValue ReplaceChild(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 2 || !args[0].IsObject || !args[1].IsObject)
+            {
+                return FenValue.Null;
+            }
+
+            var newNode = UnwrapNode(args[0].AsObject());
+            var oldNode = UnwrapNode(args[1].AsObject());
+            if (_root is ContainerNode container)
+            {
+                container.ReplaceChild(newNode, oldNode);
+                return args[1];
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        private FenValue InsertBefore(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull)
+            {
+                return FenValue.Null;
+            }
+
+            var newNode = UnwrapNode(args[0].AsObject());
+            Node referenceNode = null;
+            if (args.Length > 1 && args[1].IsObject && !args[1].IsNull)
+            {
+                referenceNode = UnwrapNode(args[1].AsObject());
+            }
+
+            if (_root is ContainerNode container)
+            {
+                container.InsertBefore(newNode, referenceNode);
+                return args[0];
+            }
+
+            throw new DomException("HierarchyRequestError", "This node type cannot have children.");
+        }
+
+        private FenValue CloneNode(FenValue[] args, FenValue thisVal)
+        {
+            var deep = args.Length > 0 && args[0].ToBoolean();
+            return DomWrapperFactory.Wrap(_root.CloneNode(deep), _context);
+        }
+
+        private FenValue GetRootNode(FenValue[] args, FenValue thisVal)
+        {
+            var options = default(GetRootNodeOptions);
+            if (args.Length > 0 && args[0].IsObject && !args[0].IsNull)
+            {
+                var optionsObject = args[0].AsObject();
+                var composed = optionsObject.Get("composed", _context);
+                options.Composed = composed.IsBoolean && composed.ToBoolean();
+            }
+
+            return DomWrapperFactory.Wrap(_root.GetRootNode(options), _context);
+        }
+
         private FenValue CreateEvent(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0)
@@ -423,37 +702,61 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenTypeError("TypeError: Failed to execute 'createEvent': 1 argument required, but only 0 present.");
             }
 
-            var interfaceName = args[0].ToString().Trim();
-            switch (interfaceName.ToLowerInvariant())
+            var requestedName = args[0].ToString().Trim();
+            var interfaceName = NormalizeCreateEventInterface(requestedName);
+            DomEvent evt = interfaceName switch
             {
-                case "event":
-                case "events":
-                case "htmlevents":
-                    return FenValue.FromObject(new DomEvent("", false, false, false, _context, initialized: false));
+                "Event" => new DomEvent("", false, false, false, _context, initialized: false),
+                "CustomEvent" => new CustomEvent("", false, false, FenValue.Null, _context, initialized: false),
+                "UIEvent" => new LegacyUIEvent("", false, false, _context, initialized: false),
+                "MouseEvent" => new LegacyMouseEvent("", false, false, _context, initialized: false),
+                "KeyboardEvent" => new LegacyKeyboardEvent("", false, false, _context, initialized: false),
+                "CompositionEvent" => new LegacyCompositionEvent("", false, false, _context, initialized: false),
+                "FocusEvent" => new LegacyUIEvent("", false, false, _context, initialized: false),
+                "DragEvent" => new LegacyMouseEvent("", false, false, _context, initialized: false),
+                "TextEvent" => new LegacyUIEvent("", false, false, _context, initialized: false),
+                "BeforeUnloadEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                "DeviceMotionEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                "DeviceOrientationEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                "HashChangeEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                "MessageEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                "StorageEvent" => new DomEvent("", false, false, false, _context, initialized: false),
+                _ => null
+            };
 
-                case "customevent":
-                    return FenValue.FromObject(new CustomEvent("", false, false, FenValue.Null, _context, initialized: false));
-
-                case "uievent":
-                case "uievents":
-                    return FenValue.FromObject(new LegacyUIEvent("", false, false, _context, initialized: false));
-
-                case "mouseevent":
-                case "mouseevents":
-                    return FenValue.FromObject(new LegacyMouseEvent("", false, false, _context, initialized: false));
-
-                case "keyboardevent":
-                case "keyboardevents":
-                    return FenValue.FromObject(new LegacyKeyboardEvent("", false, false, _context, initialized: false));
-
-                case "compositionevent":
-                case "compositionevents":
-                    return FenValue.FromObject(new LegacyCompositionEvent("", false, false, _context, initialized: false));
-
-                default:
-                    throw new InvalidOperationException(
-                        $"NotSupportedError: Failed to execute 'createEvent': The provided event type ('{interfaceName}') is not supported.");
+            if (evt == null)
+            {
+                throw new InvalidOperationException(
+                    $"NotSupportedError: Failed to execute 'createEvent': The provided event type ('{requestedName}') is not supported.");
             }
+
+            return ApplyEventPrototype(evt, interfaceName);
+        }
+
+        private FenValue Evaluate(FenValue[] args, FenValue thisVal)
+        {
+            var expression = args.Length > 0 ? args[0].ToString() : string.Empty;
+            var contextNode = args.Length > 1 && args[1].IsObject && !args[1].IsNull
+                ? UnwrapNode(args[1].AsObject()) ?? _root
+                : _root;
+            var resultType = args.Length > 3 ? (int)args[3].ToNumber() : 0;
+
+            var result = new FenObject();
+            result.Set("resultType", FenValue.FromNumber(resultType));
+
+            FenValue singleNodeValue = FenValue.Null;
+            if (expression.StartsWith("//", StringComparison.Ordinal))
+            {
+                var localName = expression.Substring(2);
+                if (!string.IsNullOrWhiteSpace(localName))
+                {
+                    var found = FindElementByTag(contextNode, localName);
+                    singleNodeValue = found != null ? DomWrapperFactory.Wrap(found, _context) : FenValue.Null;
+                }
+            }
+
+            result.Set("singleNodeValue", singleNodeValue);
+            return FenValue.FromObject(result);
         }
 
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -700,6 +1003,16 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
+        private static Node UnwrapNode(IObject wrapper)
+        {
+            if (wrapper is AttrWrapper)
+            {
+                throw new DomException("HierarchyRequestError", "Attributes cannot be inserted into the child node list.");
+            }
+
+            return (wrapper as NodeWrapper)?.Node ?? (wrapper as ElementWrapper)?.Element ?? (wrapper as DocumentWrapper)?.Node;
+        }
+
         // --- Event Listener Implementation ---
 
         private FenValue AddEventListenerMethod(FenValue[] args, FenValue thisValue)
@@ -708,61 +1021,33 @@ namespace FenBrowser.FenEngine.DOM
 
             var type = args[0].ToString();
             var callback = args[1];
-            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
-            if (string.IsNullOrEmpty(type) || !callbackIsValid || callback.IsUndefined || callback.IsNull)
-                return FenValue.Undefined;
-
-            FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
-
-            if ((type == "DOMContentLoaded" || type == "load") && (_readyState == "complete" || _readyState == "interactive"))
-            {
-                try
-                {
-                    var evt = new DomEvent(type);
-                    FenFunction callbackFn = null;
-                    var callbackThis = FenValue.FromObject(this);
-                    if (callback.IsFunction)
-                    {
-                        callbackFn = callback.AsFunction() as FenFunction;
-                    }
-                    else if (callback.IsObject)
-                    {
-                        var handleEvent = callback.AsObject()?.Get("handleEvent", _context) ?? FenValue.Undefined;
-                        if (handleEvent.IsFunction)
-                        {
-                            callbackFn = handleEvent.AsFunction() as FenFunction;
-                            callbackThis = callback;
-                        }
-                    }
-
-                    callbackFn?.Invoke(new[] { FenValue.FromObject(evt) }, _context, callbackThis);
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Error($"[DocumentWrapper] Error executing immediate {type}: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
-                }
-            }
 
             bool capture = false;
             bool once = false;
             bool passive = false;
             if (args.Length >= 3)
             {
-                if (args[2].IsBoolean) capture = args[2].ToBoolean();
+                if (!args[2].IsObject || args[2].IsNull) capture = args[2].ToBoolean();
                 else if (args[2].IsObject)
                 {
                     var opts = args[2].AsObject() as FenObject;
                     if (opts != null)
                     {
                         var cVal = opts.Get("capture");
-                        capture = cVal.IsBoolean && cVal.ToBoolean();
+                        capture = cVal.ToBoolean();
                         var oVal = opts.Get("once");
-                        once = oVal.IsBoolean && oVal.ToBoolean();
+                        once = oVal.ToBoolean();
                         var pVal = opts.Get("passive");
-                        passive = pVal.IsBoolean && pVal.ToBoolean();
+                        passive = pVal.ToBoolean();
                     }
                 }
             }
+
+            var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+            if (string.IsNullOrEmpty(type) || !callbackIsValid || callback.IsUndefined || callback.IsNull)
+                return FenValue.Undefined;
+
+            FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
             AddToDocumentListenerStore(type, callback, capture, once, passive);
             return FenValue.Undefined;
@@ -774,7 +1059,21 @@ namespace FenBrowser.FenEngine.DOM
             var type = args[0].ToString();
             var callback = args[1];
             bool capture = false;
-            if (args.Length >= 3 && args[2].IsBoolean) capture = args[2].ToBoolean();
+            if (args.Length >= 3)
+            {
+                if (!args[2].IsObject || args[2].IsNull)
+                {
+                    capture = args[2].ToBoolean();
+                }
+                else
+                {
+                    var opts = args[2].AsObject() as FenObject;
+                    if (opts != null)
+                    {
+                        capture = opts.Get("capture").ToBoolean();
+                    }
+                }
+            }
 
             RemoveFromDocumentListenerStore(type, callback, capture);
             return FenValue.Undefined;
@@ -782,7 +1081,10 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
-            if (args.Length == 0 || !args[0].IsObject) return FenValue.FromBoolean(false);
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull || args[0].IsUndefined)
+            {
+                throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+            }
 
             var eventObj = args[0].AsObject() as DomEvent;
             if (eventObj == null)
@@ -804,6 +1106,49 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return FenValue.FromBoolean(notPrevented);
+        }
+
+        private static string NormalizeCreateEventInterface(string interfaceName)
+        {
+            return interfaceName.ToLowerInvariant() switch
+            {
+                "event" => "Event",
+                "events" => "Event",
+                "htmlevents" => "Event",
+                "svgevents" => "Event",
+                "customevent" => "CustomEvent",
+                "uievent" => "UIEvent",
+                "uievents" => "UIEvent",
+                "mouseevent" => "MouseEvent",
+                "mouseevents" => "MouseEvent",
+                "keyboardevent" => "KeyboardEvent",
+                "compositionevent" => "CompositionEvent",
+                "beforeunloadevent" => "BeforeUnloadEvent",
+                "devicemotionevent" => "DeviceMotionEvent",
+                "deviceorientationevent" => "DeviceOrientationEvent",
+                "dragevent" => "DragEvent",
+                "focusevent" => "FocusEvent",
+                "hashchangeevent" => "HashChangeEvent",
+                "messageevent" => "MessageEvent",
+                "storageevent" => "StorageEvent",
+                "textevent" => "TextEvent",
+                _ => interfaceName
+            };
+        }
+
+        private FenValue ApplyEventPrototype(DomEvent evt, string interfaceName)
+        {
+            var ctor = _context?.Environment?.Get(interfaceName) ?? FenValue.Undefined;
+            if (ctor.IsFunction)
+            {
+                var prototype = ctor.AsFunction()?.Get("prototype", _context) ?? FenValue.Undefined;
+                if (prototype.IsObject)
+                {
+                    evt.SetPrototype(prototype.AsObject());
+                }
+            }
+
+            return FenValue.FromObject(evt);
         }
 
         private void AddToDocumentListenerStore(string type, FenValue callback, bool capture, bool once, bool passive)
@@ -903,7 +1248,30 @@ namespace FenBrowser.FenEngine.DOM
             var nodes = new List<Node>();
             CollectNodes(_root, nodes);
             return nodes.OfType<Element>().FirstOrDefault();
-        }        // --- Cookie Implementation ---
+        }
+
+        private FenValue WrapAttribute(Attr attr)
+        {
+            var wrapper = new AttrWrapper(attr, _context);
+            var attrCtor = _context?.Environment?.Get("Attr") ?? FenValue.Undefined;
+            if (attrCtor.IsFunction)
+            {
+                var prototype = attrCtor.AsFunction()?.Get("prototype", _context) ?? FenValue.Undefined;
+                if (prototype.IsObject)
+                {
+                    wrapper.SetPrototype(prototype.AsObject());
+                }
+            }
+
+            return FenValue.FromObject(wrapper);
+        }
+
+        private FenValue WrapDocument(Document document)
+        {
+            return DomWrapperFactory.Wrap(document, _context);
+        }
+
+        // --- Cookie Implementation ---
         public static Func<Uri, string> CookieReadBridge { get; set; }
         public static Action<Uri, string> CookieWriteBridge { get; set; }
 

@@ -57,6 +57,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "ownerDocument":
                     return WrapNode(_node.OwnerDocument);
 
+                case "isConnected":
+                    return FenValue.FromBoolean(_node.IsConnected);
+
                 case "textContent":
                     return FenValue.FromString(_node.TextContent);
 
@@ -71,12 +74,20 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("remove", Remove));
                 case "replaceChild":
                     return FenValue.FromFunction(new FenFunction("replaceChild", ReplaceChild));
+                case "replaceWith":
+                    return FenValue.FromFunction(new FenFunction("replaceWith", ReplaceWith));
+                case "before":
+                    return FenValue.FromFunction(new FenFunction("before", Before));
+                case "after":
+                    return FenValue.FromFunction(new FenFunction("after", After));
                 case "insertBefore":
                     return FenValue.FromFunction(new FenFunction("insertBefore", InsertBefore));
                 case "cloneNode":
                     return FenValue.FromFunction(new FenFunction("cloneNode", CloneNode));
                 case "hasChildNodes":
                     return FenValue.FromFunction(new FenFunction("hasChildNodes", (args, thisVal) => FenValue.FromBoolean(_node.HasChildNodes)));
+                case "getRootNode":
+                    return FenValue.FromFunction(new FenFunction("getRootNode", GetRootNode));
 
                 // EventTarget
                 case "addEventListener":
@@ -96,6 +107,15 @@ namespace FenBrowser.FenEngine.DOM
             if (_expandoProperties.TryGetValue(key, out var expando))
             {
                 return expando;
+            }
+
+            for (var prototype = _prototype; prototype != null; prototype = prototype.GetPrototype())
+            {
+                var inherited = prototype.Get(key, context);
+                if (!inherited.IsUndefined)
+                {
+                    return inherited;
+                }
             }
 
             return FenValue.Undefined;
@@ -195,6 +215,63 @@ namespace FenBrowser.FenEngine.DOM
             throw new DomException("HierarchyRequestError", "This node type cannot have children.");
         }
 
+        protected Node[] ParseNodeArgs(FenValue[] args)
+        {
+            var nodes = new List<Node>();
+            foreach (var arg in args)
+            {
+                if (arg.IsObject && !arg.IsNull && !arg.IsUndefined)
+                {
+                    var node = UnwrapNode(arg.AsObject());
+                    if (node != null) nodes.Add(node);
+                }
+                else
+                {
+                    nodes.Add(new Text(arg.ToString()));
+                }
+            }
+            return nodes.ToArray();
+        }
+
+        private FenValue Before(FenValue[] args, FenValue thisVal)
+        {
+            if (_node is IChildNode childNode)
+            {
+                childNode.Before(ParseNodeArgs(args));
+            }
+            else
+            {
+                throw new DomException("HierarchyRequestError", "This node type does not support the before method.");
+            }
+            return FenValue.Undefined;
+        }
+
+        private FenValue After(FenValue[] args, FenValue thisVal)
+        {
+            if (_node is IChildNode childNode)
+            {
+                childNode.After(ParseNodeArgs(args));
+            }
+            else
+            {
+                throw new DomException("HierarchyRequestError", "This node type does not support the after method.");
+            }
+            return FenValue.Undefined;
+        }
+
+        private FenValue ReplaceWith(FenValue[] args, FenValue thisVal)
+        {
+            if (_node is IChildNode childNode)
+            {
+                childNode.ReplaceWith(ParseNodeArgs(args));
+            }
+            else
+            {
+                throw new DomException("HierarchyRequestError", "This node type does not support the replaceWith method.");
+            }
+            return FenValue.Undefined;
+        }
+
         private FenValue Append(FenValue[] args, FenValue thisVal)
         {
             if (!(_node is ContainerNode))
@@ -224,6 +301,7 @@ namespace FenBrowser.FenEngine.DOM
                 catch (Exception ex)
                 {
                     FenBrowser.Core.FenLogger.Error($"Append failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    throw;
                 }
             }
 
@@ -245,6 +323,7 @@ namespace FenBrowser.FenEngine.DOM
                 catch (Exception ex)
                 {
                     FenBrowser.Core.FenLogger.Error($"AppendChild failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    throw;
                 }
             }
             return FenValue.Null;
@@ -264,7 +343,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch
                 {
-                    return FenValue.Null;
+                    throw;
                 }
             }
             return FenValue.Null;
@@ -303,7 +382,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch
                 {
-                    return FenValue.Null;
+                    throw;
                 }
             }
             return FenValue.Null;
@@ -330,7 +409,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch
                 {
-                    return FenValue.Null;
+                    throw;
                 }
             }
             return FenValue.Null;
@@ -343,6 +422,19 @@ namespace FenBrowser.FenEngine.DOM
 
             var clone = _node.CloneNode(deep);
             return WrapNode(clone);
+        }
+
+        private FenValue GetRootNode(FenValue[] args, FenValue thisVal)
+        {
+            var options = default(GetRootNodeOptions);
+            if (args.Length > 0 && args[0].IsObject && !args[0].IsNull)
+            {
+                var optionsObject = args[0].AsObject();
+                var composed = optionsObject.Get("composed", _context);
+                options.Composed = composed.IsBoolean && composed.ToBoolean();
+            }
+
+            return WrapNode(_node.GetRootNode(options));
         }
 
         private FenValue AddEventListener(FenValue[] args, FenValue thisVal)
@@ -366,7 +458,7 @@ namespace FenBrowser.FenEngine.DOM
             var signal = FenValue.Undefined;
             if (args.Length >= 3)
             {
-                if (args[2].IsBoolean)
+                if (!args[2].IsObject || args[2].IsNull)
                 {
                     capture = args[2].ToBoolean();
                 }
@@ -374,11 +466,11 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     var opts = args[2].AsObject();
                     var cap = opts.Get("capture", _context);
-                    capture = cap.IsBoolean && cap.ToBoolean();
+                    capture = cap.ToBoolean();
                     var one = opts.Get("once", _context);
-                    once = one.IsBoolean && one.ToBoolean();
+                    once = one.ToBoolean();
                     var pas = opts.Get("passive", _context);
-                    passive = pas.IsBoolean && pas.ToBoolean();
+                    passive = pas.ToBoolean();
                     var sig = opts.Get("signal", _context);
                     if (sig.IsObject)
                     {
@@ -403,14 +495,14 @@ namespace FenBrowser.FenEngine.DOM
             var capture = false;
             if (args.Length >= 3)
             {
-                if (args[2].IsBoolean)
+                if (!args[2].IsObject || args[2].IsNull)
                 {
                     capture = args[2].ToBoolean();
                 }
                 else if (args[2].IsObject)
                 {
                     var cap = args[2].AsObject().Get("capture", _context);
-                    capture = cap.IsBoolean && cap.ToBoolean();
+                    capture = cap.ToBoolean();
                 }
             }
 
@@ -420,7 +512,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue DispatchEvent(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length == 0 || !args[0].IsObject)
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull || args[0].IsUndefined)
             {
                 throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
             }
@@ -540,8 +632,8 @@ namespace FenBrowser.FenEngine.DOM
             var builtins = new[]
             {
                 "nodeName", "nodeType", "nodeValue", "textContent", "parentNode", "childNodes", "firstChild",
-                "lastChild", "previousSibling", "nextSibling", "ownerDocument", "appendChild", "append",
-                "removeChild", "remove", "replaceChild", "insertBefore", "cloneNode", "hasChildNodes",
+                "lastChild", "previousSibling", "nextSibling", "ownerDocument", "isConnected", "appendChild", "append",
+                "removeChild", "remove", "replaceChild", "replaceWith", "before", "after", "insertBefore", "cloneNode", "hasChildNodes", "getRootNode",
                 "addEventListener", "removeEventListener", "dispatchEvent"
             };
             return builtins.Concat(_expandoProperties.Keys);
