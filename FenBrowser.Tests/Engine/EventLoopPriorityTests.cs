@@ -42,5 +42,31 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(1, snapshot.UserVisibleCount);
             Assert.Equal(1, snapshot.BackgroundCount);
         }
+
+        [Fact]
+        public void ProcessNextTaskDetailed_DrainsPendingMicrotasks_WhenNoTaskIsQueued()
+        {
+            EventLoopCoordinator.ResetInstance();
+            var coordinator = EventLoopCoordinator.Instance;
+            var order = new List<string>();
+
+            coordinator.ScheduleMicrotask(() =>
+            {
+                order.Add("microtask");
+                coordinator.ScheduleTask(() => order.Add("task"), TaskSource.Timer, "timer");
+            });
+
+            var microtaskResult = coordinator.ProcessNextTaskDetailed();
+            var taskResult = coordinator.ProcessNextTaskDetailed();
+
+            Assert.True(microtaskResult.Processed);
+            Assert.Equal(TaskSource.Other, microtaskResult.Source);
+            Assert.Equal(TaskPriorityGroup.Background, microtaskResult.PriorityGroup);
+
+            Assert.True(taskResult.Processed);
+            Assert.Equal(TaskSource.Timer, taskResult.Source);
+            Assert.Equal(TaskPriorityGroup.Background, taskResult.PriorityGroup);
+            Assert.Equal(new[] { "microtask", "task" }, order);
+        }
     }
 }
