@@ -57,12 +57,9 @@ namespace FenBrowser.FenEngine.DOM
             // Modern spec usually requires getNamedItem, but for convenience/compat we check.
             var attrByName = _map.GetNamedItem(key);
             if (attrByName != null)
-             //   return FenValue.FromObject(new AttrWrapper(attrByName, _context));
-                // Actually, standard NamedNodeMap doesn't usually expose attributes as properties directly on the object 
-                // in the same way 'style' does. It's mostly item()/getNamedItem().
-                // However, for debugging/ease, let's keep it strictly method-based unless requested.
-                // Wait, some browsers do expose them. Let's stick to methods + index for now to be safe.
-                {}
+            {
+                return FenValue.FromObject(new AttrWrapper(attrByName, _context));
+            }
 
             switch (key.ToLowerInvariant())
             {
@@ -295,16 +292,12 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue SetNamedItem(FenValue[] args, FenValue thisVal)
         {
-            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "NamedNodeMap.setNamedItem"))
-                 throw new FenSecurityError("DOM write permission required");
-
-            if (args.Length == 0 || !args[0].IsObject) return FenValue.Null;
+            if (args.Length == 0) throw new FenTypeError("1 argument required");
+            if (!args[0].IsObject || args[0].IsNull) throw new FenTypeError("Argument 1 is not an object.");
             
             var wrapper = args[0].AsObject() as AttrWrapper;
-            if (wrapper  == null) throw new FenSecurityError("Argument 1 of setNamedItem is not an Attr.");
+            if (wrapper == null) throw new FenTypeError("Argument 1 of setNamedItem is not an Attr.");
 
-            // Setting an attribute on map triggers owner element update internally in Core.NamedNodeMap
-            // Exception: InUseAttributeError is handled in Core
             try
             {
                 var old = _map.SetNamedItem(wrapper.Attr);
@@ -312,16 +305,14 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception ex)
             {
-                throw new FenSecurityError(ex.Message); // Or DOMException mapping
+                throw new DomException("InUseAttributeError", ex.Message);
             }
         }
 
         private FenValue RemoveNamedItem(FenValue[] args, FenValue thisVal)
         {
-            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "NamedNodeMap.removeNamedItem"))
-                 throw new FenSecurityError("DOM write permission required");
-
-            if (args.Length == 0) return FenValue.Null;
+            if (args.Length == 0) throw new FenTypeError("1 argument required");
+            if (args[0].IsUndefined || args[0].IsNull) throw new FenTypeError("Cannot convert null or undefined to primitive value");
             var name = args[0].ToString();
 
             try
@@ -331,12 +322,8 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception ex)
             {
-                throw new FenSecurityError(ex.Message); // Should match DOMException really
+                throw new DomException("NotFoundError", ex.Message);
             }
         }
     }
 }
-
-
-
-

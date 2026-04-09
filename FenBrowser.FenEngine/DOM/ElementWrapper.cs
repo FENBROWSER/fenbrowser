@@ -90,6 +90,21 @@ namespace FenBrowser.FenEngine.DOM
                 case "removeattribute":
                     return FenValue.FromFunction(new FenFunction("removeAttribute", RemoveAttribute));
 
+                case "toggleattribute":
+                    return FenValue.FromFunction(new FenFunction("toggleAttribute", ToggleAttribute));
+
+                case "hasattributes":
+                    return FenValue.FromFunction(new FenFunction("hasAttributes", HasAttributes));
+                
+                case "removeattributens":
+                    return FenValue.FromFunction(new FenFunction("removeAttributeNS", RemoveAttributeNS));
+
+                case "prepend":
+                    return FenValue.FromFunction(new FenFunction("prepend", Prepend));
+                
+                case "replacechildren":
+                    return FenValue.FromFunction(new FenFunction("replaceChildren", ReplaceChildren));
+
                 case "attributes":
                     return FenValue.FromObject(new NamedNodeMapWrapper(_element.Attributes, _context));
 
@@ -1280,6 +1295,59 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
+        private FenValue ToggleAttribute(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "toggleAttribute"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length == 0)
+                return FenValue.FromBoolean(false);
+
+            var qualifiedName = args[0].ToString();
+            bool? force = null;
+            if (args.Length >= 2 && !args[1].IsUndefined)
+            {
+                force = args[1].ToBoolean();
+            }
+
+            return FenValue.FromBoolean(_element.ToggleAttribute(qualifiedName, force));
+        }
+
+        private FenValue HasAttributes(FenValue[] args, FenValue thisVal)
+        {
+            return FenValue.FromBoolean(_element.HasAttributes());
+        }
+
+        private FenValue RemoveAttributeNS(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttributeNS"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length < 2) return FenValue.Undefined;
+            var namespaceUri = args[0].IsNull ? null : args[0].ToString();
+            var localName = args[1].ToString();
+            _element.RemoveAttributeNS(namespaceUri, localName);
+            return FenValue.Undefined;
+        }
+
+        private FenValue Prepend(FenValue[] args, FenValue thisVal)
+        {
+            if (_element is IParentNode parentNode)
+            {
+                parentNode.Prepend(ParseNodeArgs(args));
+            }
+            return FenValue.Undefined;
+        }
+
+        private FenValue ReplaceChildren(FenValue[] args, FenValue thisVal)
+        {
+            if (_element is IParentNode parentNode)
+            {
+                parentNode.ReplaceChildren(ParseNodeArgs(args));
+            }
+            return FenValue.Undefined;
+        }
+
         private FenValue GetAttributeNode(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
@@ -2303,7 +2371,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue DispatchEventMethod(FenValue[] args, FenValue thisValue)
         {
-            if (args.Length == 0 || !args[0].IsObject)
+            if (args.Length == 0 || !args[0].IsObject || args[0].IsNull || args[0].IsUndefined)
             {
                 throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
             }
@@ -3144,6 +3212,10 @@ namespace FenBrowser.FenEngine.DOM
 
             switch (key)
             {
+                case "[Symbol.toStringTag]":
+                case "Symbol.toStringTag":
+                case "Symbol(Symbol.toStringTag)":
+                    return FenValue.FromString("DOMTokenList");
                 case "add": return FenValue.FromFunction(new FenFunction("add", (args, _) => Modify(tokens, args, (t, list) => { if (!list.Contains(t, StringComparer.Ordinal)) list.Add(t); })));
                 case "remove": return FenValue.FromFunction(new FenFunction("remove", (args, _) => Modify(tokens, args, (t, list) => list.RemoveAll(existing => string.Equals(existing, t, StringComparison.Ordinal)))));
                 case "toggle": return FenValue.FromFunction(new FenFunction("toggle", (args, _) => Toggle(tokens, args)));
@@ -3252,7 +3324,8 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (key == "length" || key == "add" || key == "remove" || key == "toggle" || key == "contains" ||
                 key == "item" || key == "forEach" || key == "values" || key == "keys" || key == "entries" ||
-                key == "[Symbol.iterator]" || key == "Symbol.iterator" || key == "Symbol(Symbol.iterator)")
+                key == "[Symbol.iterator]" || key == "Symbol.iterator" || key == "Symbol(Symbol.iterator)" ||
+                key == "[Symbol.toStringTag]" || key == "Symbol.toStringTag" || key == "Symbol(Symbol.toStringTag)")
             {
                 return false;
             }

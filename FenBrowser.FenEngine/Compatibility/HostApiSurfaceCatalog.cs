@@ -71,6 +71,16 @@ namespace FenBrowser.FenEngine.Compatibility
                     HostApiImplementationClass.CompatibilityShim,
                     "Core/FenRuntime.cs",
                     "Idle deadlines are synthetic and currently expose a fixed timeRemaining budget."),
+                ["window.MessageChannel"] = new HostApiSurfaceDescriptor(
+                    "window.MessageChannel",
+                    HostApiImplementationClass.CompatibilityShim,
+                    "Core/FenRuntime.cs",
+                    "MessageChannel/MessagePort are currently implemented as a lightweight event-loop shim without structured-clone transfer lists or full port lifecycle semantics."),
+                ["window.BroadcastChannel"] = new HostApiSurfaceDescriptor(
+                    "window.BroadcastChannel",
+                    HostApiImplementationClass.CompatibilityShim,
+                    "Core/FenRuntime.cs",
+                    "BroadcastChannel is implemented as an in-process event-loop shim that delivers same-name messages across live FenRuntime channel instances without cross-process persistence."),
                 ["Intl"] = new HostApiSurfaceDescriptor(
                     "Intl",
                     HostApiImplementationClass.ProductionImplementation,

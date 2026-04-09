@@ -40,6 +40,16 @@ namespace FenBrowser.FenEngine.DOM
             _attr = attr ?? throw new ArgumentNullException(nameof(attr));
             _context = context ?? throw new ArgumentNullException(nameof(context));
             NativeObject = attr;
+
+            var attrCtor = _context.Environment?.Get("Attr") ?? FenValue.Undefined;
+            if (attrCtor.IsFunction)
+            {
+                var prototype = attrCtor.AsFunction()?.Get("prototype", _context) ?? FenValue.Undefined;
+                if (prototype.IsObject)
+                {
+                    _prototype = prototype.AsObject();
+                }
+            }
         }
 
         public Attr Attr => _attr;
