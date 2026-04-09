@@ -96,6 +96,18 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         Action<MutationRecord> OnMutation { get; set; }
 
         /// <summary>
+        /// Callback for Unhandled Promise Rejections
+        /// Action&lt;FenValue /* reason */, FenObject /* promise */&gt;
+        /// </summary>
+        Action<FenValue, FenObject> OnUnhandledRejection { get; set; }
+
+        /// <summary>
+        /// Callback for Uncaught top-level errors (eval or bytecode)
+        /// Action&lt;FenValue /* error */, string /* sourceUrl */&gt;
+        /// </summary>
+        Action<FenValue, string> OnUncaughtException { get; set; }
+
+        /// <summary>
         /// Current script URL being executed (for debugging)
         /// </summary>
         string CurrentUrl { get; set; }
