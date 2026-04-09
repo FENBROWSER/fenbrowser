@@ -18,7 +18,10 @@ namespace FenBrowser.FenEngine.DOM
             if (node == null) return FenValue.Null;
 
             if (_wrapperCache.TryGetValue(node, out var cached))
+            {
+                ApplyRuntimePrototype(cached, node, context);
                 return FenValue.FromObject(cached);
+            }
 
             IObject wrapper;
             if (node is Document doc)
@@ -31,16 +34,95 @@ namespace FenBrowser.FenEngine.DOM
                 wrapper = new CommentWrapper(comment, context);
             else if (node is ShadowRoot shadow)
                 wrapper = new ShadowRootWrapper(shadow, context);
+            else if (node is DocumentType documentType)
+                wrapper = new DocumentTypeWrapper(documentType, context);
             else if (node is DocumentFragment fragment)
                 wrapper = new NodeWrapper(fragment, context);
             else
                 return FenValue.Null;
 
+            ApplyRuntimePrototype(wrapper, node, context);
             _wrapperCache.Add(node, wrapper);
             return FenValue.FromObject(wrapper);
         }
 
         /// <summary>Clear the identity cache on page navigation so stale wrappers are not reused.</summary>
         public static void ClearCache() => _wrapperCache.Clear();
+
+        private static void ApplyRuntimePrototype(IObject wrapper, Node node, IExecutionContext context)
+        {
+            if (wrapper == null || context?.Environment == null)
+            {
+                return;
+            }
+
+            var prototype = ResolvePrototype(node, context);
+            if (prototype == null)
+            {
+                return;
+            }
+
+            if (!ReferenceEquals(wrapper.GetPrototype(), prototype))
+            {
+                wrapper.SetPrototype(prototype);
+            }
+        }
+
+        private static IObject ResolvePrototype(Node node, IExecutionContext context)
+        {
+            if (node is Document)
+            {
+                return GetConstructorPrototype(context, "Document") ?? GetConstructorPrototype(context, "Node");
+            }
+
+            if (node is Text)
+            {
+                return GetConstructorPrototype(context, "Text") ?? GetConstructorPrototype(context, "Node");
+            }
+
+            if (node is DocumentType)
+            {
+                return GetConstructorPrototype(context, "DocumentType") ?? GetConstructorPrototype(context, "Node");
+            }
+
+            if (node is Comment)
+            {
+                return GetConstructorPrototype(context, "Comment") ?? GetConstructorPrototype(context, "Node");
+            }
+
+            if (node is Element element)
+            {
+                if (string.Equals(element.TagName, "img", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return GetConstructorPrototype(context, "HTMLImageElement")
+                        ?? GetConstructorPrototype(context, "HTMLElement")
+                        ?? GetConstructorPrototype(context, "Element")
+                        ?? GetConstructorPrototype(context, "Node");
+                }
+
+                return GetConstructorPrototype(context, "HTMLElement")
+                    ?? GetConstructorPrototype(context, "Element")
+                    ?? GetConstructorPrototype(context, "Node");
+            }
+
+            return GetConstructorPrototype(context, "Node");
+        }
+
+        private static IObject GetConstructorPrototype(IExecutionContext context, string constructorName)
+        {
+            if (context?.Environment == null || string.IsNullOrWhiteSpace(constructorName))
+            {
+                return null;
+            }
+
+            var constructor = context.Environment.Get(constructorName);
+            if (!constructor.IsFunction)
+            {
+                return null;
+            }
+
+            var prototype = constructor.AsFunction()?.Get("prototype", context) ?? FenValue.Undefined;
+            return prototype.IsObject ? prototype.AsObject() : null;
+        }
     }
 }

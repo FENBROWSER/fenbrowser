@@ -95,6 +95,22 @@ namespace FenBrowser.FenEngine.DOM
                         }
                         return FenValue.Undefined;
                     }));
+
+                case "indexOf":
+                    return FenValue.FromFunction(new FenFunction("indexOf", (args, thisVal) =>
+                    {
+                        if (args.Length > 0)
+                        {
+                            var target = args[0];
+                            int index = 0;
+                            foreach (var node in _source)
+                            {
+                                if (WrapNode(node).StrictEquals(target)) return FenValue.FromNumber(index);
+                                index++;
+                            }
+                        }
+                        return FenValue.FromNumber(-1);
+                    }));
             }
 
             if (_expando.TryGetValue(key, out var expando))
@@ -148,6 +164,26 @@ namespace FenBrowser.FenEngine.DOM
 
             _expando[key] = desc.Value ?? FenValue.Undefined;
             return true;
+        }
+
+        public PropertyDescriptor? GetOwnPropertyDescriptor(string key)
+        {
+            if (_expando.TryGetValue(key, out var val))
+            {
+                return new PropertyDescriptor { Value = val, Writable = true, Enumerable = true, Configurable = true, Getter = null, Setter = null };
+            }
+
+            if (TryParseArrayIndex(key, out var index) && index < (uint)_source.Count())
+            {
+                return new PropertyDescriptor { Value = Get(key), Writable = false, Enumerable = true, Configurable = true, Getter = null, Setter = null };
+            }
+
+            return null;
+        }
+
+        public IEnumerable<string> GetOwnPropertyNames(IExecutionContext context = null)
+        {
+            return Keys(context);
         }
         public bool Delete(string key, IExecutionContext context = null)
         {

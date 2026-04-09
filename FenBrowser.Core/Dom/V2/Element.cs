@@ -597,8 +597,53 @@ namespace FenBrowser.Core.Dom.V2
                     $"Element <{LocalName}> cannot have a shadow root");
 
             _shadowRoot = new ShadowRoot(this, init.Mode, init.DelegatesFocus, init.SlotAssignment);
+            SyncShadowRootConnectionState();
             _flags |= NodeFlags.HasShadowRoot;
             return _shadowRoot;
+        }
+
+        protected override void OnConnected()
+        {
+            base.OnConnected();
+            SyncShadowRootConnectionState();
+        }
+
+        protected override void OnDisconnected()
+        {
+            base.OnDisconnected();
+            SyncShadowRootConnectionState();
+        }
+
+        private void SyncShadowRootConnectionState()
+        {
+            if (_shadowRoot == null)
+            {
+                return;
+            }
+
+            SyncShadowTreeConnectionState(_shadowRoot, IsConnected);
+        }
+
+        private static void SyncShadowTreeConnectionState(Node node, bool isConnected)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            if (isConnected)
+            {
+                node._flags |= NodeFlags.IsConnected;
+            }
+            else
+            {
+                node._flags &= ~NodeFlags.IsConnected;
+            }
+
+            for (var child = node.FirstChild; child != null; child = child._nextSibling)
+            {
+                SyncShadowTreeConnectionState(child, isConnected);
+            }
         }
 
         private bool CanHaveShadowRoot()

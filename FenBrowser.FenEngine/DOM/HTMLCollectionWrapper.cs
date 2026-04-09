@@ -105,6 +105,22 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         return FenValue.FromObject(CreateIteratorObject());
                     }));
+                
+                case "indexOf":
+                    return FenValue.FromFunction(new FenFunction("indexOf", (args, thisVal) =>
+                    {
+                        if (args.Length > 0)
+                        {
+                            var target = args[0];
+                            int index = 0;
+                            foreach (var node in GetSnapshot())
+                            {
+                                if (WrapElement(node).StrictEquals(target)) return FenValue.FromNumber(index);
+                                index++;
+                            }
+                        }
+                        return FenValue.FromNumber(-1);
+                    }));
             }
 
             return FenValue.Undefined;

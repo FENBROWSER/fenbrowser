@@ -261,6 +261,51 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Object_HasOwn_TrueForNonEnumerableOwnProperty()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var obj = {};
+                Object.defineProperty(obj, 'hidden', { value: 42, enumerable: false, configurable: true });
+                var h = Object.hasOwn(obj, 'hidden');
+            ");
+
+            Assert.True(rt.GetGlobal("h").ToBoolean());
+        }
+
+        [Fact]
+        public void Function_Bind_PreservesLengthAndNameMetadata()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                function sample(a, b, c) { return a + b + c; }
+                var bound = sample.bind(null, 1);
+                var bindMeta = [bound.name, bound.length, bound(2, 3)].join(',');
+            ");
+
+            Assert.Equal("bound sample,2,6", rt.GetGlobal("bindMeta").ToString());
+        }
+
+        [Fact]
+        public void Prototype_Setter_IsResolvedWithoutRecursiveHasTraversal()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var hits = 0;
+                var parent = {};
+                Object.defineProperty(parent, 'value', {
+                    set: function(next) { hits++; this.shadow = next; },
+                    configurable: true
+                });
+                var child = Object.create(parent);
+                child.value = 7;
+                var setterState = [hits, child.shadow, Object.prototype.hasOwnProperty.call(child, 'value')].join(',');
+            ");
+
+            Assert.Equal("1,7,false", rt.GetGlobal("setterState").ToString());
+        }
+
+        [Fact]
         public void Object_FromEntries_RoundTripsEntries()
         {
             var rt = CreateRuntime();
