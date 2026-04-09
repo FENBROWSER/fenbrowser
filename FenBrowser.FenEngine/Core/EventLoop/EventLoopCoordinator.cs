@@ -156,6 +156,14 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
             if (task == null)
             {
+                if (_microtaskQueue.HasPendingMicrotasks)
+                {
+                    PerformMicrotaskCheckpoint();
+                    ProcessRenderingUpdate();
+                    EnsureIdlePhase();
+                    return new TaskProcessingResult(true, TaskSource.Other, TaskPriorityGroup.Background);
+                }
+
                 ProcessRenderingUpdate();
                 return TaskProcessingResult.None;
             }
@@ -353,6 +361,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public bool HasPendingTasks => _taskQueue.HasPendingTasks;
         public bool HasPendingMicrotasks => _microtaskQueue.HasPendingMicrotasks;
         public TaskQueueSnapshot GetTaskSnapshot() => _taskQueue.GetSnapshot();
+        public bool HasPendingTasksFor(TaskSource source) => _taskQueue.HasPendingTasksFor(source);
         public bool HasPendingTasksFor(TaskPriorityGroup group) => _taskQueue.HasPendingTasksFor(group);
 
         #endregion

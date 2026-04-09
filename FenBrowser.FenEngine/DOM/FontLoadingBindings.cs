@@ -290,8 +290,21 @@ namespace FenBrowser.FenEngine.DOM
             Func<FenValue[], FenValue, FenValue> load)
         {
             var obj = new FenObject { InternalClass = "FontFaceSet" };
+            var eventListeners = new Dictionary<string, List<FenValue>>(StringComparer.OrdinalIgnoreCase);
+            var readyPromise = JsPromise.Resolve(FenValue.FromObject(obj), context);
+
             obj.DefineOwnProperty("size", PropertyDescriptor.Accessor(
                 new FenFunction("get size", (_, _) => FenValue.FromNumber(currentFaces().Count())),
+                null,
+                enumerable: true,
+                configurable: true));
+            obj.DefineOwnProperty("status", PropertyDescriptor.Accessor(
+                new FenFunction("get status", (_, _) => FenValue.FromString("loaded")),
+                null,
+                enumerable: true,
+                configurable: true));
+            obj.DefineOwnProperty("ready", PropertyDescriptor.Accessor(
+                new FenFunction("get ready", (_, _) => FenValue.FromObject(readyPromise)),
                 null,
                 enumerable: true,
                 configurable: true));
@@ -300,11 +313,54 @@ namespace FenBrowser.FenEngine.DOM
                 null,
                 enumerable: false,
                 configurable: true));
+            obj.Set("onloading", FenValue.Null);
+            obj.Set("onloadingdone", FenValue.Null);
+            obj.Set("onloadingerror", FenValue.Null);
             obj.Set("add", FenValue.FromFunction(new FenFunction("add", add)));
             obj.Set("delete", FenValue.FromFunction(new FenFunction("delete", delete)));
             obj.Set("clear", FenValue.FromFunction(new FenFunction("clear", clear)));
             obj.Set("has", FenValue.FromFunction(new FenFunction("has", has)));
+            obj.Set("check", FenValue.FromFunction(new FenFunction("check", (args, _) =>
+            {
+                var font = args.Length > 0 ? args[0].AsString(context) ?? string.Empty : string.Empty;
+                return FenValue.FromBoolean(!ContainsInvalidLoadSyntax(font));
+            })));
             obj.Set("load", FenValue.FromFunction(new FenFunction("load", load)));
+            obj.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, _) =>
+            {
+                var type = args.Length > 0 ? args[0].AsString(context) ?? string.Empty : string.Empty;
+                if (args.Length > 1 && args[1].IsFunction && !string.IsNullOrWhiteSpace(type))
+                {
+                    if (!eventListeners.TryGetValue(type, out var listeners))
+                    {
+                        listeners = new List<FenValue>();
+                        eventListeners[type] = listeners;
+                    }
+
+                    listeners.Add(args[1]);
+                }
+
+                return FenValue.Undefined;
+            })));
+            obj.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, _) =>
+            {
+                var type = args.Length > 0 ? args[0].AsString(context) ?? string.Empty : string.Empty;
+                if (args.Length > 1 &&
+                    args[1].IsFunction &&
+                    !string.IsNullOrWhiteSpace(type) &&
+                    eventListeners.TryGetValue(type, out var listeners))
+                {
+                    var callback = args[1].AsFunction();
+                    listeners.RemoveAll(existing => existing.IsFunction && existing.AsFunction() == callback);
+                    if (listeners.Count == 0)
+                    {
+                        eventListeners.Remove(type);
+                    }
+                }
+
+                return FenValue.Undefined;
+            })));
+            obj.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (_, _) => FenValue.FromBoolean(false))));
             obj.Set("keys", FenValue.FromFunction(new FenFunction("keys", (_, _) => FenValue.FromObject(CreateIterator(currentFaces().Select(FenValue.FromObject))))));
             obj.Set("values", FenValue.FromFunction(new FenFunction("values", (_, _) => FenValue.FromObject(CreateIterator(currentFaces().Select(FenValue.FromObject))))));
             obj.Set("entries", FenValue.FromFunction(new FenFunction("entries", (_, _) =>

@@ -1,5 +1,6 @@
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
 using Xunit;
 
@@ -20,16 +21,31 @@ namespace FenBrowser.Tests.DOM
 
             runtime.ExecuteSimple(@"
                 var __fontsSize = document.fonts.size;
+                var __fontsStatus = document.fonts.status;
+                var __fontsReadyType = typeof document.fonts.ready;
+                var __fontsReadyResolved = false;
+                document.fonts.ready.then(function (fonts) {
+                    __fontsReadyResolved = fonts === document.fonts;
+                });
+                var __fontsCheck = document.fonts.check('16px WebFont');
+                var __fontsAddEventListenerType = typeof document.fonts.addEventListener;
                 var __cssFace = document.fonts.keys().next().value;
                 var __hasCssFace = document.fonts.has(__cssFace);
                 var __ctorError = '';
                 try { new document.fonts.constructor([]); } catch (e) { __ctorError = e.name || String(e); }
             ");
 
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
             document.Head!.RemoveChild(style);
             runtime.ExecuteSimple("var __fontsSizeAfterRemove = document.fonts.size;");
 
             Assert.Equal(1, runtime.GetGlobal("__fontsSize").ToNumber());
+            Assert.Equal("loaded", runtime.GetGlobal("__fontsStatus").ToString());
+            Assert.Equal("object", runtime.GetGlobal("__fontsReadyType").ToString());
+            Assert.True(runtime.GetGlobal("__fontsReadyResolved").ToBoolean());
+            Assert.True(runtime.GetGlobal("__fontsCheck").ToBoolean());
+            Assert.Equal("function", runtime.GetGlobal("__fontsAddEventListenerType").ToString());
             Assert.True(runtime.GetGlobal("__hasCssFace").ToBoolean());
             Assert.Equal("TypeError", runtime.GetGlobal("__ctorError").ToString());
             Assert.Equal(0, runtime.GetGlobal("__fontsSizeAfterRemove").ToNumber());

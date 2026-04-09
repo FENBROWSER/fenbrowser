@@ -151,6 +151,56 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task VisualViewport_TracksWindowMetrics_AndDispatchesResize()
+        {
+            var engine = new JavaScriptEngine(CreateHost());
+
+            Assert.Equal("object", engine.Evaluate("typeof window.visualViewport")?.ToString());
+            Assert.Equal("function", engine.Evaluate("typeof window.visualViewport.addEventListener")?.ToString());
+            Assert.Equal(
+                engine.Evaluate("String(window.innerWidth)")?.ToString(),
+                engine.Evaluate("String(window.visualViewport.width)")?.ToString());
+            Assert.Equal(
+                engine.Evaluate("String(window.innerHeight)")?.ToString(),
+                engine.Evaluate("String(window.visualViewport.height)")?.ToString());
+            Assert.Equal("1", engine.Evaluate("String(window.visualViewport.scale)")?.ToString());
+
+            engine.Evaluate(@"
+                globalThis.__visualViewportResizeCount = 0;
+                window.visualViewport.addEventListener('resize', function () {
+                    globalThis.__visualViewportResizeCount++;
+                    globalThis.__visualViewportResizeWidth = String(window.visualViewport.width);
+                    globalThis.__visualViewportResizeHeight = String(window.visualViewport.height);
+                });
+            ");
+
+            engine.WindowWidth = 640;
+            engine.WindowHeight = 480;
+            await Task.Delay(25);
+
+            Assert.Equal("640", engine.Evaluate("String(window.visualViewport.width)")?.ToString());
+            Assert.Equal("480", engine.Evaluate("String(window.visualViewport.height)")?.ToString());
+            Assert.Equal("2", engine.Evaluate("String(globalThis.__visualViewportResizeCount)")?.ToString());
+            Assert.Equal("640", engine.Evaluate("globalThis.__visualViewportResizeWidth")?.ToString());
+            Assert.Equal("480", engine.Evaluate("globalThis.__visualViewportResizeHeight")?.ToString());
+        }
+
+        [Fact]
+        public void IntlLocale_FallbackExposesCanonicalLocaleMetadata_AndTextDirection()
+        {
+            var engine = new JavaScriptEngine(CreateHost());
+
+            Assert.Equal("function", engine.Evaluate("typeof Intl.Locale")?.ToString());
+            Assert.Equal("en-US", engine.Evaluate("new Intl.Locale('en-us').baseName")?.ToString());
+            Assert.Equal("en", engine.Evaluate("new Intl.Locale('en-us').language")?.ToString());
+            Assert.Equal("US", engine.Evaluate("new Intl.Locale('en-us').region")?.ToString());
+            Assert.Equal("zh-Hant-TW", engine.Evaluate("new Intl.Locale('zh-hant-tw').toString()")?.ToString());
+            Assert.Equal("ltr", engine.Evaluate("new Intl.Locale('en-us').getTextInfo().direction")?.ToString());
+            Assert.Equal("rtl", engine.Evaluate("new Intl.Locale('ar').getTextInfo().direction")?.ToString());
+            Assert.Equal("fa", engine.Evaluate("new Intl.Locale('fa').maximize().toString()")?.ToString());
+        }
+
+        [Fact]
         public async Task ExternalScriptExecution_ExposesDocumentCurrentScript()
         {
             var baseUri = new Uri("https://example.com/index.html");
@@ -244,6 +294,47 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task RequestIdleCallback_CallbackRunsWithDeadlineObject()
+        {
+            var engine = new JavaScriptEngine(CreateHost());
+
+            engine.Evaluate(@"
+                globalThis.__idleHandleType = typeof requestIdleCallback(function (deadline) {
+                    globalThis.__idleDidRun = true;
+                    globalThis.__idleDeadlineShape =
+                        typeof deadline + ':' +
+                        typeof deadline.didTimeout + ':' +
+                        typeof deadline.timeRemaining + ':' +
+                        String(deadline.timeRemaining() >= 0);
+                });
+            ");
+
+            await Task.Delay(50);
+
+            Assert.Equal("number", engine.Evaluate("globalThis.__idleHandleType")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__idleDidRun"));
+            Assert.Equal("object:boolean:function:true", engine.Evaluate("globalThis.__idleDeadlineShape")?.ToString());
+        }
+
+        [Fact]
+        public async Task CancelIdleCallback_PreventsPendingCallbackInvocation()
+        {
+            var engine = new JavaScriptEngine(CreateHost());
+
+            engine.Evaluate(@"
+                globalThis.__idleCancelled = false;
+                var handle = requestIdleCallback(function () {
+                    globalThis.__idleCancelled = true;
+                });
+                cancelIdleCallback(handle);
+            ");
+
+            await Task.Delay(50);
+
+            Assert.Equal(false, engine.Evaluate("globalThis.__idleCancelled"));
+        }
+
+        [Fact]
         public async Task SetDomAsync_DynamicExternalScriptInsertedViaAppendChildExecutesAndUpdatesState()
         {
             var baseUri = new Uri("https://example.com/index.html");
@@ -280,6 +371,58 @@ namespace FenBrowser.Tests.Engine
                 dynamicScriptLoadedBool,
                 $"dynamicScriptLoaded={dynamicScriptLoaded}, mutationObserved={mutationObserved}, stateText={stateText}, appendChildStatus={appendChildStatus}, scriptCount={scriptCount}");
             Assert.Equal("updated", stateText);
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DynamicExternalScriptAssignedOnloadFiresAfterExecution()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><div id='state'>pending</div>" +
+                "<script>document.addEventListener('DOMContentLoaded', function () { var s = document.createElement('script'); s.src = '/assets/chunk.js'; s.onload = function (event) { window.__dynamicOnload = true; window.__dynamicOnloadType = event && event.type ? String(event.type) : 'missing'; document.getElementById('state').textContent = 'loaded'; }; s.onerror = function () { window.__dynamicOnerror = true; }; document.body.appendChild(s); });</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost())
+            {
+                ExternalScriptFetcher = (uri, _) => Task.FromResult(
+                    "window.__dynamicChunkExecuted = true;")
+            };
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(75);
+
+            Assert.Equal("true", engine.Evaluate("String(window.__dynamicChunkExecuted)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(window.__dynamicOnload)")?.ToString());
+            Assert.Equal("load", engine.Evaluate("String(window.__dynamicOnloadType)")?.ToString());
+            Assert.Equal("undefined", engine.Evaluate("typeof window.__dynamicOnerror")?.ToString());
+            Assert.Equal("loaded", engine.Evaluate("document.getElementById('state').textContent")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DynamicExternalScriptAssignedOnerrorFiresOnFetchFailure()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><div id='state'>pending</div>" +
+                "<script>document.addEventListener('DOMContentLoaded', function () { var s = document.createElement('script'); s.src = '/assets/missing.js'; s.onload = function () { window.__dynamicOnload = true; }; s.onerror = function (event) { window.__dynamicOnerror = true; window.__dynamicOnerrorType = event && event.type ? String(event.type) : 'missing'; document.getElementById('state').textContent = 'error'; }; document.body.appendChild(s); });</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost())
+            {
+                ExternalScriptFetcher = (_, _) => Task.FromException<string>(new InvalidOperationException("simulated fetch failure"))
+            };
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(75);
+
+            Assert.Equal("undefined", engine.Evaluate("typeof window.__dynamicOnload")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(window.__dynamicOnerror)")?.ToString());
+            Assert.Equal("error", engine.Evaluate("String(window.__dynamicOnerrorType)")?.ToString());
+            Assert.Equal("error", engine.Evaluate("document.getElementById('state').textContent")?.ToString());
         }
 
         [Fact]
@@ -495,6 +638,84 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("function", engine.Evaluate("typeof Element.prototype.matches")?.ToString());
             Assert.Equal("function", engine.Evaluate("typeof HTMLElement.prototype.matches")?.ToString());
             Assert.Equal("object", engine.Evaluate("typeof Document.prototype")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DomWrappersParticipateInInstanceofChecksUsedByBootstrapBundles()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser("<html><head></head><body><div id='root'></div></body></html>", baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            engine.Evaluate(@"
+                var body = document.body;
+                var root = document.getElementById('root');
+                var text = document.createTextNode('hello');
+                var comment = document.createComment('note');
+                globalThis.__instanceofDocument = String(document instanceof Document);
+                globalThis.__instanceofDocumentNode = String(document instanceof Node);
+                globalThis.__instanceofBodyNode = String(body instanceof Node);
+                globalThis.__instanceofBodyElement = String(body instanceof Element);
+                globalThis.__instanceofBodyHtmlElement = String(body instanceof HTMLElement);
+                globalThis.__instanceofRootElement = String(root instanceof Element);
+                globalThis.__instanceofTextNode = String(text instanceof Node);
+                globalThis.__instanceofTextText = String(text instanceof Text);
+                globalThis.__instanceofCommentNode = String(comment instanceof Node);
+                globalThis.__instanceofCommentComment = String(comment instanceof Comment);
+            ");
+
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofDocument")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofDocumentNode")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofBodyNode")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofBodyElement")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofBodyHtmlElement")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofRootElement")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofTextNode")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofTextText")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofCommentNode")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__instanceofCommentComment")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_NodeWrapper_ExposesRootNodeAndConnectivityForReactNativeWebBootstrap()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser("<html><head></head><body><div id='react-root'></div></body></html>", baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            engine.Evaluate(@"
+                var rootTag = document.getElementById('react-root');
+                var rootNode = rootTag.getRootNode();
+                var composedRootNode = rootTag.getRootNode({ composed: true });
+                var style = document.createElement('style');
+                style.setAttribute('data-rnw-probe', '1');
+                style.textContent = '.rnw-probe{display:block;}';
+                rootNode.head.appendChild(style);
+                globalThis.__rnwRootNodeType = String(rootNode.nodeType);
+                globalThis.__rnwComposedRootNodeType = String(composedRootNode.nodeType);
+                globalThis.__rnwRootIsConnected = String(rootTag.isConnected);
+                globalThis.__rnwRootLookupId = rootNode.getElementById('react-root').id;
+                globalThis.__rnwStyleIsConnected = String(style.isConnected);
+                globalThis.__rnwHeadStyleCount = String(rootNode.head.getElementsByTagName('style').length);
+                globalThis.__rnwInsertedStyleText = rootNode.head.lastChild && rootNode.head.lastChild.textContent;
+            ");
+
+            Assert.Equal("function", engine.Evaluate("typeof document.getElementById('react-root').getRootNode")?.ToString());
+            Assert.Equal("9", engine.Evaluate("globalThis.__rnwRootNodeType")?.ToString());
+            Assert.Equal("9", engine.Evaluate("globalThis.__rnwComposedRootNodeType")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__rnwRootIsConnected")?.ToString());
+            Assert.Equal("react-root", engine.Evaluate("globalThis.__rnwRootLookupId")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__rnwStyleIsConnected")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__rnwHeadStyleCount")?.ToString());
+            Assert.Equal(".rnw-probe{display:block;}", engine.Evaluate("globalThis.__rnwInsertedStyleText")?.ToString());
         }
 
         [Fact]

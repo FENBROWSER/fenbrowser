@@ -14,6 +14,12 @@ namespace FenBrowser.Tests.Engine
             return new Parser(lexer);
         }
 
+        private Parser CreateRuntimeParser(string input, bool isModule = false)
+        {
+            var lexer = new Lexer(input);
+            return new Parser(lexer, isModule: isModule, allowRecovery: false);
+        }
+
         private Parser CreateModuleParser(string input)
         {
             var lexer = new Lexer(input);
@@ -1049,6 +1055,30 @@ namespace FenBrowser.Tests.Engine
                 ({1:(e,t,r)=>{return e=>{const r=`Connect(${t})`;if(l){return y}return z}}});
                 """;
             var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_RuntimeMode_IfWithEmptyConsequentElseBlock_NoErrors()
+        {
+            var input = """
+                function hasInlineImage(e,t){if(!c(t))return!1;const{editorStateRaw:n}=e;if(n)for(const e of n.blocks){var i;if(null!==(i=e.inlineStyleRanges)&&void 0!==i&&i.length)return!0;if(e.type!==r.UP);else{const t=e.entityRanges;if(!Array.isArray(t)||!t.length)continue;const[i]=t,r=String(i.key),s=n.entityMap[r];if(!s)continue;if(s.type===o.Z.INLINE_IMAGE)return!0}}return p}
+                """;
+            var parser = CreateRuntimeParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_RuntimeMode_ArrowFunction_WithEmptyConsequentElseBlock_NoErrors()
+        {
+            var input = """
+                const scrollTo=(e,t,r)=>{if("number"==typeof e);else{var n=e||x;e=n.x,t=n.y,r=n.animated}return [e,t,r]}
+                """;
+            var parser = CreateRuntimeParser(input);
             parser.ParseProgram();
 
             AssertNoErrors(parser);

@@ -251,6 +251,7 @@ namespace FenBrowser.FenEngine.Core.Types
             {
                 var reasonStr = _result.IsUndefined ? "(undefined)" : _result.ToString();
                 FenLogger.Warn($"[Promise] Unhandled promise rejection: {reasonStr}", LogCategory.JavaScript);
+                _context?.OnUnhandledRejection?.Invoke(_result, this);
             }
         }
 

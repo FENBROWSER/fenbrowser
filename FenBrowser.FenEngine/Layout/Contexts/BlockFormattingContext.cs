@@ -17,6 +17,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     {
         private static BlockFormattingContext _instance;
         public static BlockFormattingContext Instance => _instance ??= new BlockFormattingContext();
+        
+        /// <summary>
+        /// Guards against infinite shrink-to-fit relayout recursion.
+        /// The shrink-to-fit pass is a single one-shot adjustment: if we are
+        /// already inside a shrink-to-fit relayout for this box, suppress further
+        /// re-entry to avoid an infinite loop on self-sizing flex/block containers.
+        /// </summary>
+        [ThreadStatic] private static int _shrinkToFitDepth;
+        private const int MaxShrinkToFitDepth = 2;
 
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
@@ -389,21 +398,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     Math.Abs(previousWidth - maxWidth) > 0.5f &&
                     blockBox.Children.Count > 0)
                 {
-                    // The first shrink-to-fit probe leaves child subtrees positioned in the
-                    // original pass. Reset local coordinates before re-entering LayoutCore so
-                    // the second pass does not accumulate stale offsets into descendants.
-                    LayoutBoxOps.ResetSubtreeToOrigin(blockBox);
+                    // Guard: only allow one shrink-to-fit reflow per call chain.
+                    // Multiple re-entries create an N^2 loop on self-sizing containers
+                    // (e.g. YouTube's nested flex/block layout) causing 6000ms+ frames.
+                    if (_shrinkToFitDepth < MaxShrinkToFitDepth)
+                    {
+                        // The first shrink-to-fit probe leaves child subtrees positioned in the
+                        // original pass. Reset local coordinates before re-entering LayoutCore so
+                        // the second pass does not accumulate stale offsets into descendants.
+                        LayoutBoxOps.ResetSubtreeToOrigin(blockBox);
 
-                    var relayoutState = state.Clone();
-                    relayoutState.AvailableSize = new SKSize(maxWidth, state.AvailableSize.Height);
-                    relayoutState.ContainingBlockWidth = maxWidth;
-                    LayoutCore(blockBox, relayoutState);
+                        var relayoutState = state.Clone();
+                        relayoutState.AvailableSize = new SKSize(maxWidth, state.AvailableSize.Height);
+                        relayoutState.ContainingBlockWidth = maxWidth;
+                        _shrinkToFitDepth++;
+                        try   { LayoutCore(blockBox, relayoutState); }
+                        finally { _shrinkToFitDepth--; }
+                    }
+                    else
+                    {
+                        FenBrowser.Core.FenLogger.Warn(
+                            $"[BFC] Shrink-to-fit depth {_shrinkToFitDepth} exceeded for <{(blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName}>. Skipping relayout to break infinite-loop.",
+                            FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
                     return;
                 }
             }
-
-            // 4. Resolve Height
-            // Auto height = padding_top + border_top + content_height + padding_bottom + border_bottom
             // yOffset is now 0 + maxBottom (pure content height), so we add all padding+border
             float autoHeight = (float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top
                               + yOffset

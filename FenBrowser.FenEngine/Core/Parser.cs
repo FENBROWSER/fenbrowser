@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -386,6 +386,57 @@ namespace FenBrowser.FenEngine.Core
             // mis-parsing `default:` as an expression statement.
             if (CurTokenIs(TokenType.Default) && PeekTokenIs(TokenType.Colon))
             {
+                return null;
+            }
+            
+            // Recovery: Orphaned 'catch' or 'finally' clause at statement level.
+            // This occurs in minified JS (e.g. `}catch(e){...}`) when the block-depth
+            // heuristic misidentifies a nested `}` as the try block's closing brace,
+            // causing the outer loop to advance past it and exposing `catch`/`finally`.
+            if (CurTokenIs(TokenType.Catch))
+            {
+                _errors.Add($"SyntaxError: Orphaned 'catch' clause (no preceding try block) at line {_curToken.Line}, col {_curToken.Column} - skipping clause body");
+                // Skip optional catch parameter
+                if (PeekTokenIs(TokenType.LParen))
+                {
+                    NextToken(); // consume '('
+                    int parenDepth = 1;
+                    while (parenDepth > 0 && !CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                        if (CurTokenIs(TokenType.LParen)) parenDepth++;
+                        else if (CurTokenIs(TokenType.RParen)) parenDepth--;
+                    }
+                }
+                // Skip catch body block
+                if (PeekTokenIs(TokenType.LBrace))
+                {
+                    NextToken(); // consume '{'
+                    int braceDepth = 1;
+                    while (braceDepth > 0 && !CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                        if (CurTokenIs(TokenType.LBrace)) braceDepth++;
+                        else if (CurTokenIs(TokenType.RBrace)) braceDepth--;
+                    }
+                }
+                return null;
+            }
+            
+            if (CurTokenIs(TokenType.Finally))
+            {
+                _errors.Add($"SyntaxError: Orphaned 'finally' clause at line {_curToken.Line}, col {_curToken.Column} - skipping clause body");
+                if (PeekTokenIs(TokenType.LBrace))
+                {
+                    NextToken(); // consume '{'
+                    int braceDepth = 1;
+                    while (braceDepth > 0 && !CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                        if (CurTokenIs(TokenType.LBrace)) braceDepth++;
+                        else if (CurTokenIs(TokenType.RBrace)) braceDepth--;
+                    }
+                }
                 return null;
             }
             
@@ -1344,6 +1395,11 @@ namespace FenBrowser.FenEngine.Core
             {
                 // Single statement without braces
                 NextToken();
+                if (CurTokenIs(TokenType.Semicolon))
+                {
+                    return new BlockStatement { Token = _curToken };
+                }
+
                 Statement stmt;
                 _moduleDeclarationNestingDepth++;
                 try
@@ -2895,7 +2951,13 @@ namespace FenBrowser.FenEngine.Core
 
         private void NoPrefixParseFnError(TokenType type)
         {
-            _errors.Add($"no prefix parse function for {type} found");
+            var msg = $"no prefix parse function for {type} found at line {_curToken.Line}, column {_curToken.Column}";
+            if (_lexer != null)
+            {
+                msg += $"\nContext:\n{_lexer.GetCodeContext(_curToken.Line, _curToken.Column)}";
+            }
+
+            _errors.Add(msg);
         }
 
 

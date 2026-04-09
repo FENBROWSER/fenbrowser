@@ -176,6 +176,7 @@ namespace FenBrowser.FenEngine.Testing
         /// </summary>
         public async Task<TestExecutionResult> RunSingleTestAsync(string testFile, bool verbose = false)
         {
+            testFile = NormalizeTestFilePath(testFile);
             var result = new TestExecutionResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
             string? source = null;
@@ -411,7 +412,7 @@ namespace FenBrowser.FenEngine.Testing
             var state = new TestExecutionState();
 
             // Convert file path to URI
-            var uri = new Uri(testFile).AbsoluteUri;
+            var uri = new Uri(NormalizeTestFilePath(testFile)).AbsoluteUri;
             
             // 1. Navigate
             if (verbose) Console.WriteLine($"[WPT] Navigating to {uri}");
@@ -783,7 +784,7 @@ namespace FenBrowser.FenEngine.Testing
 
         private async Task ExecuteCrashTestAsync(string testFile, bool verbose)
         {
-            var uri = new Uri(testFile).AbsoluteUri;
+            var uri = new Uri(NormalizeTestFilePath(testFile)).AbsoluteUri;
             if (verbose) Console.WriteLine($"[WPT] Navigating crash test to {uri}");
             await _navigator(uri);
 
@@ -980,6 +981,11 @@ namespace FenBrowser.FenEngine.Testing
             }
             
             return sb.ToString();
+        }
+
+        private static string NormalizeTestFilePath(string testFile)
+        {
+            return Path.GetFullPath(testFile);
         }
     }
 }

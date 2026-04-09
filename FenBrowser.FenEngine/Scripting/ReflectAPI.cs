@@ -257,6 +257,8 @@ namespace FenBrowser.FenEngine.Scripting
             public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get; set; }
             public IModuleLoader ModuleLoader { get; set; }
             public Action<MutationRecord> OnMutation { get; set; }
+            public Action<FenValue, FenObject> OnUnhandledRejection { get; set; }
+            public Action<FenValue, string> OnUncaughtException { get; set; }
             public string CurrentUrl { get; set; } = "reflect";
             public FenEnvironment Environment { get; set; }
             public FenValue NewTarget { get; set; }

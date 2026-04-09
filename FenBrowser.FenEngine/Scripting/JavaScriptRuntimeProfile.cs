@@ -1,3 +1,5 @@
+using System;
+
 namespace FenBrowser.FenEngine.Scripting
 {
     /// <summary>
@@ -17,6 +19,8 @@ namespace FenBrowser.FenEngine.Scripting
         public bool UseSandboxedResourceLimits { get; init; } = false;
         public bool AllowDynamicCodeEvaluation { get; init; } = true;
         public int LargeScriptWarningBytes { get; init; } = 64 * 1024;
+        public TimeSpan MaxExecutionTime { get; init; } = TimeSpan.FromSeconds(15);
+        public long MaxInstructionCount { get; init; } = 100_000_000;
 
         public static JavaScriptRuntimeProfile CreateLockedDown()
         {
@@ -29,7 +33,9 @@ namespace FenBrowser.FenEngine.Scripting
                 FreezeIntrinsicPrototypes = true,
                 UseSandboxedResourceLimits = true,
                 AllowDynamicCodeEvaluation = false,
-                LargeScriptWarningBytes = 16 * 1024
+                LargeScriptWarningBytes = 16 * 1024,
+                MaxExecutionTime = TimeSpan.FromSeconds(1),
+                MaxInstructionCount = 10_000_000
             };
         }
     }

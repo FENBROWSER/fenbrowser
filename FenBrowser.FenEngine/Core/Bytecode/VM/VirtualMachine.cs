@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -24,10 +25,61 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private const int DirectEvalAllowNewTargetFlag = 0x1;
         private const int DirectEvalForceUndefinedNewTargetFlag = 0x2;
         private const int DirectEvalAllowSuperPropertyFlag = 0x4;
+        private const int LongRunTraceIntervalMs = 5000;
+        private static int s_nativeTraceCount;
         private static readonly string[] s_cachedIndexKeys = BuildCachedIndexKeys();
         private static readonly ConditionalWeakTable<CodeBlock, string[]> s_stringConstantCache = new ConditionalWeakTable<CodeBlock, string[]>();
         private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>> s_loadPropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>>();
         private static readonly ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>> s_storePropertyInlineCaches = new ConditionalWeakTable<CodeBlock, Dictionary<int, PolymorphicInlineCache>>();
+
+        private static bool IsLongRunTraceEnabled()
+        {
+            var value = Environment.GetEnvironmentVariable("FEN_VM_TRACE_LONGRUN");
+            return !string.IsNullOrWhiteSpace(value) &&
+                   !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNativeCallTraceEnabled()
+        {
+            var value = Environment.GetEnvironmentVariable("FEN_VM_TRACE_NATIVE");
+            return !string.IsNullOrWhiteSpace(value) &&
+                   !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void TraceNativeCall(string phase, FenFunction func, int argCount, FenValue thisValue, long elapsedMs = -1)
+        {
+            if (!IsNativeCallTraceEnabled())
+            {
+                return;
+            }
+
+            var count = Interlocked.Increment(ref s_nativeTraceCount);
+            if (count > 512)
+            {
+                return;
+            }
+
+            var elapsedPart = elapsedMs >= 0 ? $" elapsed={elapsedMs}ms" : string.Empty;
+            var funcName = func?.Name ?? "<anonymous>";
+            FenBrowser.Core.FenLogger.Warn(
+                $"[VM-NATIVECALL] {phase} name={funcName} args={argCount} thisType={thisValue.Type}{elapsedPart}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+        private FenValue InvokeNativeFunction(FenFunction func, FenValue[] args, FenValue thisValue)
+        {
+            TraceNativeCall("begin", func, args?.Length ?? 0, thisValue);
+            var stopwatch = IsNativeCallTraceEnabled() ? Stopwatch.StartNew() : null;
+            var result = func.Invoke(args, null, thisValue);
+            if (stopwatch != null)
+            {
+                TraceNativeCall("end", func, args?.Length ?? 0, thisValue, stopwatch.ElapsedMilliseconds);
+            }
+
+            return result;
+        }
 
         private sealed class PropertyInlineCacheEntry
         {
@@ -227,6 +279,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
 
                 base.Set(key, value, context);
+            }
+
+            public override void Set(string key, FenValue value, bool strict)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    SetLength((int)value.ToNumber());
+                    return;
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    SetElement(index, value);
+                    return;
+                }
+
+                base.Set(key, value, strict);
             }
 
             public override bool Has(string key, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context = null)
@@ -815,6 +884,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             }
 
             return keys;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsArrayIndexKey(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < key.Length; i++)
+            {
+                char c = key[i];
+                if (c < '0' || c > '9')
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -1666,6 +1755,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             _limits = limits;
             _generatorYielded = false;
             _generatorYieldValue = FenValue.Undefined;
+            Interlocked.Exchange(ref s_nativeTraceCount, 0);
             FenObject.ResetAllocatedBytes();
             _sp = 0;
             _completionValue = FenValue.Undefined;
@@ -1725,6 +1815,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private FenValue RunLoop()
         {
+            var longRunTrace = IsLongRunTraceEnabled() ? Stopwatch.StartNew() : null;
+            long nextLongRunTraceMs = LongRunTraceIntervalMs;
+
 run_loop_restart:
             try
             {
@@ -1760,6 +1853,15 @@ run_loop_restart:
 
                         OpCode op = (OpCode)instructions[frame.IP++];
                         int instructionOffset = frame.IP - 1;
+
+                        if (longRunTrace != null &&
+                            longRunTrace.ElapsedMilliseconds >= nextLongRunTraceMs)
+                        {
+                            nextLongRunTraceMs += LongRunTraceIntervalMs;
+                            FenBrowser.Core.FenLogger.Warn(
+                                $"[VM-LONGRUN] elapsed={longRunTrace.ElapsedMilliseconds}ms ip={instructionOffset}/{instructions.Length} op={op} frames={_frameCount} sp={_sp} pendingTasks={EventLoopCoordinator.Instance.TaskCount} pendingMicrotasks={EventLoopCoordinator.Instance.MicrotaskCount}",
+                                FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        }
 
                         switch (op)
                         {
@@ -2223,9 +2325,15 @@ run_loop_restart:
                                 if (!newFunc.IsArrowFunction)
                                 {
                                     var fnPrototype = new FenObject();
-                                    fnPrototype.Set("constructor", FenValue.FromFunction(newFunc));
+                                    fnPrototype.SetBuiltin("constructor", FenValue.FromFunction(newFunc));
                                     newFunc.Prototype = fnPrototype;
-                                    newFunc.Set("prototype", FenValue.FromObject(fnPrototype));
+                                    newFunc.DefineOwnProperty("prototype", new PropertyDescriptor
+                                    {
+                                        Value = FenValue.FromObject(fnPrototype),
+                                        Writable = true,
+                                        Enumerable = false,
+                                        Configurable = false
+                                    });
                                 }
 
                                 _stack[_sp++] = FenValue.FromFunction(newFunc);
@@ -2251,7 +2359,7 @@ run_loop_restart:
                                     _sp = argStart - 1; // Pop callee + args
                                     // Route native calls through FenFunction.Invoke so the owning runtime
                                     // can activate the correct realm and preserve built-in semantics.
-                                    var callResult = func.Invoke(args, null, FenValue.Undefined);
+                                    var callResult = InvokeNativeFunction(func, args, FenValue.Undefined);
                                     ThrowIfNativeError(callResult);
                                     _stack[_sp++] = callResult;
                                 }
@@ -2308,7 +2416,7 @@ run_loop_restart:
                                 if (func.IsNative)
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
-                                    var callFromArrayResult = func.Invoke(args, null, FenValue.Undefined);
+                                    var callFromArrayResult = InvokeNativeFunction(func, args, FenValue.Undefined);
                                     ThrowIfNativeError(callFromArrayResult);
                                     _stack[_sp++] = callFromArrayResult;
                                 }
@@ -2365,7 +2473,7 @@ run_loop_restart:
                                     }
 
                                     _sp = argStart - 2; // Pop receiver + callee + args
-                                    var callMethodResult = func.Invoke(args, null, receiver);
+                                    var callMethodResult = InvokeNativeFunction(func, args, receiver);
                                     ThrowIfNativeError(callMethodResult);
                                     _stack[_sp++] = callMethodResult;
                                 }
@@ -2424,7 +2532,7 @@ run_loop_restart:
                                 if (func.IsNative)
                                 {
                                     var args = ExtractArrayLikeValues(argsArrayVal);
-                                    var callMethodFromArrayResult = func.Invoke(args, null, receiver);
+                                    var callMethodFromArrayResult = InvokeNativeFunction(func, args, receiver);
                                     ThrowIfNativeError(callMethodFromArrayResult);
                                     _stack[_sp++] = callMethodFromArrayResult;
                                 }
@@ -2640,7 +2748,16 @@ run_loop_restart:
                                         }
 
                                         var cache = GetLoadPropertyInlineCache(frame.Block);
-                                        if (TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out var cachedValue))
+                                        bool mustUseDynamicEventGetter =
+                                            fenObj is FenBrowser.FenEngine.DOM.DomEvent &&
+                                            (string.Equals(key, "eventPhase", StringComparison.Ordinal) ||
+                                             string.Equals(key, "currentTarget", StringComparison.Ordinal) ||
+                                             string.Equals(key, "defaultPrevented", StringComparison.Ordinal) ||
+                                             string.Equals(key, "returnValue", StringComparison.Ordinal) ||
+                                             string.Equals(key, "cancelBubble", StringComparison.Ordinal) ||
+                                             string.Equals(key, "isTrusted", StringComparison.Ordinal));
+                                        if (!mustUseDynamicEventGetter &&
+                                            TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out var cachedValue))
                                         {
                                             _stack[_sp++] = cachedValue;
                                             break;
@@ -2648,7 +2765,10 @@ run_loop_restart:
 
                                         var value = fenObj.GetWithReceiver(key, obj);
                                         _stack[_sp++] = value;
-                                        PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: false);
+                                        if (!mustUseDynamicEventGetter)
+                                        {
+                                            PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: false);
+                                        }
                                     }
                                     else
                                     {
@@ -2741,10 +2861,20 @@ run_loop_restart:
                                             break;
                                         }
 
+                                        bool storePropStrict = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                        bool mustUseCustomEventSetter =
+                                            fenObj is FenBrowser.FenEngine.DOM.DomEvent &&
+                                            (string.Equals(key, "cancelBubble", StringComparison.Ordinal) ||
+                                             string.Equals(key, "returnValue", StringComparison.Ordinal));
+                                        bool arrayLengthSensitiveStore =
+                                            fenObj is BytecodeArrayObject &&
+                                            (string.Equals(key, "length", StringComparison.Ordinal) || IsArrayIndexKey(key));
                                         var cache = GetStorePropertyInlineCache(frame.Block);
                                         bool inlineCacheHit = false;
-                                        bool storePropStrict = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
-                                        if (cache.TryGetValue(instructionOffset, out var pic) && !pic.Megamorphic)
+                                        if (!mustUseCustomEventSetter &&
+                                            !arrayLengthSensitiveStore &&
+                                            cache.TryGetValue(instructionOffset, out var pic) &&
+                                            !pic.Megamorphic)
                                         {
                                             var shape = fenObj.GetShape();
                                             for (int idx = 0; idx < pic.Count; idx++)
@@ -2780,7 +2910,10 @@ run_loop_restart:
                                         }
 
                                         fenObj.Set(key, value, storePropStrict);
-                                        PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: true);
+                                        if (!mustUseCustomEventSetter && !arrayLengthSensitiveStore)
+                                        {
+                                            PopulatePropertyInlineCache(cache, instructionOffset, fenObj, key, writableRequired: true);
+                                        }
                                     }
                                     else
                                     {
@@ -3376,8 +3509,15 @@ run_loop_restart:
             string rawMsg = ex?.Message ?? "Error";
             string errType = "Error";
             string errMsg = rawMsg;
+            int? domExceptionCode = null;
 
-            if (TryParseKnownErrorPrefix(rawMsg, out var prefixedErrorType, out var prefixedErrorMessage))
+            if (ex is FenBrowser.Core.Dom.V2.DomException domException)
+            {
+                errType = domException.Name;
+                errMsg = domException.Message ?? string.Empty;
+                domExceptionCode = domException.Code;
+            }
+            else if (TryParseKnownErrorPrefix(rawMsg, out var prefixedErrorType, out var prefixedErrorMessage))
             {
                 errType = prefixedErrorType;
                 errMsg = prefixedErrorMessage;
@@ -3413,6 +3553,11 @@ run_loop_restart:
 
                         errObj.Set("name", FenValue.FromString(errType));
                         errObj.Set("message", FenValue.FromString(errMsg));
+                        if (domExceptionCode.HasValue)
+                        {
+                            errObj.Set("code", FenValue.FromNumber(domExceptionCode.Value));
+                            errObj.Set("Symbol(Symbol.toStringTag)", FenValue.FromString("DOMException"));
+                        }
                         errObj.Set("stack", FenValue.FromString($"{errType}: {errMsg}\n    at <anonymous>"));
                         return FenValue.FromObject(errObj);
                     }
@@ -3425,6 +3570,11 @@ run_loop_restart:
             var plainErr = new FenObject();
             plainErr.Set("name", FenValue.FromString(errType));
             plainErr.Set("message", FenValue.FromString(errMsg));
+            if (domExceptionCode.HasValue)
+            {
+                plainErr.Set("code", FenValue.FromNumber(domExceptionCode.Value));
+                plainErr.Set("Symbol(Symbol.toStringTag)", FenValue.FromString("DOMException"));
+            }
             return FenValue.FromObject(plainErr);
         }
 
@@ -3919,6 +4069,11 @@ run_loop_restart:
 
                 if (EventLoopCoordinator.Instance.HasPendingTasks)
                 {
+                    if (EventLoopCoordinator.Instance.HasPendingTasksFor(FenBrowser.FenEngine.Core.EventLoop.TaskSource.Messaging))
+                    {
+                        break;
+                    }
+
                     try
                     {
                         EventLoopCoordinator.Instance.ProcessNextTask();

@@ -42,11 +42,13 @@ public sealed class HeadlessNavigator
 
   if (g.addEventListener) {
     g.addEventListener('error', function (ev) {
+      if (g.__fenAllowUncaughtException) { return; }
       var msg = ev && (ev.message || (ev.error && ev.error.message)) ? (ev.message || ev.error.message) : 'Unhandled script error';
       finish(msg);
     });
 
     g.addEventListener('unhandledrejection', function (ev) {
+      if (g.__fenAllowUncaughtException) { return; }
       var reason = ev && ev.reason;
       var msg = reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection');
       finish(msg);
@@ -235,7 +237,12 @@ function __fenMiniHarnessKick() {
   });
 }
 
-function setup(fn) {
+function setup(fnOrOptions, maybeOptions) {
+  var fn = typeof fnOrOptions === 'function' ? fnOrOptions : null;
+  var options = fn ? maybeOptions : fnOrOptions;
+  if (options && typeof options === 'object' && options.allow_uncaught_exception) {
+    self.__fenAllowUncaughtException = true;
+  }
   if (typeof fn === 'function') {
     __fenMiniHarnessSetupPromise = __fenMiniHarnessSetupPromise.then(function () { return fn(); });
   }

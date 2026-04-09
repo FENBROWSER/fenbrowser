@@ -64,9 +64,23 @@ namespace FenBrowser.FenEngine.Security
     /// </summary>
     public class DefaultResourceLimits : IResourceLimits
     {
+        private readonly TimeSpan _maxExecutionTime;
+        private readonly long _maxInstructionCount;
+
+        public DefaultResourceLimits()
+            : this(TimeSpan.FromSeconds(5), 100_000_000)
+        {
+        }
+
+        public DefaultResourceLimits(TimeSpan maxExecutionTime, long maxInstructionCount = 100_000_000)
+        {
+            _maxExecutionTime = maxExecutionTime;
+            _maxInstructionCount = maxInstructionCount;
+        }
+
         public int MaxCallStackDepth => 100;
-        public TimeSpan MaxExecutionTime => TimeSpan.FromSeconds(5);
-        public long MaxInstructionCount => 100_000_000; // 100M instructions
+        public TimeSpan MaxExecutionTime => _maxExecutionTime;
+        public long MaxInstructionCount => _maxInstructionCount;
         public long MaxTotalMemory => 50 * 1024 * 1024; // 50MB
         public int MaxStringLength => 1_000_000; // 1MB strings
         public int MaxArrayLength => 100_000;
@@ -97,9 +111,23 @@ namespace FenBrowser.FenEngine.Security
     /// </summary>
     public class SandboxedResourceLimits : IResourceLimits
     {
+        private readonly TimeSpan _maxExecutionTime;
+        private readonly long _maxInstructionCount;
+
+        public SandboxedResourceLimits()
+            : this(TimeSpan.FromSeconds(1), 10_000_000)
+        {
+        }
+
+        public SandboxedResourceLimits(TimeSpan maxExecutionTime, long maxInstructionCount = 10_000_000)
+        {
+            _maxExecutionTime = maxExecutionTime;
+            _maxInstructionCount = maxInstructionCount;
+        }
+
         public int MaxCallStackDepth => 50;
-        public TimeSpan MaxExecutionTime => TimeSpan.FromSeconds(1);
-        public long MaxInstructionCount => 10_000_000; // 10M instructions
+        public TimeSpan MaxExecutionTime => _maxExecutionTime;
+        public long MaxInstructionCount => _maxInstructionCount;
         public long MaxTotalMemory => 10 * 1024 * 1024; // 10MB
         public int MaxStringLength => 100_000;
         public int MaxArrayLength => 10_000;
