@@ -83,8 +83,8 @@ namespace FenBrowser.FenEngine.Scripting
         private IResourceLimits CreateResourceLimitsForProfile()
         {
             return RuntimeProfile.UseSandboxedResourceLimits
-                ? new SandboxedResourceLimits()
-                : new DefaultResourceLimits();
+                ? new SandboxedResourceLimits(RuntimeProfile.MaxExecutionTime, RuntimeProfile.MaxInstructionCount)
+                : new DefaultResourceLimits(RuntimeProfile.MaxExecutionTime, RuntimeProfile.MaxInstructionCount);
         }
 
         private void ApplyRuntimeProfilePostInitialization()
@@ -143,11 +143,13 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     outcome = "throw";
                     errorMessage = normalizedValue.ToString();
+                    _fenRuntime?.Context?.OnUncaughtException?.Invoke(normalizedValue, normalizedSourceName);
                 }
                 else if (normalizedValue.Type == JsValueType.Error)
                 {
                     outcome = "error";
                     errorMessage = normalizedValue.ToString();
+                    _fenRuntime?.Context?.OnUncaughtException?.Invoke(normalizedValue, normalizedSourceName);
                 }
 
                 return new RuntimeScriptExecutionResult(normalizedValue, null, outcome);
@@ -158,6 +160,7 @@ namespace FenBrowser.FenEngine.Scripting
                 outcome = "exception";
                 errorMessage = ex.GetBaseException().Message;
                 normalizedValue = FenValue.FromError(errorMessage);
+                _fenRuntime?.Context?.OnUncaughtException?.Invoke(normalizedValue, normalizedSourceName);
                 return new RuntimeScriptExecutionResult(normalizedValue, ex, outcome);
             }
             finally

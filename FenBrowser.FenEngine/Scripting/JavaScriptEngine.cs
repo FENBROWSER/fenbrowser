@@ -151,6 +151,57 @@ namespace FenBrowser.FenEngine.Scripting
 
 
 
+            context.OnUncaughtException = (errVal, srcUrl) =>
+            {
+                try
+                {
+                    var evt = new FenObject();
+                    evt.Set("type", FenValue.FromString("error"));
+                    evt.Set("error", errVal);
+                    var msg = errVal.IsObject ? errVal.AsObject().Get("message").ToString() : errVal.ToString();
+                    if (string.IsNullOrWhiteSpace(msg) && errVal.IsObject) msg = "Error";
+                    evt.Set("message", FenValue.FromString(msg));
+                    evt.Set("filename", FenValue.FromString(srcUrl ?? string.Empty));
+                    evt.Set("lineno", FenValue.FromNumber(1));
+                    evt.Set("colno", FenValue.FromNumber(1));
+
+                    var win = _fenRuntime?.GetGlobal("window") ?? FenValue.Undefined;
+                    if (win.IsObject)
+                    {
+                        var winObj = win.AsObject();
+                        DispatchEvent(winObj, "error", evt);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Failed to dispatch global error event: {ex.Message}", LogCategory.JavaScript);
+                }
+            };
+
+            context.OnUnhandledRejection = (reason, promise) =>
+            {
+                try
+                {
+                    var evt = new FenObject();
+                    evt.Set("type", FenValue.FromString("unhandledrejection"));
+                    evt.Set("reason", reason);
+                    evt.Set("promise", FenValue.FromObject(promise));
+                    evt.Set("cancelable", FenValue.True);
+
+                    var win = _fenRuntime?.GetGlobal("window") ?? FenValue.Undefined;
+                    if (win.IsObject)
+                    {
+                        var winObj = win.AsObject();
+                        // WPT relies heavily on window.onunhandledrejection
+                        DispatchEvent(winObj, "unhandledrejection", evt);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[JavaScriptEngine] Failed to dispatch global unhandledrejection event: {ex.Message}", LogCategory.JavaScript);
+                }
+            };
+
             TryLogDebug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...");
             _fenRuntime = new FenRuntime(context, _storageBackend, this);
             _fenRuntime.NetworkFetchHandler = async (req) =>
