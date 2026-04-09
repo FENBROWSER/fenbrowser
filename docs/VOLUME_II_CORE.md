@@ -37,6 +37,9 @@ Extends `ContainerNode`. Represents HTML tags.
 - **Attributes**: Managed via `NamedNodeMap` with security sanitization.
 - **ClassList**: `DOMTokenList` implementation for efficient class toggling.
 - **ShadowRoot**: Hooks for Shadow DOM encapsulation.
+- **Shadow connectivity propagation (2026-04-07)**:
+  - `Element.AttachShadow(...)`, `OnConnected()`, and `OnDisconnected()` now resynchronize `ShadowRoot` subtree connection state through the attached shadow tree.
+  - This keeps `isConnected` correct for shadow-hosted descendants during attach/detach and removes a direct source of shadow-root DOM/WPT click and form-event failures.
 
 ### 2.3 Events & Mutation
 

@@ -153,6 +153,16 @@ flowchart TD
 - Historical tranche note: this section originally documented a simulated Web Audio surface.
 - Current state is defined by `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` plus `FenBrowser.Tests/WebAPIs/AudioApiTests.cs`.
 - The simulation-only `Audio`, `AudioContext`, and `webkitAudioContext` globals were later removed from the live engine surface in section `2.176`, so they are now intentionally absent from both global and `window`.
+
+### 2.9 Nullable Reference Type Enablement & Build Hardening (2026-04-07)
+
+- `FenBrowser.FenEngine.csproj` now enables `<Nullable>enable</Nullable>`, aligning the core engine with modern C# safety standards and reducing null-reference risk across the pipeline.
+- `IExecutionContext` now strictly requires `OnUnhandledRejection` and `OnUncaughtException` implementations; these were added to `EventTarget.ContextShim` and `ReflectAPI.ExecutionContextShim` to restore build integrity.
+- `JavaScriptEngine.InitRuntime()` now wires these execution context hooks to the DOM event loop:
+  - `OnUnhandledRejection` dispatches a `unhandledrejection` event to the global object.
+  - `OnUncaughtException` dispatches a standard `error` event to the global object.
+- `FenValue` struct was hardened with `static readonly` `True` and `False` constants to avoid repeated `FromBoolean` allocations in hot-path logic.
+- Resolved `Test262` runner compilation blockers, enabling full ECMAScript conformance testing against the active engine.
 ### 2.9 Notifications API Productionization (2026-03-06)
 
 - `NotificationsAPI` now exposes `Notification` as a real constructor-capable `FenFunction` instead of a plain object surface (`FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`).
@@ -260,6 +270,7 @@ flowchart TD
 - `JavaScriptEngine.SyncDomContext(...)` now synchronizes `_ctx.BaseUri` alongside the active DOM/runtime bridge, fixing dynamic subresource resolution for DOM-inserted `<script src="...">` elements and related host location surfaces that depend on the active document URL.
 - MutationObserver delivery now invokes observer callbacks inside the active batch-delivery pass instead of re-queuing them onto the same mutation-observer queue, eliminating the prior extra-checkpoint requirement that left same-turn DOM mutations unobservable in focused tests and simple hosts.
 - Dynamically inserted external scripts now resolve against the active page URL, execute through the event-loop networking task path, and preserve `document.currentScript` during execution in the same way as initial parser-discovered external scripts.
+- Parser-discovered and dynamically inserted external scripts now raise real DOM `load` / `error` events through `DOM.EventTarget.DispatchEvent(...)` instead of the lightweight string-event bridge, so assigned handler properties such as `script.onload` and `script.onerror` observe the same semantics as listener registrations. This unblocks webpack-style chunk loaders that gate startup on those handler properties.
 - Regression coverage was extended in `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`, and the March 14 verification slice (`JavaScriptEngineLifecycleTests` plus `ControlFlowInvariantTests`) passed 22/22 after this tranche.
 
 ### 2.16 ES Module Export-Star Hardening (2026-03-20)
@@ -385,7 +396,6 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
   - Base-frame reuse is a caller contract, not an implicit renderer guarantee: callers must seed a reusable frame before enabling partial-raster updates, and the current host Debug record path still does not auto-seed that frame by default.
 
 ### 3.3 Backend (`SkiaRenderer`)
-
 A stateless drawer that takes the Paint Tree and executes SkiaSharp API calls (`canvas.DrawRect`, `canvas.DrawText`).
 
 ---
@@ -400,6 +410,7 @@ A massive facilitator class that bridges the JS runtime (Jint/V8 abstraction) wi
 
 - **DOM Bindings**: Implements standards like `document.getElementById`, `element.addEventListener`.
 - **Event Loop**: Drives the browser pulse via `RequestAnimationFrame` and `SetTimeout`.
+- **Error Handling**: Captures and dispatches `unhandledrejection` and global `error` events through `IExecutionContext` hooks (2026-04-07).
 - **Sandboxing**: Enforces permissions (network, sensors) via `SandboxBlockRecord`.
 
 ### 4.2 BrowserHost (in `BrowserApi.cs`)
@@ -644,78 +655,6 @@ Runtime selector matcher used by cascade matching and selector specificity selec
   - selector-chain parser now force-advances on malformed tokens to guarantee progress under random/hostile selector input.
   - selector parsing now applies recursion-depth, selector-list, and selector-length caps to prevent runaway nested pseudo-selector parsing.
 - Ancestor bloom-filter matching now hashes tag/id probes with the same normalization used by `Element.ComputeFeatureHash()`, preventing false negatives for valid mixed tag/id descendant selectors in large site stylesheets.
-
-#### `Compatibility/WebCompatibilityInterventions.cs` (Lines 1-290)
-
-Central compatibility intervention subsystem.
-
-- Provides behavior-class keyed intervention registration (`WebCompatibilityBehaviorClass`) and pipeline stage routing (`WebCompatibilityPipelineStage`).
-- Enforces centralized execution via `WebCompatibilityInterventionRegistry` with:
-- global enable/disable switch (`FEN_COMPAT_INTERVENTIONS` environment variable),
-- per-intervention evaluation/application/skip metrics,
-- expiry gating for auto-retirement workflow.
-
-### 6.3 Rendering Subsystem (`FenBrowser.FenEngine.Rendering`)
-
-#### `BrowserApi.cs` (Lines 1-2446)
-
-The monolithic Interface Layer between Host and Engine.
-
-- **Lines 187-2440**: **`BrowserHost`**: Manages the `EngineLoop`, Navigation, and DOM connectivity.
-- **Lines 597-883**: **`NavigateAsync`**: The central navigation controller.
-- **Lines 1110-1119**: **`Pulse`**: Drives the Event Loop (Tasks and Microtasks).
-- Navigation hardening tranche NL-1 (2026-02-20):
-  - integrated deterministic lifecycle transitions through `NavigationLifecycleTracker`
-  - removed forced `window.load` fallback dispatch from top-level navigation correctness path
-  - removed delayed repaint (`Task.Delay(1500)`) correctness fallback and replaced with lifecycle-driven progression.
-- Navigation hardening tranche NL-2 (2026-02-20):
-  - response lifecycle transitions now carry redirect metadata from fetch pipeline (`Redirected`, `RedirectCount`)
-  - commit lifecycle transitions now carry commit-source classification (`network-document`, `error-document`, `synthetic-history`)
-  - interactive lifecycle detail now includes staged render telemetry (parse/css/visual/script/total timings)
-  - complete lifecycle is no longer immediate post-render; it waits for bounded subresource/event-loop settle signals.
-- Navigation hardening tranche NL-3 (2026-02-20):
-  - `FontRegistry` now exposes deterministic pending-load state (`PendingLoadCount`, `PendingLoadCountChanged`)
-  - lifecycle completion settle-gate now includes pending webfont loads in addition to image/event-loop state.
-- Navigation hardening tranche NL-4 (2026-02-20):
-  - `BrowserApi` now wraps render-phase CSS/image fetch delegates with navigation-scoped subresource accounting.
-  - completion settle gate now includes navigation-local render subresource pending count (`renderSubresourcesPending`) to avoid cross-navigation bleed.
-- Navigation hardening tranche NL-5 (2026-02-20):
-  - `BrowserApi` now marks active render navigation scope and tracks external script/module fetches in the same navigation-scoped subresource counter used by completion settle gating.
-  - top-level `Complete` transition now closes only after render-time script/module/CSS/image/font dependency classes are settled (or timeout-annotated).
-
-#### `SkiaRenderer.cs` (Lines 1-839)
-
-The final painting stage.
-
-- **Lines 52-99**: **`Render`**: Entry point for drawing a Paint Tree to a Skia canvas.
-- **Lines 151-286**: **`DrawNode`**: Recursive visitor processing Display List commands.
-- **Lines 515-615**: **`DrawText`**: Text rendering with anti-aliasing.
-
-#### `RenderCommands.cs` (Lines 1-503)
-
-The Display List command definitions.
-
-- Defines `DrawRect`, `DrawText`, `DrawImage`, `SaveLayer` (opacity/blending).
-
-#### `CustomHtmlEngine.cs` (Lines 1-1419)
-
-Alternative legacy/wrapper engine for specialized environments.
-
-- **Lines 1065-1283**: **`RenderAsync`**: Direct HTML-to-Visual pipeline.
-- `RenderTelemetrySnapshot` now captures staged render timings (`TokenizingAndParsingMs`, `CssAndStyleMs`, `InitialVisualTreeMs`, `ScriptExecutionMs`, `PostScriptVisualTreeMs`, `TotalRenderMs`) for navigation lifecycle telemetry wiring.
-
-### 6.3 Scripting Subsystem (`FenBrowser.FenEngine.Scripting`)
-
-#### `JavaScriptEngine.cs` (Lines 1-3570)
-
-The custom logic runtime and bridge.
-
-- **Lines 515-708**: **`SetupPermissions`**: Sandbox security enforcement.
-- **Lines 1311-1340**: **`RequestAnimationFrame`**: Timing loop implementation.
-- **Lines 1141-1254**: **Event Dispatch**: Bridge between internal C# events and JS `DispatchEvent`.
-
-#### Recent Hardening Notes (2026-02-06)
-
 - `ElementWrapper.focus()` and `ElementWrapper.blur()` now update `document.activeElement` and dispatch non-bubbling focus/blur events through the DOM event pipeline.
 - `LayoutEngine` debug tree dump markers now log at debug level instead of error level to reduce false-positive error noise in runtime diagnostics.
 - `ErrorPageRenderer` SSL and connection templates were normalized to ASCII-safe literals to prevent mojibake artifacts in `dom_dump.txt` and rendered text diagnostics.
@@ -2411,6 +2350,28 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Fresh `run_category dom --max 100 --timeout 8000 --format json` => Tests: 100, Assertions: 269 (219 passed, 50 failed).
 - Remaining failures are now primarily non-trivial feature gaps: event propagation path/order edge cases, collection/property descriptor semantics (HTMLCollection/NamedNodeMap), historical DOM removals, and cross-realm/incumbent-global behavior.
 
+### 2.113 DOM WPT Event/Shadow Recovery (2026-04-07)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.WPT/HeadlessNavigator.cs`
+- `FenBrowser.Tests/DOM/InputEventTests.cs`
+- `FenBrowser.Tests/Engine/WptDomEventRegressionTests.cs`
+- `FenRuntime` default construction now uses `PermissionManager(JsPermissions.StandardWeb)` instead of the narrower baseline that rejected ordinary page-script DOM writes (`elem.onclick = ...`, `input.type = 'checkbox'`) during WPT/headless execution.
+- The headless `test_driver.click(...)` shim now delegates to the target element's real `click()` DOM API, which lets trusted click activation reuse the browser's native dispatch/activation pipeline instead of a no-op compatibility stub.
+- `EventTarget.DispatchEvent(...)` now builds composed propagation paths across `ShadowRoot -> Host`, preserving shadow-host bubbling behavior needed by the current DOM events pack while keeping the external top-level bridge split intact.
+- `FenRuntime` and `JavaScriptEngine` top-level event bridges now invoke `on<type>` handler properties on object targets in their non-capture path, which closes the missing `window.onerror` / top-level property-handler hole on the engine-managed WPT path.
+- The minimal WPT harness now honors `setup({ allow_uncaught_exception: true })` by setting a runtime flag that suppresses the fatal-page-error bridge for deliberate uncaught-exception tests.
+- Added regression coverage for:
+  - `test_driver.click(...)` delegating into real element activation,
+  - shadow-root checkbox activation dispatching `input`/`change`,
+  - WPT-path `window.onerror` firing for a shadow-tree `ErrorEvent`.
+- Verified:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~InputEventTests.TestDriverClick_Delegates_To_ElementClick_RuntimeSemantics|FullyQualifiedName~InputEventTests.ShadowRootHosted_Checkable_Click_Dispatches_Input_And_Change|FullyQualifiedName~InputEventTests.DispatchEvent_WindowOnError_Receives_ActualThrownErrorObject|FullyQualifiedName~WptDomEventRegressionTests.WindowOnError_Fires_For_ShadowTree_ErrorEvent_On_Wpt_Path"` -> passing targeted coverage.
+  - `FenBrowser.WPT run_pack dom_event_api --root test_assets\wpt` improved from `15/17` to `16/17`.
+- Remaining blocker:
+  - `dom/events/event-global.html` still has one failing subcase in the full WPT page-loader path (`window.event is undefined inside window.onerror if the target is in a shadow tree`), even though the equivalent engine-level regression now passes. The unresolved gap is isolated to the headless/WPT execution path, not the already-fixed permission/click/shadow-connectivity regressions.
+
 ### JavaScript Runtime Hardening Follow-up (2026-03-04, Array.fromAsync spec guardrails)
 - Hardened `Array.fromAsync` in `FenRuntime` to reject invalid usage instead of silently resolving:
   - rejects `null`/`undefined` input,
@@ -3821,6 +3782,7 @@ Verification snapshot (2026-03-06):
   - `WheelEvent`
   - `TouchEvent`
   - `AnimationEvent`
+
   - `TransitionEvent`
   - `BeforeUnloadEvent`
 - Constructor init dictionaries now populate baseline subclass fields such as coordinates, modifier keys, `key`/`code`, `relatedTarget`, `data`, `inputType`, pointer metrics, wheel deltas, touch lists, and transition/animation metadata.
@@ -3832,7 +3794,6 @@ Verification snapshot (2026-03-06):
 - `HTMLCollection.item(...)` now uses a `ToUint32`-style coercion path instead of directly casting to `int`.
 - Negative and oversized numeric arguments now follow collection-index wrapping semantics more closely, including the WPT cases around `2^31` and `2^32`.
 - Out-of-range `item(...)` access now deterministically returns `null` instead of depending on LINQ negative-index behavior.
-- This closes another concrete collection/name edge-case gap in the Milestone `C2` DOM surface without claiming the full HTMLCollection suite is complete.
 
 ### 2.84 HTMLCollection prototype brand-check hardening (2026-03-07, Milestone C2 tranche)
 - `FenBrowser.FenEngine/DOM/HtmlCollectionWrapper.cs`
@@ -3859,9 +3820,121 @@ Verification snapshot (2026-03-06):
 - Those legacy bridge entrypoints now feed HTMLCollectionWrapper, preserving the same named-property and collection-method behavior used by the main DOM wrapper path.
 - This removes another bypass where older bridge consumers could still observe array semantics instead of real HTMLCollection semantics.
 
+### 2.87a WPT runner absolute-path normalization (2026-04-06)
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+- `RunSingleTestAsync(...)` now normalizes incoming test paths through `Path.GetFullPath(...)` before any file IO or navigation.
+- `ExecuteTestAsync(...)` and `ExecuteCrashTestAsync(...)` now build navigation URIs from normalized absolute paths, preventing `UriFormatException` when `FenBrowser.WPT` is invoked with a relative `--root` such as `test_assets\wpt`.
+- Reproduced impact before fix:
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 80 --format json -o Results/dom_probe_80.json`
+  - pre-fix result: `1/80` test successes, dominated by harness-side `Invalid URI: The format of the URI could not be determined.`
+- Post-fix baseline using the same relative root now reaches real DOM execution instead of harness aborts; remaining failures are engine-side DOM/event gaps rather than path-construction failures.
+
+### 2.87b DOM wrapper surface parity for Attr, CharacterData, DOMTokenList, and DOMException mapping (2026-04-06)
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `FenBrowser.FenEngine/DOM/AttrWrapper.cs`
+- `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+- `FenBrowser.FenEngine/DOM/TextWrapper.cs`
+- `FenBrowser.FenEngine/DOM/CommentWrapper.cs`
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.Dom.cs`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+- `FenBrowser.Tests/Engine/WptDomSurfaceRegressionTests.cs`
+- Added missing DOM surface on the active wrapper path:
+  - `document.createAttribute(...)` and `document.createAttributeNS(...)`
+  - CharacterData methods on both `Text` and `Comment`: `substringData`, `appendData`, `insertData`, `deleteData`, `replaceData`
+  - `Element.toggleAttribute(...)`
+  - `DOMTokenList` branding via `Symbol.toStringTag`
+- `AttrWrapper` now adopts the global `Attr.prototype` so attribute nodes participate in the correct prototype chain and `instanceof Node` checks no longer fail for wrapper-created `Attr` objects.
+- Child-mutation entrypoints on `NodeWrapper` now rethrow DOM tree errors instead of swallowing them into `null`/`undefined`, which restores WPT-facing `HierarchyRequestError` behavior for illegal insertions like `appendChild(attr)`.
+- DOM exceptions raised from native wrapper methods are now preserved as DOM-style thrown objects at both runtime boundaries:
+  - `FenRuntime` converts raw `DomException` into thrown JS objects instead of collapsing them into generic `TypeError`
+  - `VirtualMachine.CreateHostExceptionValue(...)` maps native `DomException` to JS objects with `name`, `message`, `code`, and `DOMException` branding so script-level `catch (e)` observes `e.name === "HierarchyRequestError"` and related values.
+- Focused verification after the fix:
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --root test_assets\wpt --timeout 8000`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/nodes/CharacterData-appendData.html --root test_assets\wpt --timeout 8000`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/lists/DOMTokenList-coverage-for-attributes.html --root test_assets\wpt --timeout 8000`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomSurfaceRegressionTests --no-restore`
+- These fixes remove one concrete early DOM failure cluster; remaining `dom` gaps are now dominated by event semantics, legacy/global surface holes, and parser/runtime incompatibilities rather than these wrapper omissions.
+
+### 2.87c Event legacy-flag and dynamic-property hardening (2026-04-06)
+- `FenBrowser.FenEngine/DOM/DomEvent.cs`
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+- `FenBrowser.Tests/Engine/WptDomEventRegressionTests.cs`
+- Hardened the `Event` legacy mutable fields so script assignment and reads now stay tied to native dispatch state instead of writable own-slot drift:
+  - `cancelBubble`
+  - `returnValue`
+  - `defaultPrevented`
+  - `eventPhase`
+  - `isTrusted`
+- `DomEvent` now handles both normal and strict-mode property stores for `cancelBubble` / `returnValue`, so bytecode-side assignment like `e.cancelBubble = true` and `e.returnValue = false` no longer bypasses event semantics.
+- The bytecode VM now skips inline property caches for dynamic `DomEvent` state on both write and read paths, which fixes cross-dispatch stale reads such as `eventPhase === 0` after a previous bubble-phase listener warmed the cache.
+- Listener option parsing now uses JS truthiness for non-boolean capture values and object `{ capture: ... }` options on both `addEventListener(...)` and `removeEventListener(...)`, including getter side effects for capture-option probing.
+- Focused verification after the fix:
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-cancelBubble.html --timeout 8000`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-returnValue.html --timeout 8000`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/EventListenerOptions-capture.html --timeout 8000`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --format json -o Results/dom_probe_100_after_event_fix.json`
+- Updated probe artifact:
+  - `Results/dom_probe_100_after_event_fix.json`: `60/100` tests passed, `497/584` assertions passed
+- Compared with the prior `Results/dom_probe_100_after_surface_fix.json` baseline, the same 100-test DOM slice moved from `51/100` to `60/100`, confirming that the event bucket was a real score limiter rather than just a narrow focused failure.
+
+### 2.87d Event initialization reset, dispatch-flag enforcement, and legacy createEvent alias coverage (2026-04-06)
+- `FenBrowser.FenEngine/DOM/DomEvent.cs`
+- `FenBrowser.FenEngine/DOM/CustomEvent.cs`
+- `FenBrowser.FenEngine/DOM/LegacyUiEvents.cs`
+- `FenBrowser.FenEngine/DOM/EventTarget.cs`
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+- `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.Tests/Engine/WptDomEventRegressionTests.cs`
+- Fixed another WPT-heavy event tranche by aligning initialization and dispatch state with DOM expectations:
+  - `initEvent(...)`, `initCustomEvent(...)`, `initUIEvent(...)`, `initMouseEvent(...)`, `initKeyboardEvent(...)`, and `initCompositionEvent(...)` now ignore calls during active dispatch via a real dispatch flag instead of phase-only heuristics.
+  - Re-initialization now clears internal cancellation/propagation state, so `defaultPrevented` no longer survives across `initEvent(...)` resets.
+  - `EventTarget.DispatchEvent(...)` now enforces a dispatch flag and throws `InvalidStateError` when the same event is redispatched while already in-flight.
+  - `dispatchEvent(null)` and other nullish non-Event inputs now throw consistently across `Document`, `Node`, `Element`, and runtime-level `EventTarget` entrypoints instead of silently returning `false`.
+- Expanded legacy `document.createEvent(...)` coverage to the alias set exercised by current DOM WPTs:
+  - event-family aliases now normalize to canonical interfaces and apply the correct global prototype when constructed from `DocumentWrapper`
+  - added constructor exposure for placeholder legacy interfaces used by WPT alias/prototype checks, including `DeviceMotionEvent`, `DeviceOrientationEvent`, `DragEvent`, `HashChangeEvent`, `MessageEvent`, `StorageEvent`, and `TextEvent`
+  - constructor-created `UIEvent` / `MouseEvent` / `KeyboardEvent` / `CompositionEvent` instances now use the legacy event objects that actually expose their `init*Event(...)` methods
+- Focused verification after the fix:
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-defaultPrevented.html --root test_assets\wpt`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/EventTarget-dispatchEvent.html --root test_assets\wpt`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --format json -o Results/dom_probe_100_after_dispatch_init_fix.json`
+- Updated probe artifact:
+  - `Results/dom_probe_100_after_dispatch_init_fix.json`: `62/100` tests passed, `509/584` assertions passed
+- Known residual after this tranche:
+  - `dom/events/Event-init-while-dispatching.html` still fails only on the WPT single-file path with a remaining uncaught `TypeError: undefined is not a function`, even though the equivalent in-engine regression coverage now passes. That mismatch looks isolated to the WPT execution path, not the underlying event semantics fixed in this tranche.
+
 ### 2.88 Event constant/prototype-chain parity hardening (2026-03-07, Milestone C2 tranche)
 - FenBrowser.FenEngine/Core/FenRuntime.cs
 - Mirrored the core Event phase constants onto Event.prototype in addition to the constructor and instance surface.
+
+### 2.89 Event path and wrapper identity hardening (2026-04-06)
+- FenBrowser.FenEngine/DOM/DocumentWrapper.cs
+  - `WrapDocument(...)` now routes created documents through `DomWrapperFactory`, restoring same-object identity for `document.implementation.createHTMLDocument()` and downstream event target comparisons.
+  - Removed the non-spec eager invocation of late `load` / `DOMContentLoaded` listeners from `addEventListener(...)`.
+- FenBrowser.FenEngine/DOM/NodeWrapper.cs
+  - `Get(...)` now walks the prototype chain after own properties and expandos, exposing inherited DOM members like `constructor`.
+- FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
+  - External DOM event invocation now binds native targets through cached DOM wrappers instead of ad hoc wrappers, preserving expando-backed handler state during dispatch.
+- Focused verification:
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-dispatch-bubbles-false.html --root test_assets\wpt --verbose`
+  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-dispatch-bubbles-true.html --root test_assets\wpt --verbose`
+  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --timeout 8000 --format json -o Results/dom_probe_100_after_event_path_fix.json`
+- Updated probe artifact:
+  - `Results/dom_probe_100_after_event_path_fix.json`: `67/100` tests passed, `546/584` assertions passed
+- Remaining dominant blockers in the same 100-test slice:
+  - parser/runtime compatibility (`Duplicate declaration`, `Expected identifier in var declaration`)
+  - platform-object/custom-element listener behavior
+  - disabled-control activation edge cases
+  - missing stylesheet / animation hooks such as `insertRule`
 - Corrected subclass prototype inheritance so:
   - UIEvent extends Event
   - MouseEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, and TouchEvent extend UIEvent

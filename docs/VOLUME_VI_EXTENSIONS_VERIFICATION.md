@@ -40,20 +40,6 @@ Standard xUnit tests covering internal components:
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 
 ### 3.2 Compliance Runners (`FenBrowser.FenEngine.Testing`, `FenBrowser.Test262`)
-
-Specialized runners built to execute standard web test suites against the engine.
-
-- **Test262Runner**: Runs the official ECMA-262 (JavaScript) conformance suite.
-- **WPTTestRunner**: Runs the Web Platform Tests (WPT) for DOM/CSS.
-- **AcidTestRunner**: Specific runner for the Acid2 layout test, verifying standard rendering compliance.
-- **FenBrowser.Test262 CLI** (`FenBrowser.Test262`):
-  - Provides direct suite discovery (`summary`, `get_chunk_count`), targeted execution (`run_single`, `run_category`), and chunk execution (`run_chunk`).
-  - Keeps operator guidance in `FenBrowser.Test262/README.md` so the local runbook sits next to the CLI entrypoint.
-  - Uses helper scripts for clean-state resets and parallel worker fan-out instead of mixing local debug files into the vendored suite.
-
-### 3.3 The Verification Loop
-
-1.  **Code Changes** are made in `FenEngine`.
 2.  **Unit Tests** verify the specific component.
 3.  **WPT/Test262** runners verify that the change adheres to the spec and doesn't regress existing features.
 4.  **Acid2** verifies visual integrity.
@@ -156,6 +142,54 @@ Parallel helper for one logical chunk.
 The Web Platform Tests (WPT) runner for DOM/CSS compliance.
 
 - Automates the execution of `.html` tests and compares rendered output or computed styles against reference expectations.
+- Path handling invariant:
+  - Every test file entering the runner is normalized to an absolute filesystem path before `File.ReadAllText(...)` or `new Uri(...)`.
+  - This prevents relative-`--root` category runs from collapsing into harness-side `UriFormatException` failures.
+  - Verified repro/fix path on 2026-04-06 with:
+    - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 80 --format json -o Results/dom_probe_80.json`
+  - Post-fix relative-root baselines recorded on 2026-04-06:
+    - `Results/dom_full_relative_fixed.json`: `135/534` tests passed, `2599/4798` assertions passed
+    - `Results/dom_probe_100_after_surface_fix.json`: `51/100` tests passed, `479` assertions passed, `105` failed assertions
+- DOM surface verification cluster added on 2026-04-06:
+  - `attributes-are-nodes.html`: passes after `Attr` creation/prototype-chain and `HierarchyRequestError` fixes
+  - `CharacterData-appendData.html`: passes after exposing CharacterData methods on `CommentWrapper`
+  - `DOMTokenList-coverage-for-attributes.html`: passes after `DOMTokenList` branding and `toggleAttribute(...)` exposure
+- Event legacy-state verification cluster added on 2026-04-06:
+  - `Event-cancelBubble.html`: passes after routing legacy flag assignment through `DomEvent` rather than writable-slot fast paths
+  - `Event-returnValue.html`: passes after routing strict-mode property stores through the same `DomEvent` legacy semantics
+  - `EventListenerOptions-capture.html`: passes after truthy capture-option parsing and dynamic `eventPhase` cache bypasses
+  - Regression tests:
+    - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
+  - Probe artifact:
+    - `Results/dom_probe_100_after_event_fix.json`: `60/100` tests passed, `497` passed assertions, `87` failed assertions
+- Event dispatch/init verification cluster added on 2026-04-06:
+  - `Event-defaultPrevented.html`: passes after `initEvent(...)` clears the internal canceled state rather than only resetting JS-visible own slots
+  - `EventTarget-dispatchEvent.html`: passes after nullish argument rejection, dispatch-flag enforcement, and expanded `createEvent(...)` alias coverage
+  - Regression tests:
+    - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
+  - Probe artifact:
+    - `Results/dom_probe_100_after_dispatch_init_fix.json`: `62/100` tests passed, `509` passed assertions, `75` failed assertions
+  - Residual:
+    - `Event-init-while-dispatching.html` still fails only on the WPT single-file path with `TypeError: undefined is not a function`, while the equivalent in-engine regression now passes. Treat this as a runner-path mismatch to investigate separately from the completed event-state fixes.
+- Remaining top failure buckets after the surface fixes:
+  - Missing or partial platform APIs/globals: `XPathResult.singleNodeValue`, cross-realm abort/iframe behavior, stylesheet APIs such as `insertRule`, focus/blur helpers in some scenarios
+  - Remaining event/platform semantics beyond the fixed legacy flag bucket: disabled-element dispatch, cloned-document targets, global/incumbent-global behavior, and a few listener-removal edge cases
+  - Parser/runtime compatibility gaps on some WPT scripts: duplicate declaration handling, parser failures such as `Expected identifier in var declaration`
+
+- Event path / wrapper identity verification cluster added on 2026-04-06:
+  - `Event-dispatch-bubbles-false.html`: passes after same-object document wrapping and event-path target normalization
+  - `Event-dispatch-bubbles-true.html`: passes after the same event-path fixes
+  - `DocumentWrapper.addEventListener(...)` no longer eagerly invokes late `load` / `DOMContentLoaded` listeners after ready-state transitions
+  - `NodeWrapper.Get(...)` now walks the prototype chain, restoring inherited DOM members such as `constructor`
+  - `JavaScriptEngine.InvokeObjectListenersForDomEvent(...)` now binds native DOM targets through cached DOM wrappers instead of ad hoc wrappers
+  - Probe artifact:
+    - `Results/dom_probe_100_after_event_path_fix.json`: `67/100` tests passed, `546` passed assertions, `38` failed assertions
+  - Remaining dominant buckets in the same 100-test slice:
+    - parser/runtime compatibility (`Duplicate declaration`, `Expected identifier in var declaration`)
+    - platform-object/custom-element listener behavior
+    - disabled/control activation edge cases
+    - missing stylesheet / animation hooks such as `insertRule`
+  - Cross-global / incumbent-global event behavior: several tests still finish with `No assertions executed by testharness`
 
 #### `AcidTestRunner.cs`
 
