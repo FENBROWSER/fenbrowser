@@ -1,4 +1,5 @@
 using System;
+using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core.Engine; // Phase enum
@@ -61,6 +62,8 @@ namespace FenBrowser.FenEngine.Core
         /// Internal slot for bound functions: the callable target passed to bind().
         /// </summary>
         public FenFunction BoundTargetFunction { get; set; }
+        public FenValue BoundThisValue { get; set; } = FenValue.Undefined;
+        public FenValue[] BoundArguments { get; set; } = Array.Empty<FenValue>();
 
         /// <summary>
         /// Whether invocation must create the inner function-name binding used by
@@ -218,6 +221,8 @@ namespace FenBrowser.FenEngine.Core
 
         public FenValue Invoke(FenValue[] args, IExecutionContext context, FenValue? thisArg = null)
         {
+            var effectiveArgs = args ?? Array.Empty<FenValue>();
+
             // PROXY TRAP: Apply
             if (context == null)
             {
@@ -229,6 +234,25 @@ namespace FenBrowser.FenEngine.Core
 
             var actualThis = thisArg ?? (context?.ThisBinding ?? FenValue.Undefined);
 
+            if (BoundTargetFunction != null)
+            {
+                var boundArgs = BoundArguments ?? Array.Empty<FenValue>();
+                if (boundArgs.Length == 0)
+                {
+                    return BoundTargetFunction.Invoke(effectiveArgs, context, BoundThisValue);
+                }
+
+                if (effectiveArgs.Length == 0)
+                {
+                    return BoundTargetFunction.Invoke(boundArgs, context, BoundThisValue);
+                }
+
+                var combinedArgs = new FenValue[boundArgs.Length + effectiveArgs.Length];
+                Array.Copy(boundArgs, 0, combinedArgs, 0, boundArgs.Length);
+                Array.Copy(effectiveArgs, 0, combinedArgs, boundArgs.Length, effectiveArgs.Length);
+                return BoundTargetFunction.Invoke(combinedArgs, context, BoundThisValue);
+            }
+
             if (!ProxyHandler.IsUndefined && ProxyHandler.IsObject)
             {
                 EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
@@ -238,8 +262,8 @@ namespace FenBrowser.FenEngine.Core
                 if (trap.IsFunction)
                 {
                     var argsArray = new FenObject();
-                    for (int i = 0; i < args.Length; i++) argsArray.Set(i.ToString(), args[i]);
-                    argsArray.Set("length", FenValue.FromNumber(args.Length));
+                    for (int i = 0; i < effectiveArgs.Length; i++) argsArray.Set(i.ToString(), effectiveArgs[i]);
+                    argsArray.Set("length", FenValue.FromNumber(effectiveArgs.Length));
 
                     return trap.AsFunction().Invoke(new FenValue[]
                     {
@@ -254,10 +278,10 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (OwningRuntime != null)
                 {
-                    return OwningRuntime.RunWithRealmActivation(() => NativeImplementation(args, actualThis));
+                    return OwningRuntime.RunWithRealmActivation(() => NativeImplementation(effectiveArgs, actualThis));
                 }
 
-                return NativeImplementation(args, actualThis);
+                return NativeImplementation(effectiveArgs, actualThis);
             }
 
             if (BytecodeBlock == null)
@@ -269,18 +293,18 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (OwningRuntime != null)
                 {
-                    return OwningRuntime.RunWithRealmActivation(() => InvokeViaDirectBytecode(args, context, actualThis));
+                    return OwningRuntime.RunWithRealmActivation(() => InvokeViaDirectBytecode(effectiveArgs, context, actualThis));
                 }
 
-                return InvokeViaDirectBytecode(args, context, actualThis);
+                return InvokeViaDirectBytecode(effectiveArgs, context, actualThis);
             }
 
             if (OwningRuntime != null)
             {
-                return OwningRuntime.RunWithRealmActivation(() => InvokeViaBytecodeThunk(args, context, actualThis));
+                return OwningRuntime.RunWithRealmActivation(() => InvokeViaBytecodeThunk(effectiveArgs, context, actualThis));
             }
 
-            return InvokeViaBytecodeThunk(args, context, actualThis);
+            return InvokeViaBytecodeThunk(effectiveArgs, context, actualThis);
         }
 
         private FenValue InvokeViaDirectBytecode(FenValue[] args, IExecutionContext context, FenValue thisBinding)

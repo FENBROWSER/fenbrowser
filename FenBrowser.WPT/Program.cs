@@ -870,22 +870,26 @@ public static class Program
     {
         if (!string.IsNullOrWhiteSpace(wptRootPath))
         {
-            var parent = Directory.GetParent(wptRootPath);
-            if (parent != null)
+            var startDir = new DirectoryInfo(Path.GetFullPath(wptRootPath));
+            for (var current = startDir; current != null; current = current.Parent)
             {
-                return parent.FullName;
+                if (File.Exists(Path.Combine(current.FullName, "FenBrowser.sln")) ||
+                    Directory.Exists(Path.Combine(current.FullName, "FenBrowser.WPT")))
+                {
+                    return current.FullName;
+                }
             }
         }
 
-        var dir = AppContext.BaseDirectory;
+        var searchDir = AppContext.BaseDirectory;
         for (int i = 0; i < 10; i++)
         {
-            if (File.Exists(Path.Combine(dir, "FenBrowser.sln")))
-                return dir;
+            if (File.Exists(Path.Combine(searchDir, "FenBrowser.sln")))
+                return searchDir;
 
-            var parent = Directory.GetParent(dir);
+            var parent = Directory.GetParent(searchDir);
             if (parent == null) break;
-            dir = parent.FullName;
+            searchDir = parent.FullName;
         }
 
         return Directory.GetCurrentDirectory();

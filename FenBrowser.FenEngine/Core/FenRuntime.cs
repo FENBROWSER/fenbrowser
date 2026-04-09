@@ -20,6 +20,8 @@ using FenBrowser.FenEngine.Storage;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Compatibility;
+using FenBrowser.FenEngine.Security;
+using System.Diagnostics;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -53,14 +55,26 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _windowObject;
         private FenObject _locationObject;
         private FenObject _historyObject;
+        private FenObject _visualViewportObject;
         private BrowserSurfaceProfile _browserSurface;
         private readonly List<MediaQueryListRegistration> _mediaQueryLists = new List<MediaQueryListRegistration>();
         private readonly object _mediaQueryLock = new object();
+        private readonly Dictionary<string, List<BroadcastChannelEndpoint>> _broadcastChannels =
+            new Dictionary<string, List<BroadcastChannelEndpoint>>(StringComparer.Ordinal);
+        private readonly object _broadcastChannelLock = new object();
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
         private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWaiter>();
         private static readonly object s_atomicsWaitersLock = new object();
+        private static readonly HashSet<string> s_rtlLocaleLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ar", "arc", "ckb", "dv", "fa", "ha", "he", "iw", "ji", "ks", "ku", "nqo", "ps", "sd", "ug", "ur", "yi"
+        };
+        private static readonly HashSet<string> s_rtlLocaleScripts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Arab", "Hebr", "Nkoo", "Syrc", "Thaa"
+        };
 
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
@@ -104,6 +118,22 @@ namespace FenBrowser.FenEngine.Core
             public bool Matches { get; set; }
         }
 
+        private sealed class MessagePortEndpoint
+        {
+            public FenObject PortObject { get; set; }
+            public MessagePortEndpoint Entangled { get; set; }
+            public bool Closed { get; set; }
+            public List<FenValue> MessageListeners { get; } = new List<FenValue>();
+        }
+
+        private sealed class BroadcastChannelEndpoint
+        {
+            public string Name { get; set; }
+            public FenObject ChannelObject { get; set; }
+            public bool Closed { get; set; }
+            public List<FenValue> MessageListeners { get; } = new List<FenValue>();
+        }
+
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
             IDomBridge domBridge = null, IHistoryBridge historyBridge = null)
         {
@@ -123,7 +153,7 @@ namespace FenBrowser.FenEngine.Core
                 FenBrowser.FenEngine.DOM.DomWrapperFactory.ClearCache();
 
                 /* [PERF-REMOVED] */
-                _context = context ?? new ExecutionContext();
+                _context = context ?? new ExecutionContext(new PermissionManager(Security.JsPermissions.StandardWeb));
                 _storageBackend = storageBackend ?? new InMemoryStorageBackend();
                 _domBridge = domBridge;
                 _historyBridge = historyBridge;
@@ -196,6 +226,103 @@ namespace FenBrowser.FenEngine.Core
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
 
+        private static int s_xBootMessagePortTraceCount;
+
+        private static FenValue[] SliceArguments(FenValue[] args, int startIndex)
+        {
+            if (args == null)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            if ((uint)startIndex >= (uint)args.Length)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            int count = args.Length - startIndex;
+            var sliced = new FenValue[count];
+            Array.Copy(args, startIndex, sliced, 0, count);
+            return sliced;
+        }
+
+        private static FenValue[] ConcatArguments(FenValue[] prefixArgs, FenValue[] suffixArgs)
+        {
+            int prefixCount = prefixArgs?.Length ?? 0;
+            int suffixCount = suffixArgs?.Length ?? 0;
+            if (prefixCount == 0)
+            {
+                return suffixCount == 0 ? Array.Empty<FenValue>() : (FenValue[])suffixArgs.Clone();
+            }
+
+            if (suffixCount == 0)
+            {
+                return (FenValue[])prefixArgs.Clone();
+            }
+
+            var combined = new FenValue[prefixCount + suffixCount];
+            Array.Copy(prefixArgs, 0, combined, 0, prefixCount);
+            Array.Copy(suffixArgs, 0, combined, prefixCount, suffixCount);
+            return combined;
+        }
+
+        private static FenValue[] ToArgumentArray(FenValue value, IExecutionContext context, string methodName)
+        {
+            if (value.IsUndefined || value.IsNull)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            if (!value.IsObject && !value.IsFunction)
+            {
+                throw new FenTypeError($"TypeError: {methodName} arguments list must be an object");
+            }
+
+            var argsObject = value.AsObject();
+            int length = (int)argsObject.Get("length", context).ToNumber();
+            if (length <= 0)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            var materialized = new FenValue[length];
+            for (int i = 0; i < length; i++)
+            {
+                materialized[i] = argsObject.Get(i.ToString(), context);
+            }
+
+            return materialized;
+        }
+
+        private static bool IsXBootDiagnosticsEnabled()
+        {
+            static bool IsEnabled(string name)
+            {
+                var value = Environment.GetEnvironmentVariable(name);
+                return !string.IsNullOrWhiteSpace(value) &&
+                       !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) &&
+                       !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return IsEnabled("FEN_XBOOT_DIAGNOSTICS") || IsEnabled("FEN_MESSAGEPORT_TRACE");
+        }
+
+        private static void TraceXBootMessagePort(string message)
+        {
+            if (!IsXBootDiagnosticsEnabled())
+            {
+                return;
+            }
+
+            var count = Interlocked.Increment(ref s_xBootMessagePortTraceCount);
+            if (count > 48)
+            {
+                return;
+            }
+
+            FenLogger.Warn($"[XDiag] {message} #{count}", LogCategory.JavaScript);
+        }
+
         public void NotifyPopState(object state)
         {
             try
@@ -233,6 +360,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             _browserSurface = surface;
+            var visualViewportChanges = SynchronizeVisualViewport(surface.Viewport);
 
             var navigatorValue = GetGlobal("navigator");
             var navigator = navigatorValue.IsObject ? navigatorValue.AsObject() as FenObject : null;
@@ -293,6 +421,10 @@ namespace FenBrowser.FenEngine.Core
                 _windowObject.Set("screenY", FenValue.FromNumber(surface.Viewport.ScreenY));
                 _windowObject.Set("pageXOffset", _windowObject.Get("scrollX"));
                 _windowObject.Set("pageYOffset", _windowObject.Get("scrollY"));
+                if (_visualViewportObject != null)
+                {
+                    _windowObject.Set("visualViewport", FenValue.FromObject(_visualViewportObject));
+                }
             }
 
             if (navigator != null)
@@ -310,7 +442,80 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("outerWidth", FenValue.FromNumber(surface.Viewport.OuterWidth));
             SetGlobal("outerHeight", FenValue.FromNumber(surface.Viewport.OuterHeight));
             SetGlobal("devicePixelRatio", FenValue.FromNumber(surface.Viewport.DevicePixelRatio));
+            if (_visualViewportObject != null)
+            {
+                SetGlobal("visualViewport", FenValue.FromObject(_visualViewportObject));
+            }
             NotifyMediaQueryChanges();
+
+            if (visualViewportChanges.ResizeChanged)
+            {
+                DispatchVisualViewportEvent("resize");
+            }
+
+            if (visualViewportChanges.ScrollChanged)
+            {
+                DispatchVisualViewportEvent("scroll");
+            }
+        }
+
+        private (bool ResizeChanged, bool ScrollChanged) SynchronizeVisualViewport(BrowserViewportMetrics viewport)
+        {
+            if (_visualViewportObject == null || viewport == null)
+            {
+                return (false, false);
+            }
+
+            var nextWidth = viewport.WindowWidth;
+            var nextHeight = viewport.WindowHeight;
+            var nextScale = 1d;
+            var nextPageLeft = ReadViewportScrollOffset("scrollX");
+            var nextPageTop = ReadViewportScrollOffset("scrollY");
+            const double nextOffsetLeft = 0d;
+            const double nextOffsetTop = 0d;
+
+            bool resizeChanged =
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "width") - nextWidth) > 0.01d ||
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "height") - nextHeight) > 0.01d ||
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "scale") - nextScale) > 0.01d;
+
+            bool scrollChanged =
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "pageLeft") - nextPageLeft) > 0.01d ||
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "pageTop") - nextPageTop) > 0.01d ||
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "offsetLeft") - nextOffsetLeft) > 0.01d ||
+                Math.Abs(ReadViewportMetric(_visualViewportObject, "offsetTop") - nextOffsetTop) > 0.01d;
+
+            _visualViewportObject.Set("width", FenValue.FromNumber(nextWidth));
+            _visualViewportObject.Set("height", FenValue.FromNumber(nextHeight));
+            _visualViewportObject.Set("scale", FenValue.FromNumber(nextScale));
+            _visualViewportObject.Set("pageLeft", FenValue.FromNumber(nextPageLeft));
+            _visualViewportObject.Set("pageTop", FenValue.FromNumber(nextPageTop));
+            _visualViewportObject.Set("offsetLeft", FenValue.FromNumber(nextOffsetLeft));
+            _visualViewportObject.Set("offsetTop", FenValue.FromNumber(nextOffsetTop));
+
+            return (resizeChanged, scrollChanged);
+        }
+
+        private double ReadViewportScrollOffset(string propertyName)
+        {
+            if (_windowObject == null)
+            {
+                return 0d;
+            }
+
+            var value = _windowObject.Get(propertyName);
+            return value.IsNumber ? value.ToNumber() : 0d;
+        }
+
+        private static double ReadViewportMetric(FenObject viewport, string propertyName)
+        {
+            if (viewport == null)
+            {
+                return 0d;
+            }
+
+            var value = viewport.Get(propertyName);
+            return value.IsNumber ? value.ToNumber() : 0d;
         }
 
         private void NotifyMediaQueryChanges()
@@ -383,6 +588,258 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 listener.AsFunction()?.Invoke(new[] { evtValue }, executionContext, FenValue.FromObject(mediaQueryListObject));
+            }
+        }
+
+        private FenObject CreateMessagePortObject(MessagePortEndpoint endpoint)
+        {
+            var port = new FenObject();
+            endpoint.PortObject = port;
+
+            port.Set("onmessage", FenValue.Null);
+            port.Set("onmessageerror", FenValue.Null);
+            port.Set("start", FenValue.FromFunction(new FenFunction("start", (args, thisVal) => FenValue.Undefined)));
+            port.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
+            {
+                endpoint.Closed = true;
+                return FenValue.Undefined;
+            })));
+            port.Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
+            {
+                TraceXBootMessagePort($"MessagePort.postMessage sourceClosed={endpoint.Closed} hasTarget={endpoint.Entangled != null}");
+                EnqueueMessagePortDelivery(endpoint, args.Length > 0 ? args[0] : FenValue.Undefined);
+                return FenValue.Undefined;
+            })));
+            port.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2 &&
+                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
+                    args[1].IsFunction)
+                {
+                    endpoint.MessageListeners.Add(args[1]);
+                }
+
+                return FenValue.Undefined;
+            })));
+            port.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2 &&
+                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
+                    args[1].IsFunction)
+                {
+                    var callback = args[1].AsFunction();
+                    endpoint.MessageListeners.RemoveAll(existing =>
+                        existing.IsFunction &&
+                        existing.AsFunction() == callback);
+                }
+
+                return FenValue.Undefined;
+            })));
+            port.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) => FenValue.FromBoolean(false))));
+
+            return port;
+        }
+
+        private void EnqueueMessagePortDelivery(MessagePortEndpoint source, FenValue payload)
+        {
+            var target = source?.Entangled;
+            if (source == null || target == null || source.Closed || target.Closed)
+            {
+                TraceXBootMessagePort($"MessagePort.enqueue skipped sourceNull={source == null} targetNull={target == null} sourceClosed={source?.Closed ?? false} targetClosed={target?.Closed ?? false}");
+                return;
+            }
+
+            TraceXBootMessagePort("MessagePort.enqueue delivery");
+            EventLoop.EventLoopCoordinator.Instance.ScheduleTask(
+                () => DispatchMessagePortDelivery(target, payload),
+                EventLoop.TaskSource.Messaging,
+                "MessagePort.postMessage");
+        }
+
+        private void DispatchMessagePortDelivery(MessagePortEndpoint target, FenValue payload)
+        {
+            if (target == null || target.Closed || target.PortObject == null)
+            {
+                TraceXBootMessagePort($"MessagePort.dispatch skipped targetNull={target == null} targetClosed={target?.Closed ?? false} hasPort={target?.PortObject != null}");
+                return;
+            }
+
+            TraceXBootMessagePort("MessagePort.dispatch begin");
+            var evt = new FenObject();
+            evt.Set("type", FenValue.FromString("message"));
+            evt.Set("data", payload);
+            evt.Set("target", FenValue.FromObject(target.PortObject));
+            evt.Set("currentTarget", FenValue.FromObject(target.PortObject));
+            evt.Set("ports", FenValue.FromObject(FenObject.CreateArray()));
+
+            var evtValue = FenValue.FromObject(evt);
+            InvokeMessagePortHandler(target.PortObject.Get("onmessage", _context), evtValue, target.PortObject);
+
+            foreach (var listener in target.MessageListeners.ToArray())
+            {
+                InvokeMessagePortHandler(listener, evtValue, target.PortObject);
+            }
+        }
+
+        private void InvokeMessagePortHandler(FenValue candidate, FenValue evtValue, FenObject portObject)
+        {
+            try
+            {
+                if (candidate.IsFunction)
+                {
+                    TraceXBootMessagePort("MessagePort.dispatch invoke onmessage");
+                    candidate.AsFunction()?.Invoke(new[] { evtValue }, _context, FenValue.FromObject(portObject));
+                    return;
+                }
+
+                if (!candidate.IsObject)
+                {
+                    return;
+                }
+
+                var handleEvent = candidate.AsObject()?.Get("handleEvent", _context) ?? FenValue.Undefined;
+                if (handleEvent.IsFunction)
+                {
+                    TraceXBootMessagePort("MessagePort.dispatch invoke handleEvent");
+                    handleEvent.AsFunction()?.Invoke(new[] { evtValue }, _context, candidate);
+                }
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[FenRuntime] MessagePort handler error: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        private FenObject CreateBroadcastChannelObject(BroadcastChannelEndpoint endpoint)
+        {
+            var channel = new FenObject();
+            endpoint.ChannelObject = channel;
+
+            channel.InternalClass = "BroadcastChannel";
+            channel.Set("name", FenValue.FromString(endpoint.Name ?? string.Empty));
+            channel.Set("onmessage", FenValue.Null);
+            channel.Set("onmessageerror", FenValue.Null);
+            channel.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
+            {
+                CloseBroadcastChannel(endpoint);
+                return FenValue.Undefined;
+            })));
+            channel.Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
+            {
+                EnqueueBroadcastChannelDelivery(endpoint, args.Length > 0 ? args[0] : FenValue.Undefined);
+                return FenValue.Undefined;
+            })));
+            channel.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2 &&
+                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
+                    args[1].IsFunction)
+                {
+                    endpoint.MessageListeners.Add(args[1]);
+                }
+
+                return FenValue.Undefined;
+            })));
+            channel.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
+            {
+                if (args.Length >= 2 &&
+                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
+                    args[1].IsFunction)
+                {
+                    var callback = args[1].AsFunction();
+                    endpoint.MessageListeners.RemoveAll(existing =>
+                        existing.IsFunction &&
+                        existing.AsFunction() == callback);
+                }
+
+                return FenValue.Undefined;
+            })));
+            channel.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) => FenValue.FromBoolean(false))));
+
+            lock (_broadcastChannelLock)
+            {
+                if (!_broadcastChannels.TryGetValue(endpoint.Name ?? string.Empty, out var registrations))
+                {
+                    registrations = new List<BroadcastChannelEndpoint>();
+                    _broadcastChannels[endpoint.Name ?? string.Empty] = registrations;
+                }
+
+                registrations.Add(endpoint);
+            }
+
+            return channel;
+        }
+
+        private void EnqueueBroadcastChannelDelivery(BroadcastChannelEndpoint source, FenValue payload)
+        {
+            if (source == null || source.Closed)
+            {
+                return;
+            }
+
+            List<BroadcastChannelEndpoint> targets;
+            lock (_broadcastChannelLock)
+            {
+                if (!_broadcastChannels.TryGetValue(source.Name ?? string.Empty, out var registrations) || registrations.Count == 0)
+                {
+                    return;
+                }
+
+                targets = registrations
+                    .Where(endpoint => endpoint != null && !ReferenceEquals(endpoint, source) && !endpoint.Closed)
+                    .ToList();
+            }
+
+            foreach (var target in targets)
+            {
+                EventLoop.EventLoopCoordinator.Instance.ScheduleTask(
+                    () => DispatchBroadcastChannelDelivery(target, payload),
+                    EventLoop.TaskSource.Messaging,
+                    "BroadcastChannel.postMessage");
+            }
+        }
+
+        private void DispatchBroadcastChannelDelivery(BroadcastChannelEndpoint target, FenValue payload)
+        {
+            if (target == null || target.Closed || target.ChannelObject == null)
+            {
+                return;
+            }
+
+            var evt = new FenObject();
+            evt.Set("type", FenValue.FromString("message"));
+            evt.Set("data", payload);
+            evt.Set("target", FenValue.FromObject(target.ChannelObject));
+            evt.Set("currentTarget", FenValue.FromObject(target.ChannelObject));
+
+            var evtValue = FenValue.FromObject(evt);
+            InvokeMessagePortHandler(target.ChannelObject.Get("onmessage", _context), evtValue, target.ChannelObject);
+
+            foreach (var listener in target.MessageListeners.ToArray())
+            {
+                InvokeMessagePortHandler(listener, evtValue, target.ChannelObject);
+            }
+        }
+
+        private void CloseBroadcastChannel(BroadcastChannelEndpoint endpoint)
+        {
+            if (endpoint == null || endpoint.Closed)
+            {
+                return;
+            }
+
+            endpoint.Closed = true;
+
+            lock (_broadcastChannelLock)
+            {
+                if (_broadcastChannels.TryGetValue(endpoint.Name ?? string.Empty, out var registrations))
+                {
+                    registrations.Remove(endpoint);
+                    if (registrations.Count == 0)
+                    {
+                        _broadcastChannels.Remove(endpoint.Name ?? string.Empty);
+                    }
+                }
             }
         }
 
@@ -5629,10 +6086,10 @@ namespace FenBrowser.FenEngine.Core
             // Object.hasOwn(obj, prop) - ES2022
             objectConstructor.Set("hasOwn", FenValue.FromFunction(new FenFunction("hasOwn", (args, thisVal) =>
             {
-                if (args.Length < 2 || !args[0].IsObject) return FenValue.FromBoolean(false);
+                if (args.Length < 2 || (!args[0].IsObject && !args[0].IsFunction)) return FenValue.FromBoolean(false);
                 var obj = args[0].AsObject();
                 var prop = ToPropertyKeyString(args[1]);
-                return FenValue.FromBoolean(obj.Keys()?.Contains(prop) ?? false);
+                return FenValue.FromBoolean(obj.GetOwnPropertyDescriptor(prop).HasValue);
             })));
 
             // Object.groupBy(items, callback) - ES2024
@@ -6975,17 +7432,22 @@ namespace FenBrowser.FenEngine.Core
                         return FenValue.Undefined;
                     }
 
+                    var effectiveThis = thisVal;
+                    if (!effectiveThis.IsObject || effectiveThis.IsNull || effectiveThis.IsUndefined)
+                    {
+                        effectiveThis = FenValue.FromObject(window);
+                    }
 
-                    if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
+                    if (effectiveThis.IsObject && effectiveThis.AsObject() is ElementWrapper elementTarget)
                     {
                         FenBrowser.FenEngine.DOM.EventTarget.Registry.Add(elementTarget.Element, eventType, callback, capture, once, passive, signal);
                         return FenValue.Undefined;
                     }
 
                     // Generic EventTarget instance listeners
-                    if (thisVal.IsObject)
+                    if (effectiveThis.IsObject)
                     {
-                        var targetObj = thisVal.AsObject();
+                        var targetObj = effectiveThis.AsObject();
                         var listenersVal = targetObj.Get("__fen_listeners__");
                         var listenersObj = listenersVal.IsObject ? listenersVal.AsObject() as FenObject : null;
                         if (listenersObj == null)
@@ -7065,16 +7527,21 @@ namespace FenBrowser.FenEngine.Core
                         capture = args[2].ToBoolean();
                     }
 
+                    var effectiveThis = thisVal;
+                    if (!effectiveThis.IsObject || effectiveThis.IsNull || effectiveThis.IsUndefined)
+                    {
+                        effectiveThis = FenValue.FromObject(window);
+                    }
 
-                    if (thisVal.IsObject && thisVal.AsObject() is ElementWrapper elementTarget)
+                    if (effectiveThis.IsObject && effectiveThis.AsObject() is ElementWrapper elementTarget)
                     {
                         FenBrowser.FenEngine.DOM.EventTarget.Registry.Remove(elementTarget.Element, eventType, callback, capture);
                         return FenValue.Undefined;
                     }
 
-                    if (thisVal.IsObject)
+                    if (effectiveThis.IsObject)
                     {
-                        var targetObj = thisVal.AsObject();
+                        var targetObj = effectiveThis.AsObject();
                         var listenersVal = targetObj.Get("__fen_listeners__");
                         if (listenersVal.IsObject)
                         {
@@ -7126,7 +7593,7 @@ namespace FenBrowser.FenEngine.Core
             var dispatchEventFunc = FenValue.FromFunction(new FenFunction("dispatchEvent",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    if (args.Length == 0 || (!args[0].IsObject && !args[0].IsFunction))
+                    if (args.Length == 0 || !args[0].IsObject || args[0].IsNull || args[0].IsUndefined)
                     {
                         throw new FenTypeError("TypeError: Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
                     }
@@ -7344,6 +7811,9 @@ namespace FenBrowser.FenEngine.Core
 
             // Window extends EventTarget: methods are inherited, not own properties.
             window.SetPrototype(eventTargetPrototype);
+            _visualViewportObject = CreateVisualViewport(defaultSurface.Viewport, eventTargetPrototype);
+            window.Set("visualViewport", FenValue.FromObject(_visualViewportObject));
+            SetGlobal("visualViewport", FenValue.FromObject(_visualViewportObject));
 
             // window.open (popup gate + same-window fallback)
             HostApiSurfaceCatalog.TraceUsage("window.open");
@@ -7372,11 +7842,34 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("window", FenValue.FromObject(window));
             ApplyBrowserSurface(defaultSurface);
             // Bridge DOM EventTarget static dispatch to FenRuntime top-level listener storage.
-            FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = _ => window;
-            FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = _ =>
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveWindowTarget = sourceElement =>
             {
-                var d = GetGlobal("document");
-                return d.IsObject ? d.AsObject() : null;
+                var globalDocument = GetGlobal("document").AsObject() as DocumentWrapper;
+                var sourceDocument = sourceElement?.OwnerDocument;
+                if (sourceDocument != null && globalDocument != null && ReferenceEquals(globalDocument.Node, sourceDocument))
+                {
+                    return window;
+                }
+
+                return null;
+            };
+            FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = sourceElement =>
+            {
+                var globalDocument = GetGlobal("document").AsObject() as DocumentWrapper;
+                var sourceDocument = sourceElement?.OwnerDocument;
+                if (sourceDocument != null && globalDocument != null && ReferenceEquals(globalDocument.Node, sourceDocument))
+                {
+                    return globalDocument;
+                }
+
+                if (sourceDocument == null)
+                {
+                    var globalDocumentValue = GetGlobal("document");
+                    return globalDocumentValue.IsObject ? globalDocumentValue.AsObject() : null;
+                }
+
+                var wrappedDocument = DomWrapperFactory.Wrap(sourceDocument, _context);
+                return wrappedDocument.IsObject ? wrappedDocument.AsObject() : null;
             };
             FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = (targetObj, domEvt, execCtx, capturePhase, atTargetPhase) =>
             {
@@ -7451,12 +7944,13 @@ namespace FenBrowser.FenEngine.Core
 
                 if (!capturePhase && !domEvt.ImmediatePropagationStopped)
                 {
-                    var onHandler = target.Get("on" + domEvt.Type);
+                    var handlerContext = execCtx ?? _context;
+                    var onHandler = target.Get("on" + domEvt.Type, handlerContext);
                     if (onHandler.IsFunction)
                     {
                         var thisArg = FenValue.FromObject(target);
-                        _context.ThisBinding = thisArg;
-                        var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(domEvt) }, _context, thisArg);
+                        handlerContext.ThisBinding = thisArg;
+                        var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(domEvt) }, handlerContext, thisArg);
                         if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
                         {
                             domEvt.PreventDefault();
@@ -7493,8 +7987,23 @@ namespace FenBrowser.FenEngine.Core
             SetGlobal("dispatchEvent", dispatchEventFunc);
             SetGlobal("open", windowOpenFunc);
             // Minimal WPT test_driver shim fallback.
+            // In headless WPT runs we do not have a full input synthesis stack,
+            // so route trusted click requests through the element's click() DOM API.
             var testDriverObj = new FenObject();
-            testDriverObj.Set("click", FenValue.FromFunction(new FenFunction("click", (tdArgs, tdThis) => FenValue.FromObject(JsPromise.Resolve(FenValue.Undefined, _context)))));
+            testDriverObj.Set("click", FenValue.FromFunction(new FenFunction("click", (tdArgs, tdThis) =>
+            {
+                if (tdArgs.Length > 0 && tdArgs[0].IsObject)
+                {
+                    var target = tdArgs[0].AsObject();
+                    var clickFn = target != null ? target.Get("click") : FenValue.Undefined;
+                    if (clickFn.IsFunction)
+                    {
+                        clickFn.AsFunction().Invoke(Array.Empty<FenValue>(), _context, tdArgs[0]);
+                    }
+                }
+
+                return FenValue.FromObject(JsPromise.Resolve(FenValue.Undefined, _context));
+            })));
             var testDriverVal = FenValue.FromObject(testDriverObj);
             SetGlobal("test_driver", testDriverVal);
             window.Set("test_driver", testDriverVal);
@@ -7930,7 +8439,7 @@ namespace FenBrowser.FenEngine.Core
                 return value.IsUndefined ? fallback : value;
             }
 
-            FenValue DefineEventSubclass(string name, FenObject parentPrototype, Action<FenBrowser.FenEngine.DOM.DomEvent, FenValue[]> initializer = null, Action<FenObject> prototypeInitializer = null)
+            FenValue DefineEventSubclass(string name, FenObject parentPrototype, Action<FenBrowser.FenEngine.DOM.DomEvent, FenValue[]> initializer = null, Action<FenObject> prototypeInitializer = null, Func<string, bool, bool, FenBrowser.FenEngine.DOM.DomEvent> eventFactory = null)
             {
                 var subProto = new FenObject();
                 subProto.SetPrototype(parentPrototype);
@@ -7948,7 +8457,9 @@ namespace FenBrowser.FenEngine.Core
                     var subCancelable = ReadInitBool(ctorArgs, "cancelable");
                     var subComposed = ReadInitBool(ctorArgs, "composed");
 
-                    var subEvt = new FenBrowser.FenEngine.DOM.DomEvent(subType, subBubbles, subCancelable, subComposed, _context);
+                    var subEvt = eventFactory != null
+                        ? eventFactory(subType, subBubbles, subCancelable)
+                        : new FenBrowser.FenEngine.DOM.DomEvent(subType, subBubbles, subCancelable, subComposed, _context);
                     subEvt.SetPrototype(subProto);
                     initializer?.Invoke(subEvt, ctorArgs);
                     return FenValue.FromObject(subEvt);
@@ -7972,7 +8483,7 @@ namespace FenBrowser.FenEngine.Core
                 evt.Set("view", viewValue.IsUndefined ? FenValue.Null : viewValue);
                 evt.Set("detail", FenValue.FromNumber(ReadInitNumber(ctorArgs, "detail")));
                 evt.Set("which", FenValue.FromNumber(0));
-            });
+            }, eventFactory: (subType, subBubbles, subCancelable) => new FenBrowser.FenEngine.DOM.LegacyUIEvent(subType, subBubbles, subCancelable, _context));
             var uiEventPrototype = uiEventCtor.AsFunction().Prototype;
 
             FenValue ModifierStateGetter(string propName) => FenValue.FromFunction(new FenFunction("getModifierState", (modifierArgs, modifierThis) =>
@@ -8026,7 +8537,7 @@ namespace FenBrowser.FenEngine.Core
             }, subProto =>
             {
                 subProto.SetBuiltin("getModifierState", ModifierStateGetter("mouse"));
-            });
+            }, eventFactory: (subType, subBubbles, subCancelable) => new FenBrowser.FenEngine.DOM.LegacyMouseEvent(subType, subBubbles, subCancelable, _context));
             var mouseEventPrototype = mouseEventCtor.AsFunction().Prototype;
 
             var keyboardEventCtor = DefineEventSubclass("KeyboardEvent", uiEventPrototype, (evt, ctorArgs) =>
@@ -8055,7 +8566,7 @@ namespace FenBrowser.FenEngine.Core
             }, subProto =>
             {
                 subProto.SetBuiltin("getModifierState", ModifierStateGetter("keyboard"));
-            });
+            }, eventFactory: (subType, subBubbles, subCancelable) => new FenBrowser.FenEngine.DOM.LegacyKeyboardEvent(subType, subBubbles, subCancelable, _context));
 
             var gamepadEventCtor = DefineEventSubclass("GamepadEvent", eventPrototype);
             var beforeUnloadEventCtor = DefineEventSubclass("BeforeUnloadEvent", eventPrototype, (evt, ctorArgs) =>
@@ -8097,7 +8608,14 @@ namespace FenBrowser.FenEngine.Core
                 evt.Set("view", viewValue.IsUndefined ? FenValue.Null : viewValue);
                 evt.Set("detail", FenValue.FromNumber(ReadInitNumber(ctorArgs, "detail")));
                 evt.Set("data", FenValue.FromString(ReadInitString(ctorArgs, "data")));
-            });
+            }, eventFactory: (subType, subBubbles, subCancelable) => new FenBrowser.FenEngine.DOM.LegacyCompositionEvent(subType, subBubbles, subCancelable, _context));
+            var deviceMotionEventCtor = DefineEventSubclass("DeviceMotionEvent", eventPrototype);
+            var deviceOrientationEventCtor = DefineEventSubclass("DeviceOrientationEvent", eventPrototype);
+            var dragEventCtor = DefineEventSubclass("DragEvent", mouseEventPrototype);
+            var hashChangeEventCtor = DefineEventSubclass("HashChangeEvent", eventPrototype);
+            var messageEventCtor = DefineEventSubclass("MessageEvent", eventPrototype);
+            var storageEventCtor = DefineEventSubclass("StorageEvent", eventPrototype);
+            var textEventCtor = DefineEventSubclass("TextEvent", uiEventPrototype);
             var pointerEventCtor = DefineEventSubclass("PointerEvent", mouseEventPrototype, (evt, ctorArgs) =>
             {
                 var viewValue = ReadInitAny(ctorArgs, "view", FenValue.Null);
@@ -8355,6 +8873,19 @@ namespace FenBrowser.FenEngine.Core
 
             // Provide minimal constructor interfaces required by baseline DOM WPT files.
             var nodePrototype = new FenObject();
+            nodePrototype.InternalClass = "NodePrototype";
+            nodePrototype.Set("appendChild", FenValue.FromFunction(CreatePrototypeForwarder("appendChild", "appendChild")));
+            nodePrototype.Set("append", FenValue.FromFunction(CreatePrototypeForwarder("append", "append")));
+            nodePrototype.Set("removeChild", FenValue.FromFunction(CreatePrototypeForwarder("removeChild", "removeChild")));
+            nodePrototype.Set("remove", FenValue.FromFunction(CreatePrototypeForwarder("remove", "remove")));
+            nodePrototype.Set("replaceChild", FenValue.FromFunction(CreatePrototypeForwarder("replaceChild", "replaceChild")));
+            nodePrototype.Set("insertBefore", FenValue.FromFunction(CreatePrototypeForwarder("insertBefore", "insertBefore")));
+            nodePrototype.Set("cloneNode", FenValue.FromFunction(CreatePrototypeForwarder("cloneNode", "cloneNode")));
+            nodePrototype.Set("hasChildNodes", FenValue.FromFunction(CreatePrototypeForwarder("hasChildNodes", "hasChildNodes")));
+            nodePrototype.Set("getRootNode", FenValue.FromFunction(CreatePrototypeForwarder("getRootNode", "getRootNode")));
+            nodePrototype.Set("addEventListener", FenValue.FromFunction(CreatePrototypeForwarder("addEventListener", "addEventListener")));
+            nodePrototype.Set("removeEventListener", FenValue.FromFunction(CreatePrototypeForwarder("removeEventListener", "removeEventListener")));
+            nodePrototype.Set("dispatchEvent", FenValue.FromFunction(CreatePrototypeForwarder("dispatchEvent", "dispatchEvent")));
             var nodeCtorFn = new FenFunction("Node", (FenValue[] args, FenValue thisVal) => FenValue.FromObject(new FenObject()));
             nodeCtorFn.Prototype = nodePrototype;
             nodeCtorFn.Set("prototype", FenValue.FromObject(nodePrototype));
@@ -8475,12 +9006,23 @@ namespace FenBrowser.FenEngine.Core
             documentPrototype.Set("getElementById", FenValue.FromFunction(CreatePrototypeForwarder("getElementById", "getElementById")));
             documentPrototype.Set("createElement", FenValue.FromFunction(CreatePrototypeForwarder("createElement", "createElement")));
             documentPrototype.Set("createElementNS", FenValue.FromFunction(CreatePrototypeForwarder("createElementNS", "createElementNS")));
+            documentPrototype.Set("createDocumentFragment", FenValue.FromFunction(CreatePrototypeForwarder("createDocumentFragment", "createDocumentFragment")));
             documentPrototype.Set("createEvent", FenValue.FromFunction(CreatePrototypeForwarder("createEvent", "createEvent")));
             documentPrototype.Set("createRange", FenValue.FromFunction(CreatePrototypeForwarder("createRange", "createRange")));
+            documentPrototype.Set("evaluate", FenValue.FromFunction(CreatePrototypeForwarder("evaluate", "evaluate")));
             documentPrototype.Set("getElementsByClassName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByClassName", "getElementsByClassName")));
             documentPrototype.Set("getElementsByTagName", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagName", "getElementsByTagName")));
             documentPrototype.Set("getElementsByTagNameNS", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagNameNS", "getElementsByTagNameNS")));
-            var documentCtorVal = CreateInterfaceConstructor("Document", documentPrototype);
+            var documentCtorVal = CreateInterfaceConstructor("Document", documentPrototype, (args, thisVal) =>
+            {
+                var wrapperVal = DomWrapperFactory.Wrap(new Document(), _context);
+                if (wrapperVal.IsObject)
+                {
+                    wrapperVal.AsObject().SetPrototype(documentPrototype);
+                }
+
+                return wrapperVal;
+            });
             _domDocumentPrototype = documentPrototype;
             SetGlobal("Document", documentCtorVal);
             DefineWindowInterface(window, "Document", documentCtorVal);
@@ -8531,10 +9073,17 @@ namespace FenBrowser.FenEngine.Core
             DefineWindowInterface(window, "KeyboardEvent", keyboardEventCtor);
             DefineWindowInterface(window, "GamepadEvent", gamepadEventCtor);
             DefineWindowInterface(window, "BeforeUnloadEvent", beforeUnloadEventCtor);
+            DefineWindowInterface(window, "DeviceMotionEvent", deviceMotionEventCtor);
+            DefineWindowInterface(window, "DeviceOrientationEvent", deviceOrientationEventCtor);
+            DefineWindowInterface(window, "DragEvent", dragEventCtor);
             DefineWindowInterface(window, "FocusEvent", focusEventCtor);
+            DefineWindowInterface(window, "HashChangeEvent", hashChangeEventCtor);
             DefineWindowInterface(window, "InputEvent", inputEventCtor);
+            DefineWindowInterface(window, "MessageEvent", messageEventCtor);
             DefineWindowInterface(window, "CompositionEvent", compositionEventCtor);
             DefineWindowInterface(window, "PointerEvent", pointerEventCtor);
+            DefineWindowInterface(window, "StorageEvent", storageEventCtor);
+            DefineWindowInterface(window, "TextEvent", textEventCtor);
             DefineWindowInterface(window, "WheelEvent", wheelEventCtor);
             DefineWindowInterface(window, "TouchEvent", touchEventCtor);
             DefineWindowInterface(window, "AnimationEvent", animationEventCtor);
@@ -10267,36 +10816,150 @@ namespace FenBrowser.FenEngine.Core
             window.Set("matchMedia", matchMediaFn);
 
             // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ requestIdleCallback / cancelIdleCallback ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
+            var messageChannelCtor = FenValue.FromFunction(new FenFunction("MessageChannel", (args, thisVal) =>
+            {
+                HostApiSurfaceCatalog.TraceUsage("window.MessageChannel");
+                TraceXBootMessagePort("MessageChannel.construct begin");
+
+                var port1Endpoint = new MessagePortEndpoint();
+                var port2Endpoint = new MessagePortEndpoint();
+                port1Endpoint.Entangled = port2Endpoint;
+                port2Endpoint.Entangled = port1Endpoint;
+                TraceXBootMessagePort("MessageChannel.construct endpoints-linked");
+
+                var channel = (thisVal.IsObject || thisVal.IsFunction)
+                    ? thisVal.AsObject() as FenObject
+                    : null;
+                channel ??= new FenObject();
+                channel.InternalClass = "MessageChannel";
+                var port1Object = CreateMessagePortObject(port1Endpoint);
+                TraceXBootMessagePort("MessageChannel.construct port1-created");
+                channel.Set("port1", FenValue.FromObject(port1Object));
+                TraceXBootMessagePort("MessageChannel.construct port1-attached");
+                var port2Object = CreateMessagePortObject(port2Endpoint);
+                TraceXBootMessagePort("MessageChannel.construct port2-created");
+                channel.Set("port2", FenValue.FromObject(port2Object));
+                TraceXBootMessagePort("MessageChannel.construct port2-attached");
+                return FenValue.FromObject(channel);
+            }));
+            var messagePortCtor = FenValue.FromFunction(new FenFunction("MessagePort", (args, thisVal) =>
+            {
+                throw new FenTypeError("TypeError: Illegal constructor");
+            }));
+            var broadcastChannelCtor = FenValue.FromFunction(new FenFunction("BroadcastChannel", (args, thisVal) =>
+            {
+                HostApiSurfaceCatalog.TraceUsage("window.BroadcastChannel");
+
+                var name = args.Length > 0 && !args[0].IsUndefined && !args[0].IsNull
+                    ? args[0].ToString()
+                    : string.Empty;
+                var endpoint = new BroadcastChannelEndpoint
+                {
+                    Name = name
+                };
+
+                return FenValue.FromObject(CreateBroadcastChannelObject(endpoint));
+            }));
+            SetGlobal("MessageChannel", messageChannelCtor);
+            SetGlobal("MessagePort", messagePortCtor);
+            SetGlobal("BroadcastChannel", broadcastChannelCtor);
+            window.Set("MessageChannel", messageChannelCtor);
+            window.Set("MessagePort", messagePortCtor);
+            window.Set("BroadcastChannel", broadcastChannelCtor);
+
             HostApiSurfaceCatalog.TraceUsage("window.requestIdleCallback");
             SetGlobal("requestIdleCallback", FenValue.FromFunction(new FenFunction("requestIdleCallback",
                 (args, thisVal) =>
                 {
-                    if (args.Length > 0 && args[0].IsFunction)
+                    if (args.Length == 0 || !args[0].IsFunction)
                     {
-                        var cb = args[0].AsFunction();
-                        // Execute via event loop task (idle = next available slot)
-                        EventLoop.EventLoopCoordinator.Instance.ScheduleTask(() =>
-                        {
-                            var deadline = new FenObject();
-                            deadline.Set("didTimeout", FenValue.FromBoolean(false));
-                            var idleBudgetMs = Math.Max(1d, Math.Min(50d, (_browserSurface?.Viewport?.WindowHeight ?? 50d) / 20d));
-                            var callbackStarted = DateTime.UtcNow;
-                            deadline.Set("timeRemaining",
-                                FenValue.FromFunction(new FenFunction("timeRemaining",
-                                    (a, t) =>
-                                    {
-                                        var elapsed = (DateTime.UtcNow - callbackStarted).TotalMilliseconds;
-                                        return FenValue.FromNumber(Math.Max(0d, idleBudgetMs - elapsed));
-                                    })));
-                            cb?.Invoke(new FenValue[] { FenValue.FromObject(deadline) }, _context);
-                        }, EventLoop.TaskSource.Other, "requestIdleCallback");
-                        return FenValue.FromNumber(1);
+                        return FenValue.FromNumber(0);
                     }
 
-                    return FenValue.FromNumber(0);
+                    var callback = args[0].AsFunction();
+                    var timeoutMs = -1;
+                    if (args.Length > 1 && args[1].IsObject)
+                    {
+                        var options = args[1].AsObject();
+                        var timeoutValue = options.Get("timeout");
+                        if (!timeoutValue.IsUndefined && !timeoutValue.IsNull)
+                        {
+                            timeoutMs = Math.Max(0, (int)timeoutValue.ToNumber());
+                        }
+                    }
+
+                    int id;
+                    lock (_timerLock)
+                    {
+                        id = _timerIdCounter++;
+                    }
+
+                    var cts = new CancellationTokenSource();
+                    lock (_timerLock)
+                    {
+                        _activeTimers[id] = cts;
+                    }
+
+                    var scheduledAt = DateTime.UtcNow;
+                    Action idleAction = () =>
+                    {
+                        if (cts.IsCancellationRequested)
+                        {
+                            return;
+                        }
+
+                        lock (_timerLock)
+                        {
+                            _activeTimers.Remove(id);
+                        }
+
+                        var callbackStarted = DateTime.UtcNow;
+                        var didTimeout = timeoutMs >= 0 &&
+                                         (callbackStarted - scheduledAt).TotalMilliseconds >= timeoutMs;
+                        var idleBudgetMs = Math.Max(1d, Math.Min(50d, (_browserSurface?.Viewport?.WindowHeight ?? 50d) / 20d));
+
+                        var deadline = new FenObject();
+                        deadline.Set("didTimeout", FenValue.FromBoolean(didTimeout));
+                        deadline.Set("timeRemaining",
+                            FenValue.FromFunction(new FenFunction("timeRemaining",
+                                (a, t) =>
+                                {
+                                    var elapsed = (DateTime.UtcNow - callbackStarted).TotalMilliseconds;
+                                    return FenValue.FromNumber(Math.Max(0d, idleBudgetMs - elapsed));
+                                })));
+
+                        try
+                        {
+                            _context.ThisBinding = FenValue.Undefined;
+                            callback.Invoke(new[] { FenValue.FromObject(deadline) }, _context);
+                        }
+                        catch (Exception ex)
+                        {
+                            try
+                            {
+                                FenLogger.Error($"[IdleCallback Error] {ex.Message}", LogCategory.JavaScript, ex);
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    };
+
+                    // Mirror the browser fallback path used by many frameworks: queue on the timer scheduler.
+                    _context.ScheduleCallback(idleAction, 1);
+                    return FenValue.FromNumber(id);
                 })));
             SetGlobal("cancelIdleCallback",
-                FenValue.FromFunction(new FenFunction("cancelIdleCallback", (args, thisVal) => FenValue.Undefined)));
+                FenValue.FromFunction(new FenFunction("cancelIdleCallback",
+                    (args, thisVal) =>
+                    {
+                        if (args.Length > 0)
+                        {
+                            CancelTimer((int)args[0].ToNumber());
+                        }
+
+                        return FenValue.Undefined;
+                    })));
             window.Set("requestIdleCallback", (FenValue)GetGlobal("requestIdleCallback"));
             window.Set("cancelIdleCallback", (FenValue)GetGlobal("cancelIdleCallback"));
 
@@ -11793,6 +12456,54 @@ namespace FenBrowser.FenEngine.Core
                                     result.Set("length", FenValue.FromNumber(0));
                                 }
                                 return FenValue.FromObject(result);
+                            })));
+                    }
+
+                    if (intlFallback.Get("Locale").IsUndefined)
+                    {
+                        intlFallback.Set("Locale", FenValue.FromFunction(new FenFunction("Locale",
+                            (FenValue[] args, FenValue thisVal) =>
+                            {
+                                var descriptor = ParseIntlLocaleDescriptor(
+                                    args.Length > 0 && !args[0].IsUndefined && !args[0].IsNull
+                                        ? args[0].ToString()
+                                        : null);
+
+                                var localeObject = (thisVal.IsObject || thisVal.IsFunction)
+                                    ? thisVal.AsObject() as FenObject
+                                    : null;
+                                localeObject ??= new FenObject();
+                                localeObject.InternalClass = "Intl.Locale";
+
+                                localeObject.Set("baseName", FenValue.FromString(descriptor.BaseName));
+                                localeObject.Set("language", FenValue.FromString(descriptor.Language));
+                                localeObject.Set("script", string.IsNullOrWhiteSpace(descriptor.Script)
+                                    ? FenValue.Undefined
+                                    : FenValue.FromString(descriptor.Script));
+                                localeObject.Set("region", string.IsNullOrWhiteSpace(descriptor.Region)
+                                    ? FenValue.Undefined
+                                    : FenValue.FromString(descriptor.Region));
+                                localeObject.Set("calendar", FenValue.Undefined);
+                                localeObject.Set("caseFirst", FenValue.Undefined);
+                                localeObject.Set("collation", FenValue.Undefined);
+                                localeObject.Set("hourCycle", FenValue.Undefined);
+                                localeObject.Set("numberingSystem", FenValue.Undefined);
+                                localeObject.Set("numeric", FenValue.Undefined);
+                                localeObject.Set("toString", FenValue.FromFunction(new FenFunction("toString",
+                                    (localeArgs, localeThis) => FenValue.FromString(descriptor.CanonicalTag))));
+                                localeObject.Set("maximize", FenValue.FromFunction(new FenFunction("maximize",
+                                    (localeArgs, localeThis) => FenValue.FromObject(CreateIntlLocaleObject(descriptor.CanonicalTag)))));
+                                localeObject.Set("minimize", FenValue.FromFunction(new FenFunction("minimize",
+                                    (localeArgs, localeThis) => FenValue.FromObject(CreateIntlLocaleObject(descriptor.CanonicalTag)))));
+                                localeObject.Set("getTextInfo", FenValue.FromFunction(new FenFunction("getTextInfo",
+                                    (localeArgs, localeThis) =>
+                                    {
+                                        var textInfo = new FenObject();
+                                        textInfo.Set("direction", FenValue.FromString(descriptor.IsRightToLeft ? "rtl" : "ltr"));
+                                        return FenValue.FromObject(textInfo);
+                                    })));
+
+                                return FenValue.FromObject(localeObject);
                             })));
                     }
                 }
@@ -15198,7 +15909,7 @@ namespace FenBrowser.FenEngine.Core
                 if (!thisVal.IsFunction) throw new FenTypeError("TypeError: Function.prototype.call called on non-callable");
                 var fn = thisVal.AsFunction();
                 var newThis = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var fnArgs = args.Length > 1 ? args.Skip(1).ToArray() : new FenValue[0];
+                var fnArgs = SliceArguments(args, 1);
                 return fn.Invoke(fnArgs, _context, newThis);
             })), null);
 
@@ -15208,16 +15919,9 @@ namespace FenBrowser.FenEngine.Core
                 if (!thisVal.IsFunction) throw new FenTypeError("TypeError: Function.prototype.apply called on non-callable");
                 var fn = thisVal.AsFunction();
                 var newThis = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var fnArgs = new FenValue[0];
-                if (args.Length > 1 && !args[1].IsUndefined && !args[1].IsNull && args[1].IsObject)
-                {
-                    var argsObj = args[1].AsObject();
-                    var len = (int)argsObj.Get("length", null).ToNumber();
-                    fnArgs = new FenValue[len];
-                    for (int i = 0; i < len; i++)
-                        fnArgs[i] = argsObj.Get(i.ToString(), null);
-                }
-
+                var fnArgs = args.Length > 1
+                    ? ToArgumentArray(args[1], _context, "Function.prototype.apply")
+                    : Array.Empty<FenValue>();
                 return fn.Invoke(fnArgs, _context, newThis);
             })), null);
 
@@ -15227,13 +15931,18 @@ namespace FenBrowser.FenEngine.Core
                 if (!thisVal.IsFunction) throw new FenTypeError("TypeError: Function.prototype.bind called on non-callable");
                 var fn = thisVal.AsFunction();
                 var boundThis = args.Length > 0 ? args[0] : FenValue.Undefined;
-                var boundArgs = args.Length > 1 ? args.Skip(1).ToArray() : new FenValue[0];
+                var boundArgs = SliceArguments(args, 1);
                 var boundFn = new FenFunction("bound", (newArgs, _) =>
                 {
-                    var allArgs = boundArgs.Concat(newArgs).ToArray();
+                    var allArgs = ConcatArguments(boundArgs, newArgs);
                     return fn.Invoke(allArgs, _context, boundThis);
                 });
                 boundFn.BoundTargetFunction = fn;
+                boundFn.BoundThisValue = boundThis;
+                boundFn.BoundArguments = boundArgs;
+                boundFn.NativeLength = Math.Max(0, (int)fn.Get("length", null).ToNumber() - boundArgs.Length);
+                boundFn.IsConstructor = fn.IsConstructor;
+                boundFn.Name = string.IsNullOrEmpty(fn.Name) ? "bound" : $"bound {fn.Name}";
                 return FenValue.FromFunction(boundFn);
             })), null);
 
@@ -15898,12 +16607,17 @@ namespace FenBrowser.FenEngine.Core
 
         private void InvokeWindowObjectListeners(string eventType, FenValue eventValue)
         {
-            if (_windowObject == null)
+            InvokeEventTargetListeners(_windowObject, eventType, eventValue);
+        }
+
+        private void InvokeEventTargetListeners(FenObject target, string eventType, FenValue eventValue)
+        {
+            if (target == null)
             {
                 return;
             }
 
-            var listenersVal = _windowObject.Get("__fen_listeners__");
+            var listenersVal = target.Get("__fen_listeners__");
             if (!listenersVal.IsObject)
             {
                 return;
@@ -15936,7 +16650,7 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 FenFunction callbackFn = null;
-                var callbackThis = FenValue.FromObject(_windowObject);
+                var callbackThis = FenValue.FromObject(target);
                 if (callback.IsFunction)
                 {
                     callbackFn = callback.AsFunction() as FenFunction;
@@ -16068,6 +16782,28 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private void DispatchVisualViewportEvent(string eventType)
+        {
+            if (_visualViewportObject == null || string.IsNullOrWhiteSpace(eventType))
+            {
+                return;
+            }
+
+            var eventObject = new FenObject { InternalClass = "Event" };
+            eventObject.Set("type", FenValue.FromString(eventType));
+            eventObject.Set("target", FenValue.FromObject(_visualViewportObject));
+            eventObject.Set("currentTarget", FenValue.FromObject(_visualViewportObject));
+            eventObject.Set("defaultPrevented", FenValue.FromBoolean(false));
+            eventObject.Set("preventDefault", FenValue.FromFunction(new FenFunction("preventDefault", (args, thisVal) =>
+            {
+                eventObject.Set("defaultPrevented", FenValue.FromBoolean(true));
+                return FenValue.Undefined;
+            })));
+
+            var eventValue = FenValue.FromObject(eventObject);
+            InvokeEventTargetListeners(_visualViewportObject, eventType, eventValue);
+        }
+
         private void ReloadWindowLocation(FenObject location)
         {
             if (location == null)
@@ -16087,6 +16823,7 @@ namespace FenBrowser.FenEngine.Core
         public void SetDom(Node root, Uri baseUri = null)
         {
             if (root == null) return;
+            var documentRoot = root as Document ?? root.OwnerDocument ?? root;
             this.BaseUri = baseUri;
             if (_historyBridge == null)
             {
@@ -16098,7 +16835,7 @@ namespace FenBrowser.FenEngine.Core
             }
             SynchronizeHistorySurface(baseUri);
 
-            var documentWrapper = new DocumentWrapper(root, _context, baseUri);
+            var documentWrapper = new DocumentWrapper(documentRoot, _context, baseUri);
             if (_domDocumentPrototype != null)
             {
                 documentWrapper.SetPrototype(_domDocumentPrototype);
@@ -16120,7 +16857,7 @@ namespace FenBrowser.FenEngine.Core
                 UpdateLocationState(locationObject, baseUri);
             }
 
-            RegisterLegacyNamedGlobals(root);
+            RegisterLegacyNamedGlobals(documentRoot);
 
             var fontLoadingBindings = FontLoadingBindings.CreateForDocument(documentWrapper, _context);
             documentWrapper.AttachFonts(fontLoadingBindings.Fonts);
@@ -16792,6 +17529,9 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
+                bool traceLargeScript = !string.IsNullOrEmpty(code) && code.Length >= 512 * 1024;
+                var executionStopwatch = traceLargeScript ? Stopwatch.StartNew() : null;
+
                 using var realmScope = EnterRealmActivationScope();
 
                 bool previousStrictMode = _context?.StrictMode ?? false;
@@ -16849,6 +17589,13 @@ namespace FenBrowser.FenEngine.Core
                         allowRecovery: false);
                     var program = parser.ParseProgram();
 
+                    if (traceLargeScript)
+                    {
+                        FenLogger.Warn(
+                            $"[FenRuntime] Large script parsed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms length={code.Length}",
+                            LogCategory.JavaScript);
+                    }
+
                     if (parser.Errors.Count > 0)
                     {
                         var errMsg = string.Join("\n", parser.Errors);
@@ -16869,6 +17616,12 @@ namespace FenBrowser.FenEngine.Core
                     {
                         var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
                         compiledBlock = compiler.Compile(program);
+                        if (traceLargeScript)
+                        {
+                            FenLogger.Warn(
+                                $"[FenRuntime] Large script compiled url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms instructions={compiledBlock?.Instructions?.Length ?? 0}",
+                                LogCategory.JavaScript);
+                        }
                     }
                     catch (Exception compileEx)
                     {
@@ -16885,6 +17638,12 @@ namespace FenBrowser.FenEngine.Core
                             : cancellationToken.CanBeCanceled
                                 ? vm.Execute(compiledBlock, _globalEnv, cancellationToken)
                                 : vm.Execute(compiledBlock, _globalEnv);
+                        if (traceLargeScript)
+                        {
+                            FenLogger.Warn(
+                                $"[FenRuntime] Large script executed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms",
+                                LogCategory.JavaScript);
+                        }
                         return bytecodeResult;
                     }
                     catch (OperationCanceledException)
@@ -16901,6 +17660,11 @@ namespace FenBrowser.FenEngine.Core
                         if (TryExtractThrownValue(vmEx, out var thrownValue))
                         {
                             return FenValue.FromThrow(thrownValue);
+                        }
+
+                        if (vmEx is FenBrowser.Core.Dom.V2.DomException domVmException)
+                        {
+                            return FenValue.FromThrow(CreateThrownDomExceptionValue(domVmException));
                         }
 
                         throw new FenTypeError($"TypeError: {vmEx.GetType().Name}: {vmEx.Message}");
@@ -16928,6 +17692,11 @@ namespace FenBrowser.FenEngine.Core
                 if (TryExtractThrownValue(ex, out var thrownValue))
                 {
                     return FenValue.FromThrow(thrownValue);
+                }
+
+                if (ex is FenBrowser.Core.Dom.V2.DomException domException)
+                {
+                    return FenValue.FromThrow(CreateThrownDomExceptionValue(domException));
                 }
 
                 if (ex is FenSyntaxError || ex is FenTypeError || ex is FenReferenceError || ex is FenRangeError)
@@ -17007,6 +17776,17 @@ namespace FenBrowser.FenEngine.Core
         private static bool TryExtractThrownValue(Exception exception, out FenValue thrownValue)
         {
             return JsThrownValueException.TryExtract(exception, out thrownValue);
+        }
+
+        private FenValue CreateThrownDomExceptionValue(FenBrowser.Core.Dom.V2.DomException exception)
+        {
+            var domExceptionObject = new FenObject();
+            domExceptionObject.Set("name", FenValue.FromString(exception.Name));
+            domExceptionObject.Set("message", FenValue.FromString(exception.Message ?? string.Empty));
+            domExceptionObject.Set("code", FenValue.FromNumber(exception.Code));
+            domExceptionObject.Set("stack", FenValue.FromString($"{exception.Name}: {exception.Message}\n    at <anonymous>"));
+            domExceptionObject.Set("Symbol(Symbol.toStringTag)", FenValue.FromString("DOMException"));
+            return FenValue.FromObject(domExceptionObject);
         }
 
         private bool IsGlobalScriptExecution()
@@ -17360,6 +18140,122 @@ namespace FenBrowser.FenEngine.Core
             orientation.Set("type", FenValue.FromString("landscape-primary"));
             orientation.Set("angle", FenValue.FromNumber(0));
             return orientation;
+        }
+
+        private FenObject CreateVisualViewport(BrowserViewportMetrics viewport, FenObject eventTargetPrototype)
+        {
+            var visualViewport = new FenObject { InternalClass = "VisualViewport" };
+            if (eventTargetPrototype != null)
+            {
+                visualViewport.SetPrototype(eventTargetPrototype);
+            }
+
+            visualViewport.Set("width", FenValue.FromNumber(viewport?.WindowWidth ?? 0d));
+            visualViewport.Set("height", FenValue.FromNumber(viewport?.WindowHeight ?? 0d));
+            visualViewport.Set("scale", FenValue.FromNumber(1));
+            visualViewport.Set("pageLeft", FenValue.FromNumber(0));
+            visualViewport.Set("pageTop", FenValue.FromNumber(0));
+            visualViewport.Set("offsetLeft", FenValue.FromNumber(0));
+            visualViewport.Set("offsetTop", FenValue.FromNumber(0));
+            visualViewport.Set("onresize", FenValue.Null);
+            visualViewport.Set("onscroll", FenValue.Null);
+            return visualViewport;
+        }
+
+        private FenObject CreateIntlLocaleObject(string localeTag)
+        {
+            var intl = GetGlobal("Intl");
+            var localeCtor = intl.IsObject ? intl.AsObject()?.Get("Locale") ?? FenValue.Undefined : FenValue.Undefined;
+            return localeCtor.IsFunction
+                ? localeCtor.AsFunction()?.Invoke(
+                    new[] { FenValue.FromString(localeTag ?? string.Empty) },
+                    _context,
+                    FenValue.Undefined).AsObject() as FenObject
+                : null;
+        }
+
+        private static IntlLocaleDescriptor ParseIntlLocaleDescriptor(string localeTag)
+        {
+            var normalized = NormalizeIntlLocaleTag(localeTag);
+            var subtags = normalized.Split(new[] { '-' }, StringSplitOptions.RemoveEmptyEntries);
+            var language = subtags.Length > 0 ? subtags[0].ToLowerInvariant() : "en";
+            var script = string.Empty;
+            var region = string.Empty;
+            var trailingSubtags = new List<string>();
+
+            for (int i = 1; i < subtags.Length; i++)
+            {
+                var subtag = subtags[i];
+                if (string.IsNullOrWhiteSpace(script) && subtag.Length == 4 && subtag.All(char.IsLetter))
+                {
+                    script = ToTitleCaseAscii(subtag);
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(region) &&
+                    ((subtag.Length == 2 && subtag.All(char.IsLetter)) ||
+                     (subtag.Length == 3 && subtag.All(char.IsDigit))))
+                {
+                    region = subtag.ToUpperInvariant();
+                    continue;
+                }
+
+                trailingSubtags.Add(subtag.ToLowerInvariant());
+            }
+
+            var baseSegments = new List<string> { language };
+            if (!string.IsNullOrWhiteSpace(script))
+            {
+                baseSegments.Add(script);
+            }
+
+            if (!string.IsNullOrWhiteSpace(region))
+            {
+                baseSegments.Add(region);
+            }
+
+            var canonicalSegments = new List<string>(baseSegments);
+            canonicalSegments.AddRange(trailingSubtags);
+
+            return new IntlLocaleDescriptor
+            {
+                CanonicalTag = string.Join("-", canonicalSegments),
+                BaseName = string.Join("-", baseSegments),
+                Language = language,
+                Script = script,
+                Region = region,
+                IsRightToLeft = s_rtlLocaleLanguages.Contains(language) || s_rtlLocaleScripts.Contains(script)
+            };
+        }
+
+        private static string NormalizeIntlLocaleTag(string localeTag)
+        {
+            if (string.IsNullOrWhiteSpace(localeTag))
+            {
+                return "en-US";
+            }
+
+            return localeTag.Trim().Replace('_', '-');
+        }
+
+        private static string ToTitleCaseAscii(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            return char.ToUpperInvariant(value[0]) + value.Substring(1).ToLowerInvariant();
+        }
+
+        private sealed class IntlLocaleDescriptor
+        {
+            public string CanonicalTag { get; set; }
+            public string BaseName { get; set; }
+            public string Language { get; set; }
+            public string Script { get; set; }
+            public string Region { get; set; }
+            public bool IsRightToLeft { get; set; }
         }
 
         // In-memory storage (Secure: not persisted, Privacy: cleared on restart)

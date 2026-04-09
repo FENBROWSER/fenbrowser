@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -21,6 +21,8 @@ namespace FenBrowser.FenEngine.Core
         // Static singleton values for undefined and null
         public static readonly FenValue Undefined = new FenValue { Type = Interfaces.ValueType.Undefined };
         public static readonly FenValue Null = new FenValue { Type = Interfaces.ValueType.Null };
+        public static readonly FenValue True = new FenValue { Type = Interfaces.ValueType.Boolean, _numberValue = 1.0 };
+        public static readonly FenValue False = new FenValue { Type = Interfaces.ValueType.Boolean, _numberValue = 0.0 };
         public static readonly FenValue Break = new FenValue { Type = Interfaces.ValueType.Break };
         public static readonly FenValue Continue = new FenValue { Type = Interfaces.ValueType.Continue };
 
