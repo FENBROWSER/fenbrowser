@@ -1715,11 +1715,14 @@ namespace FenBrowser.FenEngine.Rendering
             try 
             {
                 var scriptTask = RunDetachedAsync(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
-                var timeoutTask = Task.Delay(15000); 
+                var scriptTimeoutMs = Math.Max(
+                    15000,
+                    (int)js.RuntimeProfile.MaxExecutionTime.TotalMilliseconds * 3);
+                var timeoutTask = Task.Delay(scriptTimeoutMs); 
                 var completedTask = await Task.WhenAny(scriptTask, timeoutTask);
                 
                 if (completedTask == timeoutTask)
-                    FenLogger.Warn("[RenderAsync] Script execution timed out after 15s", LogCategory.Rendering);
+                    FenLogger.Warn($"[RenderAsync] Script execution timed out after {scriptTimeoutMs / 1000}s", LogCategory.Rendering);
                 else
                     FenLogger.Debug("[RenderAsync] Scripts Finished", LogCategory.Rendering);
             } 
