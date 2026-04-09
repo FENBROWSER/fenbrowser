@@ -319,6 +319,60 @@ namespace FenBrowser.Tests.DOM
         }
 
         [Fact]
+        public void TestDriverClick_Delegates_To_ElementClick_RuntimeSemantics()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            var button = document.CreateElement("button");
+            document.Body!.AppendChild(button);
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var elem = document.getElementsByTagName('button').item(0);
+                var clicks = 0;
+                elem.onclick = function() { clicks++; };
+                test_driver.click(elem);
+                window.__testDriverClicks = clicks;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.Equal(1, (int)window.Get("__testDriverClicks").ToNumber());
+        }
+
+        [Fact]
+        public void ShadowRootHosted_Checkable_Click_Dispatches_Input_And_Change()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            var host = document.CreateElement("div");
+            document.Body!.AppendChild(host);
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var host = document.getElementsByTagName('div').item(0);
+                var root = host.attachShadow({ mode: 'open' });
+                var input = document.createElement('input');
+                input.type = 'checkbox';
+                var inputCount = 0;
+                var changeCount = 0;
+                input.addEventListener('input', function() { inputCount++; });
+                input.addEventListener('change', function() { changeCount++; });
+                root.appendChild(input);
+                window.__shadowConnectedBeforeClick = input.isConnected;
+                input.click();
+                window.__shadowInputCount = inputCount;
+                window.__shadowChangeCount = changeCount;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.True(window.Get("__shadowConnectedBeforeClick").ToBoolean());
+            Assert.Equal(1, (int)window.Get("__shadowInputCount").ToNumber());
+            Assert.Equal(1, (int)window.Get("__shadowChangeCount").ToNumber());
+        }
+
+        [Fact]
         public void AddEventListener_WindowSignal_RemovesListenerAfterAbort()
         {
             var runtime = new FenRuntimeCore();

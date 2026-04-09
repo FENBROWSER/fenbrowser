@@ -39,6 +39,8 @@ namespace FenBrowser.FenEngine.DOM
                 throw new InvalidOperationException("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event's initialized flag is not set.");
             }
 
+            evt.BeginDispatch();
+
             // Event dispatch is a fresh JS entry point and must not inherit an expired
             // execution budget from a previous long-running script on the same page.
             if (context is FenBrowser.FenEngine.Core.ExecutionContext executionContext)
@@ -92,131 +94,160 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
-            // 1. Initialize Event
-            evt.ResetState(); // Reset path/phase if re-dispatching
-            evt.Target = target;
-            evt.IsTrusted = true; // Assumed trusted if dispatched by engine
-            evt.UpdateJsProperties(context); // Sync JS object
-
-            // 2. Build Propagation Path
-            var path = new List<Element>();
-            var current = target.ParentElement;
-            while (current != null)
+            try
             {
-                path.Add(current);
-                current = current.ParentElement;
-            }
-            // Path is currently Target -> Root. Invert for capture, use as-is for bubble (but skip target in list)
+                // 1. Initialize Event
+                evt.ResetState(); // Reset path/phase if re-dispatching
+                evt.Target = target;
+                evt.IsTrusted = true; // Assumed trusted if dispatched by engine
+                evt.UpdateJsProperties(context); // Sync JS object
 
-            // Populate event.path (composedPath)
-            evt.Path.Clear();
-            evt.Path.Add(target);
-            evt.Path.AddRange(path);
+                // 2. Build Propagation Path
+                var path = BuildPropagationPath(target, evt.Composed);
 
-            var useExternalInvoker = ExternalListenerInvoker != null && env != null;
-            var documentTarget = useExternalInvoker && ResolveDocumentTarget != null ? ResolveDocumentTarget(target) : null;
-            var windowTarget = useExternalInvoker && ResolveWindowTarget != null ? ResolveWindowTarget(target) : null;
+                // Populate event.path (composedPath)
+                evt.Path.Clear();
+                evt.Path.Add(target);
+                evt.Path.AddRange(path);
 
-            // 3. CAPTURING PHASE (Root -> Parent)
-            evt.EventPhase = DomEvent.CAPTURING_PHASE;
-            if (!evt.PropagationStopped)
-            {
-                if (useExternalInvoker)
+                var useExternalInvoker = ExternalListenerInvoker != null && env != null;
+                var documentTarget = useExternalInvoker && ResolveDocumentTarget != null ? ResolveDocumentTarget(target) : null;
+                var windowTarget = useExternalInvoker && ResolveWindowTarget != null ? ResolveWindowTarget(target) : null;
+
+                // 3. CAPTURING PHASE (Root -> Parent)
+                evt.EventPhase = DomEvent.CAPTURING_PHASE;
+                if (!evt.PropagationStopped)
                 {
-                    if (windowTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(windowTarget, evt, context, true, false); }
-                    if (!evt.PropagationStopped && documentTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(documentTarget, evt, context, true, false); }
-                }
-                else
-                {
-                    // WPT/headless path uses FenRuntime directly without JavaScriptEngine bridge.
-                    SetLegacyEventForTopLevel(); InvokeFenRuntimeTopLevelListeners(context, evt, capturePhase: true);
-                }
-            }
-
-            for (int i = path.Count - 1; i >= 0; i--)
-            {
-                if (evt.PropagationStopped) break;
-                var ancestor = path[i];
-                evt.CurrentTarget = ancestor;
-                evt.UpdateJsProperties(context);
-                SetLegacyEventForElement(ancestor); InvokeListeners(ancestor, evt, context, true);
-                if (!evt.PropagationStopped && useExternalInvoker)
-                {
-                    SetLegacyEventForElement(ancestor); ExternalListenerInvoker(ancestor, evt, context, true, false);
-                }
-            }
-
-            // 4. AT TARGET PHASE
-            if (!evt.PropagationStopped)
-            {
-                evt.EventPhase = DomEvent.AT_TARGET;
-                evt.CurrentTarget = target;
-                evt.UpdateJsProperties(context);
-                // Spec: "Any event listeners registered on the eventTarget... are triggered."
-                // In practice, browsers usually fire capture listeners then bubble listeners (or insertion order).
-                // We will fire Capture first, then Bubble.
-                SetLegacyEventForElement(target); InvokeListeners(target, evt, context, true);  // Capture listeners at target
-                if (!evt.PropagationStopped && useExternalInvoker)
-                {
-                    SetLegacyEventForElement(target); ExternalListenerInvoker(target, evt, context, true, true);
+                    if (useExternalInvoker)
+                    {
+                        if (windowTarget != null)
+                        {
+                            SetLegacyEventForTopLevel();
+                            ExternalListenerInvoker(windowTarget, evt, context, true, false);
+                        }
+                        if (!evt.PropagationStopped && documentTarget != null)
+                        {
+                            SetLegacyEventForTopLevel();
+                            ExternalListenerInvoker(documentTarget, evt, context, true, false);
+                        }
+                    }
+                    else
+                    {
+                        SetLegacyEventForTopLevel();
+                        InvokeFenRuntimeTopLevelListeners(context, evt, capturePhase: true);
+                    }
                 }
 
-                SetLegacyEventForElement(target); InvokeListeners(target, evt, context, false); // Bubble listeners at target
-                if (!evt.PropagationStopped && useExternalInvoker)
-                {
-                    SetLegacyEventForElement(target); ExternalListenerInvoker(target, evt, context, false, true);
-                }
-            }
-
-            // 5. BUBBLING PHASE (Parent -> Root)
-            if (evt.Bubbles && !evt.PropagationStopped)
-            {
-                evt.EventPhase = DomEvent.BUBBLING_PHASE;
-                for (int i = 0; i < path.Count; i++)
+                for (int i = path.Count - 1; i >= 0; i--)
                 {
                     if (evt.PropagationStopped) break;
                     var ancestor = path[i];
                     evt.CurrentTarget = ancestor;
                     evt.UpdateJsProperties(context);
-                    SetLegacyEventForElement(ancestor); InvokeListeners(ancestor, evt, context, false);
+                    SetLegacyEventForElement(ancestor);
+                    InvokeListeners(ancestor, evt, context, true);
                     if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        SetLegacyEventForElement(ancestor); ExternalListenerInvoker(ancestor, evt, context, false, false);
+                        SetLegacyEventForElement(ancestor);
+                        ExternalListenerInvoker(ancestor, evt, context, true, false);
                     }
                 }
 
+                // 4. AT TARGET PHASE
                 if (!evt.PropagationStopped)
                 {
-                    if (useExternalInvoker)
+                    evt.EventPhase = DomEvent.AT_TARGET;
+                    evt.CurrentTarget = target;
+                    evt.UpdateJsProperties(context);
+                    SetLegacyEventForElement(target);
+                    InvokeListeners(target, evt, context, true);
+                    if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        if (documentTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(documentTarget, evt, context, false, false); }
-                        if (!evt.PropagationStopped && windowTarget != null) { SetLegacyEventForTopLevel(); ExternalListenerInvoker(windowTarget, evt, context, false, false); }
+                        SetLegacyEventForElement(target);
+                        ExternalListenerInvoker(target, evt, context, true, true);
                     }
-                    else
+
+                    SetLegacyEventForElement(target);
+                    InvokeListeners(target, evt, context, false);
+                    if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        // WPT/headless path uses FenRuntime directly without JavaScriptEngine bridge.
-                        SetLegacyEventForTopLevel(); InvokeFenRuntimeTopLevelListeners(context, evt, capturePhase: false);
+                        SetLegacyEventForElement(target);
+                        ExternalListenerInvoker(target, evt, context, false, true);
                     }
                 }
+
+                // 5. BUBBLING PHASE (Parent -> Root)
+                if (evt.Bubbles && !evt.PropagationStopped)
+                {
+                    evt.EventPhase = DomEvent.BUBBLING_PHASE;
+                    for (int i = 0; i < path.Count; i++)
+                    {
+                        if (evt.PropagationStopped) break;
+                        var ancestor = path[i];
+                        evt.CurrentTarget = ancestor;
+                        evt.UpdateJsProperties(context);
+                        SetLegacyEventForElement(ancestor);
+                        InvokeListeners(ancestor, evt, context, false);
+                        if (!evt.PropagationStopped && useExternalInvoker)
+                        {
+                            SetLegacyEventForElement(ancestor);
+                            ExternalListenerInvoker(ancestor, evt, context, false, false);
+                        }
+                    }
+
+                    if (!evt.PropagationStopped)
+                    {
+                        if (useExternalInvoker)
+                        {
+                            if (documentTarget != null)
+                            {
+                                SetLegacyEventForTopLevel();
+                                ExternalListenerInvoker(documentTarget, evt, context, false, false);
+                            }
+                            if (!evt.PropagationStopped && windowTarget != null)
+                            {
+                                SetLegacyEventForTopLevel();
+                                ExternalListenerInvoker(windowTarget, evt, context, false, false);
+                            }
+
+                            if (!evt.PropagationStopped &&
+                                string.Equals(evt.Type, "error", StringComparison.Ordinal) &&
+                                IsInShadowTree(target) &&
+                                windowTarget is IObject windowTopLevelTarget)
+                            {
+                                SetLegacyEventForTopLevel();
+                                InvokeEventHandlerProperty(windowTopLevelTarget, FenValue.FromObject(windowTopLevelTarget), evt, context);
+                            }
+                        }
+                        else
+                        {
+                            SetLegacyEventForTopLevel();
+                            InvokeFenRuntimeTopLevelListeners(context, evt, capturePhase: false);
+                        }
+                    }
+                }
+
+                // 6. Reset/Finalize
+                evt.EventPhase = DomEvent.NONE;
+                evt.CurrentTarget = null;
+                evt.Path.Clear();
+                evt.ClearPropagationFlags();
+                evt.UpdateJsProperties(context);
+                return !evt.DefaultPrevented;
             }
-
-            // 6. Reset/Finalize (per DOM spec step 14: unset stop propagation flags)
-            evt.EventPhase = DomEvent.NONE;
-            evt.CurrentTarget = null;
-            evt.Path.Clear();
-            evt.ClearPropagationFlags(); // resets PropagationStopped/ImmediatePropagationStopped + cancelBubble JS property
-            evt.UpdateJsProperties(context);
-
-            if (windowObj != null)
+            finally
             {
-                windowObj.Set("event", previousWindowEvent, context);
-            }
-            if (env != null)
-            {
-                env.Set("event", previousGlobalEvent);
-            }
+                evt.EndDispatch();
 
-            return !evt.DefaultPrevented;
+                if (windowObj != null)
+                {
+                    windowObj.Set("event", previousWindowEvent, context);
+                }
+                if (env != null)
+                {
+                    env.Set("event", previousGlobalEvent);
+                }
+            }
         }
 
         private static bool IsInShadowTree(Element element)
@@ -230,6 +261,41 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return false;
+        }
+
+        private static List<Element> BuildPropagationPath(Element target, bool composed)
+        {
+            var path = new List<Element>();
+            for (Node current = target; current != null;)
+            {
+                current = GetPropagationParent(current, composed);
+                if (current is Element ancestor)
+                {
+                    path.Add(ancestor);
+                }
+            }
+
+            return path;
+        }
+
+        private static Node GetPropagationParent(Node node, bool composed)
+        {
+            if (node == null)
+            {
+                return null;
+            }
+
+            if (node.ParentNode != null)
+            {
+                return node.ParentNode;
+            }
+
+            if (composed && node is ShadowRoot shadowRoot)
+            {
+                return shadowRoot.Host;
+            }
+
+            return null;
         }
 
         private static void InvokeListeners(Element element, DomEvent evt, IExecutionContext context, bool isCapturePhase)
@@ -625,7 +691,8 @@ namespace FenBrowser.FenEngine.DOM
                     return;
                 }
 
-                var handlerResult = onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(evt) }, context, thisArg);
+                var handlerArgs = BuildEventHandlerArguments(targetObj, evt, context);
+                var handlerResult = onHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
                 if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
                 {
                     evt.PreventDefault();
@@ -638,6 +705,61 @@ namespace FenBrowser.FenEngine.DOM
                 FenLogger.Error($"[EventTarget] Error in handler property for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                 TryReportErrorToWindow(evt.Target, context, ex);
             }
+        }
+
+        private static FenValue[] BuildEventHandlerArguments(IObject targetObj, DomEvent evt, IExecutionContext context)
+        {
+            if (targetObj == null || evt == null)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            if (string.Equals(evt.Type, "error", StringComparison.Ordinal) && IsWindowLikeTarget(targetObj, context))
+            {
+                var message = evt.Get("message");
+                var filename = evt.Get("filename");
+                var lineno = evt.Get("lineno");
+                var colno = evt.Get("colno");
+                var error = evt.Get("error");
+
+                return new[]
+                {
+                    message.IsUndefined ? FenValue.FromString(string.Empty) : message,
+                    filename.IsUndefined ? FenValue.FromString(string.Empty) : filename,
+                    lineno.IsUndefined ? FenValue.FromNumber(0) : lineno,
+                    colno.IsUndefined ? FenValue.FromNumber(0) : colno,
+                    error.IsUndefined ? FenValue.FromObject(evt) : error
+                };
+            }
+
+            return new[] { FenValue.FromObject(evt) };
+        }
+
+        private static bool IsWindowLikeTarget(IObject targetObj, IExecutionContext context)
+        {
+            var env = context?.Environment;
+            if (env != null)
+            {
+                var windowVal = env.Get("window");
+                if (windowVal.IsObject && ReferenceEquals(windowVal.AsObject(), targetObj))
+                {
+                    return true;
+                }
+            }
+
+            try
+            {
+                var selfVal = targetObj.Get("self", context);
+                if (selfVal.IsObject && ReferenceEquals(selfVal.AsObject(), targetObj))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         private static void ApplyLegacyEventFlags(DomEvent evt)
@@ -679,6 +801,8 @@ namespace FenBrowser.FenEngine.DOM
             public Func<FenValue, FenValue[], FenValue> ExecuteFunction { get => _inner.ExecuteFunction; set => _inner.ExecuteFunction = value; }
             public IModuleLoader ModuleLoader { get => _inner.ModuleLoader; set => _inner.ModuleLoader = value; }
             public Action<MutationRecord> OnMutation { get => _inner.OnMutation; set => _inner.OnMutation = value; }
+            public Action<FenValue, FenObject> OnUnhandledRejection { get => _inner.OnUnhandledRejection; set => _inner.OnUnhandledRejection = value; }
+            public Action<FenValue, string> OnUncaughtException { get => _inner.OnUncaughtException; set => _inner.OnUncaughtException = value; }
             public string CurrentUrl { get => _inner.CurrentUrl; set => _inner.CurrentUrl = value; }
             public FenEnvironment Environment { get => _inner.Environment; set => _inner.Environment = value; }
             public FenValue NewTarget { get => _inner.NewTarget; set => _inner.NewTarget = value; }

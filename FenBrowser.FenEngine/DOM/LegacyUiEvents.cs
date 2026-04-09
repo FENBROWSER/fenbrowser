@@ -33,7 +33,7 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenTypeError("TypeError: Failed to execute 'initUIEvent': 1 argument required, but only 0 present.");
             }
 
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -45,7 +45,7 @@ namespace FenBrowser.FenEngine.DOM
             Detail = args.Length >= 5 ? CoerceInt32(args[4]) : 0;
             Initialized = true;
 
-            ResetState();
+            ResetInternalStateForInitialization();
             ReinitializeCoreProperties();
             InitializeUiProperties();
             return FenValue.Undefined;
@@ -123,7 +123,7 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenTypeError("TypeError: Failed to execute 'initMouseEvent': 1 argument required, but only 0 present.");
             }
 
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -145,7 +145,7 @@ namespace FenBrowser.FenEngine.DOM
             RelatedTarget = args.Length >= 15 && (args[14].IsObject || args[14].IsNull) ? args[14] : FenValue.Null;
             Initialized = true;
 
-            ResetState();
+            ResetInternalStateForInitialization();
             ReinitializeCoreProperties();
             InitializeUiProperties();
             InitializeMouseProperties();
@@ -190,7 +190,7 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenTypeError("TypeError: Failed to execute 'initKeyboardEvent': 1 argument required, but only 0 present.");
             }
 
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -210,7 +210,7 @@ namespace FenBrowser.FenEngine.DOM
             Locale = args.Length >= 9 ? args[8].ToString() : string.Empty;
             Initialized = true;
 
-            ResetState();
+            ResetInternalStateForInitialization();
             ReinitializeCoreProperties();
             InitializeUiProperties();
             InitializeKeyboardProperties();
@@ -243,7 +243,7 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenTypeError("TypeError: Failed to execute 'initCompositionEvent': 1 argument required, but only 0 present.");
             }
 
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -256,7 +256,7 @@ namespace FenBrowser.FenEngine.DOM
             Locale = args.Length >= 6 ? args[5].ToString() : string.Empty;
             Initialized = true;
 
-            ResetState();
+            ResetInternalStateForInitialization();
             ReinitializeCoreProperties();
             InitializeUiProperties();
             InitializeCompositionProperties();

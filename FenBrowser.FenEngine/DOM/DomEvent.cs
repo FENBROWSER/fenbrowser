@@ -62,6 +62,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool ImmediatePropagationStopped { get; private set; }
         public bool IsTrusted { get; set; }
         public bool Initialized { get; set; } = true;
+        internal bool IsDispatching { get; private set; }
         public bool ReturnValue => !DefaultPrevented;
         public bool CancelBubble => PropagationStopped;
 
@@ -70,6 +71,11 @@ namespace FenBrowser.FenEngine.DOM
         public List<Element> Path => PropagationPath;
 
         private IExecutionContext _context;
+
+        private void SetOwnProperty(string key, FenValue value, IExecutionContext context = null)
+        {
+            base.SetWithReceiver(key, value, FenValue.FromObject(this), context);
+        }
 
         /// <summary>
         /// Create a new DOM Event
@@ -248,7 +254,7 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             // Per DOM: initEvent must be ignored while dispatching.
-            if (EventPhase != NONE)
+            if (IsDispatching)
             {
                 return FenValue.Undefined;
             }
@@ -257,14 +263,11 @@ namespace FenBrowser.FenEngine.DOM
             Initialized = true;
             Bubbles = args.Length >= 2 && args[1].ToBoolean();
             Cancelable = args.Length >= 3 && args[2].ToBoolean();
-            // Preserve canceled state set before dispatch (e.g. pre-canceled synthetic events).
-            PropagationStopped = false;
-            ImmediatePropagationStopped = false;
-            CurrentTarget = null;
+            ResetInternalStateForInitialization();
             InitializeJsProperties();
             return FenValue.Undefined;
         }
-        public override void Set(string key, FenValue value, IExecutionContext context = null)
+        private bool TryHandleLegacyMutableProperty(string key, FenValue value, IExecutionContext context)
         {
             var normalized = (key ?? string.Empty).ToLowerInvariant();
             if (normalized == "returnvalue")
@@ -276,18 +279,28 @@ namespace FenBrowser.FenEngine.DOM
                     if (Cancelable)
                     {
                         DefaultPrevented = true;
-                        base.Set("defaultPrevented", FenValue.FromBoolean(true), context);
-                        base.Set("returnValue", FenValue.FromBoolean(false), context);
+                        SetOwnProperty("defaultPrevented", FenValue.FromBoolean(true), context);
+                        SetOwnProperty("returnValue", FenValue.FromBoolean(false), context);
+                    }
+                    else
+                    {
+                        SetOwnProperty("returnValue", FenValue.FromBoolean(true), context);
                     }
                     // If not cancelable, assignment has no effect.
-                    return;
-                }                // Per legacy behavior, once canceled, setting returnValue=true must not uncancel.
+                    return true;
+                }
+
+                // Per legacy behavior, once canceled, setting returnValue=true must not uncancel.
                 if (!DefaultPrevented)
                 {
-                    base.Set("defaultPrevented", FenValue.FromBoolean(false), context);
-                    base.Set("returnValue", FenValue.FromBoolean(true), context);
+                    SetOwnProperty("defaultPrevented", FenValue.FromBoolean(false), context);
+                    SetOwnProperty("returnValue", FenValue.FromBoolean(true), context);
                 }
-                return;
+                else
+                {
+                    SetOwnProperty("returnValue", FenValue.FromBoolean(false), context);
+                }
+                return true;
             }
 
             if (normalized == "cancelbubble")
@@ -297,16 +310,74 @@ namespace FenBrowser.FenEngine.DOM
                 if (stop)
                 {
                     PropagationStopped = true;
-                    base.Set("cancelBubble", FenValue.FromBoolean(true), context);
+                    SetOwnProperty("cancelBubble", FenValue.FromBoolean(true), context);
                 }
                 else if (!PropagationStopped)
                 {
-                    base.Set("cancelBubble", FenValue.FromBoolean(false), context);
+                    SetOwnProperty("cancelBubble", FenValue.FromBoolean(false), context);
                 }
+                return true;
+            }
+
+            return false;
+        }
+
+        public override void Set(string key, FenValue value, IExecutionContext context = null)
+        {
+            if (TryHandleLegacyMutableProperty(key, value, context))
+            {
                 return;
             }
 
-            base.Set(key, value, context);
+            SetOwnProperty(key, value, context);
+        }
+
+        public override void Set(string key, FenValue value, bool strict)
+        {
+            if (TryHandleLegacyMutableProperty(key, value, null))
+            {
+                return;
+            }
+
+            base.Set(key, value, strict);
+        }
+
+        public override void SetWithReceiver(string key, FenValue value, FenValue receiver, IExecutionContext context = null)
+        {
+            if (TryHandleLegacyMutableProperty(key, value, context))
+            {
+                return;
+            }
+
+            base.SetWithReceiver(key, value, receiver, context);
+        }
+
+        public override FenValue Get(string key, IExecutionContext context = null)
+        {
+            var normalized = (key ?? string.Empty).ToLowerInvariant();
+            return normalized switch
+            {
+                "cancelbubble" => FenValue.FromBoolean(PropagationStopped),
+                "returnvalue" => FenValue.FromBoolean(!DefaultPrevented),
+                "defaultprevented" => FenValue.FromBoolean(DefaultPrevented),
+                "eventphase" => FenValue.FromNumber(EventPhase),
+                "istrusted" => FenValue.FromBoolean(IsTrusted),
+                _ => base.Get(key, context)
+            };
+        }
+
+        public override FenValue GetWithReceiver(string key, FenValue receiver, IExecutionContext context = null)
+        {
+            var normalized = (key ?? string.Empty).ToLowerInvariant();
+            return normalized switch
+            {
+                "cancelbubble" => FenValue.FromBoolean(PropagationStopped),
+                "returnvalue" => FenValue.FromBoolean(!DefaultPrevented),
+                "defaultprevented" => FenValue.FromBoolean(DefaultPrevented),
+                "eventphase" => FenValue.FromNumber(EventPhase),
+                "istrusted" => FenValue.FromBoolean(IsTrusted),
+                _ => base.GetWithReceiver(key, receiver, context)
+            };
         }
         /// <summary>
         /// Reset event state for re-dispatch (not typically needed but spec-compliant)
@@ -322,11 +393,40 @@ namespace FenBrowser.FenEngine.DOM
             PropagationPath.Clear();
         }
 
+        protected void ResetInternalStateForInitialization()
+        {
+            DefaultPrevented = false;
+            PropagationStopped = false;
+            ImmediatePropagationStopped = false;
+            IsPassiveContext = false;
+            EventPhase = NONE;
+            Target = null;
+            CurrentTarget = null;
+            PropagationPath.Clear();
+        }
+
+        internal void BeginDispatch()
+        {
+            if (IsDispatching)
+            {
+                throw new InvalidOperationException("InvalidStateError: Failed to execute 'dispatchEvent' on 'EventTarget': The event is already being dispatched.");
+            }
+
+            IsDispatching = true;
+            IsPassiveContext = false;
+        }
+
+        internal void EndDispatch()
+        {
+            IsDispatching = false;
+            IsPassiveContext = false;
+        }
+
         public void ClearPropagationFlags()
         {
             PropagationStopped = false;
             ImmediatePropagationStopped = false;
-            Set("cancelBubble", FenValue.FromBoolean(false));
+            SetOwnProperty("cancelBubble", FenValue.FromBoolean(false));
         }
         public void FinalizeDispatchState()
         {
@@ -336,9 +436,9 @@ namespace FenBrowser.FenEngine.DOM
             ImmediatePropagationStopped = false;
             Set("currentTarget", FenValue.Null);
             Set("eventPhase", FenValue.FromNumber(NONE));
-            Set("cancelBubble", FenValue.FromBoolean(false));
+            SetOwnProperty("cancelBubble", FenValue.FromBoolean(false));
             Set("defaultPrevented", FenValue.FromBoolean(DefaultPrevented));
-            Set("returnValue", FenValue.FromBoolean(!DefaultPrevented));
+            SetOwnProperty("returnValue", FenValue.FromBoolean(!DefaultPrevented));
         }
     }
 }

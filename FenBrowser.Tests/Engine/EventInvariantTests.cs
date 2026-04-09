@@ -70,6 +70,8 @@ namespace FenBrowser.Tests.Engine
             public FenValue NewTarget { get; set; }
             public string CurrentModulePath { get; set; }
             public bool StrictMode { get; set; }
+            public Action<FenValue, FenObject> OnUnhandledRejection { get; set; }
+            public Action<FenValue, string> OnUncaughtException { get; set; }
         }
 
         private readonly TestContext _context = new TestContext();
