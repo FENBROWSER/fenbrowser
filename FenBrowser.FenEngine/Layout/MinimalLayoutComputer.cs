@@ -13,6 +13,7 @@ using System.Text;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Layout;  // For MarginCollapseComputer, AbsolutePositionSolver
+using System.IO;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -234,6 +235,11 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             var style = GetStyle(element);
+
+            if (ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
+            {
+                yield break;
+            }
             
             // Before
             if (style != null && style.Before != null && IsVisiblePseudo(style.Before))
@@ -270,6 +276,37 @@ namespace FenBrowser.FenEngine.Layout
                  EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
                  yield return style.After.PseudoElementInstance;
             }
+        }
+
+        private bool HasDefiniteContainingBlockHeight(Node node)
+        {
+            if (node == null)
+            {
+                return true;
+            }
+
+            var style = GetStyle(node);
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Height.HasValue || !string.IsNullOrWhiteSpace(style.HeightExpression))
+            {
+                return true;
+            }
+
+            if (string.Equals(style.Position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (style.HeightPercent.HasValue)
+            {
+                return HasDefiniteContainingBlockHeight(node.ParentNode);
+            }
+
+            return false;
         }
 
         private static bool IsVisiblePseudo(CssComputed pseudoStyle)
@@ -471,17 +508,23 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else if (style.HeightPercent.HasValue)
                 {
-                    // FIX: Process Height Percentage
-                    // ROOT ELEMENT SPECIAL CASE: For <html> and <body>, resolve against viewport
-                    float parentHeight = availableSize.Height;
-                    
-                    // Root elements (html/body) with height: 100% should ALWAYS get viewport height
-                    if ((isRootElement || isBodyElement) && (float.IsInfinity(parentHeight) || parentHeight <= 0))
+                    float parentHeight = float.NaN;
+                    bool parentDefinite = HasDefiniteContainingBlockHeight(node.ParentNode);
+
+                    if (isRootElement || isBodyElement)
                     {
-                        parentHeight = _viewportHeight;
+                        parentHeight = availableSize.Height;
+                        if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                        {
+                            parentHeight = _viewportHeight;
+                        }
                     }
-                    
-                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                    else if (parentDefinite)
+                    {
+                        parentHeight = availableSize.Height;
+                    }
+
+                    if (!float.IsInfinity(parentHeight) && !float.IsNaN(parentHeight) && parentHeight > 0)
                     {
                         h = (float)style.HeightPercent.Value / 100f * parentHeight;
                         isExplicitHeight = true;
@@ -547,8 +590,20 @@ namespace FenBrowser.FenEngine.Layout
                 if (style.MinHeight.HasValue) minH = (float)style.MinHeight.Value;
                 else if (style.MinHeightPercent.HasValue)
                 {
-                     float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
-                     minH = (float)style.MinHeightPercent.Value / 100f * resolveAgainst;
+                     float resolveAgainst = float.NaN;
+                     if (isRootElement || isBodyElement)
+                     {
+                         resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                     }
+                     else if (HasDefiniteContainingBlockHeight(node.ParentNode))
+                     {
+                         resolveAgainst = availableSize.Height;
+                     }
+
+                     if (!float.IsInfinity(resolveAgainst) && !float.IsNaN(resolveAgainst) && resolveAgainst > 0)
+                     {
+                         minH = (float)style.MinHeightPercent.Value / 100f * resolveAgainst;
+                     }
                 }
                 else if (style.MinHeightExpression != null)
                 {
@@ -569,8 +624,20 @@ namespace FenBrowser.FenEngine.Layout
                 if (style.MaxHeight.HasValue) maxH = (float)style.MaxHeight.Value;
                 else if (style.MaxHeightPercent.HasValue)
                 {
-                     float resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
-                     maxH = (float)style.MaxHeightPercent.Value / 100f * resolveAgainst;
+                     float resolveAgainst = float.NaN;
+                     if (isRootElement || isBodyElement)
+                     {
+                         resolveAgainst = float.IsInfinity(availableSize.Height) ? _viewportHeight : availableSize.Height;
+                     }
+                     else if (HasDefiniteContainingBlockHeight(node.ParentNode))
+                     {
+                         resolveAgainst = availableSize.Height;
+                     }
+
+                     if (!float.IsInfinity(resolveAgainst) && !float.IsNaN(resolveAgainst) && resolveAgainst > 0)
+                     {
+                         maxH = (float)style.MaxHeightPercent.Value / 100f * resolveAgainst;
+                     }
                 }
                 else if (style.MaxHeightExpression != null)
                 {
@@ -672,6 +739,8 @@ namespace FenBrowser.FenEngine.Layout
                 m = MeasureAudio(elem, childConstraint);
             else if (tag == "IFRAME")
                 m = MeasureIframe(elem, childConstraint);
+            else if (tag == "OBJECT" && !ReplacedElementSizing.ShouldUseObjectFallbackContent(elem))
+                m = MeasureObject(elem, childConstraint);
             else if (tag == "IMG" || tag == "SVG" || tag == "CANVAS" || tag == "EMBED" || tag == "OBJECT")
             {
                 // Use existing robust MeasureImage for all replaced elements
@@ -883,7 +952,7 @@ namespace FenBrowser.FenEngine.Layout
             else
             {
                 bool isBlock = (display == "block" || display == null); 
-                bool isFloat = style?.Float?.ToLowerInvariant() == "left";
+                bool isFloat = style?.Float?.ToLowerInvariant() == "left" || style?.Float?.ToLowerInvariant() == "right";
                 
                 if (!isExplicitWidth && isBlock && !node.IsText() && tag != "IMG" && tag != "SVG" && !tag.EndsWith(":SVG") && 
                     !isFloat && tag != "BUTTON" && tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT" && tag != "LABEL") 
@@ -1091,9 +1160,25 @@ namespace FenBrowser.FenEngine.Layout
             string pos = pStyle?.Position?.ToLowerInvariant() ?? "static";
             if (pos != "static")
             {
-                // _ancestorRects stores the element's BorderBox (passed as finalRect to ArrangeNode).
-                // For absolute positioning, we need PaddingBox. 
-                // PaddingBox = BorderBox inset by border.
+                // Prefer fully materialized geometry from the current arrange pass.
+                // _ancestorRects can contain pre-box rects, which can miss offsets introduced
+                // by flow positioning (e.g. margin offsets), causing wrong abs containing blocks.
+                if (_boxes.TryGetValue(p, out var parentBox))
+                {
+                    var paddingBox = parentBox.PaddingBox;
+                    return new ContainingBlock
+                    {
+                        Node = p,
+                        X = paddingBox.Left,
+                        Y = paddingBox.Top,
+                        Width = Math.Max(0, paddingBox.Width),
+                        Height = Math.Max(0, paddingBox.Height),
+                        IsInitial = false,
+                        PaddingBox = paddingBox
+                    };
+                }
+
+                // Fallback: derive padding box from the tracked ancestor border rect.
                 if (_ancestorRects.TryGetValue(p, out var borderRect))
                 {
                     var border = pStyle?.BorderThickness ?? new Thickness(0);
@@ -1211,6 +1296,20 @@ namespace FenBrowser.FenEngine.Layout
                     box.BorderBox.Top + bT + pT,
                     box.BorderBox.Left + bL + pL + contentW,
                     box.BorderBox.Top + bT + pT + contentH
+                );
+
+                box.PaddingBox = new SKRect(
+                    box.BorderBox.Left + bL,
+                    box.BorderBox.Top + bT,
+                    box.BorderBox.Right - bR,
+                    box.BorderBox.Bottom - bB
+                );
+
+                box.MarginBox = new SKRect(
+                    box.BorderBox.Left - (float)box.Margin.Left,
+                    box.BorderBox.Top - (float)box.Margin.Top,
+                    box.BorderBox.Right + (float)box.Margin.Right,
+                    box.BorderBox.Bottom + (float)box.Margin.Bottom
                 );
 
                 _boxes[node] = box;
@@ -1473,7 +1572,7 @@ namespace FenBrowser.FenEngine.Layout
                    }
                 }
 
-                bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left"; 
+                bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left" || childStyle?.Float?.ToLowerInvariant() == "right"; 
 
                 // Determine Child Metrics in Logical Space
                 var childPhysSize = new SKSize(childMetrics.MaxChildWidth, childMetrics.ContentHeight);
@@ -1726,7 +1825,7 @@ namespace FenBrowser.FenEngine.Layout
                         childLogMargin.BlockEnd = eff.Bottom;
                     }
 
-                    bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left";
+                    bool isFloat = childStyle?.Float?.ToLowerInvariant() == "left" || childStyle?.Float?.ToLowerInvariant() == "right";
 
                     LogicalRect childLogRect;
                     
@@ -1806,7 +1905,10 @@ namespace FenBrowser.FenEngine.Layout
                         // DEBUG: Trace layout for flex items - INFO level for visibility
                         if (element != null && element.GetAttribute("class").Contains("flex-item"))
                         {
-                             FenLogger.Info($"[BLOCK-LOOP] Child={(child is Element ? "Element" : "Text")} CurBlock={logicalCurBlock} Spacing={spacing} MarginTop={mt}", LogCategory.Layout);
+                             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
+                             {
+                                 FenLogger.Info($"[BLOCK-LOOP] Child={(child is Element ? "Element" : "Text")} CurBlock={logicalCurBlock} Spacing={spacing} MarginTop={mt}", LogCategory.Layout);
+                             }
                         }
 
                         // Implement margin: auto for block-level elements
@@ -2048,6 +2150,19 @@ namespace FenBrowser.FenEngine.Layout
             if (node is Text) return true;
             
             var style = GetStyle(node);
+            string floatValue = style?.Float?.Trim().ToLowerInvariant();
+            string effectivePosition = LayoutStyleResolver.GetEffectivePosition(style);
+            bool blockifiedOutOfFlow =
+                floatValue == "left" ||
+                floatValue == "right" ||
+                effectivePosition == "absolute" ||
+                effectivePosition == "fixed";
+
+            if (blockifiedOutOfFlow)
+            {
+                return false;
+            }
+
             string d = style?.Display?.ToLowerInvariant();
             
             // FIX: If display is explicitly set, use it. Do not fall back to Tag check.
@@ -2206,6 +2321,36 @@ namespace FenBrowser.FenEngine.Layout
                 constrainAutoToAvailableWidth: true);
 
             return new LayoutMetrics { ContentHeight = resolved.Height, MaxChildWidth = resolved.Width };
+        }
+
+        private LayoutMetrics MeasureObject(Element element, SKSize availableSize)
+        {
+            if (ReplacedElementSizing.ShouldUseObjectFallbackContent(element))
+            {
+                return MeasureInlineContext(element, availableSize, depth: 0);
+            }
+
+            var style = GetStyle(element);
+            float attrW = 0f;
+            float attrH = 0f;
+            ReplacedElementSizing.TryGetLengthAttribute(element, "width", out attrW);
+            ReplacedElementSizing.TryGetLengthAttribute(element, "height", out attrH);
+
+            float intrinsicW = 0f;
+            float intrinsicH = 0f;
+            TryResolveObjectIntrinsicSize(element, out intrinsicW, out intrinsicH);
+
+            var resolved = ReplacedElementSizing.ResolveReplacedSize(
+                "OBJECT",
+                style,
+                availableSize,
+                intrinsicW,
+                intrinsicH,
+                attrW,
+                attrH,
+                constrainAutoToAvailableWidth: true);
+
+            return new LayoutMetrics { ContentHeight = resolved.Height, ActualHeight = resolved.Height, MaxChildWidth = resolved.Width };
         }
         
         private LayoutMetrics MeasureProgress(Element element, SKSize availableSize)
@@ -2450,12 +2595,18 @@ namespace FenBrowser.FenEngine.Layout
 
                 if (container.GetAttribute("class")?.Contains("center-text") == true)
                 {
-                    FenLogger.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
+                    {
+                        FenLogger.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
                     foreach(var kvp in result.TextLines)
                     {
                         foreach(var line in kvp.Value)
                         {
-                            FenLogger.Info($"[TEXT-ALIGN-DEBUG] TextLine Origin=({line.Origin.X}, {line.Origin.Y}) Text={line.Text.Substring(0, Math.Min(20, line.Text.Length))}", FenBrowser.Core.Logging.LogCategory.Layout);
+                            if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
+                            {
+                                FenLogger.Info($"[TEXT-ALIGN-DEBUG] TextLine Origin=({line.Origin.X}, {line.Origin.Y}) Text={line.Text.Substring(0, Math.Min(20, line.Text.Length))}", FenBrowser.Core.Logging.LogCategory.Layout);
+                            }
                         }
                     }
                 }
@@ -2737,6 +2888,88 @@ namespace FenBrowser.FenEngine.Layout
             return width > 0f && height > 0f;
         }
 
+        private bool TryResolveObjectIntrinsicSize(Element elem, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (elem == null) return false;
+
+            string data = elem.GetAttribute("data");
+            if (string.IsNullOrWhiteSpace(data)) return false;
+
+            string resolved = ResolveResourceUrl(data);
+            if (TryResolveIntrinsicSizeFromDataUrl(resolved, out width, out height))
+            {
+                return true;
+            }
+
+            var bitmap = Rendering.ImageLoader.GetImage(resolved);
+            if (bitmap == null) return false;
+
+            width = bitmap.Width;
+            height = bitmap.Height;
+            return width > 0f && height > 0f;
+        }
+
+        private static bool TryResolveIntrinsicSizeFromDataUrl(string url, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            try
+            {
+                int commaIndex = url.IndexOf(',');
+                if (commaIndex < 0)
+                {
+                    return false;
+                }
+
+                string metadata = url.Substring(5, commaIndex - 5);
+                string payload = url.Substring(commaIndex + 1);
+                bool isBase64 = metadata.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                byte[] bytes;
+                if (isBase64)
+                {
+                    string cleanPayload = payload.Replace("\r", string.Empty)
+                                                 .Replace("\n", string.Empty)
+                                                 .Replace(" ", string.Empty)
+                                                 .Replace("\t", string.Empty);
+                    if (cleanPayload.Contains('%'))
+                    {
+                        cleanPayload = Uri.UnescapeDataString(cleanPayload);
+                    }
+
+                    bytes = Convert.FromBase64String(cleanPayload);
+                }
+                else
+                {
+                    bytes = Encoding.UTF8.GetBytes(Uri.UnescapeDataString(payload));
+                }
+
+                using var stream = new MemoryStream(bytes, writable: false);
+                using var codec = SKCodec.Create(stream);
+                if (codec == null)
+                {
+                    return false;
+                }
+
+                width = codec.Info.Width;
+                height = codec.Info.Height;
+                return width > 0f && height > 0f;
+            }
+            catch
+            {
+                width = 0f;
+                height = 0f;
+                return false;
+            }
+        }
+
         private string ResolveResourceUrl(string src)
         {
             if (string.IsNullOrWhiteSpace(src)) return src;
@@ -2844,7 +3077,7 @@ namespace FenBrowser.FenEngine.Layout
             }
                 
                 // Explicitly hide metadata/invisible tags
-                if (tag == "head" || tag == "script" || tag == "style" || tag == "template" || tag == "link" || tag == "meta" || tag == "title" || tag == "noscript")
+                if (tag == "head" || tag == "script" || tag == "style" || tag == "template" || tag == "link" || tag == "meta" || tag == "title" || tag == "noscript" || tag == "map" || tag == "area")
                     return true;
                 
                 // Hide hidden inputs
