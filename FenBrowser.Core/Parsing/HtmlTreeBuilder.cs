@@ -404,6 +404,7 @@ namespace FenBrowser.Core.Parsing
         private void ProcessToken(HtmlToken token)
         {
             // TEMP DEBUG: trace mode when processing tokens near xtSCL/aajZCb area
+            if (Logging.DebugConfig.LogHtmlParse)
             {
                 string curCls = (CurrentNode as Element)?.GetAttribute("class") ?? "";
                 string curTag = (CurrentNode as Element)?.TagName ?? "?";
@@ -908,7 +909,7 @@ namespace FenBrowser.Core.Parsing
                     st.TagName == "fieldset" || st.TagName == "figcaption" || st.TagName == "figure" || st.TagName == "hgroup" || st.TagName == "menu" || 
                     st.TagName == "summary" || st.TagName == "pre" || st.TagName == "listing")
                 {
-                    if ((CurrentNode as Element)?.TagName == "p") 
+                    if (HasOpenParagraphElement()) 
                     {
                          ClosePElement();
                     }
@@ -942,7 +943,7 @@ namespace FenBrowser.Core.Parsing
                         if (nodeName != "div" && nodeName != "address" && nodeName != "p" && IsSpecialElement(nodeName))
                             break;
                     }
-                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                    if (HasOpenParagraphElement()) ClosePElement();
                     InsertHtmlElement(st);
                     return true;
                 }
@@ -963,14 +964,14 @@ namespace FenBrowser.Core.Parsing
                          if (nodeName != "div" && nodeName != "address" && nodeName != "p" && IsSpecialElement(nodeName))
                              break;
                      }
-                     if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                     if (HasOpenParagraphElement()) ClosePElement();
                      InsertHtmlElement(st);
                      return true;
                 }
 
                 if (st.TagName == "h1" || st.TagName == "h2" || st.TagName == "h3" || st.TagName == "h4" || st.TagName == "h5" || st.TagName == "h6")
                 {
-                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                    if (HasOpenParagraphElement()) ClosePElement();
                     InsertHtmlElement(st);
                     return true;
                 }
@@ -1017,7 +1018,7 @@ namespace FenBrowser.Core.Parsing
                     st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use" || st.TagName == "image")
                 {
                      // Void elements
-                     if (st.TagName == "hr" && (CurrentNode as Element)?.TagName == "p") ClosePElement();
+                     if (st.TagName == "hr" && HasOpenParagraphElement()) ClosePElement();
                      
                      var el = InsertHtmlElement(st);
                      SafePopOpenElement(); // Immediately close
@@ -1028,14 +1029,14 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "form")
                 {
                     if (_formElement != null) return true; // Ignore nested forms
-                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                    if (HasOpenParagraphElement()) ClosePElement();
                     _formElement = InsertHtmlElement(st);
                     return true;
                 }
                 
                 if (st.TagName == "table")
                 {
-                    if ((CurrentNode as Element)?.TagName == "p") ClosePElement();
+                    if (HasOpenParagraphElement()) ClosePElement();
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InTable);
                     return true;
@@ -1972,6 +1973,11 @@ namespace FenBrowser.Core.Parsing
         }
 
         private bool UnsafeIsText(Node e) => e.NodeType == NodeType.Text; // Avoid property implementation details
+
+        private bool HasOpenParagraphElement()
+        {
+            return StackHas("p");
+        }
 
         private void ClosePElement()
         {

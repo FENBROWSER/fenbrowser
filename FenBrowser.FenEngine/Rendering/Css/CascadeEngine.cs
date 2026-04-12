@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public class CascadeEngine
     {
-        private readonly CssStylesheet _stylesheet;
+        private readonly StyleSet _styleSet;
         private readonly bool _logCascade;
         
         // PERF: Multi-level indexing for fast rule lookup
@@ -26,11 +26,14 @@ namespace FenBrowser.FenEngine.Rendering
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
 
-        public CascadeEngine(CssStylesheet stylesheet)
+        public CascadeEngine(StyleSet styleSet)
         {
-            _stylesheet = stylesheet;
-            _logCascade = true; // FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
-            FenBrowser.Core.FenLogger.Info($"[DEBUG-CASCADE] Created Engine with {_stylesheet.Rules.Count} rules", FenBrowser.Core.Logging.LogCategory.CSS);
+            _styleSet = styleSet ?? new StyleSet();
+            _logCascade = FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
+            if (_logCascade)
+            {
+                FenBrowser.Core.FenLogger.Info($"[DEBUG-CASCADE] Created Engine with {_styleSet.Count} sheets", FenBrowser.Core.Logging.LogCategory.CSS);
+            }
         }
         
         /// <summary>
@@ -54,20 +57,32 @@ namespace FenBrowser.FenEngine.Rendering
             _processedRules = new HashSet<CssStyleRule>();
             _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
-            IndexRules(_stylesheet.Rules);
+            for (int i = 0; i < _styleSet.Count; i++)
+            {
+                var sheet = _styleSet.Sheets[i];
+                var origin = _styleSet.Origins[i];
+                var sourceOrder = _styleSet.SourceOrders[i];
+                IndexRules(sheet.Rules, origin, sourceOrder);
+            }
         }
         
-        private void IndexRules(IEnumerable<CssRule> rules)
+        private void IndexRules(IEnumerable<CssRule> rules, CssOrigin defaultOrigin, int sourceOrder)
         {
             foreach (var rule in rules)
             {
+                rule.StylesheetSourceOrder = sourceOrder;
+                if (rule.Origin == CssOrigin.UserAgent && defaultOrigin != CssOrigin.UserAgent)
+                {
+                    rule.Origin = defaultOrigin;
+                }
+
                 if (rule is CssStyleRule styleRule)
                 {
                     IndexStyleRule(styleRule);
                 }
                 else if (rule is CssMediaRule mediaRule)
                 {
-                    IndexRules(mediaRule.Rules);
+                    IndexRules(mediaRule.Rules, defaultOrigin, sourceOrder);
                 }
             }
         }
@@ -133,7 +148,7 @@ namespace FenBrowser.FenEngine.Rendering
                 string upperTag = keySeg.TagName.ToUpperInvariant();
                 AddToIndex(_tagIndex, upperTag, styleRule);
                 // DEBUG: Log div rules
-                if (upperTag == "DIV")
+                if (upperTag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
                     var props = string.Join(", ", styleRule.Declarations.Select(d => d.Property));
                     FenBrowser.Core.FenLogger.Info($"[CASCADE-INDEX] Indexed DIV rule: {styleRule.Selector?.Raw} -> [{props}]", LogCategory.CSS);
@@ -183,6 +198,11 @@ namespace FenBrowser.FenEngine.Rendering
             results.Sort();
             deadline?.Check();
 
+            if (_logCascade && results.Count > 0)
+            {
+                LogCascadeWinners(element, pseudoElement, results);
+            }
+
             // 3. Apply the cascade declaration-by-declaration so shorthand expansion
             // participates in origin/specificity/order resolution. Expanding after
             // selecting winners per declared property is incorrect because a higher-
@@ -196,6 +216,77 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return computed;
+        }
+
+        private void LogCascadeWinners(Element element, string pseudoElement, List<MatchedDeclaration> results)
+        {
+            if (element == null || results == null || results.Count == 0)
+            {
+                return;
+            }
+
+            var winners = new Dictionary<string, MatchedDeclaration>(StringComparer.OrdinalIgnoreCase);
+            foreach (var match in results)
+            {
+                var property = match?.Declaration?.Property;
+                if (string.IsNullOrWhiteSpace(property))
+                {
+                    continue;
+                }
+
+                winners[property] = match;
+            }
+
+            if (winners.Count == 0)
+            {
+                return;
+            }
+
+            string elementLabel = BuildElementLabel(element, pseudoElement);
+            var msg = new System.Text.StringBuilder();
+            msg.AppendLine($"[CASCADE-WINNERS] {elementLabel}");
+
+            foreach (var entry in winners.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var winner = entry.Value;
+                msg.Append("  ");
+                msg.Append(entry.Key);
+                msg.Append(" = ");
+                msg.Append(winner.Declaration.Value);
+                msg.Append(" | key=");
+                msg.Append(winner.Key.ToString());
+                msg.Append($",selector={winner.SelectorText}");
+                msg.AppendLine();
+            }
+
+            FenBrowser.Core.FenLogger.Info(msg.ToString().TrimEnd(), LogCategory.CSS);
+        }
+
+        private static string BuildElementLabel(Element element, string pseudoElement)
+        {
+            var parts = new List<string>();
+            string tag = string.IsNullOrWhiteSpace(element.TagName) ? "unknown" : element.TagName.ToLowerInvariant();
+            parts.Add(tag);
+
+            if (!string.IsNullOrWhiteSpace(element.Id))
+            {
+                parts.Add("#" + element.Id);
+            }
+
+            foreach (var cls in element.ClassList)
+            {
+                if (!string.IsNullOrWhiteSpace(cls))
+                {
+                    parts.Add("." + cls);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(pseudoElement))
+            {
+                parts.Add("::" + pseudoElement.TrimStart(':'));
+            }
+
+            return string.Join(string.Empty, parts);
         }
 
         private void CollectMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
@@ -236,7 +327,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (!string.IsNullOrEmpty(tag) && _tagIndex.TryGetValue(tag, out var tagRules))
             {
                 // DEBUG: Log div cascade
-                if (tag == "DIV")
+                if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
                     FenBrowser.Core.FenLogger.Info($"[CASCADE-DIV] Found {tagRules.Count} indexed rules for DIV element", LogCategory.CSS);
                 }
@@ -246,7 +337,7 @@ namespace FenBrowser.FenEngine.Rendering
                         TryMatchRule(element, rule, results, pseudoElement);
                 }
             }
-            else if (tag == "DIV")
+            else if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
                 FenBrowser.Core.FenLogger.Warn($"[CASCADE-DIV] NO rules found in _tagIndex for DIV! Index contains: {string.Join(", ", _tagIndex.Keys.Take(20))}", LogCategory.CSS);
             }
@@ -286,6 +377,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 2. Match the actual selector
             var matchedChain = SelectorMatcher.GetMatchingChain(element, styleRule.Selector);
+            if (matchedChain == null)
+            {
+                return;
+            }
 
             if (matchedChain != null)
             {
@@ -309,23 +404,32 @@ namespace FenBrowser.FenEngine.Rendering
                             break;
                         }
                     }
-                if (!found) return;
+                    if (!found) return;
+                }
             }
 
-            foreach (var decl in styleRule.Declarations)
+            for (int declarationIndex = 0; declarationIndex < styleRule.Declarations.Count; declarationIndex++)
             {
+                var decl = styleRule.Declarations[declarationIndex];
+                var key = new CascadeKey(
+                    styleRule.Origin,
+                    decl.IsImportant,
+                    (ushort)matchedChain.Specificity.A,
+                    (ushort)matchedChain.Specificity.B,
+                    (ushort)matchedChain.Specificity.C,
+                    styleRule.LayerOrder,
+                    scopeProximity,
+                    styleRule.StylesheetSourceOrder,
+                    styleRule.Order,
+                    declarationIndex
+                );
+
                 results.Add(new MatchedDeclaration
                 {
-                        Declaration = decl,
-                        Origin = styleRule.Origin,
-                        Specificity = matchedChain.Specificity,
-                        Order = styleRule.Order,
-                        DeclarationOrder = results.Count,
-                        SelectorText = styleRule.Selector.ToString(),
-                        LayerOrder = styleRule.LayerOrder,
-                        ScopeProximity = scopeProximity
-                    });
-                }
+                    Declaration = decl,
+                    Key = key,
+                    SelectorText = styleRule.Selector?.Raw ?? styleRule.Selector?.ToString() ?? string.Empty
+                });
             }
         }
 
@@ -338,6 +442,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             var property = declaration.Property;
             var value = declaration.Value?.Trim() ?? string.Empty;
+            if (!IsValidDeclarationValue(property, value))
+            {
+                return;
+            }
+
             computed[property] = CloneDeclaration(declaration, property, declaration.Value);
 
             switch (property)
@@ -382,6 +491,153 @@ namespace FenBrowser.FenEngine.Rendering
                     ApplyInsetShorthand(computed, declaration, value);
                     break;
             }
+        }
+
+        private static bool IsValidDeclarationValue(string property, string value)
+        {
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+
+            switch (property.ToLowerInvariant())
+            {
+                case "color":
+                case "background-color":
+                case "border-top-color":
+                case "border-right-color":
+                case "border-bottom-color":
+                case "border-left-color":
+                case "outline-color":
+                case "column-rule-color":
+                case "text-decoration-color":
+                case "caret-color":
+                case "accent-color":
+                    return IsValidColorValue(value);
+                case "width":
+                case "height":
+                case "min-width":
+                case "min-height":
+                case "max-width":
+                case "max-height":
+                case "inline-size":
+                case "block-size":
+                case "min-inline-size":
+                case "min-block-size":
+                case "max-inline-size":
+                case "max-block-size":
+                    return IsValidSizingValue(value);
+                case "background":
+                    return IsValidBackgroundShorthand(value);
+                default:
+                    return true;
+            }
+        }
+
+        private static bool IsValidColorValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            switch (value.Trim().ToLowerInvariant())
+            {
+                case "inherit":
+                case "initial":
+                case "unset":
+                case "revert":
+                case "revert-layer":
+                case "currentcolor":
+                    return true;
+            }
+
+            return CssParser.ParseColor(value).HasValue;
+        }
+
+        private static bool IsValidSizingValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            string trimmed = value.Trim();
+            switch (trimmed.ToLowerInvariant())
+            {
+                case "auto":
+                case "inherit":
+                case "initial":
+                case "unset":
+                case "revert":
+                case "revert-layer":
+                case "min-content":
+                case "max-content":
+                case "fit-content":
+                    return true;
+            }
+
+            if (IsCssLength(trimmed))
+            {
+                return true;
+            }
+
+            return trimmed.Contains("(", StringComparison.Ordinal);
+        }
+
+        private static bool IsValidBackgroundShorthand(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            string trimmed = value.Trim();
+            if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.Equals("transparent", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            int colorCount = 0;
+            foreach (var part in SplitCssValue(trimmed))
+            {
+                if (string.IsNullOrWhiteSpace(part))
+                {
+                    continue;
+                }
+
+                if (part.Equals("/", StringComparison.Ordinal) ||
+                    IsBackgroundRepeat(part) ||
+                    IsBackgroundPosition(part) ||
+                    part.Equals("fixed", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("scroll", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("local", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("cover", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("contain", StringComparison.OrdinalIgnoreCase) ||
+                    part.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
+                    part.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (CssParser.ParseColor(part).HasValue)
+                {
+                    colorCount++;
+                    if (colorCount > 1)
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+
+            return true;
         }
 
         private static CssDeclaration CloneDeclaration(CssDeclaration source, string property, string value)
@@ -505,29 +761,10 @@ namespace FenBrowser.FenEngine.Rendering
         private static void ApplyBackgroundShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
         {
             if (string.IsNullOrEmpty(value)) return;
-
-            if (value == "none" || value == "transparent")
-            {
-                SetExpanded(computed, "background-color", "transparent", source);
-                SetExpanded(computed, "background-image", "none", source);
-                return;
-            }
-
-            if (!value.Contains("url(") && !value.Contains("gradient("))
-            {
-                var parts = SplitCssValue(value);
-                foreach (var part in parts)
-                {
-                    if (IsBackgroundRepeat(part))
-                        SetExpanded(computed, "background-repeat", part, source);
-                    else if (IsBackgroundPosition(part))
-                        SetExpanded(computed, "background-position", part, source);
-                    else if (part == "fixed" || part == "scroll" || part == "local")
-                        SetExpanded(computed, "background-attachment", part, source);
-                    else
-                        SetExpanded(computed, "background-color", part, source);
-                }
-            }
+            ExpandSingleLayerBackgroundShorthand(
+                value,
+                (property, shorthandValue) => SetExpanded(computed, property, shorthandValue, source),
+                setDefaults: true);
         }
 
         private static void ApplyFlexFlowShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
@@ -782,30 +1019,97 @@ namespace FenBrowser.FenEngine.Rendering
             var value = decl.Value?.Trim();
             if (string.IsNullOrEmpty(value)) return;
 
-            // Simple cases: single color, none, or transparent
-            if (value == "none" || value == "transparent")
+            ExpandSingleLayerBackgroundShorthand(
+                value,
+                (property, shorthandValue) => SetIfNotExplicit(computed, property, shorthandValue, decl),
+                setDefaults: true);
+        }
+
+        private static void ExpandSingleLayerBackgroundShorthand(
+            string value,
+            Action<string, string> assign,
+            bool setDefaults)
+        {
+            if (string.IsNullOrWhiteSpace(value) || assign == null)
             {
-                SetIfNotExplicit(computed, "background-color", "transparent", decl);
-                SetIfNotExplicit(computed, "background-image", "none", decl);
                 return;
             }
 
-            // If it looks like just a color (no url, no gradient keywords)
-            if (!value.Contains("url(") && !value.Contains("gradient("))
+            if (value == "none" || value == "transparent")
             {
-                // Might be: "red", "#fff", "rgb(...)", etc. possibly with position/repeat
-                var parts = SplitCssValue(value);
-                foreach (var p in parts)
+                assign("background-color", "transparent");
+                assign("background-image", "none");
+                return;
+            }
+
+            string color = null;
+            string image = null;
+            string repeat = null;
+            string attachment = null;
+            var positionTokens = new List<string>();
+
+            foreach (var token in SplitCssValue(value))
+            {
+                if (string.IsNullOrWhiteSpace(token) || token == "/")
                 {
-                    if (IsBackgroundRepeat(p))
-                        SetIfNotExplicit(computed, "background-repeat", p, decl);
-                    else if (IsBackgroundPosition(p))
-                        SetIfNotExplicit(computed, "background-position", p, decl);
-                    else if (p == "fixed" || p == "scroll" || p == "local")
-                        SetIfNotExplicit(computed, "background-attachment", p, decl);
-                    else
-                        SetIfNotExplicit(computed, "background-color", p, decl);
+                    continue;
                 }
+
+                if (token.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
+                    token.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
+                {
+                    image = token;
+                    continue;
+                }
+
+                if (IsBackgroundRepeat(token))
+                {
+                    repeat = token;
+                    continue;
+                }
+
+                if (token == "fixed" || token == "scroll" || token == "local")
+                {
+                    attachment = token;
+                    continue;
+                }
+
+                if (IsBackgroundPositionToken(token))
+                {
+                    positionTokens.Add(token);
+                    continue;
+                }
+
+                color = token;
+            }
+
+            if (color != null)
+            {
+                assign("background-color", color);
+            }
+
+            if (image != null)
+            {
+                assign("background-image", image);
+            }
+            else if (setDefaults)
+            {
+                assign("background-image", "none");
+            }
+
+            if (repeat != null)
+            {
+                assign("background-repeat", repeat);
+            }
+
+            if (attachment != null)
+            {
+                assign("background-attachment", attachment);
+            }
+
+            if (positionTokens.Count > 0)
+            {
+                assign("background-position", string.Join(" ", positionTokens.Take(2)));
             }
         }
 
@@ -999,87 +1303,22 @@ namespace FenBrowser.FenEngine.Rendering
             return value == "center" || value == "top" || value == "bottom" ||
                    value == "left" || value == "right";
         }
+
+        private static bool IsBackgroundPositionToken(string value)
+        {
+            return IsBackgroundPosition(value) || IsCssLength(value);
+        }
     }
 
     public class MatchedDeclaration : IComparable<MatchedDeclaration>
     {
         public CssDeclaration Declaration { get; set; }
-        public CssOrigin Origin { get; set; }
-        public Specificity Specificity { get; set; }
-        public int Order { get; set; }
-        public int DeclarationOrder { get; set; }
+        public CascadeKey Key { get; set; }
         public string SelectorText { get; set; }
-        public int LayerOrder { get; set; } // 0 for unlayered, >0 for layered
-        public int ScopeProximity { get; set; } // 0 for no scope, >0 for scoped, smaller is closer
 
         public int CompareTo(MatchedDeclaration other)
         {
-            // 1. Origin & Importance & Layers
-            int thisWeight = GetWeight(Origin, Declaration.IsImportant, LayerOrder);
-            int otherWeight = GetWeight(other.Origin, other.Declaration.IsImportant, other.LayerOrder);
-            int weightDiff = thisWeight.CompareTo(otherWeight);
-            if (weightDiff != 0) return weightDiff;
-
-            // 2. Scope Proximity (Tie-breaker before specificity)
-            // Smaller proximity means directly inside a shallower scope root? 
-            // Actually, spec says scope with HEAVIER specificity or SHORTER proximity?
-            // "Scope proximity" tie-breaker: the rule whose scope root is a CLOSER ancestor wins.
-            // So SMALLER proximity value (closer) should have HIGHER weight.
-            // Since CompareTo is ascending, we use reverse comparison for priority.
-            if (ScopeProximity != other.ScopeProximity)
-                return other.ScopeProximity.CompareTo(ScopeProximity);
-
-            // 3. Specificity
-            int specDiff = Specificity.CompareTo(other.Specificity);
-            if (specDiff != 0) return specDiff;
-
-            // 4. Rule order
-            int orderDiff = Order.CompareTo(other.Order);
-            if (orderDiff != 0) return orderDiff;
-
-            // 5. Declaration order inside the stylesheet/rule.
-            return DeclarationOrder.CompareTo(other.DeclarationOrder);
-        }
-
-        private int GetWeight(CssOrigin origin, bool important, int layerOrder)
-        {
-            // Standard Cascade Order (Level 5):
-            // Normal: UA < User < Author Layer 1 < Layer 2 < Unlayered
-            // Important: Unlayered !important < Layer 2 !important < Layer 1 !important < User !important < UA !important
-            
-            // We map this into a single integer score for sorting.
-            // Base ranges:
-            // 0-100: UA normal
-            // 100-200: User normal
-            // 200-300: Author layered (200 + layerOrder)
-            // 300-310: Author unlayered
-            // 400-410: Author unlayered !important
-            // 410-510: Author layered !important (510 - layerOrder)
-            // 600-700: User !important
-            // 700-800: UA !important
-
-            if (!important)
-            {
-                if (origin == CssOrigin.UserAgent) return 0;
-                if (origin == CssOrigin.User) return 100;
-                if (origin == CssOrigin.Author)
-                {
-                    if (layerOrder == 0) return 300; // Unlayered author rules win over layered
-                    return 200 + Math.Min(layerOrder, 99); // Higher layerOrder wins
-                }
-            }
-            else
-            {
-                if (origin == CssOrigin.Author)
-                {
-                    if (layerOrder == 0) return 400; // Unlayered important author rules are lowest priority in !important block
-                    return 510 - Math.Min(layerOrder, 100); // LOWER layerOrder wins for !important
-                }
-                if (origin == CssOrigin.User) return 600;
-                if (origin == CssOrigin.UserAgent) return 700;
-            }
-            
-            return 0;
+            return Key.CompareTo(other.Key);
         }
     }
 }

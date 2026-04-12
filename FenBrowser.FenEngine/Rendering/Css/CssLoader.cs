@@ -44,6 +44,8 @@ namespace FenBrowser.FenEngine.Rendering
         // CSS PERFORMANCE CACHES
         // -------------------------------------------------------------------------
         private static readonly Dictionary<string, List<NewCss.CssRule>> _parsedRulesCache = new Dictionary<string, List<NewCss.CssRule>>();
+        private static readonly Dictionary<string, Task<List<NewCss.CssRule>>> _inFlightParses = new Dictionary<string, Task<List<NewCss.CssRule>>>();
+        private static readonly System.Threading.SemaphoreSlim _globalParseGate = new System.Threading.SemaphoreSlim(Environment.ProcessorCount > 2 ? Environment.ProcessorCount - 1 : 2);
         private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
@@ -65,6 +67,7 @@ namespace FenBrowser.FenEngine.Rendering
         public static void ClearCaches()
         {
             lock (_parsedRulesCache) _parsedRulesCache.Clear();
+            lock (_inFlightParses) _inFlightParses.Clear();
             lock (_matchCache) _matchCache.Clear();
             lock (_elementMatchedRulesCache) _elementMatchedRulesCache.Clear();
             lock (_elementStyleCache) _elementStyleCache.Clear();
@@ -505,9 +508,8 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})", LogCategory.Rendering);
 
             // 4) Parse rules from all sources (parallel, bounded)
-            FenLogger.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (4-way)...", LogCategory.Rendering);
-            var allRules = new List<NewCss.CssRule>();
-            var parseGate = new System.Threading.SemaphoreSlim(4);
+            FenLogger.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (Global Gate Limit: {_globalParseGate.CurrentCount})...", LogCategory.Rendering);
+            var styleSet = new StyleSet();
             var parseTasks = new List<Task>();
             
             FenLogger.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
@@ -515,72 +517,97 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 parseTasks.Add(RunDetachedAsync(async () =>
                 {
-                    // FenLogger.Debug($"[PERF-CSS-TRACK] Task Started for Source={blob.SourceOrder}", LogCategory.Rendering); // Noise reduced
-                    await parseGate.WaitAsync().ConfigureAwait(false);
                     int myOrder = blob.SourceOrder;
                     int myLen = blob.CssText?.Length ?? 0;
                     try
                     {
-                        FenLogger.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
-                        // FenLogger.Debug($"[PERF-CSS-TRACK] Calling ExtractFontFace Source={myOrder}", LogCategory.Rendering);
                         string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
-                        // FenLogger.Debug($"[PERF-CSS-TRACK] Finished ExtractFontFace Source={myOrder}", LogCategory.Rendering);
                         
                         List<NewCss.CssRule> parsed = null;
-                        bool cacheHit = false;
+                        Task<List<NewCss.CssRule>> inFlightTask = null;
                         
                         string parseCacheKey = BuildParsedRuleCacheKey(processedCss, viewportWidth, viewportHeight);
                         lock (_parsedRulesCache)
                         {
-                            cacheHit = _parsedRulesCache.TryGetValue(parseCacheKey, out parsed);
+                            if (_parsedRulesCache.TryGetValue(parseCacheKey, out parsed))
+                            {
+                                // Ready in cache.
+                            }
+                            else if (_inFlightParses.TryGetValue(parseCacheKey, out inFlightTask))
+                            {
+                                // Another thread is parsing this right now. We will await it.
+                            }
+                            else
+                            {
+                                // We are the first! Set up the in-flight task wrapper.
+                                inFlightTask = Task.Run(async () =>
+                                {
+                                    await _globalParseGate.WaitAsync().ConfigureAwait(false);
+                                    try
+                                    {
+                                        FenLogger.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
+                                        var result = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
+                                        
+                                        // Once finished, move from in-flight to complete cache
+                                        lock (_parsedRulesCache)
+                                        {
+                                            _parsedRulesCache[parseCacheKey] = result;
+                                        }
+                                        return result;
+                                    }
+                                    finally
+                                    {
+                                        lock (_parsedRulesCache)
+                                        {
+                                            _inFlightParses.Remove(parseCacheKey);
+                                        }
+                                        _globalParseGate.Release();
+                                        FenLogger.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
+                                    }
+                                });
+                                _inFlightParses[parseCacheKey] = inFlightTask;
+                            }
                         }
                         
-                        if (!cacheHit)
+                        // If it wasn't statically cached, await the in-flight task (which might be ours or someone else's)
+                        if (parsed == null && inFlightTask != null)
                         {
-                            parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
-                            lock (_parsedRulesCache)
-                            {
-                                if (!_parsedRulesCache.ContainsKey(parseCacheKey))
-                                {
-                                    _parsedRulesCache[parseCacheKey] = parsed;
-                                }
-                            }
+                            parsed = await inFlightTask.ConfigureAwait(false);
                         }
                         
                         if (parsed != null)
                         {
-                            lock (allRules) allRules.AddRange(parsed);
+                            var sheet = new NewCss.CssStylesheet();
+                            sheet.Rules.AddRange(parsed);
+                            lock (styleSet) 
+                            { 
+                                styleSet.AddSheet(sheet, MapToNewCssOrigin(blob.Origin), blob.SourceOrder); 
+                            }
                         }
-                        FenLogger.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
                     }
                     catch (Exception ex)
                     {
                          Log(log, "[CssLoader] Parse error: " + ex.Message);
                     }
-                    finally 
-                    { 
-                        try 
-                        { 
-                            parseGate.Release(); 
-                            // FenLogger.Debug($"[PERF-CSS-TRACK] Semaphore Released Source={myOrder}", LogCategory.Rendering);
-                        } 
-                        catch (Exception ex)
-                        {
-                            FenLogger.Error($"[PERF-CSS-TRACK] Semaphore Release FAILED Source={myOrder}: {ex}", LogCategory.Rendering);
-                        }
-                    }
+
                 }));
             }
 
             if (parseTasks.Count > 0) 
             {
                 var allParseTask = Task.WhenAll(parseTasks);
-                var parseTimeoutTask = Task.Delay(20000); // 20s hard limit for all sheets
+                int parseTimeoutMs = 3500;
+                if (deadline != null)
+                {
+                    parseTimeoutMs = Math.Max(1000, Math.Min(5000, (int)deadline.Remaining.TotalMilliseconds));
+                }
+
+                var parseTimeoutTask = Task.Delay(parseTimeoutMs);
                 var finished = await Task.WhenAny(allParseTask, parseTimeoutTask);
                 
                 if (finished == parseTimeoutTask)
                 {
-                    FenLogger.Warn($"[PERF-CSS] CSS Parsing partially STALLED after 20s. Continuing with partial rules ({allRules.Count}).", LogCategory.Rendering);
+                    FenLogger.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Continuing with partial StyleSet ({styleSet.Count} sheets).", LogCategory.Rendering);
                 }
                 else
                 {
@@ -588,14 +615,18 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            FenLogger.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Rules: {allRules.Count})", LogCategory.Rendering);
+            FenLogger.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})", LogCategory.Rendering);
+
+            // Extract all rules purely for variable resolution (which is order-independent for initial pass)
+            var allRulesForVars = new List<NewCss.CssRule>();
+            foreach (var s in styleSet.Sheets) allRulesForVars.AddRange(s.Rules);
 
             // 4.5) Resolve CSS variables
             FenLogger.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
-            ResolveVariables(allRules);
+            ResolveVariables(allRulesForVars);
             FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
-            var computed = CascadeIntoComputedStyles(root, allRules, log, deadline);
+            var computed = CascadeIntoComputedStyles(root, styleSet, log, deadline);
             FenLogger.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
             return new CssLoadResult
@@ -2727,16 +2758,13 @@ private static double? ExtractPx(string text, string prop)
         // Stage 3: Cascade
         // ===========================
 
-        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, List<NewCss.CssRule> rules, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, StyleSet styleSet, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            FenBrowser.Core.FenLogger.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.TagName}. Rule count: {rules?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
+            FenBrowser.Core.FenLogger.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.TagName}. Sheet count: {styleSet?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
             
-            // Create CascadeEngine with provided rules (Author + User)
-            var sheet = new NewCss.CssStylesheet();
-            sheet.Rules.AddRange(rules);
-            var engine = new CascadeEngine(sheet);
+            var engine = new CascadeEngine(styleSet);
 
             // Pre-flatten the DOM into a list
             var nodes = new List<Element>();
@@ -2959,7 +2987,7 @@ private static double? ExtractPx(string text, string prop)
                 }
 
                 // DEBUG: Log all cascaded properties for div elements
-                if (tag == "DIV")
+                if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
                     var propsStr = string.Join(", ", css.Map.Select(kv => $"{kv.Key}={kv.Value}"));
                     FenBrowser.Core.FenLogger.Info($"[DIV-CASCADE] Cascaded props for <div>: {propsStr}", LogCategory.CSS);
@@ -3248,7 +3276,7 @@ private static double? ExtractPx(string text, string prop)
             else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthPercent = sizeVal;
             else if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
 
-            if (!string.IsNullOrEmpty(maxWStr))
+            if (!string.IsNullOrEmpty(maxWStr) && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
                 FenLogger.Info($"[CSS-MAXWIDTH] <{tag}#{n.Id}> Raw='{maxWStr}' MW={css.MaxWidth} MWP={css.MaxWidthPercent}", LogCategory.CSS);
             }
@@ -3336,7 +3364,7 @@ private static double? ExtractPx(string text, string prop)
             var bgColorRaw = DictGet(css.Map, "background-color");
             var explicitBgColor = TryColor(bgColorRaw);
             // DEBUG: Log background-color for div elements
-            if (tag == "DIV")
+            if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
                 FenBrowser.Core.FenLogger.Info($"[BG-DEBUG] DIV background-color: raw='{bgColorRaw}' parsed={explicitBgColor}", LogCategory.CSS);
             }
@@ -3592,7 +3620,13 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(DictGet(css.Map, "padding-inline-start"), out mVal, currentEmBase)) pLeft = mVal;
             if (TryPx(DictGet(css.Map, "padding-inline-end"), out mVal, currentEmBase)) pRight = mVal;
             
-            css.Padding = new Thickness(pLeft, pTop, pRight, pBottom);
+            // Spec: padding cannot be negative
+            css.Padding = new Thickness(
+                System.Math.Max(0, pLeft), 
+                System.Math.Max(0, pTop), 
+                System.Math.Max(0, pRight), 
+                System.Math.Max(0, pBottom)
+            );
             
             var borderColor = TryColor(ExtractBorderColor(css.Map));
             if (borderColor.HasValue) css.BorderBrushColor = borderColor;
@@ -3761,6 +3795,12 @@ private static double? ExtractPx(string text, string prop)
                 if (sideStyle != "none") { css.BorderStyleLeft = sideStyle; css.BorderStyleRight = sideStyle; }
             }
             
+            // Spec: border-width computed value is 0 if border-style is none or hidden
+            if (css.BorderStyleLeft == "none" || css.BorderStyleLeft == "hidden") bLeft = 0;
+            if (css.BorderStyleRight == "none" || css.BorderStyleRight == "hidden") bRight = 0;
+            if (css.BorderStyleTop == "none" || css.BorderStyleTop == "hidden") bTop = 0;
+            if (css.BorderStyleBottom == "none" || css.BorderStyleBottom == "hidden") bBottom = 0;
+
             css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
             if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
                 css.BorderBrushColor = borderSideColor;
@@ -6109,12 +6149,6 @@ private static double? ExtractPx(string text, string prop)
             {
                 var lower = part.ToLowerInvariant();
                 if (IsBorderStyle(lower)) return lower;
-            }
-            // If border has width but no style specified, default to solid
-            foreach (var part in parts)
-            {
-                double px;
-                if (TryPx(part, out px) && px > 0) return "solid";
             }
             return "none";
         }
