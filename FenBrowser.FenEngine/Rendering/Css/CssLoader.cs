@@ -2904,8 +2904,21 @@ private static double? ExtractPx(string text, string prop)
                         var lowerVal = val?.ToLowerInvariant()?.Trim();
                         if (lowerVal == "inherit")
                         {
+                            if (string.Equals(kv.Key, "font", StringComparison.OrdinalIgnoreCase) &&
+                                parentCss != null &&
+                                parentCss.FontSize.HasValue)
+                            {
+                                // Inherited computed font values must be absolute to avoid
+                                // re-resolving relative units (e.g. 2em) against the child.
+                                string inheritedFamily = !string.IsNullOrWhiteSpace(parentCss.FontFamilyName)
+                                    ? parentCss.FontFamilyName
+                                    : "sans-serif";
+                                val = string.Create(
+                                    CultureInfo.InvariantCulture,
+                                    $"{parentCss.FontSize.Value:0.##}px {inheritedFamily}");
+                            }
                             // Use parent's computed value
-                            if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
+                            else if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
                                 val = parentVal;
                             else
                                 val = CssComputed.GetInitialValue(kv.Key) ?? val;
@@ -3097,6 +3110,7 @@ private static double? ExtractPx(string text, string prop)
             // Background properties
             css.BackgroundClip = Safe(DictGet(css.Map, "background-clip"))?.ToLowerInvariant();
             css.BackgroundOrigin = Safe(DictGet(css.Map, "background-origin"))?.ToLowerInvariant();
+            css.BackgroundAttachment = Safe(DictGet(css.Map, "background-attachment"))?.ToLowerInvariant();
             css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
             css.BackgroundSize = Safe(DictGet(css.Map, "background-size"))?.ToLowerInvariant();
             css.BackgroundPosition = Safe(DictGet(css.Map, "background-position"))?.ToLowerInvariant();
@@ -3268,7 +3282,7 @@ private static double? ExtractPx(string text, string prop)
             
             string minHStr = DictGet(css.Map, "min-height");
             if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
-            else if (TryPercent(minHStr, out sizeVal)) css.MinHeightExpression = sizeVal + "%";
+            else if (TryPercent(minHStr, out sizeVal)) css.MinHeightPercent = sizeVal;
             else if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
             
             string maxWStr = DictGet(css.Map, "max-width");
@@ -3283,7 +3297,7 @@ private static double? ExtractPx(string text, string prop)
 
             string maxHStr = DictGet(css.Map, "max-height");
             if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
-            else if (TryPercent(maxHStr, out sizeVal)) css.MaxHeightExpression = sizeVal + "%";
+            else if (TryPercent(maxHStr, out sizeVal)) css.MaxHeightPercent = sizeVal;
             else if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
             
             // Logical properties: inline-size, block-size
@@ -3396,7 +3410,18 @@ private static double? ExtractPx(string text, string prop)
             }
 
             string bgImage = DictGet(css.Map, "background-image");
-            if (string.IsNullOrWhiteSpace(bgImage)) bgImage = DictGet(css.Map, "background");
+            var bgShorthandRaw = DictGet(css.Map, "background");
+            if (string.IsNullOrWhiteSpace(bgImage)) bgImage = bgShorthandRaw;
+
+            if (string.IsNullOrWhiteSpace(css.BackgroundAttachment))
+            {
+                css.BackgroundAttachment = ExtractBackgroundAttachmentFromShorthand(bgShorthandRaw);
+            }
+
+            if (string.IsNullOrWhiteSpace(css.BackgroundRepeat))
+            {
+                css.BackgroundRepeat = ExtractBackgroundRepeatFromShorthand(bgShorthandRaw);
+            }
 
             if (!string.IsNullOrWhiteSpace(bgImage))
             {
@@ -6117,6 +6142,63 @@ private static double? ExtractPx(string text, string prop)
                  // For now, return the whole property value so the renderer can parse it.
                  return value;
             }
+            return null;
+        }
+
+        private static string ExtractBackgroundAttachmentFromShorthand(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var lower = value.ToLowerInvariant();
+            if (Regex.IsMatch(lower, @"\bfixed\b"))
+            {
+                return "fixed";
+            }
+
+            if (Regex.IsMatch(lower, @"\blocal\b"))
+            {
+                return "local";
+            }
+
+            if (Regex.IsMatch(lower, @"\bscroll\b"))
+            {
+                return "scroll";
+            }
+
+            return null;
+        }
+
+        private static string ExtractBackgroundRepeatFromShorthand(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var lower = value.ToLowerInvariant();
+            if (Regex.IsMatch(lower, @"\bno-repeat\b"))
+            {
+                return "no-repeat";
+            }
+
+            if (Regex.IsMatch(lower, @"\brepeat-x\b"))
+            {
+                return "repeat-x";
+            }
+
+            if (Regex.IsMatch(lower, @"\brepeat-y\b"))
+            {
+                return "repeat-y";
+            }
+
+            if (Regex.IsMatch(lower, @"\brepeat\b"))
+            {
+                return "repeat";
+            }
+
             return null;
         }
 
