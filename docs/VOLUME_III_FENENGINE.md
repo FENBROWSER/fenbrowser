@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-04-02
+**State as of:** 2026-04-13
 **Codex Version:** 1.2
 
 ## 1. Overview
@@ -119,6 +119,40 @@ flowchart TD
   - `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
   - `FenBrowser.Tests/Engine/WhatIsMyBrowserLayoutRegressionTests.cs`
 
+### 2.6.1 Build Integrity Recovery (2026-04-13)
+
+- `NewPaintTreeBuilder.BuildRecursive(...)` was repaired after a malformed duplicated block introduced invalid control-flow/brace structure; paint-tree traversal now compiles cleanly and preserves the stacking-context path (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`).
+- `CssAnimationEngine` region boundaries were corrected (`#endregion` alignment), and keyframe interpolation now uses the current `CssLoader.CssKeyframes.Frames` / `CssLoader.CssKeyframe` surface with normalized percentage mapping (`FenBrowser.FenEngine/Rendering/Css/CssAnimationEngine.cs`).
+- `PaintNodeCache` no longer depends on cross-assembly `Node` internals for cache-stability markers; it now stores bounds/stacking metadata in a local `ConditionalWeakTable`, keeping cache validation deterministic without leaking node lifetime (`FenBrowser.FenEngine/Rendering/PaintTree/PaintNodeCache.cs`).
+- `CssAnimationEngine` re-exposes per-tick invalidation signaling via `OnAnimationFrame`, and `BrowserIntegration` subscriptions compile again against the live animation API (`FenBrowser.FenEngine/Rendering/Css/CssAnimationEngine.cs`, `FenBrowser.Host/BrowserIntegration.cs`).
+
+### 2.6.2 Navigation Performance Hardening (2026-04-13)
+
+- `CssLoader.ComputeAsync(...)` no longer blocks the navigation hot-path behind a fixed 20-second stylesheet parse wait; parse waiting now uses a bounded budget (`~3.5s` default, deadline-aware when provided), then continues with the partial `StyleSet` (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `JavaScriptEngine` now defers oversized external page scripts during initial navigation (`RuntimeProfile.DeferOversizedExternalPageScripts`, `RuntimeProfile.OversizedExternalPageScriptBytes`), preventing single megabyte-class scripts from stalling first paint (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`, `FenBrowser.FenEngine/Scripting/JavaScriptRuntimeProfile.cs`).
+- Always-on high-volume CSS debug traces (`DIV` cascade/background/max-width diagnostics) are now gated by `DebugConfig.LogCssCascade`, reducing synchronous logging pressure during large-page cascades (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`, `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`).
+- Repro note (`https://www.google.com`, clean logs, 2026-04-13):
+  - before: first `RenderAsync CSS loading complete` at ~`22s` after navigation start (plus an observed single-script parse block of ~`10s` in prior run),
+  - after: first rendered output at ~`4.8s` with CSS parse budget warning at `3500ms`, and oversized Google external script deferred instead of blocking initial render.
+
+### 2.7 Acid3 Rendering Hardening (2026-04-10)
+
+- `ElementStateManager` now tracks resolved visited URLs and exposes `IsVisited(...)` for selector engines, including the current synthetic-iframe fallback used by FenBrowser's in-process frame model (`FenBrowser.FenEngine/Rendering/ElementStateManager.cs`).
+- `SelectorMatcher`, `CssLoader`, `CssSelectorAdvanced`, and DOM V2 `SimpleSelector` now align `:visited` / `:link` matching with the shared element-state source instead of hard-disabling visited state (`FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`, `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`, `FenBrowser.FenEngine/Rendering/Css/CssSelectorAdvanced.cs`, `FenBrowser.Core/Dom/V2/Selectors/SimpleSelector.cs`).
+- `InlineFormattingContext.MeasureInlineChild(...)` now treats empty atomic inline boxes as chrome-sized objects instead of injecting fallback text metrics, which keeps border/padding-only inline-block geometry stable for Acid3-style bucket rows (`FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`).
+- `NewPaintTreeBuilder` now suppresses fully transparent subtrees before paint-node generation, preventing `opacity:0` descendants from leaking visible replaced content into the final frame (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`).
+- `BoxPainter` now treats border width/color without an explicit border style as non-painting, so global resets like Acid3's `* { border: 1px blue; }` no longer leak phantom blue chrome into geometry or raster output (`FenBrowser.FenEngine/Rendering/Painting/BoxPainter.cs`).
+- `CssLoader` now clamps negative padding out of used geometry and preserves authored background-shorthand colors through late background resolution, including the Acid3 body case where `background: url(...) ... white` previously regressed back to transparent because a stale `background-image: none` / `background-color: transparent` pair won the final pass (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `CssLoader.ExtractBackgroundColorFromShorthand(...)` is now function-safe for `url(data:...)` shorthands and scans for the last authored color token after stripping image/gradient functions, which restores body-panel fills for Acid3 and similar data-URI-backed backgrounds (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `NewPaintTreeBuilder.BuildBackgroundNode(...)` now has a final authored-shorthand color recovery path so paint-tree construction still emits the correct fill when computed background color is missing but the resolved `background` declaration still carries a color token (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`).
+- `SkiaDomRenderer.ResolveCanvasBackgroundColor(...)` now resolves the frame-clear color for normal `Document` roots by checking `documentElement` and `body` instead of only element roots, which fixes the `example.com` class of failures where the centered body box painted gray but the rest of the viewport stayed white (`FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`).
+- Added renderer regression coverage for document-root background propagation in `FenBrowser.Tests/Rendering/CanvasBackgroundResolutionTests.cs`.
+- `BrowserApi.OnMouseMove(...)` now deduplicates stationary pointer coordinates and normalizes hover state down to actionable/focusable elements instead of passive containers, which cuts the `example.com` class of hover-induced recascade churn where moving toward centered text repeatedly re-hovered the page shell instead of a real interactive control (`FenBrowser.FenEngine/Rendering/BrowserApi.cs`).
+- Added focused coverage for passive-container hover normalization in `FenBrowser.Tests/Rendering/BrowserApiHoverNormalizationTests.cs`.
+- `NewPaintTreeBuilder` now encodes hover-diff state only on the deepest hovered element for paint-tree damage purposes instead of the entire hovered ancestor chain, which prevents link hover on `example.com` from inflating the damage region to the full centered text column while preserving selector-level ancestor `:hover` matching in the CSS engine (`FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`).
+- Acid3 HTTP verification after the 2026-04-10 hardening kept the full DOM/Box Tree path alive (`109` DOM nodes, `48` layout boxes, `49` paint nodes in the settled run) while removing the top-left red privacy-link paint from `debug_screenshot.png`; rendered-text dumps still include hidden text because the text verifier is DOM/text based rather than paint-visibility based.
+- After the follow-up 2026-04-10 background/border tranche, a clean HTTP host repro (`clean_root.ps1` -> `FenBrowser.Host.exe http://acid3.acidtests.org/`) restored the Acid3 white body panel inside the silver root canvas and eliminated the earlier universal-border leakage. Pixel probes against `debug_screenshot.png` now show white content pixels inside the body frame and silver only outside the root/body panels, which is the intended render split for the Acid3 shell.
+
 ### 2.7 Internal Surface Hardening (2026-04-04)
 
 - `NewTabRenderer.Render()` now emits a viewport-stable internal page that uses deterministic block layout, a single visible search surface, explicit sizing, and ASCII-safe copy, avoiding the engine-visible collapse modes that made the old flex-heavy new tab render tiny, left-shifted, or visually double-framed (`FenBrowser.FenEngine/Rendering/NewTabRenderer.cs`).
@@ -163,6 +197,79 @@ flowchart TD
   - `OnUncaughtException` dispatches a standard `error` event to the global object.
 - `FenValue` struct was hardened with `static readonly` `True` and `False` constants to avoid repeated `FromBoolean` allocations in hot-path logic.
 - Resolved `Test262` runner compilation blockers, enabling full ECMAScript conformance testing against the active engine.
+
+### 2.9 Acid3 Runtime/DOM Recovery Tranche (2026-04-09)
+
+- `DocumentWrapper` now implements `document.write(...)` / `document.writeln(...)` with current-script insertion semantics instead of leaving late-written compatibility markup absent from the live DOM.
+- `JavaScriptEngine.SetDomAsync(...)` now executes the parsed body inline `onload` attribute during document load, which restores legacy bootstrap pages that initialize from `body onload="..."`.
+- `ElementWrapper.contentDocument` / `contentWindow.document` for same-process iframes now return an isolated per-iframe HTML document instead of aliasing the top-level document.
+- Iframe-local `location.assign(...)` / `replace(...)` now mutate the iframe `src` and browsing-context cache locally instead of incorrectly navigating the top-level page.
+- Isolated iframe documents now bind `contentDocument.defaultView` to the same cached `contentWindow`, and that frame window re-exposes `getComputedStyle(...)` so Acid3 no longer fails at the missing-window-surface layer for selector/media probes.
+- `FenRuntime.getComputedStyle(...)` now triggers a local recascade for isolated iframe documents using the owning iframe as the viewport host, so dynamically injected `<style>` rules inside Acid3's selector iframe populate computed-style values instead of staying empty.
+- `CSSStyleDeclaration` now maps `cssFloat` / `styleFloat` to the canonical `float` declaration name, restoring legacy inline-style access used by Acid3.
+- `SelectorMatcher` now rejects malformed compounds like `html*.test`, and it gates `:enabled` / `:disabled` / `:checked` back to actual form controls instead of matching arbitrary elements.
+- `ElementWrapper.matches(...)` now delegates to the hardened `SelectorMatcher` path instead of the older compatibility matcher, so runtime calls like `element.matches(':checked')` observe the same corrected pseudo-class semantics as the stylesheet engine.
+- `FenRuntime.getComputedStyle(...)` now fills missing direct-property values from `CssComputed.InitialValues`, restoring defaults such as `textTransform: none` and `cursor: auto` for isolated iframe probes.
+- `CssLoader.EvaluateMediaQuery(...)` now treats unsupported parenthesized media features as non-matching and evaluates color/monochrome predicates explicitly, which prevents bogus queries like `@media (bogus)` from leaking uppercase styles into Acid3's selector iframe.
+- `FenRuntime.getComputedStyle(...)` now normalizes invalid computed `cursor` values back to `auto` instead of exposing raw unsupported tokens like `bogus`.
+- `ElementWrapper` now exposes baseline HTML table DOM compatibility used by Acid3's table tranche:
+  - `table.caption`, `tHead`, `tFoot`, `tBodies`, and `rows`
+  - `tr.cells`, `tr.rowIndex`, and `tr.sectionRowIndex`
+  - `createCaption()` / `deleteCaption()`, `createTHead()` / `deleteTHead()`, `createTFoot()` / `deleteTFoot()`, and `insertRow(...)`
+  - table-section insertion now follows table-ordering rules closely enough to materialize `thead`/`tbody`/`tfoot` structure instead of leaving the table API surface absent.
+  - Dynamic `setAttribute('checked', ...)` / `removeAttribute('checked')` on checkable inputs now preserve the current checked state tracked by `ElementStateManager` instead of incorrectly flipping the live `checked` property and `:checked` matching through content-attribute mutation alone.
+  - `ElementWrapper` now exposes the next HTML form/control compatibility tranche used by Acid3:
+    - `name`, `form`, `elements`, and `length` for form-associated controls and `<form>`
+    - live property-vs-content-attribute separation for input `value`
+    - normalized `type` reflection for `<input>` and `<button>` with default `button.type === "submit"`
+    - `select.options`, `select.selectedIndex`, `select.add(...)`, and `option.defaultSelected` / `selected`
+    - DOM aliases `label.htmlFor` and `meta.httpEquiv`
+  - `<object>.data` now resolves relative URLs against the owning document URL/base URL instead of staying undefined or reflecting raw relative strings.
+- `document.createElement(...)` / `createTextNode(...)` now preserve the owning document when creating detached nodes, which fixes URL-reflecting property surfaces on dynamically created elements.
+- `JavaScriptEngine.DispatchEvent(...)` now executes inline element event attributes such as `onload` in the same runtime path as registered listeners, instead of only special-casing `body.onload`.
+- `JavaScriptEngine.SetDomAsync(...)` now dispatches initial iframe `load` events during document boot, which unblocks Acid3's selector iframe from leaving `#linktest` stuck in the `pending` state.
+- `ElementWrapper.UpdateIframeSource(...)` now schedules iframe `load` back through the shared JS event-dispatch bridge after `iframe.src = ...` mutations, so later Acid3 selector navigations execute the same inline `onload` path as the initial document boot.
+- `BoxTreeBuilder` and `MinimalLayoutComputer` now treat replaced elements (`iframe`, `object`, `img`, `canvas`, `embed`, `video`, `audio`) as atomic for child enumeration, preventing fallback descendants from leaking into normal flow and distorting Acid3 layout.
+- `BlockFormattingContext` and `LayoutPositioningLogic` now preserve authored `width: 0` / `height: 0` on replaced elements and positioned boxes instead of treating zero as "missing" and reintroducing legacy `300x150` fallback sizing. This closes the specific Acid3 path where zero-sized compatibility iframes were inflating back into visible layout participants.
+- `NewPaintTreeBuilder` now treats atomic replaced elements as paint-time leaves as well, so fallback descendants under `<iframe>` / `<object>` no longer leak compatibility text like `FAIL` or hidden link copy into the final frame. `<object data=...>` now also participates in the existing image paint path instead of only exposing its fallback subtree.
+- `ResourceManager.FetchBytesAsync(...)` now preserves binary bodies for `image` / `object` fetches even on non-2xx HTTP responses when the payload MIME type is still image-like. This restores browser-compatible handling for cases like Acid3's `support-a.png`, which intentionally returns `404` with a valid PNG body that should still render.
+- `ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(...)` now resolves `<object data=...>` against the loaded bitmap cache as well, using the owning document URL/base URL for relative `data` targets. This pushes real intrinsic object sizing through the shared inline/block/positioned layout paths instead of only a one-off `MinimalLayoutComputer` code path, which is required for Acid3's `support-a.png` / `svg.xml` object boxes to stop falling back to `300x150`.
+  - Focused regression coverage was added for:
+  - parser continuity across raw-text/comment-heavy HTML input
+  - `document.write(...)` current-script insertion ordering
+  - body inline `onload` execution during `SetDomAsync(...)`
+  - iframe `contentDocument` isolation from the main document
+  - iframe `contentDocument.defaultView === iframe.contentWindow` with `getComputedStyle(...)` available on the isolated frame window
+  - isolated iframe `getComputedStyle(...)` reflecting dynamically injected stylesheet rules
+    - isolated iframe `getComputedStyle(...)` exposing initial-value defaults for properties that were previously missing from the object surface
+    - isolated iframe `getComputedStyle(...)` rejecting bogus media-query and cursor values with spec-default fallbacks
+    - radio `checked` property vs content-attribute independence for `:checked` matching
+    - baseline HTML table DOM surface for caption/section creation, `tBodies`, `rows`, `cells`, and row indices
+    - dynamic form control reflection for `form.elements`, `name`, `type`, and `value`
+    - select/button compatibility for `options`, `selectedIndex`, `defaultSelected`, `add(...)`, and default button type
+    - legacy DOM node constants on wrapper surfaces (`ATTRIBUTE_NODE`, `DOCUMENT_TYPE_NODE`, `DOCUMENT_FRAGMENT_NODE`, etc.)
+    - legacy DOMException numeric constants on thrown exception objects (`HIERARCHY_REQUEST_ERR`, `NAMESPACE_ERR`, etc.)
+    - namespace-aware element reflection work for `tagName` / `nodeName` / `localName` / `prefix` / `namespaceURI`
+    - initial iframe inline `onload` execution during `SetDomAsync(...)`, including `this === iframe` and `event.target === iframe`
+    - iframe `src` mutations dispatching inline `load` and clearing compatibility markers after delayed navigation
+    - replaced-element box construction keeping iframe/object fallback children out of the normal Box Tree
+    - floated replaced elements preserving explicit zero used size instead of regressing to intrinsic fallback dimensions
+    - absolutely positioned boxes preserving explicit zero used width/height
+    - paint-tree object rendering preferring replaced content over fallback text when `data` is present
+    - binary image fetches preserving valid PNG bodies on HTTP error responses for image-like destinations
+    - object intrinsic sizing through the shared replaced-element resolver, including `data:` URLs and document-relative object resources
+- Verified outcome of the stable tranche:
+  - Acid3 moved from blank / effectively `0` to a reproducible `34/100` real-browser baseline.
+  - Later on-tree diagnostics show the current worktree still stalls around the early selector/CSS tranche (`~29`-`30/100`) because isolated iframe documents do not yet produce meaningful computed-style values for dynamically injected CSS.
+    - Current in-process Acid3 probe now reaches `62/100` after the document-URL and detached-node ownership fixes.
+    - The selector/CSS blockers for malformed compounds, `:enabled`, `:checked`, bogus media features, bare media feature syntax, invalid cursor fallback, the first table-API surface, and the form-control tranche through tests `52-59` are cleared.
+    - Additional DOM alias compatibility such as `meta.httpEquiv`, the `className` regex/string replacement path, and `<object>.data` URL normalization are now cleared as well.
+    - The next live blockers move into the later DOM/SVG/runtime tranche, starting with generic element title reflection during the dynamic SVG load setup and then SVG bridge gaps such as `getSVGDocument()`.
+    - A fresh real-host Acid3 run on `http://acid3.acidtests.org/` on April 9, 2026 reached `64/100`; the latest render artifacts are [debug_screenshot.png](C:/Users/udayk/Videos/fenbrowser-test/debug_screenshot.png) and [rendered_text_20260409_222340.txt](C:/Users/udayk/Videos/fenbrowser-test/logs/rendered_text_20260409_222340.txt).
+    - `CssLoader.ResolveStyle(...)` now treats `font: inherit` as inherited computed longhands instead of copying the parent's stale authored shorthand string through `css.Map`. This prevents descendants from reintroducing `20px Arial` when the parent later won with explicit longhands like `font-size: 5em`.
+    - `ParseFontShorthand(...)` now refuses to synthesize `font-size` from shorthand when the cascade already produced an explicit `font-size` longhand winner on the same element.
+    - After those shorthand-precedence fixes, the real-host Acid3 header and score typography are restored to the intended large-scale render path; the screenshot on April 9, 2026 shows the large `Acid3` title and `64/100` score box again, leaving the remaining breakage in downstream layout/painting fidelity.
+    - The next runtime fix dispatches initial iframe `load` through the normal event path and executes inline iframe `onload` attributes, specifically to unblock Acid3's selector iframe from leaving its compatibility marker pending.
 ### 2.9 Notifications API Productionization (2026-03-06)
 
 - `NotificationsAPI` now exposes `Notification` as a real constructor-capable `FenFunction` instead of a plain object surface (`FenBrowser.FenEngine/WebAPIs/WebAPIs.cs`).
@@ -641,6 +748,8 @@ Builds computed style objects from cascaded declarations and applies compatibili
 
 - Enforces standards-first compatibility: no domain/class-specific style rewrites in computed-style generation.
 - Cascade-stage compatibility interventions now flow through a centralized behavior-class registry (no site/domain keys), with kill-switch and metrics support (`Compatibility/WebCompatibilityInterventions.cs`).
+- `CssLoader.ResolveStyle(...)` enforces CSS Box Model geometry standards: negative padding values are clamped to `0` instead of corrupting layout pass dimensions.
+- `CssLoader.ExtractBorderSideStyle(...)` enforces `border-style: none` as the default for shorthand border properties that provide only a width, which properly suppresses actual width render unless explicitly restyled.
 
 #### `SelectorMatcher.cs` (Lines 1-1100+)
 
@@ -6214,3 +6323,278 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~WhatIsMyBrowserLayoutRegressionTests.Layout_Keeps_WimbVersionBadge_OnSingleLine|FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~BrowserCookieJarTests|FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges" --no-restore`: pass (`10/10`) on `2026-04-04`.
+
+## 2.201 Acid3 Bucket-Line Vertical-Align Hardening (2026-04-10)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - Inline formatting now seeds every inline box relayout with its computed padding, border, and margin chrome before line construction runs, so empty `inline-block` boxes keep their authored non-content geometry during the final pass instead of collapsing after the probe pass.
+  - Numeric `vertical-align` lengths and percentages are no longer resolved against the inline-block's full box height. The line builder now uses font-relative bases for numeric shifts and folds those shifts into line ascent/descent contributions before final placement.
+  - This specifically hardens the Acid3 bucket row, where `vertical-align: 2em` on empty `inline-block` elements must expand the line box to the tallest bucket instead of producing the earlier undersized row and upward-sheared geometry.
+
+- `FenBrowser.Tests/Engine/LayoutFidelityTests.cs`
+  - Added `InlineBlock_NumericVerticalAlign_UsesFontSizeBasisForLineBox` to lock in the core invariant: a raised empty `inline-block` must expand the line box height rather than collapsing into a zero-height row.
+
+- Why this mattered:
+  - Acid3's visible rendering failure was no longer primarily about DOM or cascade. The page had a real DOM and paint tree, but the bucket line still rendered with the wrong baseline math.
+  - Browser-correct rendering depends on preserving the distinction between content size and chrome size while also applying numeric `vertical-align` using the element's font basis, not its already-inflated box height.
+
+- Verification:
+  - `dotnet build FenBrowser.sln -c Debug`: pass on `2026-04-10`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "LayoutFidelityTests.InlineBlock_NumericVerticalAlign_UsesFontSizeBasisForLineBox"`: pass on `2026-04-10`.
+  - clean HTTP Acid3 host repro on `2026-04-10` after `clean_root.ps1`:
+    - `dom_dump.txt` now reports `.buckets` at `557.0x162.0`, up from the previous undersized `82.0`-high row.
+    - `logs/fenbrowser_20260410_104107.jsonl` records the settled frame at `109` DOM nodes, `48` layout boxes, and `49` paint nodes.
+    - `debug_screenshot.png` still shows remaining Acid3 fidelity gaps, but the bucket row now uses the correct tall line-box envelope and the privacy-link top-left red paint remains absent.
+
+## 2.202 Measured Link Underline Width In Skia Text Decorations (2026-04-11)
+
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Text-decoration width for fallback text no longer uses the old `text.Length * fontSize * 0.6f` estimate.
+  - `SkiaRenderer` now measures the actual rendered string width with `SKPaint.MeasureText(...)` before painting underline, line-through, and overline rectangles.
+  - This narrows decoration bounds to the shaped text width and fixes the visible overshoot on `example.com` where the `Learn more` underline extended slightly past the link text.
+
+- `FenBrowser.Tests/Rendering/SkiaRendererTextDecorationTests.cs`
+  - Added focused coverage for the text-width helper and for the final underline rectangle emitted by `DrawText(...)`.
+
+- Why this mattered:
+  - The remaining `example.com` artifact was no longer a layout or hover problem. The page was stable, but the underline paint width still came from a rough heuristic.
+  - Browser-correct text decoration needs glyph-aware width measurement at paint time; otherwise short link labels visibly overrun their text, especially on centered minimalist pages like `example.com`.
+
+- Verification:
+  - clean host repro on `2026-04-11` after process/log cleanup and a 28-second wait reproduced the overshoot in `debug_screenshot.png` before the fix.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~SkiaRendererTextDecorationTests" --no-restore -v q`: pending rerun after the regression test visibility fix on `2026-04-11`.
+
+## 2.203 ASCII-Safe List Marker Glyph Literals (2026-04-11)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Replaced mojibake list-marker literals with ASCII-safe Unicode escapes for `disc`, `circle`, `square`, and disclosure markers.
+  - Also corrected the password masking glyph literal in the same file to use `\\u25CF` safely.
+  - Outside list markers no longer anchor blindly from the `li` content box. The paint-tree builder now uses the earliest child box as the outside-marker reference edge, which prevents markers from colliding with list content on pages where child inline geometry starts left of the list item box.
+  - This removes both source-encoding drift and the marker/content overlap seen on the IANA example-domains page.
+
+- `FenBrowser.Tests/Rendering/ListMarkerRenderingTests.cs`
+  - Added focused coverage asserting that `display:list-item` with `list-style-type:disc` produces a real bullet glyph in the paint node.
+  - Added a geometry regression ensuring outside markers stay left of earlier child content when the child box starts before the `li` content box.
+
+- Why this mattered:
+  - The next simple standards target, `https://www.iana.org/help/example-domains`, exposed list markers rendered from mojibake source text rather than the intended glyph.
+  - This is a renderer-input correctness issue, not a site quirk: marker literals in source must survive editor/encoding boundaries deterministically.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ListMarkerRenderingTests" --no-restore -v q`: pass (`2/2`) on `2026-04-11`.
+  - clean 28-second host repro against `https://www.iana.org/help/example-domains` on `2026-04-11` now shows the bullet glyph rendered in its own gutter instead of overlapping `IANA-managed Reserved Domains`.
+
+## 2.204 Float Shrink-To-Fit Width Uses Occupied Inline Extent (2026-04-11)
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - The auto-width shrink-to-fit relayout path no longer derives container width from only the single widest child margin box.
+  - After the unconstrained probe pass, it now also measures the furthest occupied inline edge across in-flow children using each child subtree's actual margin-box right edge relative to the container content box.
+  - This preserves horizontally packed float rows during the second shrink-to-fit pass instead of collapsing a float container down to the width of one item.
+
+- Why this mattered:
+  - `https://www.iana.org/help/example-domains` exposed a generic float sizing defect in the header: the right-floated navigation container collapsed to roughly one nav item's width, so its left-floated `li` children wrapped into a vertical stack.
+  - The footer inline lists on the same page already rendered horizontally, which isolated the failure to shrink-to-fit float sizing rather than generic inline or list layout.
+
+- Verification:
+  - clean host repro on `2026-04-11` after process cleanup, log cleanup, and a 28-second wait reproduced the vertical header nav before the fix in `debug_screenshot.png` and `dom_dump.txt`.
+  - clean host repro on `2026-04-11` after the fix now shows `Domains`, `Protocols`, `Numbers`, and `About` on one row, and `dom_dump.txt` reports a widened header `UL` (`303px`) with all four `LI` boxes sharing the same top coordinate.
+
+## 2.205 `font: inherit` Shorthand No Longer Reapplies Relative Sizes On Descendants (2026-04-11)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `ResolveStyle(...)` now treats `font: inherit` / inherited shorthand-wide keywords as an immediate copy of the parent's resolved font longhands (`font-size`, `font-family`, `font-weight`, `font-style`, `line-height`) instead of leaving room for the parent's authored shorthand to be re-parsed on descendants.
+  - `ApplyInheritedFontShorthand(...)` also removes stale `font` shorthand entries from the target map before longhand synthesis so relative authored values such as `2em sans-serif` cannot compound across `.intro *` descendant chains.
+
+- Why this mattered:
+  - The Acid2 intro page uses `.intro { font: 2em sans-serif }` together with `.intro * { font: inherit }`.
+  - Before this fix, descendant shorthand inheritance compounded the authored `2em` at each level, inflating the intro `<p>` copy and then inflating `<a>` descendants again, which produced oversized links, broken baselines, and spurious line wrapping on the landing page before the real face test.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CascadeModernTests.FontInheritShorthand_UsesResolvedParentLonghands|FullyQualifiedName~Acid2LayoutTests.Acid2Intro_CopyFitsOnSingleLineAfterFontInheritance" --logger "console;verbosity=minimal"`: pass on `2026-04-11`.
+  - clean host repro on `http://acid2.acidtests.org/` after process cleanup, log cleanup, Release rebuild, and a 28-second wait now renders the entire intro sentence on one line in `debug_screenshot.png`, with matching `28.8px` text boxes for both links and the intervening plain-text run in `dom_dump.txt`.
+
+## 2.206 Root `font` Shorthand Now Drives `rem` And Positioned `em` Used Values (2026-04-12)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Root-font capture now reads both `font-size` and root `font` shorthand declarations, so `_rootFontSize` tracks authored root font changes even when the stylesheet only uses `font: 12px sans-serif`.
+  - `ResolveStyle(...)` now preserves shorthand-derived `font-size` when no longhand `font-size` winner exists, and the late top/right/bottom/left synchronization pass now reuses the element's resolved font basis instead of silently falling back to `16px`.
+  - `ResolveStyle(...)` also short-circuits `font: inherit` / `font: unset` for the shorthand itself by copying resolved parent font longhands immediately, preventing descendants from reparsing an inherited authored shorthand against the wrong base.
+
+- Regression coverage:
+  - `FenBrowser.Tests/Engine/CascadeModernTests.cs`
+  - Added `FontShorthand_OnRoot_PreservesComputedFontSizeAndInheritedEmOffsets`.
+  - Added `FontShorthand_OnRoot_UpdatesRemBasisForDescendantLengths`.
+  - Re-verified `FontInheritShorthand_UsesResolvedParentLonghands`.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FontShorthand_OnRoot_PreservesComputedFontSizeAndInheritedEmOffsets" --logger "console;verbosity=minimal"`: pass on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FontShorthand_OnRoot_UpdatesRemBasisForDescendantLengths" --logger "console;verbosity=minimal"`: pass on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FontInheritShorthand_UsesResolvedParentLonghands" --logger "console;verbosity=minimal"`: pass on `2026-04-12`.
+
+## 2.207 Acid2 Face Layout No Longer Uses Atomic `OBJECT` Fallback And Unbounded Float Probes (2026-04-11)
+
+- `FenBrowser.FenEngine/Layout/ReplacedElementSizing.cs`
+  - Added `ShouldTreatAsAtomicReplacedElement(...)` and `ShouldUseObjectFallbackContent(...)` so `<object>` only stays atomic when Fen can directly render the payload; Acid2-style nested fallback objects now remain in the Box Tree instead of collapsing to the legacy `300x150` replaced fallback.
+
+- `FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`
+- `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/LayoutPositioningLogic.cs`
+  - Layout now routes fallback `<object>` nodes through normal inline/block child layout instead of replaced-element intrinsic sizing.
+  - Block float placement now reflows auto-width floats against the actual available inline band before final placement, which stops Acid2’s smile subtree from preserving an unconstrained probe width inside the floated `span/em` chain.
+
+- `FenBrowser.FenEngine/Layout/AbsolutePositionSolver.cs`
+  - Auto-width absolutely positioned boxes now clamp intrinsic probe widths to the remaining containing-block space in the cases where `left` and/or `right` are auto, preventing the earlier viewport-scale smile mouth expansion from being baked into absolute geometry.
+
+- Why this mattered:
+  - Before the fix, the Acid2 eye stack still showed `#eyes-a object` as a single replaced fallback and the smile subtree inherited an unconstrained float probe, producing a giant horizontal mouth bar and incorrect eye geometry.
+  - After the fix, the fresh host dump shows nested Acid2 object boxes (`131x24`, `90x30`, `96x24`) instead of the old `300x150` fallback, and the smile’s positioned subtree has collapsed from a `~1897px` inline run to a `97px` absolute box with a `73px` floated span. The remaining giant pink bar is now isolated to paint-phase behavior rather than the original layout explosion.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CascadeModernTests.FontInheritShorthand_UsesResolvedParentLonghands|FullyQualifiedName~Acid2LayoutTests.Acid2Intro_CopyFitsOnSingleLineAfterFontInheritance|FullyQualifiedName~Acid2LayoutTests.Acid2Eyes_ObjectFallbackClassificationMatchesNestedPayloads|FullyQualifiedName~Acid2LayoutTests.Acid2Smile_AbsoluteAutoWidthStaysWithinContainingBlock" --logger "console;verbosity=minimal"`: pass on `2026-04-11`.
+  - clean 28-second host repro on `http://acid2.acidtests.org/#top` on `2026-04-11` now records nested `OBJECT` boxes in `dom_dump.txt` and a contracted smile subtree in `layout_engine_debug.txt`; visual output in `debug_screenshot.png` still shows a remaining paint-path mouth overdraw.
+
+## 2.207 Acid2 Face Cascade And Positioned-Descendant Corrections (2026-04-11)
+
+- `FenBrowser.FenEngine/Layout/Contexts/TableFormattingContext.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/FormattingContext.cs`
+  - Added active-pipeline `display: table` handling for table/table-row/table-cell descendants so the Acid2 tail now forms one horizontal row instead of stacking mixed `LI` fragments vertically.
+
+- `FenBrowser.FenEngine/Layout/LayoutPositioningLogic.cs`
+- `FenBrowser.FenEngine/Layout/Contexts/LayoutBoxOps.cs`
+  - Final-pass absolute/fixed resolution now shifts in-flow descendants by the same solved delta instead of rewriting only the positioned ancestor box. This keeps children of positioned containers in the same coordinate space, which pulled `#eyes-b` / `#eyes-c` back inside the Acid2 eye strip.
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - Invalid later Acid2 declarations such as unitless `width: 200` and malformed `background: red pink` are now ignored at cascade time instead of replacing earlier valid values. This removed the `.parser` blowout that had been painting as the giant pink failure bar.
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Percentage `min-height` / `max-height` values now stay in `MinHeightPercent` / `MaxHeightPercent` instead of being downgraded to generic expressions. That lets block layout treat them as unresolved when the containing block height is indefinite, so Acid2's nose falls back to the authored `max-height` constraint instead of resolving `80%` against a viewport-scale height.
+
+- Why this mattered:
+  - Before these fixes, Acid2 face repros still had three independent blockers after the earlier object/smile work: the tail table was not a row, positioned descendants inside `.eyes` escaped toward page origin, and the `.nose` percent-min-height path inflated to a viewport-scale column.
+  - After the fixes, the live host dump shows `UL` tail cells at increasing horizontal X positions on one row, `#eyes-b` / `#eyes-c` inside the `.eyes` band, and `.nose` reduced from a `~753px` border box to `36px`. The page is still not an Acid2 pass, but those specific structural failures are no longer masking the remaining face defects.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~AbsolutePositionTests.ResolvePositionedBox_ShiftsInFlowDescendantsWithAbsoluteParent|FullyQualifiedName~CascadeModernTests.InvalidUnitlessWidth_DoesNotOverrideEarlierValidWidth|FullyQualifiedName~CascadeModernTests.InvalidBackgroundShorthand_DoesNotOverrideEarlierValidColor|FullyQualifiedName~CascadeModernTests.Acid2Nose_HeightConstraints_PreservePercentAndEmValues|FullyQualifiedName~CascadeModernTests.FloatInherit_UsesParentComputedFloatValue|FullyQualifiedName~Acid2LayoutTests.Acid2TableTail_UlDisplayTableFormsSingleHorizontalRow" --logger \"console;verbosity=minimal\"`: pass on `2026-04-11`.
+  - clean 28-second host repro on `http://acid2.acidtests.org/#top` on `2026-04-11` now shows the eye strip anchored inside the face container, the nose reduced to a short bounded column, and the parser failure bar gone from `debug_screenshot.png`; remaining smile/lower-face defects persist.
+  - `2026-04-12` phase-plan audit adjusted `CascadeModernTests.Acid2NestedObjectSelector_AppliesBackgroundAndPaddingToInnermostObject` to include the Acid2 root `html { font: 12px sans-serif; }` basis, keeping the micro-regression aligned with the real page before asserting `1em` object border width and nested-object background/padding results.
+
+## 2.208 Stylesheet Source Order Now Survives Async `<link>` Fetch And `@import` Expansion (2026-04-12)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Author stylesheet collection now walks `<style>` and `<link rel="stylesheet">` nodes in one DOM-order pass instead of batching all inline sheets before all external sheets.
+  - External-sheet and parsed-rule ordering is now normalized by `SourceOrder` before `@import` expansion and before final rule merge, so async fetch completion cannot reshuffle the cascade.
+  - Parsed-rule cache keys now include `SourceOrder`, which prevents stale cached rule lists from reusing the wrong `styleRule.Order` values across otherwise identical stylesheet text.
+  - `@import` fetches still run in parallel, but imported sheets are flattened back into authored order before the parent remainder sheet is appended.
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - Cascade diagnostics are now wired back to `DebugConfig.LogCssCascade` instead of always-on logging.
+  - When enabled, the engine logs the final post-expansion stylesheet order and the winning declaration key per property (`origin`, `important`, `layer`, `scope`, `specificity`, `order`, `declaration order`, and selector text) for each element cascade pass.
+  - Rule matching now records declaration order from the declaration's position inside its own rule instead of using the global match-accumulation index, keeping same-rule winner keys stable across repeated passes and preventing unrelated earlier matches from perturbing tie-breaks.
+  - The phase-2 wiring pass also restored the `StyleSet -> CascadeEngine` typed origin handoff (`Author` / `UserAgent`) and repaired the broken `TryMatchRule(...)` block structure so the cascade pipeline can compile and run again with source-order diagnostics enabled.
+
+- Why this mattered:
+  - The phase-plan audit exposed a real cascade bug: a faster external `<link>` could be appended after collection and then renumbered during import expansion, causing it to override a later inline `<style>` even when DOM order said the inline sheet should win.
+  - That is spec-wrong for both interleaved `<style>/<link>/<style>` documents and multi-import sheets whose fetch timings differ from their authored sequence.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CascadeModernTests.TestLayerPriority|FullyQualifiedName~CascadeModernTests.TestImportantLayerPriority|FullyQualifiedName~CascadeModernTests.TestScopeProximity|FullyQualifiedName~CascadeModernTests.InterleavedStyleAndLinkSheets_PreserveDomSourceOrder|FullyQualifiedName~CascadeModernTests.ImportedStylesheets_PreserveAuthoredImportOrder" --logger "console;verbosity=minimal"`: pass on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CascadeModernTests.InterleavedStyleAndLinkSheets_PreserveDomSourceOrder|FullyQualifiedName~CascadeModernTests.ImportedStylesheets_PreserveAuthoredImportOrder" --logger "console;verbosity=minimal"`: pass on `2026-04-12`.
+
+## 2.209 Phase-4 Acid2 Height/Float Corrections For Nose And Smile (2026-04-12)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Border-side shorthand width extraction now preserves explicit zero values (`border-top: 0`, `border-left: 0`, etc.) instead of ignoring them as "unset."
+  - Side-specific border resolution now uses `TryExtractBorderSideWidth(...)` so authored zero-width side overrides correctly replace shorthand-derived widths.
+  - This closes the Acid2 nose path where `border-top: 0` was being dropped and top border width incorrectly stayed at `1em`.
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Auto-height min/max clamping for block formatting contexts now uses resolved geometry border/padding extents (not shorthand-derived style aggregates), keeping max-height fallback behavior stable when side overrides (such as zero top border) are present.
+  - Shrink-to-fit width measurement now avoids collapsing floated boxes to narrower descendant widths; floated margin-box occupancy remains the controlling width signal for the relayout pass.
+  - This keeps Acid2 smile/upper-frame absolute float chains from being reflowed into a second vertical band during probe-width shrink passes.
+
+- Why this mattered:
+  - Acid2 nose percent-height fallback required `border-top: 0` to actually zero the top side before max-height clamping.
+  - Acid2 smile and upper-frame positioned float chains were being over-shrunk by descendant-width substitution, which pushed right floats downward and broke expected vertical anchoring.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests" --logger "console;verbosity=minimal"`: pass (`75/75`) on `2026-04-12`.
+
+## 2.210 Phase-5/6 Layout-Tree Rooting And Float Constraint Consistency (2026-04-12)
+
+- `FenBrowser.FenEngine/Layout/LayoutEngine.cs`
+  - `ComputeLayout(...)` now normalizes `Document` roots to the renderable root node (`documentElement` fallback to `firstChild`) before box-tree construction.
+  - This restores layout-root materialization for document-driven calls and unblocks fixed-position geometry assertions that previously returned `null` layout results when the caller passed `Document`.
+
+- `FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`
+  - Added explicit `Document` traversal support in `ConstructBox(...)` so box construction can recurse through document children instead of only element/text node entry points.
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Reinstated full in-flow float exclusion placement for block children:
+    - explicit-width blocks advance to the next float band when required inline width does not fit,
+    - auto-width blocks relayout into narrowed float-reduced bands.
+  - Added out-of-flow auto-width exception during shrink-wrap (`absolute/fixed` auto-width containers) so in-flow block siblings in that context do not get spuriously pushed below preceding floats.
+  - This preserves Acid2 eyes-layer top alignment while still keeping generic float-band constraint behavior correct in normal flow.
+
+- Why this mattered:
+  - Phase-5 layout-input correctness required document-root layout-tree construction and correct out-of-flow participation.
+  - Phase-6 constraint behavior required deterministic float-band width/placement logic that applies consistently across explicit-width and auto-width block paths without regressions in positioned auto-width shrink-wrap scenarios.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~Acid2LayoutTests" --logger "console;verbosity=minimal"`: pass (`58/58`) on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests" --logger \"console;verbosity=minimal\"`: pass (`97/97`) on `2026-04-12`.
+
+## 2.211 Phase-7/8 Gate Verification (Positioned Layout + `<object>` Fallback) (2026-04-12)
+
+- Scope:
+  - Phase 7 (`Out-of-flow positioning`) and Phase 8 (`Replaced elements / object fallback`) were re-verified against the active layout and rendering suites after the Phase-5/6 tranche.
+  - No additional code changes were required in this checkpoint; existing positioning and object-fallback implementations remained stable under the expanded gate.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~Acid2PropertiesTests" --logger "console;verbosity=minimal"`: pass (`52/52`) on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~Acid2PropertiesTests" --logger "console;verbosity=minimal"`: pass (`115/115`) on `2026-04-12`.
+
+## 2.212 Phase-9/10 Gate Verification (Layout Output Immutability + Paint/Display Determinism) (2026-04-12)
+
+- Scope:
+  - Phase 9 (`Immutable fragment/layout output`) and Phase 10 (`Display-list / paint determinism`) were validated through the existing immutability and paint stability suites.
+  - No code changes were required in this tranche; current layout output + paint paths already satisfy the defined regression gates.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~PlatformInvariantTests|FullyQualifiedName~PaintDamageTrackerTests|FullyQualifiedName~PaintCompositingStabilityControllerTests|FullyQualifiedName~PaintTreeScrollIntegrationTests|FullyQualifiedName~PaintTreeTextColorTests|FullyQualifiedName~CompositingStressTests|FullyQualifiedName~Acid2PropertiesTests" --logger "console;verbosity=minimal"`: pass (`56/56`) on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~Acid2PropertiesTests|FullyQualifiedName~PlatformInvariantTests|FullyQualifiedName~PaintDamageTrackerTests|FullyQualifiedName~PaintCompositingStabilityControllerTests|FullyQualifiedName~PaintTreeScrollIntegrationTests|FullyQualifiedName~PaintTreeTextColorTests|FullyQualifiedName~CompositingStressTests" --logger "console;verbosity=minimal"`: pass (`151/151`) on `2026-04-12`.
+
+## 2.213 Phase-11/12 Gate Verification (Background Fixed Attachment + Invalidation/Incremental Paths) (2026-04-12)
+
+- Scope:
+  - Phase 11 (`Background system`, especially `background-attachment: fixed`) and Phase 12 (`Invalidation and incremental updates`) were validated through CSS/background, paint-tree, telemetry, and mutation invalidation test suites.
+  - No additional code changes were required in this tranche; existing behavior satisfies the phase gates.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~Acid2PropertiesTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DomMutationQueueTests|FullyQualifiedName~DomMutationBatchingTests|FullyQualifiedName~PlatformInvariantTests|FullyQualifiedName~PaintCompositingStabilityControllerTests|FullyQualifiedName~CompositingStressTests|FullyQualifiedName~ElementStateManagerTests" --logger "console;verbosity=minimal"`: pass (`84/84`) on `2026-04-12`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~Acid2PropertiesTests|FullyQualifiedName~PlatformInvariantTests|FullyQualifiedName~PaintDamageTrackerTests|FullyQualifiedName~PaintCompositingStabilityControllerTests|FullyQualifiedName~PaintTreeScrollIntegrationTests|FullyQualifiedName~PaintTreeTextColorTests|FullyQualifiedName~CompositingStressTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DomMutationQueueTests|FullyQualifiedName~DomMutationBatchingTests|FullyQualifiedName~ElementStateManagerTests" --logger "console;verbosity=minimal"`: pass (`171/171`) on `2026-04-12`.
+
+## 2.214 Full Phase-Plan Closure Audit (Step-2 Diagnostics + Step-3 Acceptance Checklist) (2026-04-12)
+
+- Step 2 (Fen loop diagnostics, 30-second host run):
+  - Process cleanup + log cleanup executed, then host run was held for 30 seconds (`host_pid=15468`).
+  - `debug_screenshot.png` verified at `FenBrowser.Host/bin/Debug/net8.0/debug_screenshot.png` (Google home rendered; no visual corruption on this run).
+  - Raw source verified at `logs/raw_source_20260412_212959.html` (`https://www.google.com/`, ~202 KB).
+  - DOM dump verified at `dom_dump.txt` (Google DOM parsed and materialized; root/head/body tree present).
+  - Module log verified at `logs/fenbrowser_20260412_212958.log` (navigation/render pipeline completed; no fatal errors in sampled run).
+  - Environment note: AGENTS fallback path `C:\Users\udayk\Videos\FENBROWSER\logs` does not exist in this workspace; active diagnostics were produced under `C:\Users\udayk\Videos\fenbrowser-test\logs`.
+
+- Step 3 (acceptance criteria checklist by phase):
+  - `P1`: pass (`32/32`) via tokenizer/syntax/parser-recovery + acid parser stress related coverage.
+  - `P2`: pass (`5/5`) via stylesheet source-order/import-order/layer/scope cascade tests.
+  - `P3`: pass (`3/3`) via root `font` shorthand + inherit/rem/em computed-style basis tests.
+  - `P4`: pass (`26/26`) via absolute positioning + height/constraint resolver + Acid2 nose basis checks.
+  - `P5`: pass (`14/14`) via layout-engine positioning + table integration + replaced sizing.
+  - `P6`: pass (`10/10`) via BFC float/relayout/stability + constraint coverage.
+  - `P7`: pass (`8/8`) via positioned-layout suites.
+  - `P8`: pass (`10/10`) via replaced element/object-fallback suites.
+  - `P9`: pass (`19/19`) via layout stability + platform immutability suites.
+  - `P10`: pass (`19/19`) via paint damage/compositing stability/paint-tree determinism suites.
+  - `P11`: pass (`6/6`) via fixed-background attachment and background shorthand-expansion suites.
+  - `P12`: pass (`23/23`) via telemetry + mutation invalidation + batching + state manager suites.
+  - Cumulative gate remains pass (`171/171`).

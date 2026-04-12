@@ -99,6 +99,11 @@ The browser employs a **Sharded 2-Level Cache**:
 
 Based strictly on the **HTML5 Parsing Specification**.
 
+### 4.0 Parser Hot-Path Logging Guard (2026-04-13)
+
+- `HtmlTreeBuilder.ProcessToken(...)` no longer emits temporary token-level parse traces on the default path.
+- The trace path is now gated by `DebugConfig.LogHtmlParse`, preserving targeted diagnostics without forcing high-volume `HtmlParsing` log I/O during normal navigation.
+
 ### 4.1 HtmlTokenizer
 
 - Converts a stream of characters into `HtmlToken` objects (StartTag, EndTag, Character, Comment).
@@ -115,7 +120,12 @@ Based strictly on the **HTML5 Parsing Specification**.
   - legacy prefix behavior is preserved for compatibility (`&notanentity;` -> `Â¬anentity;`).
 - **Tokenizer Safety Limits (2026-02-26)**:
   - `HtmlTokenizer` now exposes `MaxTokenEmissions` (default `2,000,000`) and force-emits EOF when the cap is reached to prevent pathological unbounded token streams.
-  - `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
+- `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
+- `HtmlParser` now aligns parsed document URL state by setting both `Document.URL` and `Document.BaseURI` from the active parser base URI, so detached nodes created from that document inherit correct URL-resolution context.
+- `Document.CreateElementNS(...)` now validates qualified names and namespace/prefix combinations closely enough to reject malformed names and illegal namespace usage with the correct DOMException class for the Acid3 namespace tranche.
+- **Comment-State Recovery Hardening (2026-04-09)**:
+  - `HtmlTokenizer` now exits the HTML comment family of states without truncating the rest of the document stream, which restores parser continuity for long script-heavy pages that mix comments and later executable markup.
+  - This unblocked full Acid3 source ingestion where the harness previously collapsed to an almost-empty DOM after the early comment/script region.
 
 ### 4.2 HtmlTreeBuilder
 
