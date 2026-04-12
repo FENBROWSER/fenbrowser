@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             if (context.Style != null) LayoutHelpers.ApplyContainerWidthConstraints(context.Style, writingMode, inlineOffset, ref logicalAvailableInline);
             
             var className = element?.GetAttribute("class");
-            if (element != null && element.TagName == "DIV")
+            if (element != null && element.TagName == "DIV" && DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
                 FenLogger.Info($"[STYLE-DEBUG] Element {element.TagName}.{className}: Width={context.Style?.Width}, MaxWidth={context.Style?.MaxWidth}, TextAlign={context.Style?.TextAlign}, AvailableInline={logicalAvailableInline}", LogCategory.Layout);
             }
@@ -510,7 +510,10 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                         context.Computer.RegisterTextLines(node, lines);
                         
                         // Fix: Ensure BoxModel is created for text node so renderer can find it
-                        FenBrowser.Core.FenLogger.Info($"[ARRANGE-TEXT-DEBUG] Node={node} FinalRect={finalRect} BlockOffset={blockOffset} LineCount={lines.Count} FirstLineY={(lines.Count>0?lines[0].Origin.Y:-999)}", FenBrowser.Core.Logging.LogCategory.Layout);
+                        if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
+                        {
+                            FenBrowser.Core.FenLogger.Info($"[ARRANGE-TEXT-DEBUG] Node={node} FinalRect={finalRect} BlockOffset={blockOffset} LineCount={lines.Count} FirstLineY={(lines.Count>0?lines[0].Origin.Y:-999)}", FenBrowser.Core.Logging.LogCategory.Layout);
+                        }
                         context.Computer.ArrangeText(node, finalRect); // finalRect is ContentBox
                     }
 
@@ -593,24 +596,15 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                         }
 
                         // Placement
-                        // Need float X relative to border box
+                        // finalRect is already the parent content box, so float placement
+                        // must stay in that coordinate space and must not re-add padding/border.
                         float startInline = 0;
-                         if (context.Style != null) 
-                        {
-                             var logPadding = WritingModeConverter.ToLogicalMargin(context.Style.Padding, writingMode);
-                             var logBorder = WritingModeConverter.ToLogicalMargin(context.Style.BorderThickness, writingMode);
-                             startInline = logPadding.InlineStart + logBorder.InlineStart;
-                        }
 
                         float floatX = (childStyle?.Float?.ToLowerInvariant() == "right") 
                                      ? (logicalAvailableInline - floatInlineCursor - fullChildInline) 
                                      : floatInlineCursor;
                         
-                        // Abs X = finalRect.Left + startInline + floatX + MarginLeft (logic)
-                        // Note: floatX logic above assumed content box relative.
-                        // For 'Left': floatX = floatInlineCursor.
-                        // If floatInlineCursor = 0, floatX = 0.
-                        // AbsX = finalRect.Left + startInline + 0 + MarginLeft.
+                        // Abs X = finalRect.Left + floatX + MarginLeft (logical).
                         
                         float absY = finalRect.Top + logicalCurBlock + logicalMargin.BlockStart; // Top margin
                         float absX = finalRect.Left + startInline + floatX + logicalMargin.InlineStart;

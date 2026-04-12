@@ -47,6 +47,12 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Render Loop**:
   - `RecordFrame()`: Engine produces a paint tree (Background thread).
   - `Render()`: Host draws the paint tree to the canvas (UI thread).
+- **Frame Transition Logging Guard (2026-04-13)**:
+  - `BrowserIntegration.RecordFrame()` no longer emits `[TRANSITION]` layout logs on every repaint by default.
+  - The transition log is now gated behind `DebugConfig.EnableDeepDebug && DebugConfig.LogFrameTiming`, removing high-frequency synchronous log pressure from normal navigation while preserving targeted tracing in deep debug runs.
+- **Visited-State Bridge (2026-04-10)**:
+  - `BrowserApi` now records successful request URLs into the shared `ElementStateManager` visited-url store so selector recascade can honor `:visited` / `:link` transitions driven by top-level and resource fetches.
+  - The Host still drives recascade through the existing `ElementStateManager.OnStateChanged += _ => _engine.ScheduleRecascade()` subscription, so selector-state changes remain on the established host-engine handoff path rather than introducing a parallel invalidation channel.
 - **Input Resilience (2026-02-07)**:
   - Click activation/link handling fallback is executed in the authoritative `HandleMouseUp(... emitClick)` path using the same hit-test result (`result.NativeElement`), so web-content pointer routing remains correct even when `HandleClick(...)` is bypassed by widget-level down/up flow.
   - `HandleMouseUp(... emitClick)` now falls back to the last stable hover hit when release-time hit test is transiently null, so links/controls still activate during pointer-target flicker.
@@ -815,6 +821,20 @@ _End of Volume IV_
     - animation/timer
     - diagnostics
     - interaction
+
+### 6.42 Host Dom-Poller Settling Guard (2026-04-11)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - The host DOM poller no longer keeps re-adopting late root/style snapshot churn once a styled frame has already been committed for the current navigation.
+  - `_hasFirstStyledRender` is now promoted at the successful frame-commit point instead of relying only on `root.ComputedStyle`, so the host can reliably recognize that a page has reached its first styled steady state.
+  - The poller remains available as a bootstrap/recovery path when root/style state is genuinely missing, but it stands down for settled documents instead of forcing additional `Dom, Style, Diagnostics` relayouts.
+- Why this mattered:
+  - On `https://example.com/`, the old poller path was still issuing late `BrowserIntegration.DomPoller` full frames long after first paint. That caused the page to visibly jump to a different layout position several seconds after load, which users could mistake for a mouse-hover repaint bug.
+  - A settled static document must not relayout simply because the host observed a new snapshot object reference.
+- Verification:
+  - Clean-state host repro on `2026-04-11` with `dotnet run --project FenBrowser.Host -- https://example.com/` and a 32-second wait no longer emitted late `BrowserIntegration.DomPoller` frame commits in the fresh `logs/fenbrowser_*.jsonl`.
+  - Fresh `debug_screenshot.png` stayed visually stable for the `example.com` centered content layout after first paint.
+  - Follow-up host-side hover hardening in `FenBrowser.FenEngine/Rendering/BrowserApi.cs` now ignores passive `html` / `body` / non-actionable container hover targets when normalizing mousemove hover state, so stationary pointer drift over centered content does not keep re-triggering full recascade/repaint churn on static pages like `example.com`.
   - `RecordFrame(...)` now seeds the last committed frame into the renderer when `BaseFrameReusePolicy` says reuse is safe, which turns reusable-frame behavior into a real steady-state production path.
   - The committed page frame is now kept separate from transient overlays/highlights:
     - the page frame stays reusable

@@ -63,6 +63,8 @@ public class BrowserIntegration
     
     private string _overrideUrl;
     private Element? _highlightedElement;
+    private string _pendingFragmentTargetId;
+    private string _pendingFragmentSourceUrl;
     
     // Safety Net: Polls for DOM updates if events are missed
     private System.Threading.Timer _domPoller;
@@ -133,6 +135,7 @@ public class BrowserIntegration
         // Wire browser events
         _browser.Navigated += (s, e) => 
         {
+            UpdatePendingFragmentNavigation(e);
             if (_overrideUrl == null)
             {
                 UrlChanged?.Invoke(CurrentUrl);
@@ -195,19 +198,41 @@ public class BrowserIntegration
                 var actualStyles = snapshot.Styles;
                 
                 bool needsSync = false;
+                bool localStylesMissing = _styles == null || _styles.Count == 0;
+                bool committedStyledFrameReady = _hasFirstStyledRender && HasCommittedFrame();
+
+                if (committedStyledFrameReady && _root != null && !localStylesMissing)
+                {
+                    return;
+                }
+
+                bool rootChanged = actualDom != null && actualDom != _root;
+                bool actualStylesReady = actualStyles != null && actualStyles.Count > 0;
                 
                 // Sync DOM if changed
-                if (actualDom != null && actualDom != _root)
+                if (rootChanged)
                 {
                     _root = actualDom;
                     needsSync = true;
                 }
                 
-                // Sync Styles if changed or if we have DOM but no styles
-                if (actualStyles != null && (_styles == null || _styles.Count == 0 || actualStyles != _styles))
+                // Bootstrap-time healing still adopts polled styles aggressively, but once a
+                // styled frame has committed we must not treat late dictionary reference churn
+                // as a real content change for the same settled root.
+                bool shouldAdoptPolledStyles =
+                    actualStylesReady &&
+                    (rootChanged || localStylesMissing || !_hasFirstStyledRender);
+
+                if (shouldAdoptPolledStyles && !ReferenceEquals(actualStyles, _styles))
                 {
                     _styles = actualStyles;
                     needsSync = true;
+                }
+                else if (!rootChanged && committedStyledFrameReady && actualStylesReady && !ReferenceEquals(actualStyles, _styles))
+                {
+                    FenLogger.Debug(
+                        "[BrowserIntegration] DomPoller ignored late style snapshot churn after first styled render.",
+                        LogCategory.Rendering);
                 }
                 
                 if (needsSync)
@@ -777,6 +802,20 @@ public class BrowserIntegration
 
         return url;
     }
+
+    private void UpdatePendingFragmentNavigation(Uri uri)
+    {
+        var fragment = uri?.Fragment;
+        if (string.IsNullOrWhiteSpace(fragment) || fragment == "#")
+        {
+            _pendingFragmentTargetId = null;
+            _pendingFragmentSourceUrl = null;
+            return;
+        }
+
+        _pendingFragmentTargetId = fragment.TrimStart('#');
+        _pendingFragmentSourceUrl = uri.AbsoluteUri;
+    }
     
     /// <summary>
     /// Navigate back in history.
@@ -951,7 +990,10 @@ public class BrowserIntegration
         // === DOM → Layout → Paint → Present pipeline ===
         // Note: SkiaDomRenderer.Render() manages its own PipelineContext frame scope internally,
         // so we don't wrap with scoped stages here to avoid nested frame conflicts.
-        FenLogger.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
+        if (FenBrowser.Core.Logging.DebugConfig.EnableDeepDebug && FenBrowser.Core.Logging.DebugConfig.LogFrameTiming)
+        {
+            FenLogger.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
+        }
 
         try
         {
@@ -988,6 +1030,17 @@ public class BrowserIntegration
                 viewport.Right,
                 viewport.Bottom + _scrollY
             );
+
+            // Keep the engine's root viewport scroll state synchronized with the Host's
+            // outer document scroll so fixed-position/fixed-background paint logic uses
+            // the same viewport origin as the recorded frame.
+            _renderer.ScrollManager.SetScrollBounds(
+                null,
+                viewportSize.Width,
+                Math.Max(_contentHeight, viewportSize.Height),
+                viewportSize.Width,
+                viewportSize.Height);
+            _renderer.ScrollManager.SetScrollPosition(null, 0, _scrollY);
 
             List<InputOverlayData> frameOverlays = new();
             canvas.Save();
@@ -1028,9 +1081,18 @@ public class BrowserIntegration
                 _lastCommittedFrameScrollY = _scrollY;
             }
 
-            LogCommittedFrame(frameResult, viewportSize);
+            if (_styles != null && _styles.Count > 0)
+            {
+                _hasFirstStyledRender = true;
+            }
 
-            ClearPendingFrameRequest();
+            LogCommittedFrame(frameResult, viewportSize);
+            bool requestedFollowupFrame = TryApplyPendingFragmentNavigation();
+
+            if (!requestedFollowupFrame)
+            {
+                ClearPendingFrameRequest();
+            }
             NeedsRepaint?.Invoke();
         }
         catch (Exception ex)
@@ -1128,6 +1190,61 @@ public class BrowserIntegration
         entry.Data["textMeasureEvictions"] = textMeasureCache.EvictionCount;
 
         LogManager.Log(entry);
+    }
+
+    private bool TryApplyPendingFragmentNavigation()
+    {
+        if (string.IsNullOrWhiteSpace(_pendingFragmentTargetId) ||
+            string.IsNullOrWhiteSpace(_pendingFragmentSourceUrl) ||
+            _root == null)
+        {
+            FenLogger.Info(
+                $"[FragmentNav] Skipped: target='{_pendingFragmentTargetId ?? "<null>"}' source='{_pendingFragmentSourceUrl ?? "<null>"}' root={_root?.TagName ?? "<null>"}",
+                LogCategory.Navigation);
+            return false;
+        }
+
+        if (!string.Equals(CurrentUrl, _pendingFragmentSourceUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            FenLogger.Info(
+                $"[FragmentNav] Skipped: currentUrl='{CurrentUrl}' pendingUrl='{_pendingFragmentSourceUrl}'",
+                LogCategory.Navigation);
+            return false;
+        }
+
+        var target = FindElementById(_root, _pendingFragmentTargetId);
+        if (target == null)
+        {
+            FenLogger.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' not found", LogCategory.Navigation);
+            return false;
+        }
+
+        var rect = GetElementRect(target);
+        if (!rect.HasValue)
+        {
+            FenLogger.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' has no layout box yet", LogCategory.Navigation);
+            return false;
+        }
+
+        float viewportHeight = Math.Max(1f, _lastViewportSize.Height);
+        float maxScroll = Math.Max(0f, _contentHeight - viewportHeight);
+        float targetScroll = Math.Max(0f, Math.Min(maxScroll, rect.Value.Top));
+
+        _pendingFragmentTargetId = null;
+        _pendingFragmentSourceUrl = null;
+
+        if (Math.Abs(targetScroll - _scrollY) <= 0.5f)
+        {
+            FenLogger.Info($"[FragmentNav] No-op: '#{_pendingFragmentTargetId}' targetScroll={targetScroll:F1} current={_scrollY:F1}", LogCategory.Navigation);
+            return false;
+        }
+
+        _scrollY = targetScroll;
+        _scrollPhysics.SetPosition(_scrollY);
+        ScrollChanged?.Invoke(_scrollY, _contentHeight);
+        FenLogger.Info($"[FragmentNav] Applied '#{target.Id}' -> scrollY={_scrollY:F1}", LogCategory.Navigation);
+        RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Navigation, "BrowserIntegration.FragmentNavigation");
+        return true;
     }
 
     private bool HasCommittedFrame()

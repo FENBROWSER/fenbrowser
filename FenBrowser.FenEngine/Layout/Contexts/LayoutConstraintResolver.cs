@@ -62,9 +62,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 source = "emergency-fallback";
             }
 
-            if (DebugConfig.LogLayoutConstraints ||
-                !string.Equals(source, "available", StringComparison.Ordinal) ||
-                (IsFinitePositive(rawAvailable) && rawAvailable <= 32f && resolved != rawAvailable))
+            if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
                 FenBrowser.Core.FenLogger.Info(
                     $"[LAYOUT-CONSTRAINT] {owner} Raw={Format(rawAvailable)} Resolved={resolved:0.###} Source={source} CB={Format(containingBlock)} VP={Format(viewport)}",
