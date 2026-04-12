@@ -70,6 +70,15 @@ namespace FenBrowser.FenEngine.Scripting
                 IsWorkerScriptUriAllowed);
             DocumentWrapper.CookieReadBridge = scope => GetCookieString(scope);
             DocumentWrapper.CookieWriteBridge = (scope, cookieString) => SetCookieString(scope, cookieString);
+            ElementWrapper.EventDispatchBridge = (element, eventName) =>
+            {
+                if (element == null || string.IsNullOrWhiteSpace(eventName) || _fenRuntime == null)
+                {
+                    return;
+                }
+
+                DispatchEvent(element, eventName, new DomEvent(eventName, false, false, false, _fenRuntime.Context));
+            };
             TryLogDebug("[JavaScriptEngine] Constructor: InitRuntime Done");
             SetupMutationObserver();
             // Legacy mini runtime removed.
@@ -512,6 +521,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: false, atTargetPhase: true);
                 }
+                InvokeInlineEventAttributeHandler(target, eventName, domEvent);
                 return;
             }
 
@@ -563,6 +573,56 @@ namespace FenBrowser.FenEngine.Scripting
                         FenLogger.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
                     }
                 }
+            }
+
+            InvokeInlineEventAttributeHandler(target, eventName, eventArgs);
+        }
+
+        private void InvokeInlineEventAttributeHandler(object target, string eventName, FenObject eventArgs = null)
+        {
+            if (_fenRuntime == null || string.IsNullOrWhiteSpace(eventName))
+            {
+                return;
+            }
+
+            var normalizedTarget = NormalizeEventTargetKey(target);
+            if (normalizedTarget is not Element element)
+            {
+                return;
+            }
+
+            var inlineHandler = element.GetAttribute("on" + eventName.ToLowerInvariant());
+            if (string.IsNullOrWhiteSpace(inlineHandler))
+            {
+                return;
+            }
+
+            var targetValue = DomWrapperFactory.Wrap(element, _fenRuntime.Context);
+            var previousEvent = _fenRuntime.GetGlobal("event");
+            var previousThis = _fenRuntime.GetGlobal("__fen_inline_this");
+            var eventObject = eventArgs as DomEvent ?? new DomEvent(eventName, false, false, false, _fenRuntime.Context);
+
+            try
+            {
+                if (targetValue.IsObject)
+                {
+                    eventObject.Target = element;
+                    eventObject.CurrentTarget = element;
+                    eventObject.UpdateJsProperties(_fenRuntime.Context);
+                }
+
+                _fenRuntime.SetGlobal("event", FenValue.FromObject(eventObject));
+                _fenRuntime.SetGlobal("__fen_inline_this", targetValue.IsUndefined ? FenValue.Null : targetValue);
+                RunInline($"(function(){{{inlineHandler}}}).call(__fen_inline_this);", _ctx, eventName, element.TagName?.ToLowerInvariant() ?? "element");
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[InlineEvent] Failed to execute inline {eventName} handler on <{element.TagName}>: {ex.Message}", LogCategory.JavaScript);
+            }
+            finally
+            {
+                _fenRuntime.SetGlobal("event", previousEvent is FenValue previousEventValue ? previousEventValue : FenValue.Undefined);
+                _fenRuntime.SetGlobal("__fen_inline_this", previousThis is FenValue previousThisValue ? previousThisValue : FenValue.Undefined);
             }
         }
 
@@ -3869,6 +3929,20 @@ namespace FenBrowser.FenEngine.Scripting
                                 
                                 if (!string.IsNullOrWhiteSpace(code))
                                 {
+                                    if (!string.IsNullOrEmpty(src) &&
+                                        RuntimeProfile.DeferOversizedExternalPageScripts &&
+                                        RuntimeProfile.OversizedExternalPageScriptBytes > 0 &&
+                                        code.Length >= RuntimeProfile.OversizedExternalPageScriptBytes)
+                                    {
+                                        FenLogger.Warn(
+                                            $"[JS-EXEC] Deferred oversized external script during initial load: source={srcInfo} length={code.Length}",
+                                            LogCategory.JsExecution);
+                                        DiagnosticPaths.AppendRootText(
+                                            "js_debug.log",
+                                            $"[ScriptDeferred] Oversized external page script deferred: Length={code.Length}, Info={srcInfo}\n");
+                                        DispatchEvent(el, "load");
+                                        continue;
+                                    }
                                     // SRI check ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â external scripts with an integrity attr must match before execution
                                     if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
                                     {
@@ -3972,6 +4046,8 @@ namespace FenBrowser.FenEngine.Scripting
                         // load phase
                         docWrapper.SetReadyState("complete");
                         var window = _fenRuntime.GetGlobal("window").AsObject();
+                        InvokeDocumentBodyInlineLoadHandler(docWrapper);
+                        DispatchInitialIframeLoadEvents(domRoot);
                         DispatchEvent(window, "load", new DomEvent("load"));
                     }
                 }
@@ -4120,6 +4196,43 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             documentWrapper.Set("currentScript", value.IsUndefined ? FenValue.Null : value, _fenRuntime?.Context);
+        }
+
+        private void InvokeDocumentBodyInlineLoadHandler(DocumentWrapper documentWrapper)
+        {
+            if (documentWrapper == null || _fenRuntime == null)
+            {
+                return;
+            }
+
+            var bodyValue = documentWrapper.Get("body", _fenRuntime.Context);
+            if (!bodyValue.IsObject)
+            {
+                return;
+            }
+
+            var bodyWrapper = bodyValue.AsObject() as ElementWrapper;
+            var bodyElement = bodyWrapper?.Element;
+            if (bodyElement == null)
+            {
+                return;
+            }
+
+            InvokeInlineEventAttributeHandler(bodyElement, "load", new DomEvent("load", false, false, false, _fenRuntime.Context));
+        }
+
+        private void DispatchInitialIframeLoadEvents(Node domRoot)
+        {
+            if (domRoot == null)
+            {
+                return;
+            }
+
+            foreach (var iframe in domRoot.Descendants().OfType<Element>()
+                         .Where(node => string.Equals(node.TagName, "iframe", StringComparison.OrdinalIgnoreCase)))
+            {
+                DispatchEvent(iframe, "load", new DomEvent("load", false, false, false, _fenRuntime.Context));
+            }
         }
 
         // Backward compatibility wrapper (deprecated)
