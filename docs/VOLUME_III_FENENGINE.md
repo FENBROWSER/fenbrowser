@@ -136,6 +136,17 @@ flowchart TD
   - before: first `RenderAsync CSS loading complete` at ~`22s` after navigation start (plus an observed single-script parse block of ~`10s` in prior run),
   - after: first rendered output at ~`4.8s` with CSS parse budget warning at `3500ms`, and oversized Google external script deferred instead of blocking initial render.
 
+### 2.6.3 Acid2 Cascade/Layout Corrections (2026-04-13)
+
+- `CssLoader.ResolveStyle(...)` now treats `font: inherit` as inherited computed font data (absolute `px` + inherited family) instead of re-applying relative shorthand units against the child `em` base; this prevents inherited intro text from compounding to oversized multi-line blocks (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- Background shorthand projection now maps `background-attachment` and `background-repeat` fallback values from the shorthand string when longhands are omitted (for example `background: fixed url(...)` and `background: ... no-repeat fixed`), aligning computed fields used by Acid2 eye/chin paint paths (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `%` `min-height`/`max-height` now populate typed percent fields (`MinHeightPercent` / `MaxHeightPercent`) instead of expression strings, preventing viewport-fallback expression evaluation from inflating auto-height constrained boxes (Acid2 nose path) (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- Regression validation:
+  - `FenBrowser.Tests.Layout.Acid2LayoutTests.Acid2Intro_CopyFitsOnSingleLineAfterFontInheritance`
+  - `FenBrowser.Tests.Layout.Acid2LayoutTests.Acid2Nose_PercentageHeightFallsBackToMaxHeightInsideAutoHeightFace`
+  - `FenBrowser.Tests.Rendering.Acid2PropertiesTests.Acid2EyeAndChin_BackgroundShorthands_ResolveComputedBackgroundFields`
+  - `dotnet test --filter FullyQualifiedName~Acid2` -> 38/38 pass on updated build.
+
 ### 2.7 Acid3 Rendering Hardening (2026-04-10)
 
 - `ElementStateManager` now tracks resolved visited URLs and exposes `IsVisited(...)` for selector engines, including the current synthetic-iframe fallback used by FenBrowser's in-process frame model (`FenBrowser.FenEngine/Rendering/ElementStateManager.cs`).
