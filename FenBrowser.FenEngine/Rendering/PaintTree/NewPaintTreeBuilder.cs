@@ -1412,7 +1412,17 @@ namespace FenBrowser.FenEngine.Rendering
             var rects = new List<SKRect>();
             CollectContentRects(node, rects);
             
-            if (rects.Count == 0) return null;
+            if (rects.Count == 0)
+            {
+                if (_boxes.TryGetValue(node, out var ownBox))
+                {
+                    rects.Add(ownBox.BorderBox);
+                }
+                else
+                {
+                    return null;
+                }
+            }
             
             // 2. Group by Line (Y) - approximate using helper
             var lines = GroupRectsByLine(rects);
@@ -2038,13 +2048,34 @@ namespace FenBrowser.FenEngine.Rendering
                 );
             }
 
+            var clipBounds = ResolveBackgroundPaintBounds(box, style);
+            var origin = ResolveBackgroundOriginPoint(box, style);
+            var position = ResolveBackgroundPosition(style?.BackgroundPosition, clipBounds, bitmap, origin);
+            var (tileModeX, tileModeY) = ResolveBackgroundTileModes(style?.BackgroundRepeat);
+
+            float fixedOriginX = 0;
+            float fixedOriginY = 0;
+            if (string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                var viewportScroll = _scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                fixedOriginX = viewportScroll.x;
+                fixedOriginY = viewportScroll.y;
+            }
+
             return new ImagePaintNode
             {
-                Bounds = box.PaddingBox,
+                Bounds = clipBounds,
                 SourceNode = node,
                 Bitmap = bitmap,
                 SourceRect = srcRect,
-                ObjectFit = "none"
+                ObjectFit = "none",
+                IsBackgroundImage = true,
+                TileModeX = tileModeX,
+                TileModeY = tileModeY,
+                BackgroundOrigin = origin,
+                BackgroundPosition = position,
+                BackgroundAttachmentFixed = string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase),
+                FixedViewportOrigin = new SKPoint(fixedOriginX, fixedOriginY)
             };
         }
         
@@ -2076,13 +2107,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (widths == null || widths.All(w => w <= 0)) return null;
             
             SKColor borderColor = (style?.BorderBrushColor) ?? SKColors.Black;
-            SKColor[] colors = new SKColor[4]
-            {
-                borderColor,
-                borderColor,
-                borderColor,
-                borderColor
-            };
+            var colors = ResolveBorderColors(style, borderColor);
             
             string[] styles = new string[4]
             {
@@ -2679,6 +2704,34 @@ namespace FenBrowser.FenEngine.Rendering
                 global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
                 var bitmap = ImageLoader.GetImage(url);
                 
+                return new ImagePaintNode
+                {
+                    Bounds = box.ContentBox,
+                    SourceNode = elem,
+                    Bitmap = bitmap,
+                    ObjectFit = style?.ObjectFit ?? "fill"
+                };
+            }
+            else if (tag == "OBJECT")
+            {
+                if (ReplacedElementSizing.ShouldUseObjectFallbackContent(elem))
+                {
+                    return null;
+                }
+
+                string dataUrl = elem.GetAttribute("data");
+                if (string.IsNullOrWhiteSpace(dataUrl))
+                {
+                    return null;
+                }
+
+                string resolvedUrl = NormalizeResourceUrl(dataUrl);
+                var bitmap = ImageLoader.GetImage(resolvedUrl);
+                if (bitmap == null)
+                {
+                    return null;
+                }
+
                 return new ImagePaintNode
                 {
                     Bounds = box.ContentBox,
@@ -3528,7 +3581,246 @@ namespace FenBrowser.FenEngine.Rendering
         
         private static bool IsImageElement(Element elem)
         {
-            return elem.TagName?.ToUpperInvariant() == "IMG";
+            if (elem == null)
+            {
+                return false;
+            }
+
+            string tag = elem.TagName?.ToUpperInvariant();
+            if (tag == "IMG" || tag == "SVG")
+            {
+                return true;
+            }
+
+            if (tag == "OBJECT")
+            {
+                return !ReplacedElementSizing.ShouldUseObjectFallbackContent(elem);
+            }
+
+            return false;
+        }
+
+        private static SKColor ResolveBorderSideColor(CssComputed style, string key, SKColor fallback)
+        {
+            if (style?.Map != null &&
+                style.Map.TryGetValue(key, out var raw) &&
+                !string.IsNullOrWhiteSpace(raw))
+            {
+                var parsed = CssLoader.TryColor(raw);
+                if (parsed.HasValue)
+                {
+                    return parsed.Value;
+                }
+            }
+
+            return fallback;
+        }
+
+        private static SKColor[] ResolveBorderColors(CssComputed style, SKColor fallback)
+        {
+            SKColor top = ResolveBorderSideColor(style, "border-top-color", fallback);
+            SKColor right = ResolveBorderSideColor(style, "border-right-color", fallback);
+            SKColor bottom = ResolveBorderSideColor(style, "border-bottom-color", fallback);
+            SKColor left = ResolveBorderSideColor(style, "border-left-color", fallback);
+
+            if (style?.Map != null &&
+                style.Map.TryGetValue("border-color", out var shorthand) &&
+                !string.IsNullOrWhiteSpace(shorthand))
+            {
+                var tokens = shorthand.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                SKColor? c1 = tokens.Length >= 1 ? CssLoader.TryColor(tokens[0]) : null;
+                SKColor? c2 = tokens.Length >= 2 ? CssLoader.TryColor(tokens[1]) : null;
+                SKColor? c3 = tokens.Length >= 3 ? CssLoader.TryColor(tokens[2]) : null;
+                SKColor? c4 = tokens.Length >= 4 ? CssLoader.TryColor(tokens[3]) : null;
+
+                if (tokens.Length == 1 && c1.HasValue)
+                {
+                    top = right = bottom = left = c1.Value;
+                }
+                else if (tokens.Length == 2 && c1.HasValue && c2.HasValue)
+                {
+                    top = bottom = c1.Value;
+                    right = left = c2.Value;
+                }
+                else if (tokens.Length == 3 && c1.HasValue && c2.HasValue && c3.HasValue)
+                {
+                    top = c1.Value;
+                    right = left = c2.Value;
+                    bottom = c3.Value;
+                }
+                else if (tokens.Length >= 4 && c1.HasValue && c2.HasValue && c3.HasValue && c4.HasValue)
+                {
+                    top = c1.Value;
+                    right = c2.Value;
+                    bottom = c3.Value;
+                    left = c4.Value;
+                }
+            }
+
+            // Explicit side declarations must override shorthand.
+            top = ResolveBorderSideColor(style, "border-top-color", top);
+            right = ResolveBorderSideColor(style, "border-right-color", right);
+            bottom = ResolveBorderSideColor(style, "border-bottom-color", bottom);
+            left = ResolveBorderSideColor(style, "border-left-color", left);
+
+            return new[] { top, right, bottom, left };
+        }
+
+        private static (SKShaderTileMode x, SKShaderTileMode y) ResolveBackgroundTileModes(string repeat)
+        {
+            var normalized = repeat?.Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "no-repeat" => (SKShaderTileMode.Decal, SKShaderTileMode.Decal),
+                "repeat-x" => (SKShaderTileMode.Repeat, SKShaderTileMode.Decal),
+                "repeat-y" => (SKShaderTileMode.Decal, SKShaderTileMode.Repeat),
+                _ => (SKShaderTileMode.Repeat, SKShaderTileMode.Repeat)
+            };
+        }
+
+        private static SKRect ResolveBackgroundPaintBounds(Layout.BoxModel box, CssComputed style)
+        {
+            var clip = style?.BackgroundClip?.Trim().ToLowerInvariant();
+            return clip switch
+            {
+                "padding-box" => box.PaddingBox,
+                "content-box" => box.ContentBox,
+                _ => box.BorderBox
+            };
+        }
+
+        private static SKPoint ResolveBackgroundOriginPoint(Layout.BoxModel box, CssComputed style)
+        {
+            var origin = style?.BackgroundOrigin?.Trim().ToLowerInvariant();
+            return origin switch
+            {
+                "border-box" => new SKPoint(box.BorderBox.Left, box.BorderBox.Top),
+                "content-box" => new SKPoint(box.ContentBox.Left, box.ContentBox.Top),
+                _ => new SKPoint(box.PaddingBox.Left, box.PaddingBox.Top)
+            };
+        }
+
+        private static SKPoint ResolveBackgroundPosition(string value, SKRect paintBounds, SKBitmap bitmap, SKPoint origin)
+        {
+            if (bitmap == null)
+            {
+                return SKPoint.Empty;
+            }
+
+            var raw = value?.Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return SKPoint.Empty;
+            }
+
+            var parts = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                return SKPoint.Empty;
+            }
+
+            float x = 0;
+            float y = 0;
+            bool hasX = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Width, bitmap.Width, true, out x);
+            bool hasY = false;
+
+            if (parts.Length > 1)
+            {
+                hasY = TryResolveBackgroundPositionComponent(parts[1], paintBounds.Height, bitmap.Height, false, out y);
+            }
+
+            if (!hasY && parts.Length == 1)
+            {
+                hasY = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Height, bitmap.Height, false, out y);
+            }
+
+            if (!hasX && !hasY)
+            {
+                return SKPoint.Empty;
+            }
+
+            return new SKPoint((origin.X - paintBounds.Left) + x, (origin.Y - paintBounds.Top) + y);
+        }
+
+        private static bool TryResolveBackgroundPositionComponent(string token, float containerSize, float imageSize, bool isHorizontal, out float value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+
+            if (token.EndsWith("px", StringComparison.Ordinal))
+            {
+                return float.TryParse(token.AsSpan(0, token.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value);
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal) &&
+                float.TryParse(token.AsSpan(0, token.Length - 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pct))
+            {
+                value = (containerSize - imageSize) * (pct / 100f);
+                return true;
+            }
+
+            switch (token)
+            {
+                case "left":
+                    if (isHorizontal) { value = 0; return true; }
+                    break;
+                case "right":
+                    if (isHorizontal) { value = containerSize - imageSize; return true; }
+                    break;
+                case "top":
+                    if (!isHorizontal) { value = 0; return true; }
+                    break;
+                case "bottom":
+                    if (!isHorizontal) { value = containerSize - imageSize; return true; }
+                    break;
+                case "center":
+                    value = (containerSize - imageSize) / 2f;
+                    return true;
+            }
+
+            return false;
+        }
+
+        private string NormalizeResourceUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return url;
+            }
+
+            if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(_baseUri))
+            {
+                try
+                {
+                    if (url.StartsWith("//", StringComparison.Ordinal))
+                    {
+                        var scheme = new Uri(_baseUri).Scheme;
+                        return scheme + ":" + url;
+                    }
+
+                    if (url.StartsWith("/", StringComparison.Ordinal))
+                    {
+                        var uri = new Uri(_baseUri);
+                        return $"{uri.Scheme}://{uri.Host}{url}";
+                    }
+
+                    var resolved = new Uri(new Uri(_baseUri), url);
+                    return resolved.ToString();
+                }
+                catch
+                {
+                    return url;
+                }
+            }
+
+            return url;
         }
         
         private PaintNodeBase BuildListMarkerNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
