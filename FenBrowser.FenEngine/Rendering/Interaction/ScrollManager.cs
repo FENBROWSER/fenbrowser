@@ -49,9 +49,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public void SetScrollPosition(Element element, float scrollX, float scrollY, bool fromUserInput = false)
         {
-            if (element == null) return;
-
-            var state = GetScrollState(element);
+            var state = element == null ? _nullScrollState : GetScrollState(element);
             float previousX = state.ScrollX;
             float previousY = state.ScrollY;
             var now = DateTime.UtcNow;
@@ -79,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             state.LastScrollUpdateUtc = now;
 
-            FenLogger.Debug($"[ScrollManager] {element.TagName} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
+            FenLogger.Debug($"[ScrollManager] {(element?.TagName ?? "#viewport")} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
         }
 
         /// <summary>
@@ -87,9 +85,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public void SetScrollBounds(Element element, float contentWidth, float contentHeight, float viewportWidth, float viewportHeight)
         {
-            if (element == null) return;
-
-            var state = GetScrollState(element);
+            var state = element == null ? _nullScrollState : GetScrollState(element);
             state.ContentWidth = contentWidth;
             state.ContentHeight = contentHeight;
             state.ViewportWidth = viewportWidth;
@@ -107,9 +103,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public void Scroll(Element element, float deltaX, float deltaY)
         {
-            if (element == null) return;
-
-            var state = GetScrollState(element);
+            var state = element == null ? _nullScrollState : GetScrollState(element);
             SetScrollPosition(element, state.ScrollX + deltaX, state.ScrollY + deltaY, fromUserInput: true);
         }
 
@@ -118,7 +112,18 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public void ClearScrollState(Element element)
         {
-            if (element == null) return;
+            if (element == null)
+            {
+                _nullScrollState.ScrollX = 0;
+                _nullScrollState.ScrollY = 0;
+                _nullScrollState.MaxScrollX = 0;
+                _nullScrollState.MaxScrollY = 0;
+                _nullScrollState.ContentWidth = 0;
+                _nullScrollState.ContentHeight = 0;
+                _nullScrollState.ViewportWidth = 0;
+                _nullScrollState.ViewportHeight = 0;
+                return;
+            }
 
             lock (_lock)
             {
@@ -182,9 +187,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public (float x, float y) GetScrollOffset(Element element)
         {
-            if (element == null) return (0, 0);
-
-            var state = GetScrollState(element);
+            var state = element == null ? _nullScrollState : GetScrollState(element);
             return (state.ScrollX, state.ScrollY);
         }
 

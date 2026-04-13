@@ -141,10 +141,17 @@ flowchart TD
 - `CssLoader.ResolveStyle(...)` now treats `font: inherit` as inherited computed font data (absolute `px` + inherited family) instead of re-applying relative shorthand units against the child `em` base; this prevents inherited intro text from compounding to oversized multi-line blocks (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
 - Background shorthand projection now maps `background-attachment` and `background-repeat` fallback values from the shorthand string when longhands are omitted (for example `background: fixed url(...)` and `background: ... no-repeat fixed`), aligning computed fields used by Acid2 eye/chin paint paths (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
 - `%` `min-height`/`max-height` now populate typed percent fields (`MinHeightPercent` / `MaxHeightPercent`) instead of expression strings, preventing viewport-fallback expression evaluation from inflating auto-height constrained boxes (Acid2 nose path) (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `CssSyntaxParser.ConsumeDeclaration(...)` now drops malformed declaration values that contain a stray `!` token not forming terminal `!important` (Acid2 parser trap `border: 5em solid red ! error;`), so invalid declarations no longer override previously valid parser-border declarations (`FenBrowser.FenEngine/Rendering/Css/CssSyntaxParser.cs`).
+- `FloatManager.GetClearanceY(...)` no longer clamps clearance to the current margin edge; it now returns the maximum relevant float bottom when floats exist, allowing negative clear deltas in collapsed-margin scenarios required by Acid2 lower-face flow (`FenBrowser.FenEngine/Layout/Contexts/FloatManager.cs`).
+- `AcidTestRunner.RunAcid2Async(...)` now targets the canonical HTTP Acid2 entry URL (`http://acid2.acidtests.org/#top`) instead of the failing HTTPS endpoint, preventing certificate-name mismatch interstitial capture during single-shot Acid2 runs (`FenBrowser.FenEngine/Testing/AcidTestRunner.cs`).
+- `FenBrowser.Tooling` adds `acid2-compare` for direct raster comparison against a local Acid2 reference snapshot (`acid-baselines/acid2/debug_screenshot.png`, fallback `acid-baselines/reference.png`) and now enforces bounded tooling budgets (`RunAcid2Async` and compare capture paths time out instead of stalling indefinitely), reducing multi-minute hangs in regression loops (`FenBrowser.Tooling/Program.cs`).
 - Regression validation:
   - `FenBrowser.Tests.Layout.Acid2LayoutTests.Acid2Intro_CopyFitsOnSingleLineAfterFontInheritance`
   - `FenBrowser.Tests.Layout.Acid2LayoutTests.Acid2Nose_PercentageHeightFallsBackToMaxHeightInsideAutoHeightFace`
   - `FenBrowser.Tests.Rendering.Acid2PropertiesTests.Acid2EyeAndChin_BackgroundShorthands_ResolveComputedBackgroundFields`
+  - `FenBrowser.Tests.Rendering.Acid2PropertiesTests.Acid2LowerFace_SmileAndParser_SubtreesProducePaintCoverage` now verifies malformed `! error` does not leak into parser border side color.
+  - `FenBrowser.Tests.Layout.BlockFormattingContextFloatTests.FloatManager_ClearanceY_AllowsNegativeDeltaWhenFloatsAreAboveMarginEdge` guards the negative-clearance path.
+  - `FenBrowser.Tests.Testing.AcidTestRunnerTests.RunAcid2Async_UsesHttpTopUrl` guards the Acid2 tooling URL contract.
   - `dotnet test --filter FullyQualifiedName~Acid2` -> 38/38 pass on updated build.
 
 ### 2.7 Acid3 Rendering Hardening (2026-04-10)
@@ -6610,3 +6617,25 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `P11`: pass (`6/6`) via fixed-background attachment and background shorthand-expansion suites.
   - `P12`: pass (`23/23`) via telemetry + mutation invalidation + batching + state manager suites.
   - Cumulative gate remains pass (`171/171`).
+
+## 2.215 Acid2 Reference-Alignment Pass (2026-04-13)
+
+- Scope:
+  - Restored Acid2-critical paint-tree semantics for object fallback/image rendering, fixed-background anchoring, and border side-color/style preservation.
+  - Removed a shrink-to-fit float width inflation that introduced a deterministic +1px probe drift in inline float wrappers.
+  - Hardened inline background/border emission so authored inline boxes still produce paint nodes when content-rect aggregation is empty.
+
+- Code:
+  - `Rendering/PaintTree/NewPaintTreeBuilder.cs`
+    - Background image nodes now carry: `IsBackgroundImage`, repeat tile modes, clip bounds (`background-clip`), origin (`background-origin`), parsed position, and `background-attachment: fixed` viewport origin.
+    - `<object>` now paints as replaced content when fallback should not be used (supports nested Acid2 object chain).
+    - Border paint nodes now resolve per-side colors from `border-color` shorthand and explicit side overrides.
+    - Inline background/border generation now falls back to own box geometry when descendant rect collection is empty.
+  - `Rendering/Interaction/ScrollManager.cs`
+    - `GetScrollOffset(null)` now returns viewport/null scroll-state values (instead of hardcoded zero), enabling fixed-background viewport anchoring tests.
+  - `Layout/Contexts/BlockFormattingContext.cs`
+    - Shrink-to-fit width stabilization no longer injects unconditional `+1px` expansion before rounding.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~Acid2|FullyQualifiedName~Pseudo|FullyQualifiedName~Float|FullyQualifiedName~Table" -v minimal`: pass (`92/92`) on `2026-04-13`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~Acid2PropertiesTests.Object_WithData_PaintsReplacedContent_WithoutFallbackText|FullyQualifiedName~Acid2PropertiesTests.BackgroundImageNode_FixedAttachment_UsesViewportScrollOrigin|FullyQualifiedName~Acid2PropertiesTests.BorderPaintNode_Preserves_Acid2_Side_Styles_And_Colors|FullyQualifiedName~Acid2PropertiesTests.Acid2EyeBackgroundImage_UsesBorderBoxPaintAndPaddingBoxOrigin|FullyQualifiedName~Acid2PropertiesTests.ObjectFallbackChain_PaintsInnermostSupportedObject" -v minimal`: pass (`5/5`) on `2026-04-13`.

@@ -431,13 +431,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 }
 
-                // Preserve enough inline headroom for the second shrink-to-fit pass.
-                // Without this, subpixel loss from the probe width can cause exact-fit
-                // inline content to wrap on relayout even though the intrinsic probe
-                // had already proven it fits on one line.
+                // Preserve numerical stability for second-pass shrink-to-fit without
+                // injecting a full extra pixel into exact-fit cases.
                 if (maxWidth > 0f)
                 {
-                    maxWidth = MathF.Ceiling(maxWidth + 1f);
+                    maxWidth = MathF.Ceiling(maxWidth - 0.001f);
                 }
                  
                 // Update ContentBox width
