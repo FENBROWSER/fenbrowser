@@ -22,6 +22,12 @@ namespace FenBrowser.Core.Css
         public CssComputed FirstLine { get; set; }  // ::first-line pseudo-element styles
         public CssComputed FirstLetter { get; set; }  // ::first-letter pseudo-element styles
         
+        /// <summary>
+        /// Temporary overrides for animated properties (e.g. opacity, transform).
+        /// Allows zero-allocation animation updates without cloning the full style.
+        /// </summary>
+        public Dictionary<string, string> AnimationOverlay { get; set; }
+        
         // Cache for virtual DOM node used in Rendering
         public PseudoElement PseudoElementInstance { get; set; }
 
@@ -58,6 +64,7 @@ namespace FenBrowser.Core.Css
         // Background properties
         public string BackgroundClip { get; set; }    // border-box, padding-box, content-box
         public string BackgroundOrigin { get; set; }  // border-box, padding-box, content-box
+        public string BackgroundAttachment { get; set; } // scroll, fixed, local
         public string BackgroundRepeat { get; set; }  // repeat, no-repeat, repeat-x, repeat-y
         
         // Visibility

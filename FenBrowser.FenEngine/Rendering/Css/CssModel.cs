@@ -21,7 +21,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         public Uri BaseUri { get; set; }
         public CssOrigin Origin { get; set; }
-        
+        public int StylesheetSourceOrder { get; set; } // Global stylesheet loading order
+
         // Cascade Layer Support
         public string LayerName { get; set; }
         public int LayerOrder { get; set; } // Sequence in which @layer was defined

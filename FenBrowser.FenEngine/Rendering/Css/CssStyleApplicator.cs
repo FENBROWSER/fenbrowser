@@ -45,10 +45,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     
                 case "min-height":
                     if (CssLoader.TryPx(value, out double minh)) style.MinHeight = minh;
+                    else if (CssLoader.TryPercent(value, out double minhp)) style.MinHeightPercent = minhp;
                     break;
                     
                 case "max-height":
                     if (CssLoader.TryPx(value, out double maxh)) style.MaxHeight = maxh;
+                    else if (CssLoader.TryPercent(value, out double maxhp)) style.MaxHeightPercent = maxhp;
+                    break;
+
+                case "background-attachment":
+                    style.BackgroundAttachment = value;
                     break;
 
                 case "margin-top":

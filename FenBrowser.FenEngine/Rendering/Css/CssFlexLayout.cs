@@ -147,6 +147,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                     if (isRow) 
                     {
+                        // Cross-size probing for row flex items must remain intrinsic unless
+                        // the item has an explicitly definite cross size. Passing a finite
+                        // viewport-height constraint here leaks viewport math into auto/percent
+                        // heights under indefinite parents.
+                        bool hasDefiniteCrossSize =
+                            cStyle?.Height.HasValue == true ||
+                            !string.IsNullOrEmpty(cStyle?.HeightExpression);
+                        if (!hasDefiniteCrossSize)
+                        {
+                            constraints.Height = float.PositiveInfinity;
+                        }
+
                         if (hasExplicitMainSize &&
                             !float.IsInfinity(availableSize.Width) &&
                             !float.IsNaN(availableSize.Width) &&

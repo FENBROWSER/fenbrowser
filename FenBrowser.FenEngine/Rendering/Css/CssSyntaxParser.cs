@@ -391,6 +391,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
             }
 
+            // CSS parsing rule: a leftover '!' inside a declaration value is invalid
+            // unless it formed a terminal !important that we stripped above.
+            // Acid2 depends on malformed declarations like "border: ... ! error" being ignored.
+            if (valueTokens.Any(t => t.Type == CssTokenType.Delim && t.Delimiter == '!'))
+            {
+                return null;
+            }
+
             // Stringify value (Basic support)
             string valueStr = string.Join("", valueTokens.Select(t => t.ToStringValue())); // Need simple ToString helper
 
@@ -542,8 +550,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             if (tokens == null || tokens.Count == 0) return null;
 
-            string raw = string.Join("", tokens.Select(t => t.ToStringValue())).Trim();
-            if (string.IsNullOrEmpty(raw)) return null;
+            string raw = ReconstructSelectorText(tokens);
+            if (string.IsNullOrWhiteSpace(raw)) return null;
 
             var chains = SelectorMatcher.ParseSelectorList(raw);
             if (chains.Count == 0) return null; // Invalid selector
@@ -597,10 +605,85 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             return new CssSelector
             {
-                Raw = raw,
+                Raw = raw?.Trim(),
                 Chains = chains,
                 Specificity = specificity 
             };
+        }
+
+        private static string ReconstructSelectorText(List<CssToken> tokens)
+        {
+            return string.Join("", tokens.Select(SelectorTokenToStringValue));
+        }
+
+        private static string SelectorTokenToStringValue(CssToken token)
+        {
+            switch (token.Type)
+            {
+                case CssTokenType.Ident:
+                    return EscapeIdentifier(token.Value);
+                case CssTokenType.Hash:
+                    return "#" + EscapeIdentifier(token.Value);
+                case CssTokenType.AtKeyword:
+                    return "@" + EscapeIdentifier(token.Value);
+                case CssTokenType.Function:
+                    return EscapeIdentifier(token.Value) + "(";
+                case CssTokenType.Dimension:
+                    return token.NumericValue + EscapeIdentifier(token.Unit);
+                default:
+                    return token.ToStringValue();
+            }
+        }
+
+        private static string EscapeIdentifier(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            var sb = new System.Text.StringBuilder(value.Length);
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+
+                bool mustEscape =
+                    char.IsWhiteSpace(c) ||
+                    c == '\\' ||
+                    c == '\0' ||
+                    (!IsNameChar(c) && !(i == 0 && c == '-')) ||
+                    (i == 0 && char.IsDigit(c)) ||
+                    (i == 1 && value[0] == '-' && char.IsDigit(c));
+
+                if (mustEscape)
+                {
+                    if (c == '\0')
+                    {
+                        sb.Append('\uFFFD');
+                    }
+                    else
+                    {
+                        sb.Append('\\');
+                        sb.Append(c);
+                    }
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static bool IsNameStart(char c)
+        {
+            return char.IsLetter(c) || c == '_' || c >= 0x0080;
+        }
+
+        private static bool IsNameChar(char c)
+        {
+            return IsNameStart(c) || char.IsDigit(c) || c == '-';
         }
     }
 
