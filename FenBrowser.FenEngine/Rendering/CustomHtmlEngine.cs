@@ -322,9 +322,14 @@ namespace FenBrowser.FenEngine.Rendering
         // Some pages expose a usable fallback DOM but trap limited engines in long-running
         // bootstrap script payloads. Prefer the fallback path when the raw document already
         // advertises a noscript/meta-refresh recovery flow.
-        private static bool ShouldPreferFallbackDom(string html)
+        private static bool ShouldPreferFallbackDom(string html, Uri baseUri)
         {
             if (string.IsNullOrWhiteSpace(html))
+            {
+                return false;
+            }
+
+            if (IsGoogleHost(baseUri))
             {
                 return false;
             }
@@ -515,6 +520,11 @@ namespace FenBrowser.FenEngine.Rendering
         private static bool IsJsHeavyAppShell(Node domRoot, Uri baseUri)
         {
             if (domRoot == null)
+            {
+                return false;
+            }
+
+            if (IsGoogleHost(baseUri))
             {
                 return false;
             }
@@ -1913,7 +1923,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 FenLogger.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
 
-                var preferFallbackDom = ShouldPreferFallbackDom(html);
+                var preferFallbackDom = ShouldPreferFallbackDom(html, baseUri);
                 if (preferFallbackDom)
                 {
                     html = StripScriptsForFallbackDom(html);

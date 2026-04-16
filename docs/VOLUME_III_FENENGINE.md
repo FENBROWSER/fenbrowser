@@ -6839,3 +6839,29 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`9/9`) on `2026-04-17`.
+
+## 2.224 Google Safe-Mode Bypass To Prevent White-Page Regression (2026-04-17)
+
+- Scope:
+  - Fixed the post-warning-suppression regression where Google could render a white/blank page when safe-mode forced no-JS fallback.
+  - Keeps Google on normal JS-enabled rendering path while retaining safe-mode heuristics for non-Google hosts.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - `ShouldPreferFallbackDom(...)` now takes `baseUri` and returns `false` for Google hosts.
+    - `IsJsHeavyAppShell(...)` now returns `false` for Google hosts.
+    - Updated `RenderAsync(...)` call-site to pass `baseUri` into `ShouldPreferFallbackDom(...)`.
+    - This prevents Google from being downgraded into fallback-only no-JS mode after the `PC-1.20` warning-block suppression.
+  - `FenBrowser.Tests/Engine/CustomHtmlEngineGoogleSafeModeBypassTests.cs`
+    - Added regressions covering:
+      - Google-host bypass of `ShouldPreferFallbackDom(...)`,
+      - Google-host bypass of `IsJsHeavyAppShell(...)`,
+      - unchanged fallback-heuristic behavior on non-Google hosts.
+
+- Verification:
+  - Fen loop diagnostics after clean run produced expected artifacts with Google content present in rendered text:
+    - `FenBrowser.Host/bin/Debug/net8.0/debug_screenshot.png`,
+    - `logs/raw_source_20260417_012006.html`,
+    - `dom_dump.txt`,
+    - `logs/fenbrowser_20260417_012005.log`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`11/11`) on `2026-04-17`.
