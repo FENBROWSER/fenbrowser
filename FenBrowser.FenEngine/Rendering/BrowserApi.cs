@@ -683,6 +683,10 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     if (resp == null) return;
+                    if (resp.IsSuccessStatusCode && resp.RequestMessage?.RequestUri != null)
+                    {
+                        ElementStateManager.Instance.RecordVisitedUrl(resp.RequestMessage.RequestUri);
+                    }
                     var headers = resp.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value));
                     if (resp.Content?.Headers != null)
                     {
@@ -1285,6 +1289,7 @@ pre {{
 
                 // FIX: Set _current BEFORE rendering so UI has access to correct BaseUrl during render events
                 _current = uri;
+                ElementStateManager.Instance.SetTargetFragment(uri.Fragment?.TrimStart('#') ?? string.Empty);
                 var commitSource = result.Status == FetchStatus.Success ? "network-document" : "error-document";
                 _navigationLifecycle.MarkCommitting(navigationId, _current.AbsoluteUri, commitSource);
                 TryLogDebug($"[BrowserApi] _current updated early to: {_current?.AbsoluteUri}", LogCategory.General);
@@ -2099,12 +2104,23 @@ pre {{
 
         public void OnMouseMove(float x, float y)
         {
+            const float stationaryMouseEpsilon = 0.5f;
+            if (_hasLastMouseMovePosition &&
+                Math.Abs(x - _lastMouseMoveX) < stationaryMouseEpsilon &&
+                Math.Abs(y - _lastMouseMoveY) < stationaryMouseEpsilon)
+            {
+                return;
+            }
+
             // Throttle to ~60 fps (16 ms) to avoid flooding the input queue on high-frequency devices
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
             long ticksPer16ms = System.Diagnostics.Stopwatch.Frequency / 60;
             if (now - _lastMouseMoveTick < ticksPer16ms)
                 return;
             _lastMouseMoveTick = now;
+            _lastMouseMoveX = x;
+            _lastMouseMoveY = y;
+            _hasLastMouseMovePosition = true;
             QueueInputTask("mousemove", x, y, 0);
         }
 
@@ -2185,7 +2201,7 @@ pre {{
 
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
             {
-                var hovered = inputEvent.Target;
+                var hovered = NormalizeHoverTarget(inputEvent.Target);
                 if (!ReferenceEquals(ElementStateManager.Instance.HoveredElement, hovered))
                 {
                     ElementStateManager.Instance.SetHoveredElement(hovered);
@@ -2228,6 +2244,36 @@ pre {{
                 case "touchend": return InputEventType.TouchEnd;
                 default: return InputEventType.MouseMove;
             }
+        }
+
+        private static Element NormalizeHoverTarget(Element hovered)
+        {
+            if (hovered == null)
+                return null;
+
+            var tag = hovered.TagName;
+            if (string.Equals(tag, "html", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "body", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            bool hasHref = !string.IsNullOrWhiteSpace(hovered.GetAttribute("href"));
+            bool isFocusable =
+                !string.IsNullOrWhiteSpace(hovered.GetAttribute("tabindex")) ||
+                string.Equals(hovered.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+
+            bool isInteractiveTag =
+                string.Equals(tag, "a", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "button", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "input", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "select", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "label", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "summary", StringComparison.OrdinalIgnoreCase);
+
+            if (!isInteractiveTag && !hasHref && !isFocusable)
+                return null;
+
+            return hovered;
         }
 
         public async Task<string[]> FindElementsAsync(string strategy, string value, string parentId = null)
@@ -2714,6 +2760,9 @@ pre {{
 
         // Mousemove throttle: skip events closer than 16 ms (~60 fps)
         private long _lastMouseMoveTick = 0;
+        private float _lastMouseMoveX;
+        private float _lastMouseMoveY;
+        private bool _hasLastMouseMovePosition;
 
         // Storage for async script callback result
         private object _asyncScriptResult = null;

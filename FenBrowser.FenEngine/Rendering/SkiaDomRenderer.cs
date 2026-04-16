@@ -48,6 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
         public bool LastFrameWatchdogTriggered { get; private set; }
         public string LastFrameWatchdogReason { get; private set; }
         public RenderFrameTelemetry LastFrameTelemetry { get; private set; }
+        private readonly Stopwatch _lastDomDumpWatch = new Stopwatch();
         
         /// <summary>
         /// Current overlays for input elements.
@@ -169,6 +170,7 @@ namespace FenBrowser.FenEngine.Rendering
             // node.ComputedStyle is the single source of truth set by CascadeIntoComputedStyles.
             bool treeDirty = root.StyleDirty || root.ChildStyleDirty;
             bool stylesChanged = treeDirty || _lastStyles == null || _lastStyles != styles || (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count);
+            bool styleInvalidation = treeDirty || stylesChanged || (invalidationReason & RenderFrameInvalidationReason.Style) != 0;
             _lastStyles = styles;
 
             if (_lastDomNodeCount <= 0 || root != _lastRoot || treeDirty || (invalidationReason & (RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom)) != 0)
@@ -201,7 +203,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Check if resize occurred or if root node changed (new page navigation)
             bool forceLayout = _lastLayout == null || 
                                root != _lastRoot ||
-                               stylesChanged ||
                                Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f || 
                                Math.Abs(_viewportHeight - _lastViewportHeight) > 0.1f;
             
@@ -223,15 +224,21 @@ namespace FenBrowser.FenEngine.Rendering
                 // Integrate CSS Animation Engine
                 if (root is Element && styles != null)
                 {
-                    // We need to iterate over a copy of keys because we might modify the dictionary
-                    var elements = new List<Element>();
-                    foreach(var k in styles.Keys) if(k is Element e) elements.Add(e);
+                    // PERF: Only check for new transitions/animations if style is dirty OR on navigation.
+                    // ALWAYS update existing active animations/transitions.
                     
-                    foreach(var elem in elements)
+                    // 1. Check for NEW animations/transitions starting only on elements with potentially changed styles
+                    // To do this properly we'd need a list of elements whose styles were JUST changed.
+                    // For now, we optimize by only checking elements that POSSESS animation/transition properties
+                    // OR we just iterate over all elements but avoid the Keys.ToList() allocation.
+                    
+                    // 2. Update existing animations (O(N_active) instead of O(N_total))
+                    var activeElements = CssAnimationEngine.Instance.GetAllActiveAnimationElements();
+                    foreach (var elem in activeElements)
                     {
-                        if(!styles.TryGetValue(elem, out var style)) continue;
+                        if (!styles.TryGetValue(elem, out var style)) continue;
                         
-                        // Check for transitions/animations start
+                        // Check for transitions/animations start (needed even for active ones to handle interruptions)
                         CssAnimationEngine.Instance.CheckTransitions(elem, style);
                         CssAnimationEngine.Instance.StartAnimation(elem, style);
                         
@@ -246,26 +253,40 @@ namespace FenBrowser.FenEngine.Rendering
                                 animatedProps.Keys.Concat(transitionProps.Keys));
 
                             // Create a clone for this frame to avoid persisting animated values into the base style
-                            // (which would break future transitions as 'oldValue' would become the animated value)
                             var frameStyle = style.Clone();
                             
-                            // Apply transitions
                             foreach(var kvp in transitionProps)
                                 FenBrowser.FenEngine.Rendering.Css.CssStyleApplicator.ApplyProperty(frameStyle, kvp.Key, kvp.Value);
                                 
-                            // Apply animations (override transitions)
                             foreach(var kvp in animatedProps)
                                 FenBrowser.FenEngine.Rendering.Css.CssStyleApplicator.ApplyProperty(frameStyle, kvp.Key, kvp.Value);
                                 
-                            // Replace style for this render pass
                             styles[elem] = frameStyle;
+                        }
+                    }
+                    
+                    // 3. Check for NEW animations on other elements if style was invalidated globally
+                    if (styleInvalidation)
+                    {
+                        foreach(var kvp in styles)
+                        {
+                            if (kvp.Key is not Element elem || activeElements.Contains(elem)) continue;
+                            
+                            // Check if this element should START an animation
+                            var style = kvp.Value;
+                            if (style.Map.ContainsKey("animation-name") || style.Map.ContainsKey("transition"))
+                            {
+                                CssAnimationEngine.Instance.CheckTransitions(elem, style);
+                                CssAnimationEngine.Instance.StartAnimation(elem, style);
+                                // If it started, it will be caught in the next frame
+                            }
                         }
                     }
                 }
 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Styling))
                 {
-                    if (stylesChanged || hasActiveAnimations)
+                    if (styleInvalidation || hasActiveAnimations)
                     {
                         pipelineContext.DirtyFlags.InvalidateStyle();
                     }
@@ -348,20 +369,29 @@ namespace FenBrowser.FenEngine.Rendering
                         // FenLogger.Debug($"[L-04 CHECK-LATE] RootHeight={rootBox.PaddingBox.Height} Viewport={_viewportHeight} Match={almostFullCheck}");
                     }
 
-                    try
-                    {
-                        var sb = new System.Text.StringBuilder();
-                        DumpDom(root, 0, sb, styles, _boxes);
-                        System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
+                    // PERF: Throttle DOM dumping to stay within frame budget during animations
+                    bool shouldDump = FenBrowser.Core.Logging.DebugConfig.LogDomTree;
+                    if (shouldDump && _lastDomDumpWatch.IsRunning && _lastDomDumpWatch.ElapsedMilliseconds < 1000)
+                        shouldDump = false;
 
-                        if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
-                        {
-                            FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
-                        }
-                    }
-                    catch (Exception ex)
+                    if (shouldDump)
                     {
-                        FenLogger.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
+                        try
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            DumpDom(root, 0, sb, styles, _boxes);
+                            System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
+                            _lastDomDumpWatch.Restart();
+
+                            if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
+                            {
+                                FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
+                        }
                     }
                     
                     FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
@@ -394,6 +424,7 @@ namespace FenBrowser.FenEngine.Rendering
                 paintStageWatchdog.Restart();
                 RenderPipeline.EnterPaint(); // Checks LayoutFrozen
                 paintInvalidationSignal = isLayoutDirty
+                                          || styleInvalidation
                                           || root.PaintDirty
                                           || root.ChildPaintDirty
                                           || ImageLoader.HasActiveAnimatedImages
@@ -512,51 +543,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 
                 // PHASE 3: Render
-                SKColor bgColor = SKColors.White;
-                
-                try 
-                {
-                    string log = $"[Render] Root={root?.GetType().Name}, StylesNull={styles==null}, Count={styles?.Count}\n";
-                    if (root is Element rootEl && styles != null)
-                    {
-                        if (styles.TryGetValue(rootEl, out var rootStyle) && rootStyle != null)
-                        {
-                            log += $"HTML Style Found. BG={rootStyle.BackgroundColor}\n";
-                            if (rootStyle.Map.ContainsKey("background")) log += $"  Map[background] = '{rootStyle.Map["background"]}'\n";
-                            if (rootStyle.Map.ContainsKey("background-color")) log += $"  Map[background-color] = '{rootStyle.Map["background-color"]}'\n";
-                            log += $"  Tag={rootEl.TagName}\n";
-
-                            if (rootStyle.BackgroundColor.HasValue && rootStyle.BackgroundColor.Value.Alpha > 0)
-                            {
-                                bgColor = rootStyle.BackgroundColor.Value;
-                                log += $"-> Using HTML BG: {bgColor}\n";
-                            }
-                        }
-                        else { log += "HTML Style NOT Found.\n"; }
-
-                        if (bgColor == SKColors.White)
-                        {
-                            var body = rootEl.Children?.FirstOrDefault(c => c is Element e && string.Equals(e.TagName, "body", StringComparison.OrdinalIgnoreCase)) as Element;
-                            log += $"Body Element={body!=null}\n";
-                            if (body != null)
-                            {
-                                if (styles.TryGetValue(body, out var bodyStyle) && bodyStyle != null)
-                                {
-                                    log += $"BODY Style Found. BG={bodyStyle.BackgroundColor}\n";
-                                    if (bodyStyle.BackgroundColor.HasValue && bodyStyle.BackgroundColor.Value.Alpha > 0)
-                                    {
-                                        bgColor = bodyStyle.BackgroundColor.Value;
-                                        log += $"-> Using BODY BG: {bgColor}\n";
-                                    }
-                                }
-                                else { log += "BODY Style NOT Found.\n"; }
-                            }
-                        }
-                    }
-
-                    Console.WriteLine($"[DBG-RENDER] BG-lookup: {log.Replace('\n', '|')}");
-                }
-                catch (Exception ex) { FenLogger.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering); }
+                var bgColor = ResolveCanvasBackgroundColor(root, styles);
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
@@ -718,6 +705,86 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _isRendering = false;
             }
+        }
+
+        internal static SKColor ResolveCanvasBackgroundColor(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            const string defaultReason = "default white canvas";
+
+            try
+            {
+                if (styles == null)
+                {
+                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason} (styles unavailable)", LogCategory.Rendering);
+                    return SKColors.White;
+                }
+
+                var (html, body) = ResolveDocumentElements(root);
+
+                if (TryResolveOpaqueBackground(styles, html, out var htmlColor))
+                {
+                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background resolved from HTML: {htmlColor}", LogCategory.Rendering);
+                    return htmlColor;
+                }
+
+                if (TryResolveOpaqueBackground(styles, body, out var bodyColor))
+                {
+                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background resolved from BODY: {bodyColor}", LogCategory.Rendering);
+                    return bodyColor;
+                }
+
+                FenLogger.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason}", LogCategory.Rendering);
+                return SKColors.White;
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering);
+                return SKColors.White;
+            }
+        }
+
+        private static (Element html, Element body) ResolveDocumentElements(Node root)
+        {
+            if (root is Document doc)
+            {
+                return (doc.DocumentElement, doc.Body);
+            }
+
+            if (root is Element element)
+            {
+                if (string.Equals(element.TagName, "html", StringComparison.OrdinalIgnoreCase))
+                {
+                    var body = element.Children?.OfType<Element>()
+                        .FirstOrDefault(child => string.Equals(child.TagName, "body", StringComparison.OrdinalIgnoreCase));
+                    return (element, body);
+                }
+
+                return (element, null);
+            }
+
+            return (null, null);
+        }
+
+        private static bool TryResolveOpaqueBackground(
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            Element element,
+            out SKColor color)
+        {
+            color = SKColors.Transparent;
+            if (element == null || !styles.TryGetValue(element, out var style) || style == null)
+            {
+                return false;
+            }
+
+            if (style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0)
+            {
+                color = style.BackgroundColor.Value;
+                return true;
+            }
+
+            return false;
         }
 
         private RenderFrameTelemetry CreateTelemetry(

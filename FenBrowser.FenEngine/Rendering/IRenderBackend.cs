@@ -92,6 +92,11 @@ namespace FenBrowser.FenEngine.Rendering
         public SKColor BottomColor;
         public SKColor LeftColor;
 
+        public string TopStyle;
+        public string RightStyle;
+        public string BottomStyle;
+        public string LeftStyle;
+
         public SKPoint TopLeftRadius;
         public SKPoint TopRightRadius;
         public SKPoint BottomRightRadius;
@@ -110,6 +115,10 @@ namespace FenBrowser.FenEngine.Rendering
                 RightColor = color,
                 BottomColor = color,
                 LeftColor = color,
+                TopStyle = "solid",
+                RightStyle = "solid",
+                BottomStyle = "solid",
+                LeftStyle = "solid",
                 TopLeftRadius = r,
                 TopRightRadius = r,
                 BottomRightRadius = r,
