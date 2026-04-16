@@ -396,7 +396,7 @@ namespace FenBrowser.FenEngine.Rendering
             return updated;
         }
 
-        private static bool LooksLikeVisibleFallbackCandidate(Element element)
+        private static bool LooksLikeVisibleFallbackCandidate(Element element, Uri baseUri)
         {
             if (element == null)
             {
@@ -415,13 +415,18 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
+            if (IsGoogleHost(baseUri))
+            {
+                return false;
+            }
+
             return text.IndexOf("trouble accessing", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 text.IndexOf("not redirected within a few seconds", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 (text.IndexOf("click here", StringComparison.OrdinalIgnoreCase) >= 0 &&
                  text.IndexOf("feedback", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        private static int PromoteHiddenFallbackContent(Node domRoot)
+        private static int PromoteHiddenFallbackContent(Node domRoot, Uri baseUri)
         {
             if (domRoot == null)
             {
@@ -435,7 +440,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (string.IsNullOrWhiteSpace(inlineStyle) ||
                     inlineStyle.IndexOf("display", StringComparison.OrdinalIgnoreCase) < 0 ||
                     inlineStyle.IndexOf("none", StringComparison.OrdinalIgnoreCase) < 0 ||
-                    !LooksLikeVisibleFallbackCandidate(element))
+                    !LooksLikeVisibleFallbackCandidate(element, baseUri))
                 {
                     continue;
                 }
@@ -454,6 +459,21 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return promoted;
+        }
+
+        private static bool IsGoogleHost(Uri baseUri)
+        {
+            var host = baseUri?.Host;
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return false;
+            }
+
+            host = host.ToLowerInvariant();
+            return host == "google.com" ||
+                   host.StartsWith("google.", StringComparison.Ordinal) ||
+                   host.EndsWith(".google.com", StringComparison.Ordinal) ||
+                   host.Contains(".google.", StringComparison.Ordinal);
         }
 
         private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
@@ -2074,7 +2094,7 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
 
-                        var promotedFallbacks = PromoteHiddenFallbackContent(dom);
+                        var promotedFallbacks = PromoteHiddenFallbackContent(dom, baseUri);
                         if (promotedFallbacks > 0)
                         {
                             var removedNoscriptBootstrap = RemoveEncodedNoscriptBootstrapFallbacks(noscriptElements);

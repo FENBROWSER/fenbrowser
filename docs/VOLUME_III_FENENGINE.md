@@ -6818,3 +6818,24 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `dom_dump.txt`,
     - `logs/fenbrowser_20260417_010344.log`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`6/6`) on `2026-04-17`.
+
+## 2.223 Google Fallback Warning Suppression In Safe-Mode Noscript Promotion (2026-04-17)
+
+- Scope:
+  - Removed the visible Google warning banner (`"If you're having trouble accessing Google Search..."`) that appeared after submit fixes when safe-mode rendering kept JS disabled and promoted hidden fallback blocks.
+  - Kept the fallback promotion mechanism for non-Google pages while suppressing promotion on Google hosts only.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - `PromoteHiddenFallbackContent(...)` now accepts `baseUri` and passes it into fallback-candidate checks.
+    - `LooksLikeVisibleFallbackCandidate(...)` now suppresses candidate promotion for Google hosts.
+    - Added `IsGoogleHost(...)` helper used by fallback promotion guard.
+    - Updated call-site in the no-JS fallback sanitization path to pass the active `baseUri`.
+  - `FenBrowser.Tests/Engine/CustomHtmlEngineFallbackPromotionTests.cs`
+    - Added regression coverage for:
+      - Google host detection,
+      - skip-promotion behavior on Google hosts,
+      - unchanged promotion behavior on non-Google hosts.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`9/9`) on `2026-04-17`.
