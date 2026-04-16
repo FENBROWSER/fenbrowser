@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-04-15
+**State as of:** 2026-04-17
 **Codex Version:** 1.2
 
 ## 1. Overview
@@ -6748,3 +6748,24 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName=FenBrowser.Tests.Engine.NewTabPageLayoutTests.Hovering_NewTab_Input_Does_Not_Modulate_Page_Backdrop" -v minimal`: pass (`1/1`) on `2026-04-17`.
+
+## 2.220 Google Search Input Overlay Text Legibility Hardening (2026-04-17)
+
+- Scope:
+  - Fixed the case where typed characters in native input/textarea overlays became visually invisible on external pages (notably `google.com`) when computed element text color was transparent or unresolved.
+  - Preserved existing overlay architecture (host-native text controls above Skia canvas) while hardening color resolution only for overlay text paint.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+    - `CollectOverlays(...)` now assigns overlay `TextColor` via `ResolveOverlayTextColor(...)` instead of raw `style.ForegroundColor`.
+    - Added transparent/sentinel guard plus ancestor foreground-color fallback walk:
+      - direct element color if visible (`alpha > 0` and not currentColor sentinel),
+      - nearest ancestor visible foreground color from `_lastStyles`,
+      - final fallback `SKColors.Black`.
+    - Added explicit sentinel filter for `CssParser.ParseColor("currentColor")` unresolved marker (`ARGB 1,255,0,255`).
+  - `FenBrowser.Tests/Rendering/InputOverlayColorTests.cs`
+    - Added regression: `TransparentInputText_UsesVisibleOverlayFallbackColor`.
+    - Repro fixture sets `input { color: transparent; }` under `body { color: rgb(17,34,51); }` and verifies overlay text color resolves to the inherited visible color.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~InputOverlayColorTests" -v q`: pass (`1/1`) on `2026-04-17`.

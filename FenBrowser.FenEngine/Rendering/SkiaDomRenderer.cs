@@ -976,7 +976,7 @@ namespace FenBrowser.FenEngine.Rendering
                             
                             FontFamily = style?.FontFamilyName ?? "Segoe UI",
                             FontSize = (float)(style?.FontSize ?? 16.0),
-                            TextColor = style?.ForegroundColor ?? SKColors.Black,
+                            TextColor = ResolveOverlayTextColor(el, style),
                             BackgroundColor = SKColors.Transparent, // Transparent so Skia background shows
                             TextAlign = align,
                             BorderThickness = new Thickness(0), // Disable native border
@@ -986,6 +986,37 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
+        }
+
+        private SKColor ResolveOverlayTextColor(Element element, CssComputed style)
+        {
+            // Keep native host input overlays legible even when page CSS sets transparent text.
+            if (style?.ForegroundColor is SKColor direct &&
+                direct.Alpha > 0 &&
+                !IsCurrentColorSentinel(direct))
+            {
+                return direct;
+            }
+
+            for (Element ancestor = element?.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+            {
+                if (_lastStyles != null &&
+                    _lastStyles.TryGetValue(ancestor, out var ancestorStyle) &&
+                    ancestorStyle?.ForegroundColor is SKColor inherited &&
+                    inherited.Alpha > 0 &&
+                    !IsCurrentColorSentinel(inherited))
+                {
+                    return inherited;
+                }
+            }
+
+            return SKColors.Black;
+        }
+
+        private static bool IsCurrentColorSentinel(SKColor color)
+        {
+            // CssParser.ParseColor("currentColor") sentinel (ARGB 1,255,0,255).
+            return color.Red == 255 && color.Green == 0 && color.Blue == 255 && color.Alpha == 1;
         }
 
         /// <summary>
