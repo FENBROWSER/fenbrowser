@@ -132,5 +132,76 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(800f, child.Geometry.ContentBox.Width);
             Assert.Equal(600f, child.Geometry.ContentBox.Height);
         }
+
+        [Fact]
+        public void ResolvePositionedBox_ExplicitZeroDimensions_ArePreserved()
+        {
+            var parentStyle = new CssComputed { Display = "block" };
+            var parent = new BlockBox(new Element("div"), parentStyle);
+            parent.Geometry.ContentBox = new SKRect(0, 0, 200, 200);
+            parent.Geometry.PaddingBox = parent.Geometry.ContentBox;
+            parent.Geometry.BorderBox = parent.Geometry.ContentBox;
+            parent.Geometry.MarginBox = parent.Geometry.ContentBox;
+
+            var iframe = new Element("iframe");
+            var childStyle = new CssComputed
+            {
+                Position = "absolute",
+                Left = 10,
+                Top = 20,
+                Width = 0,
+                Height = 0
+            };
+
+            var child = new BlockBox(iframe, childStyle);
+
+            LayoutPositioningLogic.ResolvePositionedBox(child, parent, parent.Geometry);
+
+            Assert.Equal(10f, child.Geometry.ContentBox.Left);
+            Assert.Equal(20f, child.Geometry.ContentBox.Top);
+            Assert.Equal(0f, child.Geometry.ContentBox.Width);
+            Assert.Equal(0f, child.Geometry.ContentBox.Height);
+        }
+
+        [Fact]
+        public void ResolvePositionedBox_ShiftsInFlowDescendantsWithAbsoluteParent()
+        {
+            var parentStyle = new CssComputed { Display = "block" };
+            var parent = new BlockBox(new Element("div"), parentStyle);
+            parent.Geometry.ContentBox = new SKRect(100, 200, 500, 600);
+            parent.Geometry.PaddingBox = parent.Geometry.ContentBox;
+            parent.Geometry.BorderBox = parent.Geometry.ContentBox;
+            parent.Geometry.MarginBox = parent.Geometry.ContentBox;
+
+            var childStyle = new CssComputed
+            {
+                Position = "absolute",
+                Left = 20,
+                Top = 30,
+                Width = 120,
+                Height = 40
+            };
+
+            var child = new BlockBox(new Element("div"), childStyle);
+            child.Geometry.ContentBox = new SKRect(0, 0, 120, 40);
+            child.Geometry.PaddingBox = child.Geometry.ContentBox;
+            child.Geometry.BorderBox = child.Geometry.ContentBox;
+            child.Geometry.MarginBox = child.Geometry.ContentBox;
+
+            var grandChild = new BlockBox(new Element("div"), new CssComputed { Display = "block", Width = 50, Height = 10 });
+            grandChild.Parent = child;
+            grandChild.Geometry.ContentBox = new SKRect(0, 0, 50, 10);
+            grandChild.Geometry.PaddingBox = grandChild.Geometry.ContentBox;
+            grandChild.Geometry.BorderBox = grandChild.Geometry.ContentBox;
+            grandChild.Geometry.MarginBox = grandChild.Geometry.ContentBox;
+            child.Children.Add(grandChild);
+
+            LayoutPositioningLogic.ResolvePositionedBox(child, parent, parent.Geometry);
+
+            Assert.Equal(120f, child.Geometry.ContentBox.Left);
+            Assert.Equal(230f, child.Geometry.ContentBox.Top);
+            Assert.Equal(120f, grandChild.Geometry.ContentBox.Left);
+            Assert.Equal(230f, grandChild.Geometry.ContentBox.Top);
+        }
     }
 }

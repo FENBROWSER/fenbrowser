@@ -159,5 +159,48 @@ namespace FenBrowser.Tests.Layout
             Assert.True(svgBox.ContentBox.Width <= 32f, $"Expected icon-scale width, got {svgBox.ContentBox.Width}");
             Assert.True(svgBox.ContentBox.Height <= 32f, $"Expected icon-scale height, got {svgBox.ContentBox.Height}");
         }
+
+        [Fact]
+        public void TryResolveIntrinsicSizeFromElement_ObjectDataUrl_ReturnsBitmapSize()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "http://acid3.acidtests.org/";
+            doc.BaseURI = doc.URL;
+
+            var obj = doc.CreateElement("object");
+            obj.SetAttribute("data", CreatePngDataUrl(12, 18, SKColors.Red));
+
+            bool ok = ReplacedElementSizing.TryResolveIntrinsicSizeFromElement("OBJECT", obj, out float width, out float height);
+
+            Assert.True(ok);
+            Assert.Equal(12f, width);
+            Assert.Equal(18f, height);
+        }
+
+        [Fact]
+        public void TryResolveIntrinsicSizeFromElement_ImgDataUrl_ReturnsBitmapSize()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "http://acid2.acidtests.org/";
+            doc.BaseURI = doc.URL;
+
+            var img = doc.CreateElement("img");
+            img.SetAttribute("src", CreatePngDataUrl(64, 64, SKColors.Red));
+
+            bool ok = ReplacedElementSizing.TryResolveIntrinsicSizeFromElement("IMG", img, out float width, out float height);
+
+            Assert.True(ok);
+            Assert.Equal(64f, width);
+            Assert.Equal(64f, height);
+        }
+
+        private static string CreatePngDataUrl(int width, int height, SKColor color)
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(width, height));
+            surface.Canvas.Clear(color);
+            using var image = surface.Snapshot();
+            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+            return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+        }
     }
 }

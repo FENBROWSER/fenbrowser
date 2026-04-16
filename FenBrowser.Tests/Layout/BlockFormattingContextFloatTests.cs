@@ -128,6 +128,42 @@ namespace FenBrowser.Tests.Layout
             Assert.True(paragraphBox.Geometry.MarginBox.Width <= 180.5f);
         }
 
+        [Fact]
+        public void FloatReplacedElement_ExplicitZeroSize_DoesNotFallbackToDefaultDimensions()
+        {
+            var root = new Element("div");
+            var iframe = new Element("iframe");
+            root.AppendChild(iframe);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 300, Height = 120 },
+                [iframe] = new CssComputed { Display = "inline", Float = "left", Width = 0, Height = 0 }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 300, 120);
+            var iframeBox = FindBox(rootBox, iframe);
+
+            Assert.NotNull(iframeBox);
+            Assert.Equal(0f, iframeBox.Geometry.MarginBox.Width, 1);
+            Assert.Equal(0f, iframeBox.Geometry.MarginBox.Height, 1);
+        }
+
+        [Fact]
+        public void FloatManager_ClearanceY_AllowsNegativeDeltaWhenFloatsAreAboveMarginEdge()
+        {
+            var floats = new FloatManager();
+            floats.AddFloat(new SKRect(0, 10, 50, 30), isLeft: true);
+
+            // If the current margin edge already sits below float bottoms,
+            // clearance resolves to the float bottom (30) and can be above
+            // or below the current edge depending on collapse math.
+            var clearanceY = floats.GetClearanceY("both", currentY: 60);
+
+            Assert.Equal(30f, clearanceY, 1);
+            Assert.True(clearanceY < 60f, "Expected clearance Y to allow a negative delta relative to currentY.");
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);
