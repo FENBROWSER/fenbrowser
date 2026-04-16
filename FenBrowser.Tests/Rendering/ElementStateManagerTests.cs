@@ -19,6 +19,22 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public void HoverStateChange_MarksAffectedElementsStyleDirty()
+        {
+            ElementStateManager.Reset();
+            var manager = ElementStateManager.Instance;
+            var parent = new Element("div");
+            var child = new Element("a");
+            parent.AppendChild(child);
+
+            manager.SetHoveredElement(child);
+
+            Assert.True(child.StyleDirty);
+            Assert.True(parent.StyleDirty);
+            Assert.True(parent.ChildStyleDirty);
+        }
+
+        [Fact]
         public void ActiveStateChange_RequestsOneFullRepaint()
         {
             ElementStateManager.Reset();
