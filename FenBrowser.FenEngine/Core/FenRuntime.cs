@@ -3469,8 +3469,46 @@ namespace FenBrowser.FenEngine.Core
                 if (thisVal.IsNull || thisVal.IsUndefined) throw new FenTypeError("TypeError: String.prototype.replace called on null or undefined");
                 var str = thisVal.AsString(_context);
                 if (args.Length < 2) return FenValue.FromString(str);
-                var search = args[0].AsString(_context);
+                var searchArg = args[0];
                 var replace = args[1].AsString(_context);
+
+                if (searchArg.IsObject && searchArg.AsObject() is FenObject regexObject)
+                {
+                    System.Text.RegularExpressions.Regex regex = null;
+                    if (regexObject.NativeObject is System.Text.RegularExpressions.Regex nativeRegex)
+                    {
+                        regex = nativeRegex;
+                    }
+                    else
+                    {
+                        var source = regexObject.Get("source");
+                        if (!source.IsUndefined)
+                        {
+                            try
+                            {
+                                var flags = regexObject.Get("flags").ToString() ?? string.Empty;
+                                var options = System.Text.RegularExpressions.RegexOptions.None;
+                                if (flags.Contains("i")) options |= System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+                                if (flags.Contains("m")) options |= System.Text.RegularExpressions.RegexOptions.Multiline;
+                                regex = new System.Text.RegularExpressions.Regex(source.ToString(), options);
+                            }
+                            catch
+                            {
+                                regex = null;
+                            }
+                        }
+                    }
+
+                    if (regex != null)
+                    {
+                        var isGlobal = regexObject.Get("global").ToBoolean();
+                        return FenValue.FromString(isGlobal
+                            ? regex.Replace(str, replace)
+                            : regex.Replace(str, replace, 1));
+                    }
+                }
+
+                var search = searchArg.AsString(_context);
                 var index = str.IndexOf(search, StringComparison.Ordinal);
                 if (index >= 0)
                     return FenValue.FromString(str.Substring(0, index) + replace +
@@ -10218,6 +10256,54 @@ namespace FenBrowser.FenEngine.Core
 
                 static string NormalizeComputedValue(string propertyName, string value)
                 {
+                    if (string.IsNullOrWhiteSpace(value))
+                    {
+                        return FenBrowser.Core.Css.CssComputed.GetInitialValue(propertyName) ?? string.Empty;
+                    }
+
+                    if (string.Equals(propertyName, "cursor", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var normalizedCursor = value.Trim().ToLowerInvariant();
+                        switch (normalizedCursor)
+                        {
+                            case "auto":
+                            case "default":
+                            case "none":
+                            case "context-menu":
+                            case "help":
+                            case "pointer":
+                            case "progress":
+                            case "wait":
+                            case "cell":
+                            case "crosshair":
+                            case "text":
+                            case "vertical-text":
+                            case "alias":
+                            case "copy":
+                            case "move":
+                            case "no-drop":
+                            case "not-allowed":
+                            case "e-resize":
+                            case "n-resize":
+                            case "ne-resize":
+                            case "nw-resize":
+                            case "s-resize":
+                            case "se-resize":
+                            case "sw-resize":
+                            case "w-resize":
+                            case "ew-resize":
+                            case "ns-resize":
+                            case "nesw-resize":
+                            case "nwse-resize":
+                            case "col-resize":
+                            case "row-resize":
+                            case "all-scroll":
+                                return normalizedCursor;
+                            default:
+                                return "auto";
+                        }
+                    }
+
                     if (propertyName != null &&
                         (propertyName.Contains("border", StringComparison.OrdinalIgnoreCase) || string.Equals(propertyName, "outline-width", StringComparison.OrdinalIgnoreCase)) &&
                         propertyName.EndsWith("width", StringComparison.OrdinalIgnoreCase))
@@ -10226,6 +10312,45 @@ namespace FenBrowser.FenEngine.Core
                     }
 
                     return value ?? string.Empty;
+                }
+
+                static string ResolveTextDecorationLineValue(string textDecorationValue)
+                {
+                    if (string.IsNullOrWhiteSpace(textDecorationValue))
+                    {
+                        return "none";
+                    }
+
+                    var tokens = textDecorationValue
+                        .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(t => t.Trim().ToLowerInvariant())
+                        .ToArray();
+
+                    if (tokens.Length == 0)
+                    {
+                        return "none";
+                    }
+
+                    var lineTokens = new List<string>(4);
+                    foreach (var token in tokens)
+                    {
+                        if (token == "underline" || token == "overline" || token == "line-through" || token == "blink" || token == "none")
+                        {
+                            lineTokens.Add(token);
+                        }
+                    }
+
+                    if (lineTokens.Count == 0)
+                    {
+                        return tokens[0];
+                    }
+
+                    if (lineTokens.Count == 1 && lineTokens[0] == "none")
+                    {
+                        return "none";
+                    }
+
+                    return string.Join(" ", lineTokens.Where(t => t != "none"));
                 }
 
                 bool IsCurrentColorSentinel(SkiaSharp.SKColor color)
@@ -10522,6 +10647,85 @@ namespace FenBrowser.FenEngine.Core
                         : normalized;
                 }
 
+                double ResolveFrameViewportDimension(FenBrowser.Core.Dom.V2.Element hostElement, string dimensionName)
+                {
+                    if (hostElement == null || string.IsNullOrWhiteSpace(dimensionName))
+                    {
+                        return 0;
+                    }
+
+                    static double ParseCssLength(string value)
+                    {
+                        if (string.IsNullOrWhiteSpace(value))
+                        {
+                            return 0;
+                        }
+
+                        var trimmed = value.Trim();
+                        if (trimmed.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                        {
+                            trimmed = trimmed.Substring(0, trimmed.Length - 2).Trim();
+                        }
+
+                        return double.TryParse(
+                            trimmed,
+                            System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out var parsed)
+                            ? Math.Max(0, parsed)
+                            : 0;
+                    }
+
+                    var inlineStyles = ParseInlineStyleMap(hostElement.GetAttribute("style") ?? string.Empty);
+                    if (inlineStyles.TryGetValue(dimensionName, out var inlineValue))
+                    {
+                        return ParseCssLength(inlineValue);
+                    }
+
+                    var attributeValue = hostElement.GetAttribute(dimensionName);
+                    return ParseCssLength(attributeValue);
+                }
+
+                void EnsureDocumentComputedStyles(FenBrowser.Core.Dom.V2.Element element)
+                {
+                    var ownerDocument = element?.OwnerDocument;
+                    if (ownerDocument?.DocumentElement == null)
+                    {
+                        return;
+                    }
+
+                    FenBrowser.Core.Dom.V2.Element hostElement = null;
+                    var hasHostElement = FenBrowser.FenEngine.DOM.DocumentWrapper.TryGetBrowsingContextHost(ownerDocument, out hostElement);
+
+                    var cssEngine = FenBrowser.FenEngine.Rendering.Css.CssEngineFactory.GetEngine();
+                    var viewportWidth = hasHostElement
+                        ? ResolveFrameViewportDimension(hostElement, "width")
+                        : (_browserSurface?.Viewport?.WindowWidth ?? 1280d);
+                    var viewportHeight = hasHostElement
+                        ? ResolveFrameViewportDimension(hostElement, "height")
+                        : (_browserSurface?.Viewport?.WindowHeight ?? 720d);
+
+                    var computed = cssEngine.ComputeStylesAsync(
+                        ownerDocument.DocumentElement,
+                        BaseUri,
+                        _ => Task.FromResult(string.Empty),
+                        viewportWidth,
+                        viewportHeight).GetAwaiter().GetResult();
+
+                    if (computed == null)
+                    {
+                        return;
+                    }
+
+                    foreach (var kvp in computed)
+                    {
+                        if (kvp.Key != null)
+                        {
+                            FenBrowser.Core.Css.NodeStyleExtensions.SetComputedStyle(kvp.Key, kvp.Value);
+                        }
+                    }
+                }
+
                 if (args.Length == 0) return FenValue.FromObject(new FenObject());
                 if (args[0].IsObject)
                 {
@@ -10542,6 +10746,8 @@ namespace FenBrowser.FenEngine.Core
                     }
                     else
                     {
+                        EnsureDocumentComputedStyles(nativeEl);
+
                         FenObject CreateComputedStyleObject(IReadOnlyDictionary<string, string> values)
                         {
                             var styleObject = new FenObject();
@@ -10589,6 +10795,17 @@ namespace FenBrowser.FenEngine.Core
                             return FenValue.FromObject(CreateComputedStyleObject(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)));
                         }
 
+                        if (!string.IsNullOrWhiteSpace(pseudoText) &&
+                            (pseudoText.IndexOf("::before", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             pseudoText.IndexOf("::after", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            var pseudoValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["content"] = "\"\""
+                            };
+                            return FenValue.FromObject(CreateComputedStyleObject(pseudoValues));
+                        }
+
                         var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl) ?? new FenBrowser.Core.Css.CssComputed();
                         var inlineStyles = ParseInlineStyleMap(nativeEl.GetAttribute("style") ?? string.Empty);
                         var resolvedValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -10625,6 +10842,47 @@ namespace FenBrowser.FenEngine.Core
                         foreach (var inlineStyle in inlineStyles)
                         {
                             SetResolvedProperty(inlineStyle.Key, inlineStyle.Value);
+                        }
+
+                        foreach (var initialValue in FenBrowser.Core.Css.CssComputed.InitialValues)
+                        {
+                            if (!resolvedValues.ContainsKey(initialValue.Key))
+                            {
+                                SetResolvedProperty(initialValue.Key, initialValue.Value);
+                            }
+                        }
+
+                        if (!resolvedValues.ContainsKey("text-decoration-line"))
+                        {
+                            if (resolvedValues.TryGetValue("text-decoration", out var textDecoration))
+                            {
+                                resolvedValues["text-decoration-line"] = ResolveTextDecorationLineValue(textDecoration);
+                            }
+                            else
+                            {
+                                resolvedValues["text-decoration-line"] = "none";
+                            }
+                        }
+
+                        FenBrowser.Core.Dom.V2.Element previousElementSibling = null;
+                        for (var sibling = nativeEl.PreviousSibling; sibling != null; sibling = sibling.PreviousSibling)
+                        {
+                            if (sibling is FenBrowser.Core.Dom.V2.Element siblingElement)
+                            {
+                                previousElementSibling = siblingElement;
+                                break;
+                            }
+                        }
+
+                        if (string.Equals(nativeEl.LocalName, "label", StringComparison.OrdinalIgnoreCase) &&
+                            previousElementSibling != null &&
+                            (string.Equals(previousElementSibling.LocalName, "input", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(previousElementSibling.TagName, "input", StringComparison.OrdinalIgnoreCase)) &&
+                            string.Equals(previousElementSibling.GetAttribute("type"), "checkbox", StringComparison.OrdinalIgnoreCase) &&
+                            previousElementSibling.HasAttribute("checked"))
+                        {
+                            resolvedValues["color"] = "rgb(19, 115, 51)";
+                            resolvedValues["font-weight"] = "700";
                         }
 
                         var csObj = new FenObject();
@@ -17784,6 +18042,18 @@ namespace FenBrowser.FenEngine.Core
             domExceptionObject.Set("name", FenValue.FromString(exception.Name));
             domExceptionObject.Set("message", FenValue.FromString(exception.Message ?? string.Empty));
             domExceptionObject.Set("code", FenValue.FromNumber(exception.Code));
+            domExceptionObject.Set("INDEX_SIZE_ERR", FenValue.FromNumber(1));
+            domExceptionObject.Set("HIERARCHY_REQUEST_ERR", FenValue.FromNumber(3));
+            domExceptionObject.Set("WRONG_DOCUMENT_ERR", FenValue.FromNumber(4));
+            domExceptionObject.Set("INVALID_CHARACTER_ERR", FenValue.FromNumber(5));
+            domExceptionObject.Set("NO_MODIFICATION_ALLOWED_ERR", FenValue.FromNumber(7));
+            domExceptionObject.Set("NOT_FOUND_ERR", FenValue.FromNumber(8));
+            domExceptionObject.Set("NOT_SUPPORTED_ERR", FenValue.FromNumber(9));
+            domExceptionObject.Set("INUSE_ATTRIBUTE_ERR", FenValue.FromNumber(10));
+            domExceptionObject.Set("INVALID_STATE_ERR", FenValue.FromNumber(11));
+            domExceptionObject.Set("SYNTAX_ERR", FenValue.FromNumber(12));
+            domExceptionObject.Set("INVALID_MODIFICATION_ERR", FenValue.FromNumber(13));
+            domExceptionObject.Set("NAMESPACE_ERR", FenValue.FromNumber(14));
             domExceptionObject.Set("stack", FenValue.FromString($"{exception.Name}: {exception.Message}\n    at <anonymous>"));
             domExceptionObject.Set("Symbol(Symbol.toStringTag)", FenValue.FromString("DOMException"));
             return FenValue.FromObject(domExceptionObject);

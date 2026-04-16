@@ -15,19 +15,15 @@ namespace FenBrowser.FenEngine.DOM
         public FenFunction Callback { get; }
         private readonly MutationObserver _coreObserver;
         private readonly List<MutationRecord> _pendingRecords = new List<MutationRecord>();
+        private readonly List<(Node Target, MutationObserverOptions Options)> _observations = new List<(Node Target, MutationObserverOptions Options)>();
+        private bool _disconnected;
 
         public MutationObserverWrapper(FenFunction callback)
         {
             Callback = callback ?? throw new ArgumentNullException(nameof(callback));
             
             // The Core.Dom.MutationObserver expects Action<List<MutationRecord>, MutationObserver>
-            _coreObserver = new MutationObserver((records, obs) =>
-            {
-                lock (_pendingRecords)
-                {
-                    _pendingRecords.AddRange(records);
-                }
-            });
+            _coreObserver = new MutationObserver((records, obs) => { });
         }
 
         public bool HasPendingRecords
@@ -38,23 +34,35 @@ namespace FenBrowser.FenEngine.DOM
         public void Observe(Element target, MutationObserverOptions options)
         {
             if (target  == null) return;
+            options ??= new MutationObserverOptions();
             var init = new MutationObserverInit
             {
-                ChildList = options?.ChildList ?? false,
-                Attributes = options?.Attributes ?? false,
-                CharacterData = options?.CharacterData ?? false,
-                Subtree = options?.Subtree ?? false,
-                AttributeOldValue = options?.AttributeOldValue ?? false,
-                CharacterDataOldValue = options?.CharacterDataOldValue ?? false,
-                AttributeFilter = options?.AttributeFilter?.ToArray()
+                ChildList = options.ChildList,
+                Attributes = options.Attributes,
+                CharacterData = options.CharacterData,
+                Subtree = options.Subtree,
+                AttributeOldValue = options.AttributeOldValue,
+                CharacterDataOldValue = options.CharacterDataOldValue,
+                AttributeFilter = options.AttributeFilter?.ToArray()
             };
             _coreObserver.Observe(target, init);
+            lock (_pendingRecords)
+            {
+                _disconnected = false;
+                _observations.RemoveAll(o => ReferenceEquals(o.Target, target));
+                _observations.Add((target, options));
+            }
         }
 
         public void Disconnect()
         {
             _coreObserver.Disconnect();
-            lock (_pendingRecords) _pendingRecords.Clear();
+            lock (_pendingRecords)
+            {
+                _disconnected = true;
+                _pendingRecords.Clear();
+                _observations.Clear();
+            }
         }
 
         public FenObject[] TakeRecords(IExecutionContext context)
@@ -81,9 +89,32 @@ namespace FenBrowser.FenEngine.DOM
         public void RecordMutation(Node target, string type, string attributeName = null,
             string oldValue = null, List<Node> addedNodes = null, List<Node> removedNodes = null)
         {
+            if (target == null || string.IsNullOrWhiteSpace(type))
+            {
+                return;
+            }
+
+            MutationRecordType mutationType;
+            try
+            {
+                mutationType = (MutationRecordType)Enum.Parse(typeof(MutationRecordType), type, true);
+            }
+            catch
+            {
+                return;
+            }
+
+            lock (_pendingRecords)
+            {
+                if (_disconnected || !ShouldQueueMutationLocked(target, mutationType, attributeName))
+                {
+                    return;
+                }
+            }
+
             var record = new MutationRecord
             {
-                Type = (MutationRecordType)Enum.Parse(typeof(MutationRecordType), type, true),
+                Type = mutationType,
                 Target = target,
                 AttributeName = attributeName,
                 OldValue = oldValue,
@@ -95,6 +126,76 @@ namespace FenBrowser.FenEngine.DOM
             {
                 _pendingRecords.Add(record);
             }
+        }
+
+        private bool ShouldQueueMutationLocked(Node mutationTarget, MutationRecordType mutationType, string attributeName)
+        {
+            foreach (var (target, options) in _observations)
+            {
+                if (target == null || options == null)
+                {
+                    continue;
+                }
+
+                if (!IsTargetMatch(target, mutationTarget, options.Subtree))
+                {
+                    continue;
+                }
+
+                if (mutationType == MutationRecordType.ChildList && options.ChildList)
+                {
+                    return true;
+                }
+
+                if (mutationType == MutationRecordType.Attributes && options.Attributes)
+                {
+                    if (options.AttributeFilter == null || options.AttributeFilter.Count == 0)
+                    {
+                        return true;
+                    }
+
+                    for (int i = 0; i < options.AttributeFilter.Count; i++)
+                    {
+                        if (string.Equals(options.AttributeFilter[i], attributeName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                if (mutationType == MutationRecordType.CharacterData && options.CharacterData)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsTargetMatch(Node observedTarget, Node mutationTarget, bool subtree)
+        {
+            if (ReferenceEquals(observedTarget, mutationTarget))
+            {
+                return true;
+            }
+
+            if (!subtree)
+            {
+                return false;
+            }
+
+            var current = mutationTarget?.ParentNode;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, observedTarget))
+                {
+                    return true;
+                }
+
+                current = current.ParentNode;
+            }
+
+            return false;
         }
 
         public FenObject ToFenObject(IExecutionContext context)

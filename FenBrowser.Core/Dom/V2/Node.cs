@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using SkiaSharp;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -36,7 +37,12 @@ namespace FenBrowser.Core.Dom.V2
 
         // Tree scope for shadow DOM isolation
         internal TreeScope _treeScope;
-
+        
+        // --- Cache Stability ---
+        // Used to verify if a cached paint fragment is still geographically valid.
+        internal SKRect _lastCachedBounds;
+        internal bool _wasInStackingContext;
+        
         // --- Abstract Properties ---
 
         /// <summary>

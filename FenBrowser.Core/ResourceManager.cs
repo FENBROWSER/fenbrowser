@@ -1549,10 +1549,15 @@ namespace FenBrowser.Core
                     }
                     break;
                 }
-                if (resp == null || !resp.IsSuccessStatusCode) return null;
+                if (resp == null) return null;
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                bool allowBodyOnError = !resp.IsSuccessStatusCode && ShouldAllowBinaryBodyOnHttpError(secFetchDest, resp);
+                if (!resp.IsSuccessStatusCode && !allowBodyOnError) return null;
+
+                var buf = resp.IsSuccessStatusCode
+                    ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+                    : await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
                     "no-cors",
@@ -1568,6 +1573,24 @@ namespace FenBrowser.Core
                 return buf;
             }
             catch { return null; }
+        }
+
+        private static bool ShouldAllowBinaryBodyOnHttpError(string secFetchDest, HttpResponseMessage response)
+        {
+            var normalizedDest = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedDest != "image" && normalizedDest != "object")
+            {
+                return false;
+            }
+
+            string mediaType = response?.Content?.Headers?.ContentType?.MediaType ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(mediaType))
+            {
+                return false;
+            }
+
+            return mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ||
+                   mediaType.Equals("application/svg+xml", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -1737,12 +1760,31 @@ namespace FenBrowser.Core
             if (!string.IsNullOrWhiteSpace(ct))
             {
                 ct = ct.ToLowerInvariant();
+                bool isCssMime =
+                    ct.Contains("text/css") ||
+                    ct.EndsWith("+css", StringComparison.OrdinalIgnoreCase);
+
                 // If it is explicitly JAVASCRIPT, we reject it
                 // Google serves 'xjs' as text/javascript which contains valid-looking tokens but is not CSS.
                 if (ct.Contains("javascript") || ct.Contains("ecmascript"))
                 {
                     System.Diagnostics.Debug.WriteLine($"[CssLoader] BLOCKED JS masquerading as CSS: {url} ({ct})");
                     FenLogger.Warn($"[CssLoader] Blocked non-CSS resource: {url} Content-Type: {ct}", LogCategory.Network);
+                    return null;
+                }
+
+                // Acid3 deliberately serves HTML from empty.css. If we accept explicit document MIME
+                // types here, the body turns red because HTML text is misparsed as author CSS.
+                bool isDocumentMime =
+                    ct.Contains("text/html") ||
+                    ct.Contains("application/xhtml+xml") ||
+                    ct.Contains("application/xml") ||
+                    ct.Contains("text/xml") ||
+                    ct.Contains("image/svg+xml");
+
+                if (isDocumentMime && !isCssMime)
+                {
+                    FenLogger.Warn($"[CssLoader] Blocked document resource masquerading as CSS: {url} Content-Type: {ct}", LogCategory.Network);
                     return null;
                 }
             }

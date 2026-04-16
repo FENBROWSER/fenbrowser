@@ -164,6 +164,10 @@ public class BrowserIntegration
             // re-fetches styles from _browser before every RecordFrame call.
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
+            // Seed fragment intent before the first post-navigation frame.
+            // BrowserHost raises RepaintReady before Navigated, and Acid2 relies on
+            // initial `#top` fragment scrolling to land the face inside the viewport.
+            UpdatePendingFragmentNavigation(_browser.CurrentUri);
 
             FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
 
@@ -682,6 +686,11 @@ public class BrowserIntegration
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
+        // Navigation must start from top; carrying prior page scroll causes blank/shifted first paints
+        // on short documents (e.g., Acid2 reference page).
+        _scrollY = 0f;
+        _contentHeight = 0f;
+        ScrollChanged?.Invoke(_scrollY, _contentHeight);
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Navigate");
 
         // Post-navigation repaint pulse: ensure the engine keeps waking up during the

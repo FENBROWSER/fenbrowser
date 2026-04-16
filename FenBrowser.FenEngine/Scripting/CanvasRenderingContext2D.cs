@@ -356,7 +356,14 @@ namespace FenBrowser.FenEngine.Scripting
         private FenValue CreateMethod(string name, Action<FenValue[]> action)
         {
             return FenValue.FromFunction(new FenFunction(name, (args, thisVal) => {
-                action(args);
+                try
+                {
+                    action(args);
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.FenLogger.Warn($"[Canvas2D] {name} failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                }
                 return FenValue.Undefined;
             }));
         }

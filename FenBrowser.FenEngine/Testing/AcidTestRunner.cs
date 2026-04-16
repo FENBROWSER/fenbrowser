@@ -64,7 +64,7 @@ body { margin: 0; background: white; }
         public async Task<TestResult> RunAcid2Async(Func<string, Task<SKBitmap>> renderPageAsync)
         {
             // Acid2 tests box model, positioning, floats, etc.
-            const string acid2Url = "https://acid2.acidtests.org/test.html";
+            const string acid2Url = "http://acid2.acidtests.org/#top";
             
             var result = new TestResult
             {

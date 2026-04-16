@@ -7,6 +7,7 @@ using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -228,14 +229,38 @@ namespace FenBrowser.FenEngine.Scripting
             public JsDomElement createElement(string tag)
             {
                 if (string.IsNullOrWhiteSpace(tag)) return null;
-                var el = new Element(tag.ToLowerInvariant());
+                var ownerDocument = Root as Document ?? Root.OwnerDocument;
+                var el = ownerDocument?.CreateElement(tag.ToLowerInvariant()) ?? new Element(tag.ToLowerInvariant());
                 return new JsDomElement(_e, el);
+            }
+
+            public JsDomElement createElementNS(string namespaceUri, string qualifiedName)
+            {
+                if (string.IsNullOrWhiteSpace(qualifiedName)) return null;
+                var ownerDocument = Root as Document ?? Root.OwnerDocument;
+                var el = ownerDocument?.CreateElementNS(namespaceUri, qualifiedName);
+                return el != null ? new JsDomElement(_e, el) : null;
             }
 
             public JsDomText createTextNode(string text)
             {
-                var t = new Text(text ?? "");
+                var ownerDocument = Root as Document ?? Root.OwnerDocument;
+                var t = ownerDocument?.CreateTextNode(text ?? string.Empty) ?? new Text(text ?? "");
                 return new JsDomText(_e, t);
+            }
+
+            public IObject createComment(string text)
+            {
+                var ownerDocument = Root as Document ?? Root.OwnerDocument;
+                var comment = ownerDocument?.CreateComment(text ?? string.Empty);
+                return comment != null ? new CommentWrapper(comment, _e._fenRuntime?.Context) : null;
+            }
+
+            public IObject createDocumentFragment()
+            {
+                var ownerDocument = Root as Document ?? Root.OwnerDocument;
+                var fragment = ownerDocument?.CreateDocumentFragment();
+                return fragment != null ? new NodeWrapper(fragment, _e._fenRuntime?.Context) : null;
             }
 
             public JsDomElement body
@@ -311,6 +336,28 @@ namespace FenBrowser.FenEngine.Scripting
                             if (_bodyCache  == null) _bodyCache = new JsDomElement(_e, (Element)Root);
                         }
                         return FenValue.FromObject(_bodyCache);
+                    case "nodeType":
+                        return FenValue.FromNumber(9);
+                    case "documentElement":
+                        {
+                            var document = Root as Document ?? Root.OwnerDocument;
+                            var element = document?.DocumentElement ?? Root as Element;
+                            return element != null ? FenValue.FromObject(new JsDomElement(_e, element)) : FenValue.Null;
+                        }
+                    case "firstChild":
+                        {
+                            var first = Root?.FirstChild;
+                            if (first is Element firstElement) return FenValue.FromObject(new JsDomElement(_e, firstElement));
+                            if (first is Text firstText) return FenValue.FromObject(new JsDomText(_e, firstText));
+                            if (first != null) return DomWrapperFactory.Wrap(first, _e._fenRuntime?.Context);
+                            return FenValue.Null;
+                        }
+                    case "DOCUMENT_FRAGMENT_NODE":
+                        return FenValue.FromNumber(11);
+                    case "COMMENT_NODE":
+                        return FenValue.FromNumber(8);
+                    case "ELEMENT_NODE":
+                        return FenValue.FromNumber(1);
                     case "getElementById": return FenValue.FromFunction(new FenFunction("getElementById", (args, _) => {
                         var result = args.Length > 0 ? getElementById(args[0].ToString()) : null;
                         return result is JsDomElement el ? FenValue.FromObject(el) : FenValue.Null;
@@ -343,17 +390,31 @@ namespace FenBrowser.FenEngine.Scripting
                         var el = args.Length > 0 ? createElement(args[0].ToString()) : null;
                         return el != null ? FenValue.FromObject(el) : FenValue.Null;
                     }));
-                    // createTextNode commented out - JsDomText doesn't implement IObject yet
-                    // case "createTextNode": return FenValue.FromFunction(new FenFunction("createTextNode", (args, _) => FenValue.Null));
+                    case "createElementNS": return FenValue.FromFunction(new FenFunction("createElementNS", (args, _) => {
+                        var el = args.Length > 1 ? createElementNS(args[0].IsNull ? null : args[0].ToString(), args[1].ToString()) : null;
+                        return el != null ? FenValue.FromObject(el) : FenValue.Null;
+                    }));
+                    case "createTextNode": return FenValue.FromFunction(new FenFunction("createTextNode", (args, _) => {
+                        var text = createTextNode(args.Length > 0 ? args[0].ToString() : string.Empty);
+                        return text != null ? FenValue.FromObject(text) : FenValue.Null;
+                    }));
+                    case "createComment": return FenValue.FromFunction(new FenFunction("createComment", (args, _) => {
+                        var comment = createComment(args.Length > 0 ? args[0].ToString() : string.Empty);
+                        return comment != null ? FenValue.FromObject(comment) : FenValue.Null;
+                    }));
+                    case "createDocumentFragment": return FenValue.FromFunction(new FenFunction("createDocumentFragment", (args, _) => {
+                        var fragment = createDocumentFragment();
+                        return fragment != null ? FenValue.FromObject(fragment) : FenValue.Null;
+                    }));
                     default:
                         return FenValue.Undefined;
                 }
             }
 
             public void Set(string key, FenValue value, IExecutionContext context = null) { /* Most document properties are read-only */ }
-            public bool Has(string key, IExecutionContext context = null) => key == "body" || key == "getElementById" || key == "querySelector" || key == "querySelectorAll" || key == "addEventListener" || key == "removeEventListener";
+            public bool Has(string key, IExecutionContext context = null) => key == "body" || key == "documentElement" || key == "firstChild" || key == "nodeType" || key == "DOCUMENT_FRAGMENT_NODE" || key == "COMMENT_NODE" || key == "ELEMENT_NODE" || key == "getElementById" || key == "getElementsByTagName" || key == "querySelector" || key == "querySelectorAll" || key == "createElement" || key == "createElementNS" || key == "createTextNode" || key == "createComment" || key == "createDocumentFragment" || key == "addEventListener" || key == "removeEventListener";
             public bool Delete(string key, IExecutionContext context = null) => false;
-            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "body", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createTextNode", "addEventListener", "removeEventListener" };
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "body", "documentElement", "firstChild", "nodeType", "DOCUMENT_FRAGMENT_NODE", "COMMENT_NODE", "ELEMENT_NODE", "getElementById", "getElementsByTagName", "querySelector", "querySelectorAll", "createElement", "createElementNS", "createTextNode", "createComment", "createDocumentFragment", "addEventListener", "removeEventListener" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
             public bool DefineOwnProperty(string key, PropertyDescriptor desc) => false; // Document is mostly read-only structure
@@ -418,7 +479,20 @@ namespace FenBrowser.FenEngine.Scripting
             private JsCssDeclaration _styleCache = null;
             public object NativeObject { get; set; }
             public JsDomElement(JavaScriptEngine e, Element n) : base(e, n) { NativeObject = n; }
-            public string tagName => (_node.NodeName ?? "").ToUpperInvariant();
+            public string tagName
+            {
+                get
+                {
+                    if (_node is Element element)
+                    {
+                        if (!string.IsNullOrEmpty(element.Prefix))
+                            return $"{element.Prefix}:{element.LocalName}";
+                        return element.TagName ?? string.Empty;
+                    }
+
+                    return (_node.NodeName ?? string.Empty).ToUpperInvariant();
+                }
+            }
 
 
 
@@ -611,6 +685,49 @@ namespace FenBrowser.FenEngine.Scripting
                     (_node as Element)?.SetAttribute("value", value ?? "");
                     _e.RequestRepaint();
                 }
+            }
+
+            public string data
+            {
+                get { return ResolveObjectData(); }
+                set { setAttribute("data", value ?? string.Empty); }
+            }
+
+            private string ResolveObjectData()
+            {
+                if (!string.Equals(_node.NodeName, "object", StringComparison.OrdinalIgnoreCase))
+                {
+                    return getAttribute("data") ?? string.Empty;
+                }
+
+                var raw = getAttribute("data") ?? string.Empty;
+                if (string.IsNullOrEmpty(raw))
+                {
+                    return raw;
+                }
+
+                var ownerDocument = _node.OwnerDocument;
+                var baseUrl = ownerDocument?.BaseURI;
+                if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+                {
+                    baseUrl = ownerDocument?.DocumentURI;
+                }
+                if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+                {
+                    baseUrl = ownerDocument?.URL;
+                }
+                if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+                {
+                    baseUrl = _e._ctx?.BaseUri?.AbsoluteUri;
+                }
+
+                if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
+                    Uri.TryCreate(baseUri, raw, out var resolved))
+                {
+                    return resolved.AbsoluteUri;
+                }
+
+                return raw;
             }
 
             public void removeChild(object child)
@@ -827,6 +944,12 @@ namespace FenBrowser.FenEngine.Scripting
                 set { setAttribute("class", value); }
             }
 
+            public string title
+            {
+                get { return getAttribute("title") ?? string.Empty; }
+                set { setAttribute("title", value ?? string.Empty); }
+            }
+
             public JsCssDeclaration style => new JsCssDeclaration(this);
 
             public JsDomTokenList classList => new JsDomTokenList(this);
@@ -842,6 +965,8 @@ namespace FenBrowser.FenEngine.Scripting
                     case "tagName": return FenValue.FromString(tagName);
                     case "id": return FenValue.FromString(id ?? "");
                     case "className": return FenValue.FromString(className);
+                    case "title": return FenValue.FromString(title);
+                    case "data": return FenValue.FromString(ResolveObjectData());
                     case "innerHTML": return FenValue.FromString(innerHTML);
                     case "innerText": return FenValue.FromString(innerText);
                     case "textContent": return FenValue.FromString(textContent);
@@ -923,6 +1048,8 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     case "id": id = value.ToString(); break;
                     case "className": className = value.ToString(); break;
+                    case "title": title = value.ToString(); break;
+                    case "data": setAttribute("data", value.ToString()); break;
                     case "innerHTML": innerHTML = value.ToString(); break;
                     case "innerText": innerText = value.ToString(); break;
                     case "textContent": textContent = value.ToString(); break;
@@ -935,7 +1062,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public bool Has(string key, IExecutionContext context = null) => true;
             public bool Delete(string key, IExecutionContext context = null) => false;
-            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "style", "tagName", "id", "className", "innerHTML", "innerText", "textContent", "classList", "attachShadow" };
+            public IEnumerable<string> Keys(IExecutionContext context = null) => new[] { "style", "tagName", "id", "className", "title", "innerHTML", "innerText", "textContent", "classList", "attachShadow" };
             public IObject GetPrototype() => _prototype;
             public void SetPrototype(IObject prototype) { _prototype = prototype; }
         }

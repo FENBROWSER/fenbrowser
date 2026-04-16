@@ -10,6 +10,7 @@ using FenBrowser.FenEngine.Errors;
 using Range = FenBrowser.Core.Dom.V2.Range;
 
 using FenBrowser.FenEngine.Rendering;
+using System.Runtime.CompilerServices;
 
 namespace FenBrowser.FenEngine.DOM
 {
@@ -19,6 +20,8 @@ namespace FenBrowser.FenEngine.DOM
     /// </summary>
     public class DocumentWrapper : IObject
     {
+        private static readonly ConditionalWeakTable<Document, FenObject> s_defaultViewByDocument = new ConditionalWeakTable<Document, FenObject>();
+        private static readonly ConditionalWeakTable<Document, Element> s_browsingContextHostByDocument = new ConditionalWeakTable<Document, Element>();
         private readonly Node _root;
         private readonly IExecutionContext _context;
         private readonly Uri _baseUri;
@@ -105,6 +108,12 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "createevent":
                     return FenValue.FromFunction(new FenFunction("createEvent", CreateEvent));
+
+                case "write":
+                    return FenValue.FromFunction(new FenFunction("write", Write));
+
+                case "writeln":
+                    return FenValue.FromFunction(new FenFunction("writeln", WriteLine));
 
                 case "createrange":
                     return FenValue.FromFunction(new FenFunction("createRange", CreateRange));
@@ -202,6 +211,27 @@ namespace FenBrowser.FenEngine.DOM
                     }
                     return FenValue.Null;
 
+                case "element_node":
+                    return FenValue.FromNumber(1);
+
+                case "attribute_node":
+                    return FenValue.FromNumber(2);
+
+                case "text_node":
+                    return FenValue.FromNumber(3);
+
+                case "comment_node":
+                    return FenValue.FromNumber(8);
+
+                case "document_node":
+                    return FenValue.FromNumber(9);
+
+                case "document_type_node":
+                    return FenValue.FromNumber(10);
+
+                case "document_fragment_node":
+                    return FenValue.FromNumber(11);
+
                 // DOM Level 3 Events
                 case "addeventlistener":
                     return FenValue.FromFunction(new FenFunction("addEventListener", AddEventListenerMethod));
@@ -237,6 +267,10 @@ namespace FenBrowser.FenEngine.DOM
                         var name = args.Length > 0 ? args[0].ToString() : string.Empty;
                         var publicId = args.Length > 1 ? args[1].ToString() : string.Empty;
                         var systemId = args.Length > 2 ? args[2].ToString() : string.Empty;
+                        if (string.IsNullOrEmpty(name) || name.Contains(":", StringComparison.Ordinal))
+                        {
+                            throw new DomException("NamespaceError", "Document type name must not contain a namespace prefix");
+                        }
                         var owner = _root as Document ?? _root.OwnerDocument ?? Document.CreateHtmlDocument();
                         return DomWrapperFactory.Wrap(owner.CreateDocumentType(name, publicId, systemId), _context);
                     })));
@@ -329,9 +363,23 @@ namespace FenBrowser.FenEngine.DOM
                     // Return the window.location equivalent
                     return FenValue.Undefined; // Will be set by runtime
 
+                case "defaultview":
+                    if (_root is Document document && s_defaultViewByDocument.TryGetValue(document, out var defaultView))
+                    {
+                        return FenValue.FromObject(defaultView);
+                    }
+
+                    var window = _context?.Environment?.Get("window") ?? FenValue.Undefined;
+                    return window.IsObject ? window : FenValue.Null;
+
                 case "url":
+                    return FenValue.FromString(GetDocumentUrl());
+
                 case "documenturi":
-                    return FenValue.FromString(_baseUri?.AbsoluteUri ?? "about:blank");
+                    return FenValue.FromString(GetDocumentUrl());
+
+                case "baseuri":
+                    return FenValue.FromString(GetDocumentBaseUri());
 
                 case "referrer":
                     return FenValue.FromString("");
@@ -382,7 +430,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createAttribute", "createAttributeNS", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "evaluate", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation", "importNode", "prepend", "replaceChildren" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createAttribute", "createAttributeNS", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "write", "writeln", "evaluate", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation", "importNode", "prepend", "replaceChildren" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -392,8 +440,9 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.Null;
             var tagName = args[0].ToString();
-            
-            var element = new Element(tagName);
+
+            var document = _root as Document ?? _root.OwnerDocument;
+            var element = document != null ? document.CreateElement(tagName) : new Element(tagName);
             return DomWrapperFactory.Wrap(element, _context);
         }
 
@@ -444,6 +493,155 @@ namespace FenBrowser.FenEngine.DOM
             
             // Dispatch readystatechange
             DispatchEventInternal(new DomEvent("readystatechange", false, false, false, _context));
+        }
+
+        internal static void BindDefaultView(Document document, FenObject window)
+        {
+            if (document == null || window == null)
+            {
+                return;
+            }
+
+            s_defaultViewByDocument.Remove(document);
+            s_defaultViewByDocument.Add(document, window);
+        }
+
+        internal static void BindBrowsingContextHost(Document document, Element hostElement)
+        {
+            if (document == null || hostElement == null)
+            {
+                return;
+            }
+
+            s_browsingContextHostByDocument.Remove(document);
+            s_browsingContextHostByDocument.Add(document, hostElement);
+        }
+
+        internal static bool TryGetBrowsingContextHost(Document document, out Element hostElement)
+        {
+            hostElement = null;
+            return document != null && s_browsingContextHostByDocument.TryGetValue(document, out hostElement);
+        }
+
+        private FenValue Write(FenValue[] args, FenValue thisVal)
+        {
+            return WriteCore(args, appendNewLine: false);
+        }
+
+        private FenValue WriteLine(FenValue[] args, FenValue thisVal)
+        {
+            return WriteCore(args, appendNewLine: true);
+        }
+
+        private FenValue WriteCore(FenValue[] args, bool appendNewLine)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "document.write"))
+                throw new FenSecurityError("DOM mutation permission required");
+
+            var html = string.Concat(args.Select(arg => arg.ToString()));
+            if (appendNewLine)
+            {
+                html += Environment.NewLine;
+            }
+
+            if (string.IsNullOrEmpty(html))
+            {
+                return FenValue.Undefined;
+            }
+
+            var document = _root as Document ?? _root.OwnerDocument;
+            if (document == null)
+            {
+                return FenValue.Undefined;
+            }
+
+            var fragment = ParseWriteFragment(document, html);
+            if (fragment.ChildNodes == null || fragment.ChildNodes.Length == 0)
+            {
+                return FenValue.Undefined;
+            }
+
+            var insertionParent = ResolveWriteInsertionParent(document, out var referenceNode);
+            if (insertionParent == null)
+            {
+                return FenValue.Undefined;
+            }
+
+            var previousSibling = referenceNode?.PreviousSibling;
+            var insertedNodes = new List<Node>();
+            foreach (var child in fragment.ChildNodes.ToArray())
+            {
+                insertedNodes.Add(child);
+                if (referenceNode != null)
+                {
+                    insertionParent.InsertBefore(child, referenceNode);
+                }
+                else
+                {
+                    insertionParent.AppendChild(child);
+                }
+            }
+
+            insertionParent.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            _context.RequestRender?.Invoke();
+            _context.OnMutation?.Invoke(new MutationRecord
+            {
+                Type = MutationRecordType.ChildList,
+                Target = insertionParent,
+                AddedNodes = insertedNodes,
+                PreviousSibling = previousSibling,
+                NextSibling = referenceNode
+            });
+
+            return FenValue.Undefined;
+        }
+
+        private ContainerNode ResolveWriteInsertionParent(Document document, out Node referenceNode)
+        {
+            referenceNode = null;
+
+            var currentScriptValue = Get("currentScript", _context);
+            var currentScript = currentScriptValue.IsObject ? currentScriptValue.AsObject() as ElementWrapper : null;
+            var scriptElement = currentScript?.Element;
+            if (scriptElement?.ParentNode is ContainerNode scriptParent)
+            {
+                referenceNode = scriptElement.NextSibling;
+                return scriptParent;
+            }
+
+            if (document.Body is ContainerNode body)
+            {
+                return body;
+            }
+
+            if (document.DocumentElement is ContainerNode documentElement)
+            {
+                return documentElement;
+            }
+
+            return document;
+        }
+
+        private DocumentFragment ParseWriteFragment(Document ownerDocument, string html)
+        {
+            var parsed = new FenBrowser.Core.Parsing.HtmlParser(html, _baseUri).Parse();
+            var fragment = ownerDocument.CreateDocumentFragment();
+            if (parsed == null)
+            {
+                return fragment;
+            }
+
+            ContainerNode source = parsed.GetElementsByTagName("body").FirstOrDefault();
+            source ??= parsed.GetElementsByTagName("head").FirstOrDefault();
+            source ??= parsed.FirstElementChild as ContainerNode;
+            source ??= parsed;
+
+            foreach (var child in source.ChildNodes.ToArray())
+            {
+                fragment.AppendChild(child);
+            }
+
+            return fragment;
         }
 
         internal void AttachFonts(FenObject fonts)
@@ -975,6 +1173,33 @@ namespace FenBrowser.FenEngine.DOM
                 foreach (var child in node.ChildNodes)
                     CollectNodes(child, result);
             }
+        }
+
+        private string GetDocumentUrl()
+        {
+            var document = _root as Document ?? _root.OwnerDocument;
+            if (!string.IsNullOrWhiteSpace(document?.URL))
+            {
+                return document.URL;
+            }
+
+            return _baseUri?.AbsoluteUri ?? "about:blank";
+        }
+
+        private string GetDocumentBaseUri()
+        {
+            var document = _root as Document ?? _root.OwnerDocument;
+            if (!string.IsNullOrWhiteSpace(document?.BaseURI))
+            {
+                return document.BaseURI;
+            }
+
+            if (!string.IsNullOrWhiteSpace(document?.URL))
+            {
+                return document.URL;
+            }
+
+            return _baseUri?.AbsoluteUri ?? "about:blank";
         }
 
         private Element FindElementByTag(Node node, string tagName)

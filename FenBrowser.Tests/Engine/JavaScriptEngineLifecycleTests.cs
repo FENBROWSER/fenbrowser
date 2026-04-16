@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
+using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
@@ -243,6 +244,299 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(true, engine.Evaluate("globalThis.__wimbInit"));
             Assert.Equal("object", engine.Evaluate("typeof window.WIMB")?.ToString());
             Assert.Equal("function", engine.Evaluate("typeof do_capabilities_detection")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DocumentWrite_InsertsMarkupAtCurrentScriptPosition()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><div id='before'></div><script>document.write('<span id=\"written\">ok</span>'); globalThis.__writtenNextSibling = document.currentScript.nextSibling && document.currentScript.nextSibling.id;</script><p id='after'></p></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("written", engine.Evaluate("globalThis.__writtenNextSibling")?.ToString());
+            Assert.Equal("ok", engine.Evaluate("document.getElementById('written').textContent")?.ToString());
+            Assert.Equal("after", engine.Evaluate("document.getElementById('written').nextSibling.id")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_BodyOnloadAttribute_ExecutesDuringDocumentLoad()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"globalThis.__bodyLoaded = true; document.getElementById('state').textContent = 'loaded';\"><div id='state'>pending</div></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__bodyLoaded"));
+            Assert.Equal("loaded", engine.Evaluate("document.getElementById('state').textContent")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeContentDocument_IsIsolatedFromMainDocument()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; globalThis.__iframeHasIsolatedDoc = doc !== document; var p = doc.createElement('p'); p.textContent = 'frame'; doc.body.appendChild(p); globalThis.__iframeText = doc.body.textContent; globalThis.__mainText = document.getElementById('state').textContent;\"><iframe id='frame'></iframe><div id='state'>main</div></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__iframeHasIsolatedDoc"));
+            Assert.Equal("frame", engine.Evaluate("globalThis.__iframeText")?.ToString());
+            Assert.Equal("main", engine.Evaluate("globalThis.__mainText")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeInlineOnloadAttribute_ExecutesDuringInitialDocumentLoad()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><a id='linktest' class='pending'>pending</a><iframe id='frame' onload=\"document.getElementById('linktest').removeAttribute('class'); globalThis.__iframeInlineLoadTag = this.tagName; globalThis.__iframeInlineLoadTarget = event && event.target && event.target.id;\"></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(string.Empty, engine.Evaluate("document.getElementById('linktest').className")?.ToString());
+            Assert.Equal("IFRAME", engine.Evaluate("globalThis.__iframeInlineLoadTag")?.ToString());
+            Assert.Equal("frame", engine.Evaluate("globalThis.__iframeInlineLoadTarget")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeSrcMutation_DispatchesInlineLoadHandler()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"document.getElementById('frame').src = 'empty.html?probe';\"><a id='linktest' class='pending'>pending</a><iframe id='frame' onload=\"document.getElementById('linktest').removeAttribute('class'); globalThis.__iframeSrcLoadTarget = event && event.target && event.target.id;\"></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(50);
+
+            Assert.Equal(string.Empty, engine.Evaluate("document.getElementById('linktest').className")?.ToString());
+            Assert.Equal("frame", engine.Evaluate("globalThis.__iframeSrcLoadTarget")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeContentDocument_DefaultViewTracksContentWindow()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; globalThis.__sameDefaultView = doc.defaultView === frame.contentWindow; globalThis.__hasComputedStyle = typeof doc.defaultView.getComputedStyle;\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__sameDefaultView"));
+            Assert.Equal("function", engine.Evaluate("globalThis.__hasComputedStyle")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeContentDocument_ComputedStyleReflectsInjectedStyles()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; var style = doc.createElement('style'); style.textContent = '#probe { text-transform: uppercase; }'; doc.head.appendChild(style); var p = doc.createElement('p'); p.id = 'probe'; doc.body.appendChild(p); globalThis.__iframeTextTransform = doc.defaultView.getComputedStyle(p, '').textTransform;\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("uppercase", engine.Evaluate("globalThis.__iframeTextTransform")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeContentDocument_ComputedStyleExposesInitialValues()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; var p = doc.createElement('p'); doc.body.appendChild(p); var style = doc.defaultView.getComputedStyle(p, ''); globalThis.__iframeDefaultTextTransform = style.textTransform; globalThis.__iframeDefaultCursor = style.cursor;\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("none", engine.Evaluate("globalThis.__iframeDefaultTextTransform")?.ToString());
+            Assert.Equal("auto", engine.Evaluate("globalThis.__iframeDefaultCursor")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_IframeContentDocument_ComputedStyleRejectsBogusMediaAndCursorValues()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; var style = doc.createElement('style'); style.textContent = '@media (bogus) { #probe { text-transform: uppercase; } } @media all and color { #probe { text-transform: uppercase; } } #probe { cursor: bogus; }'; doc.head.appendChild(style); var p = doc.createElement('p'); p.id = 'probe'; doc.body.appendChild(p); var computed = doc.defaultView.getComputedStyle(p, ''); globalThis.__iframeBogusMediaTextTransform = computed.textTransform; globalThis.__iframeBogusCursor = computed.cursor;\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("none", engine.Evaluate("globalThis.__iframeBogusMediaTextTransform")?.ToString());
+            Assert.Equal("auto", engine.Evaluate("globalThis.__iframeBogusCursor")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GetComputedStyle_ExposesTextDecorationLineWithoutThrowing()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head><style>#probe { text-decoration: underline; }</style></head><body><span id='probe'>x</span><script>var s = getComputedStyle(document.getElementById('probe')); globalThis.__textDecorationLine = s.textDecorationLine; globalThis.__textDecoration = s.textDecoration; globalThis.__textDecorationCheck = s.textDecorationLine.indexOf('underline') !== -1 || s.textDecoration.indexOf('underline') !== -1;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Contains("underline", engine.Evaluate("globalThis.__textDecorationLine")?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("underline", engine.Evaluate("globalThis.__textDecoration")?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(true, engine.Evaluate("globalThis.__textDecorationCheck"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_RadioCheckedProperty_IsIndependentFromCheckedAttribute()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>var a = document.createElement('input'); a.type = 'radio'; a.name = 'g'; document.body.appendChild(a); var b = document.createElement('input'); b.type = 'radio'; b.name = 'g'; document.body.appendChild(b); a.checked = true; b.setAttribute('checked', 'checked'); globalThis.__radioA = a.checked; globalThis.__radioB = b.checked; globalThis.__radioAMatches = window.getComputedStyle(a, '').zIndex; globalThis.__radioSelectorA = a.matches(':checked'); globalThis.__radioSelectorB = b.matches(':checked');</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__radioA"));
+            Assert.Equal(false, engine.Evaluate("globalThis.__radioB"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__radioSelectorA"));
+            Assert.Equal(false, engine.Evaluate("globalThis.__radioSelectorB"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_TableDomSurface_ExposesCaptionSectionsRowsAndInsertion()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><table id='t'><tr id='r0'><td id='c0'>a</td></tr></table><script>var table = document.getElementById('t'); var caption = table.createCaption(); caption.id = 'cap'; var thead = table.createTHead(); var headRow = thead.insertRow(0); headRow.id = 'rh'; var bodyRow = table.insertRow(-1); bodyRow.id = 'rb'; var bodyCell = document.createElement('td'); bodyCell.id = 'cb'; bodyRow.appendChild(bodyCell); var tfoot = table.createTFoot(); var footRow = tfoot.insertRow(0); footRow.id = 'rf'; globalThis.__tableCaptionId = table.caption && table.caption.id; globalThis.__tableTHeadTag = table.tHead && table.tHead.tagName; globalThis.__tableTFootTag = table.tFoot && table.tFoot.tagName; globalThis.__tableTBodiesLength = String(table.tBodies.length); globalThis.__tableRowsLength = String(table.rows.length); globalThis.__theadRowsLength = String(table.tHead.rows.length); globalThis.__tbodyRowsLength = String(table.tBodies[0].rows.length); globalThis.__tfootRowsLength = String(table.tFoot.rows.length); globalThis.__bodyCellsLength = String(bodyRow.cells.length); globalThis.__bodyRowIndex = String(bodyRow.rowIndex); globalThis.__bodySectionRowIndex = String(bodyRow.sectionRowIndex); table.deleteCaption(); table.deleteTHead(); table.deleteTFoot(); globalThis.__afterDeleteCaption = table.caption === null; globalThis.__afterDeleteTHead = table.tHead === null; globalThis.__afterDeleteTFoot = table.tFoot === null;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("cap", engine.Evaluate("globalThis.__tableCaptionId")?.ToString());
+            Assert.Equal("THEAD", engine.Evaluate("globalThis.__tableTHeadTag")?.ToString());
+            Assert.Equal("TFOOT", engine.Evaluate("globalThis.__tableTFootTag")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__tableTBodiesLength")?.ToString());
+            Assert.Equal("4", engine.Evaluate("globalThis.__tableRowsLength")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__theadRowsLength")?.ToString());
+            Assert.Equal("2", engine.Evaluate("globalThis.__tbodyRowsLength")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__tfootRowsLength")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__bodyCellsLength")?.ToString());
+            Assert.Equal("2", engine.Evaluate("globalThis.__bodyRowIndex")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__bodySectionRowIndex")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__afterDeleteCaption"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__afterDeleteTHead"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__afterDeleteTFoot"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_FormElements_ReflectDynamicNameTypeAndValueChanges()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>var f = document.createElement('form'); var i = document.createElement('input'); i.name = 'first'; i.type = 'text'; i.value = 'test'; f.appendChild(i); globalThis.__formName1 = i.name; globalThis.__formType1 = i.type; globalThis.__formValue1 = i.value; globalThis.__formValueAttr1 = i.hasAttribute('value'); globalThis.__formLen1 = String(f.elements.length); globalThis.__formNamed1 = f.elements.first === i; i.name = 'second'; i.type = 'password'; i.value = 'TEST'; globalThis.__formName2 = i.name; globalThis.__formType2 = i.type; globalThis.__formValue2 = i.value; globalThis.__formValueAttr2 = i.hasAttribute('value'); globalThis.__formLen2 = String(f.length); globalThis.__formNamed2 = f.elements.second === i; globalThis.__formNamed1Cleared = f.elements.first === null;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("first", engine.Evaluate("globalThis.__formName1")?.ToString());
+            Assert.Equal("text", engine.Evaluate("globalThis.__formType1")?.ToString());
+            Assert.Equal("test", engine.Evaluate("globalThis.__formValue1")?.ToString());
+            Assert.Equal(false, engine.Evaluate("globalThis.__formValueAttr1"));
+            Assert.Equal("1", engine.Evaluate("globalThis.__formLen1")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__formNamed1"));
+            Assert.Equal("second", engine.Evaluate("globalThis.__formName2")?.ToString());
+            Assert.Equal("password", engine.Evaluate("globalThis.__formType2")?.ToString());
+            Assert.Equal("TEST", engine.Evaluate("globalThis.__formValue2")?.ToString());
+            Assert.Equal(false, engine.Evaluate("globalThis.__formValueAttr2"));
+            Assert.Equal("1", engine.Evaluate("globalThis.__formLen2")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__formNamed2"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__formNamed1Cleared"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_SelectAndButtonSurfaces_ExposeAcid3CompatibilitySemantics()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>var s = document.createElement('select'); var o = document.createElement('option'); s.add(o, null); var o2 = document.createElement('option'); o2.defaultSelected = true; s.appendChild(o2); var button = document.createElement('button'); globalThis.__selectChild = s.firstChild === o; globalThis.__selectLength = String(s.options.length); globalThis.__selectDefaultIndex = String(s.selectedIndex); globalThis.__buttonType1 = button.type; button.setAttribute('type', 'button'); globalThis.__buttonType2 = button.type; button.removeAttribute('type'); globalThis.__buttonType3 = button.type; button.setAttribute('value', 'apple'); globalThis.__buttonValue = button.value;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__selectChild"));
+            Assert.Equal("2", engine.Evaluate("globalThis.__selectLength")?.ToString());
+            Assert.Equal("1", engine.Evaluate("globalThis.__selectDefaultIndex")?.ToString());
+            Assert.Equal("submit", engine.Evaluate("globalThis.__buttonType1")?.ToString());
+            Assert.Equal("button", engine.Evaluate("globalThis.__buttonType2")?.ToString());
+            Assert.Equal("submit", engine.Evaluate("globalThis.__buttonType3")?.ToString());
+            Assert.Equal("apple", engine.Evaluate("globalThis.__buttonValue")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_ObjectData_ResolvesRelativeUrlsAgainstDocumentUrl()
+        {
+            var baseUri = new Uri("http://acid3.acidtests.org/");
+            var parser = new HtmlParser(
+                "<html><body><script>var p = document.createElement('p'); globalThis.__titleDefault = p.title; p.title = 'ready'; globalThis.__titleAfterSet = p.title; var obj1 = document.createElement('object'); obj1.setAttribute('data', 'test.html'); var obj2 = document.createElement('object'); obj2.setAttribute('data', './test.html'); globalThis.__documentUrl = document.URL; globalThis.__documentBaseUri = document.baseURI; globalThis.__objectData1 = obj1.data; globalThis.__objectData2 = obj2.data;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("http://acid3.acidtests.org/", engine.Evaluate("globalThis.__documentUrl")?.ToString());
+            Assert.Equal("http://acid3.acidtests.org/", engine.Evaluate("globalThis.__documentBaseUri")?.ToString());
+            Assert.Equal(string.Empty, engine.Evaluate("globalThis.__titleDefault")?.ToString());
+            Assert.Equal("ready", engine.Evaluate("globalThis.__titleAfterSet")?.ToString());
+            Assert.Equal("http://acid3.acidtests.org/test.html", engine.Evaluate("globalThis.__objectData1")?.ToString());
+            Assert.Equal("http://acid3.acidtests.org/test.html", engine.Evaluate("globalThis.__objectData2")?.ToString());
         }
 
         [Fact]
@@ -866,6 +1160,7 @@ namespace FenBrowser.Tests.Engine
 
         private static JsHostAdapter CreateHost()
         {
+            ElementStateManager.Reset();
             return new JsHostAdapter(
                 navigate: _ => { },
                 post: (_, __) => { },
