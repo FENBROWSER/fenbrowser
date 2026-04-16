@@ -6885,3 +6885,27 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`13/13`) on `2026-04-17`.
+
+## 2.226 Google `yvlrue` Trouble-Banner Script Neutralization (2026-04-17)
+
+- Scope:
+  - Fixed the delayed reappearance of Google fallback warning copy on `/search` URLs where inline script unhides the hidden `#yvlrue` banner after ~2 seconds.
+  - Ensures warning suppression holds even when Google challenge scripts run in JS-enabled mode.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - Added `RemoveGoogleTroubleBannerArtifacts(...)`:
+      - active only on Google hosts,
+      - removes `div#yvlrue`,
+      - removes inline scripts matching `cad=sg_trbl` or `cssId='yvlrue'` unhide patterns.
+    - Invoked artifact removal before `SetupJavaScriptEngine(...)`, so these scripts cannot execute and re-show the banner.
+  - `FenBrowser.Tests/Engine/CustomHtmlEngineFallbackPromotionTests.cs`
+    - Added regressions:
+      - removes `#yvlrue` + unhide script on Google hosts,
+      - does not remove same nodes on non-Google hosts.
+
+- Verification:
+  - Direct payload inspection for Google `/search` response confirmed the problematic pattern:
+    - hidden `div#yvlrue` fallback message,
+    - inline script unhide timer targeting `#yvlrue` (`cad=sg_trbl`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`15/15`) on `2026-04-17`.

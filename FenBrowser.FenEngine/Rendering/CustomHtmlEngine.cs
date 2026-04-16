@@ -524,6 +524,45 @@ namespace FenBrowser.FenEngine.Rendering
             return toRemove.Count;
         }
 
+        private static int RemoveGoogleTroubleBannerArtifacts(Node domRoot, Uri baseUri)
+        {
+            if (domRoot == null || !IsGoogleHost(baseUri))
+            {
+                return 0;
+            }
+
+            var toRemove = new List<Element>();
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                var tag = element.TagName?.ToLowerInvariant();
+                if (tag == "div" && string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
+                {
+                    toRemove.Add(element);
+                    continue;
+                }
+
+                if (tag != "script")
+                {
+                    continue;
+                }
+
+                var scriptText = element.Text ?? string.Empty;
+                if (scriptText.IndexOf("sg_trbl", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    scriptText.IndexOf("cssId='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    scriptText.IndexOf("cssId=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    toRemove.Add(element);
+                }
+            }
+
+            foreach (var element in toRemove)
+            {
+                element.Remove();
+            }
+
+            return toRemove.Count;
+        }
+
         private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
         {
             if (noscriptElements == null)
@@ -2176,6 +2215,21 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         FenLogger.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
                     }
+                }
+
+                try
+                {
+                    var removedGoogleTroubleArtifacts = RemoveGoogleTroubleBannerArtifacts(dom, baseUri);
+                    if (removedGoogleTroubleArtifacts > 0)
+                    {
+                        FenLogger.Debug(
+                            $"[CustomHtmlEngine] Removed {removedGoogleTroubleArtifacts} Google trouble-banner artifact node(s) before script execution",
+                            LogCategory.Rendering);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Failed to remove Google trouble-banner artifacts: {ex.Message}", LogCategory.Rendering);
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);

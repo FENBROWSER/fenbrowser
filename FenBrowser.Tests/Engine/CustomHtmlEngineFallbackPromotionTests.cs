@@ -41,6 +41,17 @@ namespace FenBrowser.Tests.Engine
             return Assert.IsType<int>(result);
         }
 
+        private static int InvokeRemoveGoogleTroubleBannerArtifacts(Node domRoot, Uri baseUri)
+        {
+            var method = typeof(CustomHtmlEngine).GetMethod(
+                "RemoveGoogleTroubleBannerArtifacts",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+            var result = method.Invoke(null, new object[] { domRoot, baseUri });
+            return Assert.IsType<int>(result);
+        }
+
         private static Element BuildHiddenFallbackCandidate()
         {
             var root = new Element("div");
@@ -107,6 +118,40 @@ namespace FenBrowser.Tests.Engine
             var removed = InvokeRemoveGoogleAccessTroubleBanners(root, new Uri("https://example.test/"));
             Assert.Equal(0, removed);
             Assert.Single(root.ChildNodes);
+        }
+
+        [Fact]
+        public void RemoveGoogleTroubleBannerArtifacts_RemovesTroubleDivAndUnhideScriptOnGoogleHosts()
+        {
+            var root = new Element("div");
+            var script = new Element("script");
+            script.TextContent = "setTimeout(function(){document.getElementById('yvlrue').setAttribute('style','');navigator.sendBeacon('/gen_204?cad=sg_trbl')},2000);";
+            var banner = new Element("div");
+            banner.SetAttribute("id", "yvlrue");
+            banner.SetAttribute("style", "display:none");
+            banner.TextContent = "If you're having trouble accessing Google Search, please click here, or send feedback.";
+            root.AppendChild(script);
+            root.AppendChild(banner);
+
+            var removed = InvokeRemoveGoogleTroubleBannerArtifacts(root, new Uri("https://www.google.com/search?q=test"));
+            Assert.Equal(2, removed);
+            Assert.Empty(root.ChildNodes);
+        }
+
+        [Fact]
+        public void RemoveGoogleTroubleBannerArtifacts_DoesNotRemoveOnNonGoogleHosts()
+        {
+            var root = new Element("div");
+            var script = new Element("script");
+            script.TextContent = "setTimeout(function(){document.getElementById('yvlrue').setAttribute('style','')},2000);";
+            var banner = new Element("div");
+            banner.SetAttribute("id", "yvlrue");
+            root.AppendChild(script);
+            root.AppendChild(banner);
+
+            var removed = InvokeRemoveGoogleTroubleBannerArtifacts(root, new Uri("https://example.test/search?q=test"));
+            Assert.Equal(0, removed);
+            Assert.Equal(2, root.ChildNodes.Length);
         }
     }
 }
