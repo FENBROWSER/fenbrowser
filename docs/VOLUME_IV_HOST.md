@@ -53,6 +53,12 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Visited-State Bridge (2026-04-10)**:
   - `BrowserApi` now records successful request URLs into the shared `ElementStateManager` visited-url store so selector recascade can honor `:visited` / `:link` transitions driven by top-level and resource fetches.
   - The Host still drives recascade through the existing `ElementStateManager.OnStateChanged += _ => _engine.ScheduleRecascade()` subscription, so selector-state changes remain on the established host-engine handoff path rather than introducing a parallel invalidation channel.
+- **Fragment Scroll Ordering Guard (2026-04-14)**:
+  - `BrowserIntegration` now seeds pending fragment navigation from `_browser.CurrentUri` inside `RepaintReady` before requesting the first frame.
+  - This closes an ordering race where `BrowserHost` emits `RepaintReady` before `Navigated`; previously `#fragment` targets (notably Acid2 `#top`) could miss the first frame-scroll application and remain at scroll origin.
+- **Navigation Scroll Reset Guard (2026-04-14)**:
+  - `BrowserIntegration.NavigateInternalAsync(...)` now resets `_scrollY` and `_contentHeight` at top-level navigation start and emits `ScrollChanged`.
+  - This prevents stale scroll carry-over between pages (notably Acid2 `#top` -> `reference.html`) that could capture blank/offset first frames on short documents.
 - **Input Resilience (2026-02-07)**:
   - Click activation/link handling fallback is executed in the authoritative `HandleMouseUp(... emitClick)` path using the same hit-test result (`result.NativeElement`), so web-content pointer routing remains correct even when `HandleClick(...)` is bypassed by widget-level down/up flow.
   - `HandleMouseUp(... emitClick)` now falls back to the last stable hover hit when release-time hit test is transiently null, so links/controls still activate during pointer-target flicker.

@@ -38,6 +38,24 @@ Standard xUnit tests covering internal components:
 - **Engine**: CSS Parser correctness, Layout arithmetic.
 - **Html5lib**: Tests the Tokenizer against the tricky edge cases of the HTML5 spec.
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
+- Acid2 intro-page hardening on `2026-04-11` added:
+  - `FenBrowser.Tests/Engine/CascadeModernTests.cs`
+    - `FontInheritShorthand_UsesResolvedParentLonghands`
+  - `FenBrowser.Tests/Layout/Acid2LayoutTests.cs`
+    - `Acid2Intro_CopyFitsOnSingleLineAfterFontInheritance`
+  - Together these guard the exact landing-page regression where `.intro * { font: inherit }` compounded a parent `2em` shorthand into oversized descendant `<p>` and `<a>` text, which then manifested as false baseline and wrapping failures before the actual Acid2 face test.
+- Acid2 phase-plan audit on `2026-04-12` also corrected the nested-object cascade microtest so it now includes the page’s `html { font: 12px sans-serif; }` root basis before asserting `1em` object border width, preventing a false `16px` default-font failure in `CascadeModernTests.Acid2NestedObjectSelector_AppliesBackgroundAndPaddingToInnermostObject`.
+- The same phase-plan audit on `2026-04-12` added stylesheet-order regressions in `FenBrowser.Tests/Engine/CascadeModernTests.cs`:
+  - `InterleavedStyleAndLinkSheets_PreserveDomSourceOrder`
+  - `ImportedStylesheets_PreserveAuthoredImportOrder`
+  - These pin the exact async-ordering failure where a fetched `<link rel="stylesheet">` or faster imported sheet could win against a later-authored stylesheet because collection and parse merge followed completion timing instead of canonical source order.
+- The phase-2 cascade wiring pass on `2026-04-12` also revalidated the non-import ordering surfaces:
+  - `TestLayerPriority`
+  - `TestImportantLayerPriority`
+  - `TestScopeProximity`
+  - `InterleavedStyleAndLinkSheets_PreserveDomSourceOrder`
+  - `ImportedStylesheets_PreserveAuthoredImportOrder`
+  - Together these confirm the current `StyleSet` / `CascadeKey` path keeps origin+importance, layer order, scope proximity, and stylesheet source order stable after the typed-origin handoff and per-rule declaration-order fix in `CascadeEngine`.
 
 ### 3.2 Compliance Runners (`FenBrowser.FenEngine.Testing`, `FenBrowser.Test262`)
 2.  **Unit Tests** verify the specific component.
@@ -194,6 +212,28 @@ The Web Platform Tests (WPT) runner for DOM/CSS compliance.
 #### `AcidTestRunner.cs`
 
 Specialized harness for the Acid2/Acid3 verification suites.
+
+- Verification note (2026-04-11):
+  - A clean host repro against `http://acid2.acidtests.org/` was used as the pre-face gate after process cleanup, root-artifact cleanup, and a 28-second wait.
+  - The landing page now renders as a single inline sentence in `debug_screenshot.png` instead of the earlier oversized/two-line broken intro state, so intro-page typography is no longer masking later Acid2 face-test defects.
+  - Follow-up face repros against `http://acid2.acidtests.org/#top` now confirm the eye/object regression is in the fallback/renderability path rather than generic replaced sizing: fresh dumps show nested `OBJECT` boxes (`131x24`, `90x30`, `96x24`) instead of the old `300x150` fallback, and the smile layout regression has been reduced to a paint-path overdraw after float shrink-to-fit reflow collapsed the inner smile subtree to `97px` / `73px`.
+  - Additional hardening on `2026-04-11` added regressions for:
+    - table-tail row assembly in `FenBrowser.Tests/Layout/Acid2LayoutTests.cs`
+    - positioned-descendant translation after final absolute resolution in `FenBrowser.Tests/Layout/AbsolutePositionTests.cs`
+    - invalid-width / invalid-background cascade rejection and nose percent-height preservation in `FenBrowser.Tests/Engine/CascadeModernTests.cs`
+  - The corresponding clean host repro now confirms the parser pink failure bar is gone, the eye-strip children remain inside `.eyes`, and the nose no longer expands to viewport-scale height. Remaining failures are concentrated in the lower-face smile/composition path rather than the earlier table/cascade/positioning blockers.
+- Verification note (2026-04-12):
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CascadeModernTests.InterleavedStyleAndLinkSheets_PreserveDomSourceOrder|FullyQualifiedName~CascadeModernTests.ImportedStylesheets_PreserveAuthoredImportOrder" --logger "console;verbosity=minimal"` passed (`2/2`).
+  - This confirms CSS loader ordering is now stable across async external fetch timing and async `@import` timing, which closes the remaining stylesheet-order phase item surfaced by the audit.
+  - The same change set also made phase-2 diagnostics explicit: enabling `DebugConfig.LogCssCascade` now emits final stylesheet source order after `@import` expansion plus per-property winning cascade keys during `CascadeEngine` resolution, which satisfies the plan requirement that stylesheet ordering and winner identity be visible in logs.
+- Verification note (2026-04-14):
+  - `FenBrowser.Tooling/Program.cs` now exposes `acid2-layout-html [output_html]`.
+  - `acid2-compare` and `acid2-layout-html` now capture live frame bitmaps via `WindowManager.CaptureScreenshot()` after a post-navigation settle window (instead of relying on `debug_screenshot.png` artifact timing), reducing stale-first-frame comparisons.
+  - The commands now capture both live Acid2 (`http://acid2.acidtests.org/#top`) and live canonical reference (`http://acid2.acidtests.org/reference.html`) in the same run for deterministic side-by-side comparison artifacts.
+  - 2026-04-14 capture hardening now gates screenshot readiness on target-URL match (fragment-insensitive), non-loading state, and available DOM/style snapshots before capture; this removed false captures of the previous page during back-to-back Acid2/reference runs.
+  - Generated artifact default: `acid-baselines/acid2_layout_snapshot.html` (absolute-positioned boxes with labels for direct browser-to-browser visual/layout diffing).
+  - 2026-04-14 live rerun after engine-side `clear` propagation and block-clearance margin-edge correction reports `Similarity: 98.07%` (`Score: 98/100`) in `acid2-layout-html` output, with updated `acid2_actual_current.png` / `acid2_reference_live_current.png` / diff artifacts.
+  - 2026-04-14 follow-up rerun after shorthand-background URL normalization and positioned-offset parse dedupe reports `Similarity: 98.26%` (`Score: 98/100`) in `acid2-layout-html` output; artifacts refreshed in `acid-baselines/`.
 
 ### 4.3 Contributor Cookbook: Adding a WebDriver Command
 

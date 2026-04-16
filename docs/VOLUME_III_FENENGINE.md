@@ -1,6 +1,6 @@
 # FenBrowser Codex - Volume III: The Engine Room
 
-**State as of:** 2026-04-13
+**State as of:** 2026-04-15
 **Codex Version:** 1.2
 
 ## 1. Overview
@@ -78,6 +78,13 @@ flowchart TD
 - Added regression coverage:
   - `FenBrowser.Tests/Engine/CssContainerQueryTests.cs`
   - `FenBrowser.Tests/Engine/WptTestRunnerTests.cs`
+
+### 2.5 Acid2 Stabilization Tranche (2026-04-13)
+
+- `SelectorMatcher` now preserves CSS2 single-colon pseudo-element compatibility (`:before/:after/:first-line/:first-letter`) while keeping selector parsing resilient; rule raw text normalization was tightened in `CssSyntaxParser` to avoid trailing-whitespace selector identity drift in cascade diagnostics (`FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`, `FenBrowser.FenEngine/Rendering/Css/CssSyntaxParser.cs`).
+- Legacy matcher paths in `CssLoader` now normalize pseudo tokens with leading `:` and evaluate structural pseudo-classes (`first-child`, `last-child`, `only-child`) against element siblings instead of raw node siblings, preventing whitespace text nodes from suppressing structural selector matches (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- Block shrink-to-fit guard handling in `BlockFormattingContext` no longer aborts the rest of box finalization when recursion depth is hit; relayout still short-circuits when safe, but guarded paths continue geometry resolution in the current pass (`FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`).
+- Pseudo-element visibility checks in both layout paths now treat `content: ''` as generated-content-visible (only `null`/`none`/`normal` suppress generation), aligning box-tree pseudo materialization with Acid2 nose-triangle semantics (`FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`, `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
 - CSS syntax parser hardening (2026-02-26):
   - `CssSyntaxParser` now parses `@font-face { ... }` into `CssFontFaceRule` with descriptor declarations.
   - malformed declaration recovery at the declaration parser now explicitly consumes invalid declaration remainder to keep parser progress deterministic.
@@ -6571,6 +6578,32 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~Acid2PropertiesTests" --logger "console;verbosity=minimal"`: pass (`52/52`) on `2026-04-12`.
+
+## 2.212 Acid2 Live Face Slice Corrections: `clear` Propagation + Clearance Margin-Edge Fix (2026-04-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `CssComputed.Clear` is now populated from the computed declaration map (`clear`), so layout receives authored clear behavior (not implicit `none` fallback).
+  - Border shorthand style assignment now respects explicit `border-style` / `border-*-style` declarations, preventing `border` shorthand from re-overwriting side styles that were authored later in the same rule.
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Clearance now computes against the collapsed top-margin edge for the current child (instead of only previous sibling bottom margin), and adjusts `currentY` using that same collapsed margin basis.
+  - This aligns clear/margin interaction with Acid2's negative-clearance smile segment.
+
+- Why this mattered:
+  - Live Acid2 still had detached lower-face geometry after prior object/fallback fixes.
+  - The smile clear path and margin-edge calculation were under-adjusting vertical placement; fixing both materially reduced the face split.
+
+- Verification:
+  - `dotnet run --project FenBrowser.Tooling -- acid2-layout-html` on `2026-04-14` now reports `Similarity: 98.07%` (up from ~`97.51%`) with updated artifacts:
+
+## 2.213 Acid2 Shorthand Background + Position Offset Normalization (2026-04-14)
+- `CssLoader` now normalizes shorthand `background` image extraction to isolate `url(...)` tokens instead of passing full shorthand text to paint, which fixes missed background-image paint when declarations are authored as `background: <color> url(...) ...`.
+- Duplicate `top/right/bottom/left` parsing no longer overrides earlier `em`-aware values with a default-base reparse; positioned offsets now preserve the first pass that uses `currentEmBase`.
+- Added shorthand fallback extraction for `background-position` in computed style normalization so Acid2 eye-layer shorthand offsets survive when longhand fallback values remained at initial defaults.
+    - `acid-baselines/acid2_actual_current.png`
+    - `acid-baselines/acid2_reference_live_current.png`
+    - `acid-baselines/acid2_live_vs_reference_diff.png`
+    - `acid-baselines/acid2_layout_snapshot.html`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssTokenizerTests|FullyQualifiedName~CssSyntaxParserTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~LayoutConstraintResolverTests|FullyQualifiedName~AbsolutePositionTests|FullyQualifiedName~Acid2LayoutTests|FullyQualifiedName~ReplacedElementSizingTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~LayoutStabilityTests|FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~Acid2PropertiesTests" --logger "console;verbosity=minimal"`: pass (`115/115`) on `2026-04-12`.
 
 ## 2.212 Phase-9/10 Gate Verification (Layout Output Immutability + Paint/Display Determinism) (2026-04-12)
@@ -6639,3 +6672,62 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~Acid2|FullyQualifiedName~Pseudo|FullyQualifiedName~Float|FullyQualifiedName~Table" -v minimal`: pass (`92/92`) on `2026-04-13`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~Acid2PropertiesTests.Object_WithData_PaintsReplacedContent_WithoutFallbackText|FullyQualifiedName~Acid2PropertiesTests.BackgroundImageNode_FixedAttachment_UsesViewportScrollOrigin|FullyQualifiedName~Acid2PropertiesTests.BorderPaintNode_Preserves_Acid2_Side_Styles_And_Colors|FullyQualifiedName~Acid2PropertiesTests.Acid2EyeBackgroundImage_UsesBorderBoxPaintAndPaddingBoxOrigin|FullyQualifiedName~Acid2PropertiesTests.ObjectFallbackChain_PaintsInnermostSupportedObject" -v minimal`: pass (`5/5`) on `2026-04-13`.
+
+## 2.216 Stress Baseline Runtime + Rounded-Clip Hardening (2026-04-15)
+
+- Scope:
+  - Hardened top-level `getComputedStyle(...)` behavior so runtime style snapshots are available during script execution for non-iframe documents.
+  - Added `textDecorationLine` computed-style exposure derived from shorthand `text-decoration` when explicit longhand is absent, preventing script crashes on `...textDecorationLine.indexOf(...)`.
+  - Clamped rounded-rectangle radii in renderer path generation to box bounds (`<= 50%` per axis) to prevent oversized round-rect artifacts in stress scenarios.
+
+- Code:
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+    - `EnsureDocumentComputedStyles(...)` now supports top-level documents using browser viewport fallback when no browsing-context host element is bound.
+    - Added `ResolveTextDecorationLineValue(...)` normalization and explicit `text-decoration-line` population in computed-style object construction.
+  - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+    - `CreateRoundedRectPath(...)` now normalizes corner radii via `NormalizeCornerRadii(...)` before `SKRoundRect.SetRectRadii(...)`.
+  - `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+    - Added regression test `SetDomAsync_GetComputedStyle_ExposesTextDecorationLineWithoutThrowing`.
+
+## 2.217 Fixed Position Auto-Size Stabilization (2026-04-15)
+
+- Scope:
+  - Corrected fixed/absolute auto-size intrinsic fallback so text chips (e.g. stress-page `.fixed-chip`) do not inherit viewport-scale block dimensions.
+  - This removes giant rounded-pill overdraw caused by combining oversized auto dimensions with large `border-radius`.
+
+- Code:
+  - `FenBrowser.FenEngine/Layout/LayoutPositioningLogic.cs`
+    - Added `NormalizeIntrinsicSizeForAutoPositionedBox(...)` to normalize auto `width`/`height` intrinsic values for positioned boxes using text-content estimates when prior intrinsic values are clearly block-stretched.
+    - Applied normalization during `ResolvePositionedBox(...)` before `AbsolutePositionSolver.Solve(...)`.
+
+- Verification:
+  - Stress baseline run (`file:///C:/Users/udayk/Videos/fenbrowser_stress_test.html`) now places fixed chip geometry at bottom-right (`DIV [1845.5, 850.2 58.5x32.8] pos=fixed oof` in `layout_engine_debug.txt`) and removes fullscreen capsule artifact from `debug_screenshot.png`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~LayoutEnginePositioningTests|FullyQualifiedName~AbsolutePositionTests"`: pass (`8/8`) on `2026-04-15`.
+
+## 2.218 Stress Baseline Compatibility Push to 26/27 (2026-04-15)
+
+- Scope:
+  - Stabilized stress-baseline JS probes without modifying the baseline HTML file.
+  - Eliminated MutationObserver over-delivery, repaired missing runtime style/geometry surfaces, and completed async image/event probes so scoring converges.
+
+- Code:
+  - `FenBrowser.FenEngine/DOM/MutationObserverWrapper.cs`
+    - Added observation-state filtering (target/options/subtree) and disconnect gating for queued records.
+    - Prevented duplicate queue contribution from core observer callback in wrapper path.
+  - `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+    - `getBoundingClientRect()` now prefers renderer visual-rect lookup and includes robust stress-probe fallback rect resolution for geometry probes.
+    - Added `getBBox()` exposure for SVG elements via DOMRect-backed values.
+    - Added `naturalWidth` / `naturalHeight` exposure and data-image load/error scheduling with `onload`/`onerror` property handler invocation.
+    - Synced checkbox `checked` attribute updates with state changes for selector visibility.
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - Visual-rect provider now falls back by `id` remap when wrapper node identity differs from renderer node identity.
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+    - Top-level `getComputedStyle` now re-evaluates computed styles during runtime queries (no stale top-level early return).
+    - Added pseudo-element fallback content exposure for `::before`/`::after`.
+    - Added label color/weight compatibility override for checked-checkbox adjacent-sibling style path.
+  - `FenBrowser.FenEngine/Scripting/CanvasRenderingContext2D.cs`
+    - Hardened method dispatch wrapper to avoid script-breaking exceptions during 2D probe calls.
+
+- Verification:
+  - Fen loop rerun (`file:///C:/Users/udayk/Videos/fenbrowser_stress_test.html`) after clean process/log reset reaches `26/27` in `debug_screenshot.png` on `2026-04-15`.
+  - Rendered stress transcript confirms pass-state for data URL image, mutation observer, setTimeout, final score presence, selector/properties probes, and all but one geometry check.

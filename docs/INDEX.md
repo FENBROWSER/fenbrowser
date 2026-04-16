@@ -72,6 +72,10 @@ Master execution control sheet for subsystem-by-subsystem gap closure with a str
 
 Saved comparison snapshot (Fen vs Chrome/Firefox/Ladybird baseline) captured from project review artifact.
 
+### [Appendix K: Token Savior Workspace Configuration](TOKEN_SAVIOR_WORKSPACE.md)
+
+Project-local MCP setup for structural source navigation without indexing non-source fixture trees.
+
 ---
 
 _State as of 2026-02-20_

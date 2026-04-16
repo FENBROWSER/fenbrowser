@@ -454,4 +454,16 @@ Net effect:
   - `FenBrowser.Tests/DevTools/MessageRouterTests.cs`
     - existing duplicate-domain guard remains in force for non-reset paths.
 
+### 5.19 Token Savior Workspace Scoping (2026-04-10)
+
+- Project tooling now carries a repo-local MCP configuration in `.mcp.json` for `token-savior`.
+- The configuration intentionally scopes `WORKSPACE_ROOTS` to FenBrowser source and documentation projects instead of the repository root.
+- Why this mattered:
+  - Repository-root indexing pulled in `test_assets/wpt`, verification dumps, and other large non-source trees, expanding discovery to 119,406 files and making structural queries effectively unusable.
+  - Splitting the workspace by project preserves the architecture boundaries already present in the solution and keeps symbol navigation aligned with actual ownership boundaries.
+- Operational contract:
+  - `token-savior` is launched from `C:\Users\udayk\token-savior\token-savior-venv\Scripts\token-savior.exe`.
+  - Active roots are switched with `list_projects` / `switch_project` rather than re-pointing the server at the monorepo root.
+  - Supporting operator notes live in `docs/TOKEN_SAVIOR_WORKSPACE.md`.
+
 _End of Volume V_
