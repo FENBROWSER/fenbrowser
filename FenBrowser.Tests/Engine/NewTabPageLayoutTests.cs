@@ -412,7 +412,7 @@ namespace FenBrowser.Tests.Engine
             authorRule.Declarations.Add(new CssDeclaration { Property = "background", Value = "rgba(15, 23, 42, 0.88)" });
             stylesheet.Rules.Add(authorRule);
 
-            var engine = new CascadeEngine(stylesheet);
+            var styleSet = new StyleSet(); styleSet.SetSingleSheet(stylesheet); var engine = new CascadeEngine(styleSet);
             var cascaded = engine.ComputeCascadedValues(input);
 
             Assert.True(cascaded.TryGetValue("background", out var background));

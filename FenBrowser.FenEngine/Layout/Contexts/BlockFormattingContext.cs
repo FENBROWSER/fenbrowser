@@ -115,7 +115,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 
                 if (clearStyle != "none")
                 {
-                    float marginEdgeY = currentY + lastMarginBottom;
+                    float childMarginTopForClear = (float)(child.ComputedStyle?.Margin.Top ?? 0.0);
+                    float collapsedMarginForClear;
+                    if (isFirstChild)
+                    {
+                        collapsedMarginForClear = parentPreventsTopCollapse ? childMarginTopForClear : 0f;
+                    }
+                    else
+                    {
+                        collapsedMarginForClear = MarginCollapseComputer.Collapse(lastMarginBottom, childMarginTopForClear);
+                    }
+
+                    float marginEdgeY = currentY + collapsedMarginForClear;
                     float clearY = floatManager.GetClearanceY(clearStyle, marginEdgeY);
                     if (Math.Abs(clearY - marginEdgeY) > floatEpsilon)
                     {
@@ -125,7 +136,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         // discarding negative/positive collapsed margins entirely.
                         // Acid2 relies on the computed clearance delta being allowed to
                         // go negative when preceding floats sit above the current margin edge.
-                        currentY = clearY - lastMarginBottom;
+                        currentY = clearY - collapsedMarginForClear;
                     }
                 }
 
@@ -478,6 +489,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         _shrinkToFitDepth++;
                         try   { LayoutCore(blockBox, relayoutState); }
                         finally { _shrinkToFitDepth--; }
+                        return;
                     }
                     else
                     {
@@ -485,7 +497,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             $"[BFC] Shrink-to-fit depth {_shrinkToFitDepth} exceeded for <{(blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName}>. Skipping relayout to break infinite-loop.",
                             FenBrowser.Core.Logging.LogCategory.Layout);
                     }
-                    return;
                 }
             }
             // yOffset is now 0 + maxBottom (pure content height), so we add all padding+border

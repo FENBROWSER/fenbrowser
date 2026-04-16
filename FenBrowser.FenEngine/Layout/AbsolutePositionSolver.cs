@@ -149,20 +149,23 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (!width.HasValue && !left.HasValue && !right.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - ml - mr); // Fix: don't go negative if container small
+                float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr);
+                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
                 l = 0;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }
             else if (!width.HasValue && !left.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - ml - mr - r);
+                float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr - r);
+                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
                 l = cbWidth - ml - fixedSpace - w - mr - r;
                 result.WidthWasAuto = true;
             }
             else if (!width.HasValue && !right.HasValue)
             {
-                w = intrinsicWidth > 0 ? intrinsicWidth : Math.Max(0, cbWidth - fixedSpace - l - ml - mr);
+                float availableWidth = Math.Max(0, cbWidth - fixedSpace - l - ml - mr);
+                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }

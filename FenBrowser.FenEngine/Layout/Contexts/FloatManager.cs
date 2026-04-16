@@ -21,6 +21,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             else _rightFloats.Add(rect);
         }
 
+        public void AddFloat(SKRect rect, bool isLeft)
+        {
+            if (isLeft) _leftFloats.Add(rect);
+            else _rightFloats.Add(rect);
+        }
+
         /// <summary>
         /// Calculates the available width at a given Y coordinate, accounting for floats.
         /// </summary>
@@ -57,16 +63,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public float GetClearanceY(string clearMode, float currentY)
         {
-            float maxY = currentY;
+            bool matched = false;
+            float maxY = float.NegativeInfinity;
             if (clearMode == "left" || clearMode == "both")
             {
-                foreach (var rect in _leftFloats) if (rect.Bottom > maxY) maxY = rect.Bottom;
+                foreach (var rect in _leftFloats)
+                {
+                    matched = true;
+                    if (rect.Bottom > maxY) maxY = rect.Bottom;
+                }
             }
             if (clearMode == "right" || clearMode == "both")
             {
-                foreach (var rect in _rightFloats) if (rect.Bottom > maxY) maxY = rect.Bottom;
+                foreach (var rect in _rightFloats)
+                {
+                    matched = true;
+                    if (rect.Bottom > maxY) maxY = rect.Bottom;
+                }
             }
-            return maxY;
+
+            // CSS clearance can be negative relative to the current margin edge in
+            // collapse scenarios (Acid2 relies on this). Only fall back to currentY
+            // when there are no relevant floats to clear.
+            return matched ? maxY : currentY;
         }
 
         /// <summary>

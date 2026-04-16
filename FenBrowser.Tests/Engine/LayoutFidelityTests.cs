@@ -126,6 +126,65 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void BoxTreeBuilder_InlineContentAroundFloat_UsesSingleAnonymousInlineFlow()
+        {
+            var paragraph = new Element("p");
+            var leading = new Text("To pass the test, ");
+            var floated = new Element("span");
+            var trailing = new Text("a browser must use its default settings.");
+
+            paragraph.AppendChild(leading);
+            paragraph.AppendChild(floated);
+            paragraph.AppendChild(trailing);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [paragraph] = new CssComputed { Display = "block", Width = 200 },
+                [floated] = new CssComputed { Display = "inline", Float = "right", Width = 20, Height = 20 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(paragraph);
+
+            Assert.IsType<BlockBox>(rootBox);
+            Assert.Equal(2, rootBox.Children.Count);
+            Assert.Same(floated, rootBox.Children[0].SourceNode);
+            Assert.IsType<AnonymousBlockBox>(rootBox.Children[1]);
+            Assert.Equal(2, rootBox.Children[1].Children.Count);
+            Assert.All(rootBox.Children[1].Children, child => Assert.IsType<TextLayoutBox>(child));
+        }
+
+        [Fact]
+        public void BoxTreeBuilder_ReplacedElements_DoNotGenerateFallbackChildBoxes()
+        {
+            var root = new Element("div");
+            var iframe = new Element("iframe");
+            var iframeFallback = new Text("FAIL");
+            var obj = new Element("object");
+            var objFallback = new Text("FAIL");
+
+            iframe.AppendChild(iframeFallback);
+            obj.AppendChild(objFallback);
+            root.AppendChild(iframe);
+            root.AppendChild(obj);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block" },
+                [iframe] = new CssComputed { Display = "inline" },
+                [obj] = new CssComputed { Display = "inline" }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(root);
+
+            Assert.IsType<BlockBox>(rootBox);
+            Assert.Equal(2, rootBox.Children.Count);
+            Assert.All(rootBox.Children, child => Assert.IsType<InlineBox>(child));
+            Assert.All(rootBox.Children, child => Assert.Empty(child.Children));
+        }
+
+        [Fact]
         public void RelativePositionedFlexItem_ShiftsSubtreeWithoutChangingSiblingFlow()
         {
             var root = new Element("div");
@@ -300,6 +359,50 @@ namespace FenBrowser.Tests.Engine
             // It should have height 30 (container's line-height) even though span's fontSize is 10.
             Assert.True(result.Metrics.ContentHeight >= 30, $"Height was {result.Metrics.ContentHeight}, expected >= 30");
         }
+
+        [Fact]
+        public void InlineLayout_AtomicInlineVerticalAlign_ExpandsParentConsumedHeight()
+        {
+            var root = new Element("div");
+            var bucket = new Element("p");
+            root.AppendChild(bucket);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 400,
+                    FontSize = 0,
+                    LineHeight = 0,
+                    Padding = new Thickness(3, 0, 0, 150)
+                },
+                [bucket] = new CssComputed
+                {
+                    Display = "inline-block",
+                    FontSize = 40,
+                    VerticalAlign = "2em",
+                    Padding = new Thickness(104, 40, 0, 40),
+                    BorderThickness = new Thickness(1),
+                    BackgroundColor = SkiaSharp.SKColors.Purple
+                }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(root);
+            var state = new LayoutState(
+                new SKSize(400, 600),
+                400,
+                600,
+                400,
+                600);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            Assert.NotNull(rootBox.Geometry);
+            Assert.True(rootBox.Geometry.MarginBox.Height >= 300f, $"Expected Acid3-style bucket row to consume its full line box plus bottom padding, got {rootBox.Geometry.MarginBox.Height}.");
+        }
+
         [Fact]
         public void InlineLayout_MixedFonts_AlignsBaselinesToStrut()
         {
@@ -342,6 +445,74 @@ namespace FenBrowser.Tests.Engine
             // Origin.Y should be positive and pushed down by the strut's baseline
             Assert.True(line.Origin.Y > 8, $"Baseline Y was {line.Origin.Y}, expected it to be pushed down by the strut (> 8).");
         }
+
+        [Fact]
+        public void InlineBlock_NumericVerticalAlign_UsesFontSizeBasisForLineBox()
+        {
+            var root = new Element("div");
+            var bucket = new Element("p");
+            root.AppendChild(bucket);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 300,
+                    FontSize = 0,
+                    LineHeight = 0
+                },
+                [bucket] = new CssComputed
+                {
+                    Display = "inline-block",
+                    FontSize = 40,
+                    LineHeight = 48,
+                    VerticalAlign = "2em",
+                    Padding = new Thickness(0, 40, 0, 40),
+                    BorderThickness = new Thickness(1)
+                }
+            };
+
+            var computer = new FenBrowser.FenEngine.Layout.MinimalLayoutComputer(styles, 800, 600);
+            computer.Measure(root, new SKSize(300, 300));
+            computer.Arrange(root, new SKRect(0, 0, 300, 300));
+
+            var rootBox = computer.GetBox(root);
+            var bucketBox = computer.GetBox(bucket);
+
+            Assert.NotNull(rootBox);
+            Assert.NotNull(bucketBox);
+            Assert.True(rootBox.ContentBox.Height >= 160f, $"Expected raised inline-block to expand line box height, got {rootBox.ContentBox.Height}.");
+        }
+
+        [Fact]
+        public void Map_Subtree_DoesNotGenerateLayoutBoxes()
+        {
+            var root = new Element("div");
+            var map = new Element("map");
+            var anchor = new Element("a");
+            var obj = new Element("object");
+            anchor.AppendChild(new Text("hidden"));
+            obj.SetAttribute("data", "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK6QAAAAASUVORK5CYII=");
+            map.AppendChild(anchor);
+            map.AppendChild(obj);
+            root.AppendChild(map);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 200, Height = 100 },
+                [map] = new CssComputed { Display = "inline" },
+                [anchor] = new CssComputed { Display = "inline" },
+                [obj] = new CssComputed { Display = "block", Width = 40, Height = 30 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(root);
+
+            Assert.NotNull(rootBox);
+            Assert.Empty(rootBox.Children);
+        }
+
         [Fact]
         public void BlockLayout_MarginCollapsing_Siblings()
         {
@@ -421,6 +592,7 @@ namespace FenBrowser.Tests.Engine
             // Clear element should be below the float (Top >= 50)
             Assert.True(clearBox.BorderBox.Top >= 50, $"Clear element Top ({clearBox.BorderBox.Top}) should be >= Float Bottom (50)");
         }
+
         [Fact]
         public void BlockLayout_MarginCollapsing_PositiveNegative()
         {
@@ -448,6 +620,42 @@ namespace FenBrowser.Tests.Engine
 
             // Height = 1 (border) + 50 (a) + 10 (collapsed 20 - 10) + 50 (b) + 1 (border) = 112
             Assert.Equal(112, result.ContentHeight);
+        }
+
+        [Fact]
+        public void BlockLayout_NegativeTopMargin_PullsFollowingBlockUpward()
+        {
+            var root = new Element("div");
+            var a = new Element("div");
+            var b = new Element("div");
+            root.AppendChild(a);
+            root.AppendChild(b);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 200, BorderThickness = new Thickness(1) },
+                [a] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0, 0, 0, 20) },
+                [b] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0, -10, 0, 0) }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(root);
+            var state = new LayoutState(
+                new SKSize(200, 200),
+                200,
+                200,
+                200,
+                200);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var firstBox = FindBox(rootBox, a);
+            var secondBox = FindBox(rootBox, b);
+
+            Assert.NotNull(firstBox);
+            Assert.NotNull(secondBox);
+            Assert.Equal(1f, firstBox.Geometry.MarginBox.Top, 1);
+            Assert.Equal(71f, secondBox.Geometry.MarginBox.Top, 1);
         }
 
         private static LayoutBox FindBox(LayoutBox box, Node target)
