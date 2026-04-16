@@ -77,10 +77,7 @@ namespace FenBrowser.FenEngine.Typography
 
             (rawAscent, rawDescent) = NormalizeContentMetrics(fontSize, rawAscent, rawDescent);
 
-            // Ensure line height is at least as tall as content
             float contentHeight = rawAscent + rawDescent;
-            if (lineHeight < contentHeight)
-                lineHeight = contentHeight;
             
             return new NormalizedFontMetrics
             {
