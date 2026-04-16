@@ -6790,3 +6790,31 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`4/4`) on `2026-04-17`.
+
+## 2.222 Google Search Submit Activation Hardening (2026-04-17)
+
+- Scope:
+  - Fixed the remaining interaction gap where typed text appeared in Google search fields but pressing `Enter` (or clicking search via wrapper-first hit targets) did not trigger form submission.
+  - Preserved multiline behavior for normal textareas while enabling submit-on-enter for search-like textarea controls used by modern Google surfaces.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+    - `HandleElementClick(...)` wrapper-promotion now resolves descendant submit controls (in addition to editable controls) so click activation can reach real submit elements inside wrapper containers.
+    - `HandleKeyPress(...)` is now async and handles `Enter` for focused form fields:
+      - focused `input` => attempts `SubmitFormAsync(...)`,
+      - focused `textarea` => submits only when `ShouldSubmitOnEnterTextArea(...)` heuristic identifies search-like controls (`enterkeyhint`, `role`, known Google id/class/aria markers),
+      - regular textarea keeps newline insertion semantics when submit is not applicable.
+    - Added helper methods:
+      - `IsSubmitControlElement(...)`,
+      - `ShouldSubmitOnEnterTextArea(...)`,
+      - `ContainsCssClass(...)`.
+  - `FenBrowser.Tests/Rendering/BrowserHostTextareaStateTests.cs`
+    - Added regression: `HandleKeyPress_EnterInRegularTextarea_InsertsNewline` to lock standard multiline behavior.
+
+- Verification:
+  - Fen loop diagnostics (process cleanup + log cleanup + 30s host run) generated expected artifacts on `2026-04-17`:
+    - `FenBrowser.Host/bin/Debug/net8.0/debug_screenshot.png`,
+    - `logs/raw_source_20260417_010345.html` (`https://www.google.com/`),
+    - `dom_dump.txt`,
+    - `logs/fenbrowser_20260417_010344.log`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`6/6`) on `2026-04-17`.

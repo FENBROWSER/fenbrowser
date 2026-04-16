@@ -66,6 +66,23 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal("fen", textarea.TextContent);
         }
 
+        [Fact]
+        public async Task HandleKeyPress_EnterInRegularTextarea_InsertsNewline()
+        {
+            var host = new BrowserHost();
+            var textarea = new Element("textarea");
+            textarea.SetAttribute("value", string.Empty);
+            textarea.TextContent = string.Empty;
+            SetFocusedElement(host, textarea);
+
+            await host.HandleKeyPress("a");
+            await host.HandleKeyPress("Enter");
+            await host.HandleKeyPress("b");
+
+            Assert.Equal("a\nb", textarea.GetAttribute("value"));
+            Assert.Equal("a\nb", textarea.TextContent);
+        }
+
         private static void RegisterElement(BrowserHost host, string elementId, Element element)
         {
             var mapField = typeof(BrowserHost).GetField("_elementMap", BindingFlags.Instance | BindingFlags.NonPublic);

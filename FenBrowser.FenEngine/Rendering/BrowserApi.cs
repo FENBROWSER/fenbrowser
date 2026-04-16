@@ -3493,6 +3493,11 @@ pre {{
                 tag != "select" &&
                 !string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
             {
+                var descendantSubmit = element
+                    .Descendants()
+                    .OfType<Element>()
+                    .FirstOrDefault(IsSubmitControlElement);
+
                 var descendantEditable = element
                     .Descendants()
                     .OfType<Element>()
@@ -3504,6 +3509,11 @@ pre {{
                 if (descendantEditable != null)
                 {
                     element = descendantEditable;
+                    tag = element.NodeName?.ToLowerInvariant();
+                }
+                else if (descendantSubmit != null)
+                {
+                    element = descendantSubmit;
                     tag = element.NodeName?.ToLowerInvariant();
                 }
             }
@@ -3707,6 +3717,17 @@ pre {{
             }
 
             return false;
+        }
+
+        private static bool IsSubmitControlElement(Element element)
+        {
+            if (element == null || IsDisabledControl(element))
+            {
+                return false;
+            }
+
+            var tag = element.NodeName?.ToLowerInvariant();
+            return IsSubmitActivationControl(element, tag);
         }
 
         private async Task<bool> SubmitFormAsync(Element submitter)
@@ -4166,14 +4187,14 @@ pre {{
             return Uri.EscapeDataString(value ?? string.Empty).Replace("%20", "+");
         }
 
-        public Task HandleKeyPress(string key)
+        public async Task HandleKeyPress(string key)
         {
             if (_focusedElement == null)
             {
                 var recovered = RecoverFocusedElementForTyping();
                 if (recovered == null)
                 {
-                    return Task.CompletedTask;
+                    return;
                 }
 
                 SetFocusedElementState(recovered, fromKeyboard: true);
@@ -4218,6 +4239,7 @@ pre {{
                     if (_cursorIndex > val.Length) _cursorIndex = val.Length;
                     if (_cursorIndex < 0) _cursorIndex = 0;
                     
+                    bool submitted = false;
                     if (key == "Backspace")
                     {
                         if (hasSelection)
@@ -4265,6 +4287,30 @@ pre {{
                         _cursorIndex = val.Length;
                         _selectionAnchor = -1;
                     }
+                    else if (key == "Enter")
+                    {
+                        if (tag == "input")
+                        {
+                            submitted = await SubmitFormAsync(_focusedElement);
+                        }
+                        else if (tag == "textarea" && ShouldSubmitOnEnterTextArea(_focusedElement))
+                        {
+                            submitted = await SubmitFormAsync(_focusedElement);
+                        }
+
+                        if (!submitted && tag == "textarea")
+                        {
+                            if (hasSelection)
+                            {
+                                val = val.Remove(start, end - start);
+                                _cursorIndex = start;
+                                _selectionAnchor = -1;
+                            }
+
+                            val = val.Insert(_cursorIndex, "\n");
+                            _cursorIndex++;
+                        }
+                    }
                     else if (key.Length == 1) // Normal char
                     {
                         if (hasSelection)
@@ -4277,10 +4323,13 @@ pre {{
                         _cursorIndex++;
                     }
                     
-                    SetTextEntryValue(_focusedElement, val);
-                    
-                    // Trigger Repaint
-                     TryInvokeRepaintReady(_engine.GetActiveDom());
+                    if (!submitted)
+                    {
+                        SetTextEntryValue(_focusedElement, val);
+                        
+                        // Trigger Repaint
+                        TryInvokeRepaintReady(_engine.GetActiveDom());
+                    }
                 }
                 else if (isContentEditable)
                 {
@@ -4372,7 +4421,56 @@ pre {{
                  TryLogError($"[BrowserApi] Error typing key: {ex.Message}", LogCategory.General);
             }
             
-            return Task.CompletedTask;
+            return;
+        }
+
+        private static bool ShouldSubmitOnEnterTextArea(Element textarea)
+        {
+            if (!string.Equals(textarea?.NodeName, "TEXTAREA", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var enterKeyHint = textarea.GetAttribute("enterkeyhint");
+            if (string.Equals(enterKeyHint, "search", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(enterKeyHint, "go", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var role = textarea.GetAttribute("role");
+            if (string.Equals(role, "combobox", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(role, "searchbox", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var id = textarea.GetAttribute("id");
+            if (string.Equals(id, "APjFqb", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var classAttr = textarea.GetAttribute("class");
+            if (ContainsCssClass(classAttr, "gLFyf"))
+            {
+                return true;
+            }
+
+            var ariaLabel = textarea.GetAttribute("aria-label");
+            return !string.IsNullOrWhiteSpace(ariaLabel) &&
+                   ariaLabel.IndexOf("search", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool ContainsCssClass(string classList, string token)
+        {
+            if (string.IsNullOrWhiteSpace(classList) || string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            var segments = classList.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+            return segments.Any(segment => string.Equals(segment, token, StringComparison.Ordinal));
         }
 
         private Element RecoverFocusedElementForTyping()
