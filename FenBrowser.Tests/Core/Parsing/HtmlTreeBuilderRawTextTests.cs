@@ -44,5 +44,33 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.NotNull(marker);
             Assert.Equal("ready", marker!.TextContent);
         }
+
+        [Fact]
+        public void Build_Acid3HeadCommentWithMarkupLikeText_DoesNotTruncateDocument()
+        {
+            const string html = """
+<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="empty.css"><!-- text/html file (should be ignored, <h1> will go red if it isn't) -->
+    <script>var marker = 1;</script>
+  </head>
+  <body>
+    <p id="score">JS</p>
+  </body>
+</html>
+""";
+
+            var builder = new HtmlTreeBuilder(html);
+            var document = builder.Build();
+
+            var script = document.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "SCRIPT");
+            Assert.NotNull(script);
+            Assert.Contains("marker = 1", script!.TextContent);
+
+            var score = document.Descendants().OfType<Element>().FirstOrDefault(e => e.GetAttribute("id") == "score");
+            Assert.NotNull(score);
+            Assert.Equal("JS", score!.TextContent);
+        }
     }
 }

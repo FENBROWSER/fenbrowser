@@ -976,5 +976,64 @@ namespace FenBrowser.Tests.Core
             Assert.True(Math.Abs(launcherCenter - signInCenter) <= 4f,
                 $"Expected launcher and sign-in pill to share a centerline, got launcher={launcherCenter} signIn={signInCenter}.");
         }
+
+        [Fact]
+        public void BlockChild_PercentageHeight_DoesNotResolveAgainstAutoHeightContainingBlock()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var picture = new Element("div");
+            var nose = new Element("div");
+            var noseInner = new Element("div");
+            var noseCore = new Element("div");
+
+            picture.AppendChild(nose);
+            nose.AppendChild(noseInner);
+            noseInner.AppendChild(noseCore);
+
+            styles[picture] = new CssComputed
+            {
+                Display = "block",
+                Width = 600
+            };
+            styles[nose] = new CssComputed
+            {
+                Display = "block",
+                Float = "left",
+                Width = 192,
+                HeightPercent = 60,
+                MinHeightPercent = 80,
+                MaxHeight = 48,
+                BorderThickness = new Thickness(16, 0, 16, 16)
+            };
+            styles[noseInner] = new CssComputed
+            {
+                Display = "block",
+                Height = 0,
+                Padding = new Thickness(16, 16, 16, 48),
+                BackgroundColor = SKColors.Yellow
+            };
+            styles[noseCore] = new CssComputed
+            {
+                Display = "block",
+                Width = 32,
+                Height = 32,
+                BackgroundColor = SKColors.Red,
+                MarginLeftAuto = true,
+                MarginRightAuto = true
+            };
+
+            renderer.Render(
+                picture,
+                new SKCanvas(new SKBitmap(800, 600)),
+                styles,
+                new SKRect(0, 0, 800, 600),
+                "http://example.com",
+                (size, overlays) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(nose, out var noseRect));
+            Assert.InRange(noseRect.Height, 40f, 80f);
+        }
     }
 }

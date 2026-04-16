@@ -92,5 +92,31 @@ namespace FenBrowser.Tests.Core.Parsing
             
             Assert.Equal(2, colgroup.Children.Count(c => (c as Element)?.TagName == "COL"));
         }
+
+        [Fact]
+        public void Acid2_MisnestedParagraphAroundTable_ClosesParagraphBeforeTable()
+        {
+            var html = "<div class=\"picture\"><p><table><tr><td></table><p class=\"bad\"></div>";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var picture = body.Children.FirstOrDefault(c => (c as Element)?.GetAttribute("class") == "picture") as Element;
+            Assert.NotNull(picture);
+
+            var pictureChildren = picture.ChildNodes.Where(n => n is Element).Cast<Element>().ToList();
+            Assert.True(pictureChildren.Count >= 3, "Expected an empty paragraph, a table, and the following paragraph under .picture.");
+
+            Assert.Equal("P", pictureChildren[0].TagName);
+            Assert.Empty(pictureChildren[0].ChildNodes.OfType<Element>());
+
+            Assert.Equal("TABLE", pictureChildren[1].TagName);
+
+            Assert.Equal("P", pictureChildren[2].TagName);
+            Assert.Equal("bad", pictureChildren[2].GetAttribute("class"));
+
+            Assert.DoesNotContain(pictureChildren[1].ChildNodes, n => (n as Element)?.TagName == "P");
+            Assert.DoesNotContain(pictureChildren[2].ChildNodes, n => (n as Element)?.TagName == "TABLE");
+        }
     }
 }
