@@ -1591,6 +1591,83 @@ namespace FenBrowser.Core.Parsing
                             continue;
                         }
                         break;
+
+                    case TokenizerState.CommentLessThanSign:
+                        if (c == '!')
+                        {
+                            Consume();
+                            _currentComment.Data += '!';
+                            SwitchTo(TokenizerState.CommentLessThanSignBang);
+                        }
+                        else if (c == '<')
+                        {
+                            Consume();
+                            _currentComment.Data += '<';
+                        }
+                        else
+                        {
+                            SwitchTo(TokenizerState.Comment);
+                            continue;
+                        }
+                        break;
+
+                    case TokenizerState.CommentLessThanSignBang:
+                        if (c == '-')
+                        {
+                            Consume();
+                            _currentComment.Data += '-';
+                            SwitchTo(TokenizerState.CommentLessThanSignBangDash);
+                        }
+                        else
+                        {
+                            SwitchTo(TokenizerState.Comment);
+                            continue;
+                        }
+                        break;
+
+                    case TokenizerState.CommentLessThanSignBangDash:
+                        if (c == '-')
+                        {
+                            Consume();
+                            _currentComment.Data += '-';
+                            SwitchTo(TokenizerState.CommentLessThanSignBangDashDash);
+                        }
+                        else
+                        {
+                            SwitchTo(TokenizerState.CommentEndDash);
+                            continue;
+                        }
+                        break;
+
+                    case TokenizerState.CommentLessThanSignBangDashDash:
+                        SwitchTo(TokenizerState.CommentEnd);
+                        continue;
+
+                    case TokenizerState.CommentEndBang:
+                        if (c == '-')
+                        {
+                            Consume();
+                            _currentComment.Data += "--!";
+                            SwitchTo(TokenizerState.CommentEndDash);
+                        }
+                        else if (c == '>')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.Data);
+                            return EmitCurrentComment();
+                        }
+                        else if (IsEof())
+                        {
+                            EmitError("Eof In Comment");
+                            return EmitCurrentComment();
+                        }
+                        else
+                        {
+                            _currentComment.Data += "--!";
+                            SwitchTo(TokenizerState.Comment);
+                            continue;
+                        }
+                        break;
                         
                     case TokenizerState.BogusComment:
                          if (c == '>')

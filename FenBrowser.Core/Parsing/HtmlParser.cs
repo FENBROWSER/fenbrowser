@@ -41,6 +41,7 @@ namespace FenBrowser.Core.Parsing
                 MaxOpenElementsDepth = _securityPolicy.HtmlMaxOpenElementsDepth
             };
             var doc = builder.Build();
+            doc.URL = _baseUri.AbsoluteUri;
             doc.BaseURI = _baseUri.AbsoluteUri; // Ensure doc knows its base
             return doc;
         }
