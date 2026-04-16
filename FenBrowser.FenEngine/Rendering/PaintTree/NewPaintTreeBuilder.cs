@@ -993,7 +993,8 @@ namespace FenBrowser.FenEngine.Rendering
             // Poll interactive state
             Element elemNode = node as Element;
             bool isFocused = elemNode != null && ElementStateManager.Instance.IsFocused(elemNode);
-            bool isHovered = elemNode != null && ElementStateManager.Instance.IsHovered(elemNode);
+            // Paint-time hover chrome should be direct-target only; ancestor-chain hover remains for CSS matching.
+            bool isHovered = elemNode != null && ReferenceEquals(ElementStateManager.Instance.HoveredElement, elemNode);
             
             // CRITICAL FIX: Disable focus ring for root elements (HTML/BODY) to prevent "Blue Edge" 
             if (elemNode != null)

@@ -749,19 +749,46 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (root is Document doc)
             {
-                return (doc.DocumentElement, doc.Body);
+                var html = doc.DocumentElement;
+                var body = doc.Body;
+                if (body == null && html != null)
+                {
+                    body = html
+                        .Descendants()
+                        .OfType<Element>()
+                        .FirstOrDefault(e => string.Equals(e.TagName, "body", StringComparison.OrdinalIgnoreCase));
+                }
+
+                return (html, body);
             }
 
             if (root is Element element)
             {
                 if (string.Equals(element.TagName, "html", StringComparison.OrdinalIgnoreCase))
                 {
-                    var body = element.Children?.OfType<Element>()
+                    var body = element.ChildNodes?
+                        .OfType<Element>()
                         .FirstOrDefault(child => string.Equals(child.TagName, "body", StringComparison.OrdinalIgnoreCase));
+                    if (body == null)
+                    {
+                        body = element
+                            .Descendants()
+                            .OfType<Element>()
+                            .FirstOrDefault(e => string.Equals(e.TagName, "body", StringComparison.OrdinalIgnoreCase));
+                    }
                     return (element, body);
                 }
 
-                return (element, null);
+                if (string.Equals(element.TagName, "body", StringComparison.OrdinalIgnoreCase))
+                {
+                    var html = element.ParentElement;
+                    if (html != null && !string.Equals(html.TagName, "html", StringComparison.OrdinalIgnoreCase))
+                    {
+                        html = null;
+                    }
+
+                    return (html, element);
+                }
             }
 
             return (null, null);

@@ -6731,3 +6731,20 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Verification:
   - Fen loop rerun (`file:///C:/Users/udayk/Videos/fenbrowser_stress_test.html`) after clean process/log reset reaches `26/27` in `debug_screenshot.png` on `2026-04-15`.
   - Rendered stress transcript confirms pass-state for data URL image, mutation observer, setTimeout, final score presence, selector/properties probes, and all but one geometry check.
+
+## 2.219 New-Tab Hover Backdrop Stability Hardening (2026-04-17)
+
+- Scope:
+  - Eliminated full-surface background shifts on `fen://newtab` when hovering the search input or quick-link cards.
+  - Kept CSS selector semantics intact (`:hover` continues to match ancestors in the selector engine) while isolating renderer-only hover tint behavior to the direct hovered target.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+    - `BuildPaintNodesForElement(...)` now computes paint-node `IsHovered` with direct-target semantics (`ReferenceEquals(ElementStateManager.Instance.HoveredElement, elemNode)`) instead of ancestor-chain semantics (`IsHovered(...)`).
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+    - `ResolveDocumentElements(...)` document-element/body discovery path hardened for element-root renders (`html`/`body` roots and descendant fallback) so canvas background resolution remains robust across root shapes.
+  - `FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`
+    - Added regression: `Hovering_NewTab_Input_Does_Not_Modulate_Page_Backdrop`.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName=FenBrowser.Tests.Engine.NewTabPageLayoutTests.Hovering_NewTab_Input_Does_Not_Modulate_Page_Backdrop" -v minimal`: pass (`1/1`) on `2026-04-17`.

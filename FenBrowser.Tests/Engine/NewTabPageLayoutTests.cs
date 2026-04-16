@@ -382,6 +382,66 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task Hovering_NewTab_Input_Does_Not_Modulate_Page_Backdrop()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            var renderer = new SkiaDomRenderer();
+            using var beforeBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var beforeCanvas = new SKCanvas(beforeBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = beforeCanvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.HoverBackdrop.before",
+                EmitVerificationReport = false
+            });
+            beforeCanvas.Flush();
+            var beforePixel = beforeBitmap.GetPixel(30, 30);
+
+            using var hoveredBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var hoveredCanvas = new SKCanvas(hoveredBitmap);
+            try
+            {
+                ElementStateManager.Instance.SetHoveredElement(searchBox);
+                renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+                {
+                    Root = root,
+                    Canvas = hoveredCanvas,
+                    Styles = styles,
+                    Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                    BaseUrl = baseUri.AbsoluteUri,
+                    InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Input,
+                    RequestedBy = "NewTabPageLayoutTests.HoverBackdrop.hovered",
+                    EmitVerificationReport = false
+                });
+                hoveredCanvas.Flush();
+            }
+            finally
+            {
+                ElementStateManager.Instance.SetHoveredElement(null);
+            }
+
+            var hoveredPixel = hoveredBitmap.GetPixel(30, 30);
+            Assert.Equal(beforePixel.Red, hoveredPixel.Red);
+            Assert.Equal(beforePixel.Green, hoveredPixel.Green);
+            Assert.Equal(beforePixel.Blue, hoveredPixel.Blue);
+        }
+
+        [Fact]
         public void CascadeEngine_Author_Background_Shorthand_Overrides_UserAgent_BackgroundColor_Longhand()
         {
             var html = new Element("html");
