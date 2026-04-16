@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
@@ -50,6 +51,21 @@ namespace FenBrowser.Tests.Engine
             Assert.False(SelectorMatcher.Matches(target, "[data-code='abc' s]"));
             Assert.True(SelectorMatcher.Matches(target, "[data-code='AbC' s]"));
             Assert.True(SelectorMatcher.Matches(target, "[data-note='a ] b' i]"));
+        }
+
+        [Fact]
+        public void AttributeSelectors_UnescapeEscapedWhitespaceInUnquotedValue()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <address id='target' class='second two'></address>
+</body></html>");
+
+            var target = ById(doc, "target");
+
+            Assert.True(SelectorMatcher.Matches(target, @"[class=second\ two]"));
+            Assert.True(SelectorMatcher.Matches(target, @"[class=second\ two][class=""second two""]"));
         }
 
         [Fact]
@@ -125,6 +141,52 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task EscapedSpaceIdSelector_MatchesAndAppliesCascade()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        #\  { display: none; }
+    </style>
+</head>
+<body>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var hidden = doc.CreateElement("div");
+            hidden.Id = " ";
+            hidden.AppendChild(doc.CreateTextNode("FAIL"));
+            doc.Body.AppendChild(hidden);
+
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            Assert.True(SelectorMatcher.Matches(hidden, @"#\ "));
+            Assert.Equal("none", computed[hidden].Display);
+        }
+
+        [Fact]
+        public void EscapedSpaceIdDescendantSelector_DoesNotMatchWithoutEscapedAncestor()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <p id='result'><span id='score'>66</span></p>
+    <div id=' '>FAIL</div>
+</body></html>");
+
+            var result = ById(doc, "result");
+            var score = ById(doc, "score");
+
+            Assert.False(SelectorMatcher.Matches(result, @"#\  #result"));
+            Assert.False(SelectorMatcher.Matches(score, @"#\  #score"));
+        }
+
+        [Fact]
         public async Task CascadeAppliesNthChildOfSelectorRules()
         {
             const string html = @"
@@ -177,6 +239,35 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void EnabledPseudoClass_DoesNotMatchNonFormElements()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='plain'></div>
+    <input id='control' />
+</body></html>");
+
+            var plain = ById(doc, "plain");
+            var control = ById(doc, "control");
+
+            Assert.False(SelectorMatcher.Matches(plain, ":enabled"));
+            Assert.True(SelectorMatcher.Matches(control, ":enabled"));
+        }
+
+        [Fact]
+        public void MalformedCompoundSelector_IsRejected()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html class='test'><body></body></html>");
+
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+
+            Assert.False(SelectorMatcher.Matches(root, "html*.test"));
+        }
+
+        [Fact]
         public async Task Cascade_KeepsWikipediaEasterEggNoticeHiddenWithoutCompanionClass()
         {
             const string html = @"
@@ -220,6 +311,103 @@ namespace FenBrowser.Tests.Engine
 
             Assert.Equal("none", computed[notice].Display);
             Assert.Equal("none", computed[landmark].Display);
+        }
+
+        [Fact]
+        public async Task Cascade_AppliesFirstChildPseudoClassRule_ToLeadingHeading()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        html { font-size: 20px; }
+        h1 { font-size: 2em; }
+        h1:first-child { font-size: 5em; }
+        #result { font-size: 5em; }
+    </style>
+</head>
+<body>
+    <h1 id='title'>Acid3</h1>
+    <div id='result'>64</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://acid3.acidtests.org/"), null);
+
+            var title = ById(doc, "title");
+            var result = ById(doc, "result");
+
+            Assert.Equal("5em", computed[title].Map["font-size"]);
+            Assert.InRange(computed[title].FontSize ?? 0d, 99.999d, 100.001d);
+            Assert.Equal("5em", computed[result].Map["font-size"]);
+            Assert.InRange(computed[result].FontSize ?? 0d, 99.999d, 100.001d);
+        }
+
+        [Fact]
+        public async Task Cascade_Acid3HeaderRules_SurviveDataUrlBodyDeclaration()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style type='text/css'>
+        * { margin: 0; border: 1px blue; padding: 0; border-spacing: 0; font: inherit; line-height: 1.2; color: inherit; background: transparent; }
+        html { font: 20px Arial, sans-serif; border: 2cm solid gray; width: 32em; margin: 1em; }
+        :root { background: silver; color: black; border-width: 0 0.2em 0.2em 0; }
+        body { padding: 2em 2em 0; background: url(data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAABGdBTUEAAK/INwWK6QAAAAlwSFlzAAAASAAAAEgARslrPgAAABtJREFUOMtj/M9APmCiQO+o5lHNo5pHNVNBMwAinAEnIWw89gAAACJ6VFh0U29mdHdhcmUAAHjac0zJT0pV8MxNTE8NSk1MqQQAL5wF1K4MqU0AAAAASUVORK5CYII=) no-repeat 99.8392283% 1px white; border: solid 1px black; margin: -0.2em 0 0 -0.2em; }
+        h1:first-child { cursor: help; font-size: 5em; font-weight: bolder; margin-bottom: -0.4em; text-shadow: rgba(192, 192, 192, 1.0) 3px 3px; }
+        #result { font-weight: bolder; width: 5.68em; text-align: right; }
+        #result { font-size: 5em; margin: -2.19em 0 0; }
+    </style>
+</head>
+<body>
+    <h1 id='title'>Acid3</h1>
+    <div id='result'>64</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://acid3.acidtests.org/"), null);
+
+            var title = ById(doc, "title");
+            var result = ById(doc, "result");
+
+            Assert.Equal("5em", computed[title].Map["font-size"]);
+            Assert.Equal("5em", computed[result].Map["font-size"]);
+        }
+
+        [Fact]
+        public void ParseRules_Acid3HeaderRules_AreNotDroppedAfterDataUrlBodyDeclaration()
+        {
+            const string css = @"
+                * { margin: 0; border: 1px blue; padding: 0; border-spacing: 0; font: inherit; line-height: 1.2; color: inherit; background: transparent; }
+                html { font: 20px Arial, sans-serif; border: 2cm solid gray; width: 32em; margin: 1em; }
+                :root { background: silver; color: black; border-width: 0 0.2em 0.2em 0; }
+                body { padding: 2em 2em 0; background: url(data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAABGdBTUEAAK/INwWK6QAAAAlwSFlzAAAASAAAAEgARslrPgAAABtJREFUOMtj/M9APmCiQO+o5lHNo5pHNVNBMwAinAEnIWw89gAAACJ6VFh0U29mdHdhcmUAAHjac0zJT0pV8MxNTE8NSk1MqQQAL5wF1K4MqU0AAAAASUVORK5CYII=) no-repeat 99.8392283% 1px white; border: solid 1px black; margin: -0.2em 0 0 -0.2em; }
+                h1:first-child { cursor: help; font-size: 5em; font-weight: bolder; margin-bottom: -0.4em; text-shadow: rgba(192, 192, 192, 1.0) 3px 3px; }
+                #result { font-weight: bolder; width: 5.68em; text-align: right; }
+                #result { font-size: 5em; margin: -2.19em 0 0; }";
+
+            var parseRules = typeof(CssLoader).GetMethod("ParseRules", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(parseRules);
+
+            var rules = Assert.IsAssignableFrom<System.Collections.IEnumerable>(
+                parseRules!.Invoke(null, new object[] { css, 0, new Uri("https://acid3.acidtests.org/"), null, null, null, CssOrigin.Author }));
+
+            var styleSelectors = rules.Cast<CssRule>()
+                .OfType<CssStyleRule>()
+                .Select(rule => rule.Selector?.Raw)
+                .Where(raw => !string.IsNullOrWhiteSpace(raw))
+                .ToArray();
+
+            Assert.Contains("h1:first-child", styleSelectors);
+            Assert.Equal(2, styleSelectors.Count(raw => raw == "#result"));
         }
 
         private static Document Parse(string html)

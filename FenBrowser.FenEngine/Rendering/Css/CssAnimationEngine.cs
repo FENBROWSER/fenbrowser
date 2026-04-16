@@ -109,19 +109,18 @@ namespace FenBrowser.FenEngine.Rendering
             "flex", "flex-basis", "flex-grow", "flex-shrink",
             "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows"
         };
-        
         /// <summary>
-        /// Event raised when animation frame updates require repaint
-        /// </summary>
-        public event Action<Element> OnAnimationFrame;
-        
-        /// <summary>
-        /// Event raised when animation completes
+        /// Event raised when an animation completes.
         /// </summary>
         public event Action<Element, string> OnAnimationEnd;
-        
+
         /// <summary>
-        /// Event raised when transition completes
+        /// Event raised on animation ticks for elements with updated animated values.
+        /// </summary>
+        public event Action<Element> OnAnimationFrame;
+
+        /// <summary>
+        /// Event raised when transition completes.
         /// </summary>
         public event Action<Element, string> OnTransitionEnd;
         
@@ -440,6 +439,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        
         /// <summary>
         /// Get computed animation properties for an element at current time
         /// </summary>
@@ -475,6 +475,24 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>
+        /// Gets all elements that are currently being animated or transitioned.
+        /// PERF: use this to avoid O(N) iteration in the renderer.
+        /// </summary>
+        public HashSet<Element> GetAllActiveAnimationElements()
+        {
+            var result = new HashSet<Element>();
+            lock (_activeAnimations)
+            {
+                foreach (var el in _activeAnimations.Keys) result.Add(el);
+            }
+            lock (_activeTransitions)
+            {
+                foreach (var el in _activeTransitions.Keys) result.Add(el);
+            }
+            return result;
+        }
+
         public static InvalidationKind DetermineInvalidationKind(IEnumerable<string> properties)
         {
             if (properties == null)
@@ -508,7 +526,7 @@ namespace FenBrowser.FenEngine.Rendering
                 ? InvalidationKind.Layout | InvalidationKind.Paint
                 : InvalidationKind.Paint;
         }
-        
+
         #endregion
         
         #region Animation Loop
@@ -542,269 +560,247 @@ namespace FenBrowser.FenEngine.Rendering
                 foreach (var kvp in _activeAnimations)
                 {
                     var element = kvp.Key;
+                    var style = element.GetComputedStyle();
+                    if (style != null) style.AnimationOverlay?.Clear();
+
                     foreach (var anim in kvp.Value)
                     {
                         if (anim.PlayState == "paused") continue;
-                        
-                        // Calculate elapsed time
                         double elapsed = (now - anim.StartTime).TotalMilliseconds;
                         
-                        // Handle delay
                         if (elapsed < anim.DelayMs)
                         {
-                            // Apply backwards fill if applicable
                             if (anim.FillMode == "backwards" || anim.FillMode == "both")
                             {
                                 ApplyKeyframeAt(anim, 0);
+                                ApplyToOverlay(element, anim.ComputedProperties);
                                 toNotify.Add(element);
+                                element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
                             }
                             continue;
                         }
                         
                         elapsed -= anim.DelayMs;
-                        
-                        // Calculate iteration and progress
                         double iterationProgress = anim.DurationMs > 0 ? elapsed / anim.DurationMs : 1;
                         int iteration = (int)Math.Floor(iterationProgress);
                         double progress = iterationProgress - iteration;
                         
-                        // Check if complete
                         if (anim.IterationCount >= 0 && iteration >= anim.IterationCount)
                         {
                             anim.IsComplete = true;
-                            
-                            // Apply forwards fill if applicable
                             if (anim.FillMode == "forwards" || anim.FillMode == "both")
                             {
                                 ApplyKeyframeAt(anim, 100);
+                                ApplyToOverlay(element, anim.ComputedProperties);
                                 toNotify.Add(element);
+                                element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
                             }
-                            else
-                            {
-                                anim.ComputedProperties.Clear();
-                            }
-                            
                             toRemove.Add((element, anim));
                             OnAnimationEnd?.Invoke(element, anim.AnimationName);
                             continue;
                         }
                         
                         anim.CurrentIteration = iteration;
-                        
-                        // Handle direction
                         bool reverse = false;
                         switch (anim.Direction)
                         {
-                            case "reverse":
-                                reverse = true;
-                                break;
-                            case "alternate":
-                                reverse = iteration % 2 == 1;
-                                break;
-                            case "alternate-reverse":
-                                reverse = iteration % 2 == 0;
-                                break;
+                            case "reverse": reverse = true; break;
+                            case "alternate": reverse = iteration % 2 == 1; break;
+                            case "alternate-reverse": reverse = iteration % 2 == 0; break;
                         }
                         
-                        if (reverse)
-                            progress = 1 - progress;
-                        
-                        // Apply easing
+                        if (reverse) progress = 1 - progress;
                         progress = ApplyEasing(progress, anim.TimingFunction);
+                        ApplyKeyframeAt(anim, progress * 100);
                         
-                        // Calculate animated values
-                        double percentage = progress * 100;
-                        ApplyKeyframeAt(anim, percentage);
+                        ApplyToOverlay(element, anim.ComputedProperties);
+                        element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
                         toNotify.Add(element);
                     }
                 }
                 
-                // Remove completed animations
                 foreach (var (element, anim) in toRemove)
                 {
                     if (_activeAnimations.TryGetValue(element, out var list))
                     {
                         list.Remove(anim);
-                        if (list.Count == 0)
-                            _activeAnimations.Remove(element);
+                        if (list.Count == 0) _activeAnimations.Remove(element);
                     }
                 }
             }
+
+            lock (_activeTransitions)
+            {
+                foreach (var kvp in _activeTransitions)
+                {
+                    var element = kvp.Key;
+                    bool elementDirty = false;
+                    var invalidation = InvalidationKind.None;
+
+                    foreach (var trans in kvp.Value)
+                    {
+                        if (trans.IsComplete) continue;
+                        double elapsed = (now - trans.StartTime).TotalMilliseconds;
+                        if (elapsed < trans.DelayMs) continue;
+                        elapsed -= trans.DelayMs;
+                        double progress = trans.DurationMs > 0 ? Math.Min(elapsed / trans.DurationMs, 1.0) : 1.0;
+                        progress = ApplyEasing(progress, trans.TimingFunction);
+
+                        string interpolated = InterpolateValue(trans.Property, trans.FromValue, trans.ToValue, progress);
+                        if (interpolated != null)
+                        {
+                            var style = element.GetComputedStyle();
+                            if (style != null)
+                            {
+                                style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                                style.AnimationOverlay[trans.Property] = interpolated;
+                                elementDirty = true;
+                                invalidation |= ClassifyPropertyInvalidation(trans.Property);
+                            }
+                        }
+                        if (progress >= 1.0)
+                        {
+                            trans.IsComplete = true;
+                            OnTransitionEnd?.Invoke(element, trans.Property);
+                        }
+                    }
+
+                    if (elementDirty)
+                    {
+                        element.MarkDirty(invalidation);
+                        toNotify.Add(element);
+                    }
+                }
+                
+                foreach (var el in _activeTransitions.Keys.ToList())
+                {
+                    if (_activeTransitions[el].All(t => t.IsComplete))
+                        _activeTransitions.Remove(el);
+                }
+            }
             
-            // Notify about frame updates
             foreach (var element in toNotify)
             {
                 OnAnimationFrame?.Invoke(element);
             }
-            
-            // Stop engine if no more animations
-            lock (_activeAnimations)
-            {
-                if (_activeAnimations.Count == 0)
-                    Stop();
-            }
+
+            if (toNotify.Count == 0 && _activeAnimations.Count == 0 && _activeTransitions.Count == 0)
+                Stop();
         }
-        
-        #endregion
-        
-        #region Keyframe Interpolation
-        
-        private void ApplyKeyframeAt(ActiveAnimation anim, double percentage)
+
+        private void ApplyToOverlay(Element element, Dictionary<string, string> properties)
         {
+            var style = element.GetComputedStyle();
+            if (style == null) return;
+            style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in properties) style.AnimationOverlay[kvp.Key] = kvp.Value;
+        }
+
+        private void ApplyKeyframeAt(ActiveAnimation anim, double progress)
+        {
+            if (anim.Keyframes == null || anim.Keyframes.Frames.Count == 0) return;
+
             var frames = anim.Keyframes.Frames.OrderBy(f => f.Percentage).ToList();
-            if (frames.Count == 0) return;
+            double normalizedProgress = progress * 100.0;
             
-            // Find surrounding keyframes
-            CssLoader.CssKeyframe fromFrame = null;
-            CssLoader.CssKeyframe toFrame = null;
-            
-            foreach (var frame in frames)
+            // Find bounding keyframes
+            CssLoader.CssKeyframe lower = frames.LastOrDefault(f => f.Percentage <= normalizedProgress);
+            CssLoader.CssKeyframe upper = frames.FirstOrDefault(f => f.Percentage > normalizedProgress);
+
+            if (lower == null) lower = frames.First();
+            if (upper == null)
             {
-                if (frame.Percentage <= percentage)
-                    fromFrame = frame;
-                if (frame.Percentage >= percentage && toFrame == null)
-                    toFrame = frame;
+                // We are at or past the last keyframe
+                foreach (var kvp in lower.Properties) anim.ComputedProperties[kvp.Key] = kvp.Value;
+                return;
             }
-            
-            fromFrame ??= frames[0];
-            toFrame ??= frames[frames.Count - 1];
-            
-            // Calculate interpolation factor
-            double t = 0;
-            if (fromFrame != toFrame && toFrame.Percentage != fromFrame.Percentage)
-            {
-                t = (percentage - fromFrame.Percentage) / (toFrame.Percentage - fromFrame.Percentage);
-            }
-            else if (fromFrame == toFrame)
-            {
-                t = 0; // At exact keyframe
-            }
-            
-            // Interpolate properties
-            anim.ComputedProperties.Clear();
-            
-            // Get all properties from both keyframes
-            var allProps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in fromFrame.Properties.Keys) allProps.Add(p);
-            foreach (var p in toFrame.Properties.Keys) allProps.Add(p);
-            
+
+            double frameRange = upper.Percentage - lower.Percentage;
+            double frameProgress = frameRange > 0 ? (normalizedProgress - lower.Percentage) / frameRange : 1.0;
+
+            // Interpolate all properties present in either keyframe
+            var allProps = lower.Properties.Keys.Union(upper.Properties.Keys).Distinct();
             foreach (var prop in allProps)
             {
-                string fromValue = fromFrame.Properties.TryGetValue(prop, out var fv) ? fv : null;
-                string toValue = toFrame.Properties.TryGetValue(prop, out var tv) ? tv : null;
-                
-                if (fromValue == null) fromValue = toValue;
-                if (toValue == null) toValue = fromValue;
-                
-                string interpolated = InterpolateValue(prop, fromValue, toValue, t);
-                if (interpolated != null)
+                lower.Properties.TryGetValue(prop, out var fromVal);
+                upper.Properties.TryGetValue(prop, out var toVal);
+
+                if (fromVal != null && toVal != null)
                 {
-                    anim.ComputedProperties[prop] = interpolated;
+                    anim.ComputedProperties[prop] = InterpolateValue(prop, fromVal, toVal, frameProgress);
+                }
+                else if (fromVal != null)
+                {
+                    anim.ComputedProperties[prop] = fromVal;
+                }
+                else if (toVal != null)
+                {
+                    anim.ComputedProperties[prop] = toVal;
                 }
             }
         }
-        
-        /// <summary>
-        /// Interpolate between two CSS values
-        /// </summary>
-        private string InterpolateValue(string property, string from, string to, double t)
+
+        private string InterpolateValue(string property, string from, string to, double progress)
         {
-            if (from == null || to == null) return to ?? from;
-            if (t <= 0) return from;
-            if (t >= 1) return to;
-            
-            // Try numeric interpolation
-            if (TryParseNumericValue(from, out double fromNum, out string fromUnit) &&
-                TryParseNumericValue(to, out double toNum, out string toUnit) &&
-                fromUnit == toUnit)
+            if (progress <= 0) return from;
+            if (progress >= 1) return to;
+
+            // Handle Transforms
+            if (property == "transform")
             {
-                double interpolated = fromNum + (toNum - fromNum) * t;
-                return $"{interpolated:F2}{fromUnit}";
+                var f = ParseTransform(from);
+                var t = ParseTransform(to);
+                
+                double tx = f.Item1 + (t.Item1 - f.Item1) * progress;
+                double ty = f.Item2 + (t.Item2 - f.Item2) * progress;
+                double sx = f.Item3 + (t.Item3 - f.Item3) * progress;
+                double sy = f.Item4 + (t.Item4 - f.Item4) * progress;
+                double r = f.Item5 + (t.Item5 - f.Item5) * progress;
+
+                return $"translate({tx}px, {ty}px) scale({sx}, {sy}) rotate({r}deg)";
             }
-            
-            // Try color interpolation
-            if (TryParseColor(from, out var fromColor) && TryParseColor(to, out var toColor))
+
+            // Handle Numeric values (Opacity, etc)
+            if (TryParseNumericValue(from, out double fNum, out string fUnit) && 
+                TryParseNumericValue(to, out double tNum, out string tUnit))
             {
-                byte r = (byte)(fromColor.Red + (toColor.Red - fromColor.Red) * t);
-                byte g = (byte)(fromColor.Green + (toColor.Green - fromColor.Green) * t);
-                byte b = (byte)(fromColor.Blue + (toColor.Blue - fromColor.Blue) * t);
-                byte a = (byte)(fromColor.Alpha + (toColor.Alpha - fromColor.Alpha) * t);
-                return $"rgba({r},{g},{b},{a / 255.0:F2})";
+                double val = fNum + (tNum - fNum) * progress;
+                return $"{val}{fUnit}";
             }
-            
-            // Try transform interpolation
-            if (property.ToLower() == "transform")
+
+            // Handle Colors
+            if (TryParseColor(from, out SKColor fCol) && TryParseColor(to, out SKColor tCol))
             {
-                return InterpolateTransform(from, to, t);
+                byte r = (byte)(fCol.Red + (tCol.Red - fCol.Red) * progress);
+                byte g = (byte)(fCol.Green + (tCol.Green - fCol.Green) * progress);
+                byte b = (byte)(fCol.Blue + (tCol.Blue - fCol.Blue) * progress);
+                byte a = (byte)(fCol.Alpha + (tCol.Alpha - fCol.Alpha) * progress);
+                return $"rgba({r},{g},{b},{a})";
             }
-            
-            // Discrete (step) interpolation for non-numeric values
-            return t < 0.5 ? from : to;
+
+            // Default to discrete swap at 50%
+            return progress < 0.5 ? from : to;
         }
-        
-        private string InterpolateTransform(string from, string to, double t)
-        {
-            // Parse and interpolate common transforms
-            var fromParsed = ParseTransform(from);
-            var toParsed = ParseTransform(to);
-            
-            var result = new List<string>();
-            
-            // Interpolate translate
-            if (fromParsed.translateX != 0 || toParsed.translateX != 0 ||
-                fromParsed.translateY != 0 || toParsed.translateY != 0)
-            {
-                double x = fromParsed.translateX + (toParsed.translateX - fromParsed.translateX) * t;
-                double y = fromParsed.translateY + (toParsed.translateY - fromParsed.translateY) * t;
-                result.Add($"translate({x:F2}px,{y:F2}px)");
-            }
-            
-            // Interpolate scale
-            if (fromParsed.scaleX != 1 || toParsed.scaleX != 1 ||
-                fromParsed.scaleY != 1 || toParsed.scaleY != 1)
-            {
-                double sx = fromParsed.scaleX + (toParsed.scaleX - fromParsed.scaleX) * t;
-                double sy = fromParsed.scaleY + (toParsed.scaleY - fromParsed.scaleY) * t;
-                result.Add($"scale({sx:F3},{sy:F3})");
-            }
-            
-            // Interpolate rotate
-            if (fromParsed.rotate != 0 || toParsed.rotate != 0)
-            {
-                double r = fromParsed.rotate + (toParsed.rotate - fromParsed.rotate) * t;
-                result.Add($"rotate({r:F2}deg)");
-            }
-            
-            // Interpolate opacity (if part of transform)
-            return result.Count > 0 ? string.Join(" ", result) : "none";
-        }
-        
-        private (double translateX, double translateY, double scaleX, double scaleY, double rotate) ParseTransform(string value)
+
+        private (double, double, double, double, double) ParseTransform(string value)
         {
             double tx = 0, ty = 0, sx = 1, sy = 1, r = 0;
-            
-            if (string.IsNullOrWhiteSpace(value) || value == "none")
-                return (tx, ty, sx, sy, r);
-            
+            if (string.IsNullOrEmpty(value) || value == "none") return (tx, ty, sx, sy, r);
+
             // Parse translate
             var translateMatch = System.Text.RegularExpressions.Regex.Match(value, @"translate\s*\(\s*([-\d.]+)(px|%)?\s*,?\s*([-\d.]+)?(px|%)?\s*\)");
             if (translateMatch.Success)
             {
                 double.TryParse(translateMatch.Groups[1].Value, out tx);
-                double.TryParse(translateMatch.Groups[3].Value, out ty);
+                if (!string.IsNullOrEmpty(translateMatch.Groups[3].Value))
+                    double.TryParse(translateMatch.Groups[3].Value, out ty);
             }
             
             var translateXMatch = System.Text.RegularExpressions.Regex.Match(value, @"translateX\s*\(\s*([-\d.]+)(px|%)?\s*\)");
-            if (translateXMatch.Success)
-            {
-                double.TryParse(translateXMatch.Groups[1].Value, out tx);
-            }
+            if (translateXMatch.Success) double.TryParse(translateXMatch.Groups[1].Value, out tx);
             
             var translateYMatch = System.Text.RegularExpressions.Regex.Match(value, @"translateY\s*\(\s*([-\d.]+)(px|%)?\s*\)");
-            if (translateYMatch.Success)
-            {
-                double.TryParse(translateYMatch.Groups[1].Value, out ty);
-            }
+            if (translateYMatch.Success) double.TryParse(translateYMatch.Groups[1].Value, out ty);
             
             // Parse scale
             var scaleMatch = System.Text.RegularExpressions.Regex.Match(value, @"scale\s*\(\s*([-\d.]+)\s*,?\s*([-\d.]+)?\s*\)");
@@ -822,8 +818,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (rotateMatch.Success)
             {
                 double.TryParse(rotateMatch.Groups[1].Value, out r);
-                if (rotateMatch.Groups[2].Value == "rad")
-                    r = r * 180 / Math.PI;
+                if (rotateMatch.Groups[2].Value == "rad") r = r * 180 / Math.PI;
             }
             
             return (tx, ty, sx, sy, r);
@@ -835,25 +830,17 @@ namespace FenBrowser.FenEngine.Rendering
         
         private double ApplyEasing(double t, string timingFunction)
         {
-            if (string.IsNullOrEmpty(timingFunction))
-                return t;
+            if (string.IsNullOrEmpty(timingFunction)) return t;
             
             switch (timingFunction.ToLower().Trim())
             {
-                case "linear":
-                    return t;
-                case "ease":
-                    return CubicBezier(t, 0.25, 0.1, 0.25, 1.0);
-                case "ease-in":
-                    return CubicBezier(t, 0.42, 0, 1.0, 1.0);
-                case "ease-out":
-                    return CubicBezier(t, 0, 0, 0.58, 1.0);
-                case "ease-in-out":
-                    return CubicBezier(t, 0.42, 0, 0.58, 1.0);
+                case "linear": return t;
+                case "ease": return CubicBezier(t, 0.25, 0.1, 0.25, 1.0);
+                case "ease-in": return CubicBezier(t, 0.42, 0, 1.0, 1.0);
+                case "ease-out": return CubicBezier(t, 0, 0, 0.58, 1.0);
+                case "ease-in-out": return CubicBezier(t, 0.42, 0, 0.58, 1.0);
                 default:
-                    // Try parsing cubic-bezier(...)
-                    var match = System.Text.RegularExpressions.Regex.Match(timingFunction, 
-                        @"cubic-bezier\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)");
+                    var match = System.Text.RegularExpressions.Regex.Match(timingFunction, @"cubic-bezier\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)");
                     if (match.Success)
                     {
                         double.TryParse(match.Groups[1].Value, out double p1x);
@@ -866,12 +853,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
-        /// <summary>
-        /// Evaluate cubic bezier curve at time t
-        /// </summary>
         private double CubicBezier(double t, double p1x, double p1y, double p2x, double p2y)
         {
-            // Newton-Raphson iteration to find x for given t
             double x = t;
             for (int i = 0; i < 8; i++)
             {
@@ -883,20 +866,9 @@ namespace FenBrowser.FenEngine.Rendering
             return BezierY(x, p1y, p2y);
         }
         
-        private double BezierX(double t, double p1x, double p2x)
-        {
-            return 3 * (1 - t) * (1 - t) * t * p1x + 3 * (1 - t) * t * t * p2x + t * t * t;
-        }
-        
-        private double BezierY(double t, double p1y, double p2y)
-        {
-            return 3 * (1 - t) * (1 - t) * t * p1y + 3 * (1 - t) * t * t * p2y + t * t * t;
-        }
-        
-        private double BezierXDerivative(double t, double p1x, double p2x)
-        {
-            return 3 * (1 - t) * (1 - t) * p1x + 6 * (1 - t) * t * (p2x - p1x) + 3 * t * t * (1 - p2x);
-        }
+        private double BezierX(double t, double p1x, double p2x) => 3 * (1 - t) * (1 - t) * t * p1x + 3 * (1 - t) * t * t * p2x + t * t * t;
+        private double BezierY(double t, double p1y, double p2y) => 3 * (1 - t) * (1 - t) * t * p1y + 3 * (1 - t) * t * t * p2y + t * t * t;
+        private double BezierXDerivative(double t, double p1x, double p2x) => 3 * (1 - t) * (1 - t) * p1x + 6 * (1 - t) * t * (p2x - p1x) + 3 * t * t * (1 - p2x);
         
         #endregion
         
@@ -904,81 +876,43 @@ namespace FenBrowser.FenEngine.Rendering
         
         private string GetAnimationProperty(CssComputed style, string property, int listIndex = 0)
         {
-            // Try direct property
-            if (style.Map.TryGetValue(property, out var value))
-                return GetIndexedAnimationValue(value, listIndex);
+            if (style.Map.TryGetValue(property, out var value)) return GetIndexedAnimationValue(value, listIndex);
             
-            // Try shorthand 'animation'
             if (style.Map.TryGetValue("animation", out var shorthand))
             {
-                // Parse animation shorthand: name duration timing-function delay iteration-count direction fill-mode play-state
-                // This is a simplified parser - full implementation would handle multiple animations
                 var parts = shorthand.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-                
                 switch (property)
                 {
                     case "animation-name":
-                        // First non-keyword is usually the name
-                        foreach (var p in parts)
-                        {
-                            if (!IsDurationValue(p) && !IsTimingFunction(p) && !IsIterationCount(p) &&
-                                !IsDirection(p) && !IsFillMode(p) && !IsPlayState(p))
-                                return p;
-                        }
+                        foreach (var p in parts) if (!IsDurationValue(p) && !IsTimingFunction(p) && !IsIterationCount(p) && !IsDirection(p) && !IsFillMode(p) && !IsPlayState(p)) return p;
                         break;
                     case "animation-duration":
-                        foreach (var p in parts)
-                        {
-                            if (IsDurationValue(p)) return p;
-                        }
+                        foreach (var p in parts) if (IsDurationValue(p)) return p;
                         break;
                     case "animation-timing-function":
-                        foreach (var p in parts)
-                        {
-                            if (IsTimingFunction(p)) return p;
-                        }
+                        foreach (var p in parts) if (IsTimingFunction(p)) return p;
                         break;
                 }
             }
-            
             return null;
         }
 
-        private static List<string> SplitAnimationList(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-                return new List<string>();
-
-            return raw
-                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(p => p.Trim())
-                .Where(p => p.Length > 0)
-                .ToList();
-        }
+        private static List<string> SplitAnimationList(string raw) => string.IsNullOrWhiteSpace(raw) ? new List<string>() : raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
 
         private static string GetIndexedAnimationValue(string raw, int listIndex)
         {
-            if (string.IsNullOrWhiteSpace(raw))
-                return raw;
-
+            if (string.IsNullOrWhiteSpace(raw)) return raw;
             var parts = SplitAnimationList(raw);
-            if (parts.Count == 0)
-                return raw.Trim();
-
-            int index = Math.Max(0, Math.Min(listIndex, parts.Count - 1));
-            return parts[index];
+            if (parts.Count == 0) return raw.Trim();
+            return parts[Math.Max(0, Math.Min(listIndex, parts.Count - 1))];
         }
         
         private double ParseDuration(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return 1000;
-            
             value = value.Trim().ToLower();
-            if (value.EndsWith("ms") && double.TryParse(value.Replace("ms", ""), out double ms))
-                return ms;
-            if (value.EndsWith("s") && double.TryParse(value.Replace("s", ""), out double s))
-                return s * 1000;
-            
+            if (value.EndsWith("ms") && double.TryParse(value.Replace("ms", ""), out double ms)) return ms;
+            if (value.EndsWith("s") && double.TryParse(value.Replace("s", ""), out double s)) return s * 1000;
             return 1000;
         }
         
@@ -987,66 +921,23 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(value)) return 1;
             value = value.Trim().ToLower();
             if (value == "infinite") return -1;
-            if (int.TryParse(value, out int count)) return count;
-            return 1;
+            return int.TryParse(value, out int count) ? count : 1;
         }
         
-        private bool IsDurationValue(string value)
-        {
-            return value.EndsWith("s") || value.EndsWith("ms");
-        }
-        
-        private bool IsTimingFunction(string value)
-        {
-            var v = value.ToLower();
-            return v == "linear" || v == "ease" || v == "ease-in" || v == "ease-out" || 
-                   v == "ease-in-out" || v.StartsWith("cubic-bezier");
-        }
-        
-        private bool IsIterationCount(string value)
-        {
-            return value.ToLower() == "infinite" || int.TryParse(value, out _);
-        }
-        
-        private bool IsDirection(string value)
-        {
-            var v = value.ToLower();
-            return v == "normal" || v == "reverse" || v == "alternate" || v == "alternate-reverse";
-        }
-        
-        private bool IsFillMode(string value)
-        {
-            var v = value.ToLower();
-            return v == "none" || v == "forwards" || v == "backwards" || v == "both";
-        }
-        
-        private bool IsPlayState(string value)
-        {
-            var v = value.ToLower();
-            return v == "running" || v == "paused";
-        }
+        private bool IsDurationValue(string value) => value.EndsWith("s") || value.EndsWith("ms");
+        private bool IsTimingFunction(string value) { var v = value.ToLower(); return v == "linear" || v == "ease" || v == "ease-in" || v == "ease-out" || v == "ease-in-out" || v.StartsWith("cubic-bezier"); }
+        private bool IsIterationCount(string value) => value.ToLower() == "infinite" || int.TryParse(value, out _);
+        private bool IsDirection(string value) { var v = value.ToLower(); return v == "normal" || v == "reverse" || v == "alternate" || v == "alternate-reverse"; }
+        private bool IsFillMode(string value) { var v = value.ToLower(); return v == "none" || v == "forwards" || v == "backwards" || v == "both"; }
+        private bool IsPlayState(string value) { var v = value.ToLower(); return v == "running" || v == "paused"; }
         
         private bool TryParseNumericValue(string value, out double number, out string unit)
         {
-            number = 0;
-            unit = "";
-            
+            number = 0; unit = "";
             if (string.IsNullOrWhiteSpace(value)) return false;
-            
             value = value.Trim().ToLower();
-            
-            // Extract unit
             string[] units = { "px", "%", "em", "rem", "vh", "vw", "deg", "rad", "s", "ms" };
-            foreach (var u in units)
-            {
-                if (value.EndsWith(u))
-                {
-                    unit = u;
-                    value = value.Substring(0, value.Length - u.Length);
-                    break;
-                }
-            }
-            
+            foreach (var u in units) if (value.EndsWith(u)) { unit = u; value = value.Substring(0, value.Length - u.Length); break; }
             return double.TryParse(value, out number);
         }
         
@@ -1054,46 +945,26 @@ namespace FenBrowser.FenEngine.Rendering
         {
             color = SKColors.Black;
             if (string.IsNullOrWhiteSpace(value)) return false;
-            
             value = value.Trim().ToLower();
-            
-            // Try hex
             if (value.StartsWith("#"))
             {
-                try
-                {
-                    color = SKColor.Parse(value);
-                    return true;
-                }
-                catch (Exception ex) { FenLogger.Warn($"[CssAnimationEngine] Hex color parse failed: {ex.Message}", LogCategory.Rendering); }
+                try { color = SKColor.Parse(value); return true; }
+                catch { return false; }
             }
-            
-            // Try rgb/rgba
-            var rgbMatch = System.Text.RegularExpressions.Regex.Match(value, 
-                @"rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)");
+            var rgbMatch = System.Text.RegularExpressions.Regex.Match(value, @"rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)");
             if (rgbMatch.Success)
             {
                 byte.TryParse(rgbMatch.Groups[1].Value, out byte r);
                 byte.TryParse(rgbMatch.Groups[2].Value, out byte g);
                 byte.TryParse(rgbMatch.Groups[3].Value, out byte b);
                 byte a = 255;
-                if (!string.IsNullOrEmpty(rgbMatch.Groups[4].Value) && 
-                    double.TryParse(rgbMatch.Groups[4].Value, out double alpha))
-                {
-                    a = (byte)(alpha * 255);
-                }
+                if (!string.IsNullOrEmpty(rgbMatch.Groups[4].Value) && double.TryParse(rgbMatch.Groups[4].Value, out double alpha)) a = (byte)(alpha * 255);
                 color = new SKColor(r, g, b, a);
                 return true;
             }
-            
             return false;
         }
         
         #endregion
     }
 }
-
-
-
-
-

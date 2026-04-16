@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (selector.Length > MaxSelectorLength) return result;
 
             // Split by comma (respecting parentheses)
-            var parts = SplitByComma(selector.Trim());
+            var parts = SplitByComma(selector);
             
             foreach (var part in parts)
             {
@@ -130,7 +130,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     break;
                 }
 
-                var chain = ParseChain(part.Trim(), depth);
+                var chain = ParseChain(part, depth);
                 if (chain != null && chain.Segments.Count > 0)
                 {
                     result.Add(chain);
@@ -193,6 +193,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         break;
                     }
                 }
+                else if (newPos > before)
+                {
+                    // A malformed compound selector invalidates the whole chain.
+                    chain.Segments.Clear();
+                    return chain;
+                }
 
                 // Hard progress guard for malformed selectors.
                 i = newPos <= before ? before + 1 : newPos;
@@ -208,6 +214,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var segment = new SelectorSegment();
             int i = start;
+            var isInvalid = false;
 
             while (i < selector.Length)
             {
@@ -222,8 +229,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     i++;
                     var name = ReadIdent(selector, ref i);
-                    if (!string.IsNullOrEmpty(name))
-                        segment.Classes.Add(name);
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    segment.Classes.Add(name);
                     continue;
                 }
 
@@ -231,7 +243,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (c == '#')
                 {
                     i++;
-                    segment.Id = ReadIdent(selector, ref i);
+                    var id = ReadIdent(selector, ref i);
+                    if (string.IsNullOrEmpty(id))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    segment.Id = id;
                     continue;
                 }
 
@@ -252,6 +271,22 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (isElement) i++;
 
                     var name = ReadIdent(selector, ref i);
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    // CSS2 compatibility: :before/:after/:first-line/:first-letter
+                    // are pseudo-elements even with a single colon.
+                    if (!isElement)
+                    {
+                        string lower = name.ToLowerInvariant();
+                        if (lower == "before" || lower == "after" || lower == "first-line" || lower == "first-letter")
+                        {
+                            isElement = true;
+                        }
+                    }
                     
                     // Check for functional pseudo-class
                     string args = null;
@@ -296,6 +331,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 // Tag name or universal
                 if (c == '*')
                 {
+                    if (!string.IsNullOrEmpty(segment.TagName))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
                     segment.TagName = "*";
                     i++;
                     continue;
@@ -303,22 +344,136 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (char.IsLetter(c) || c == '-' || c == '_')
                 {
+                    if (!string.IsNullOrEmpty(segment.TagName))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
                     segment.TagName = ReadIdent(selector, ref i);
                     continue;
                 }
 
+                isInvalid = true;
                 i++;
+                break;
             }
 
-            return (segment.IsEmpty ? null : segment, i);
+            return (isInvalid || segment.IsEmpty ? null : segment, i);
         }
 
         private static string ReadIdent(string s, ref int i)
         {
-            int start = i;
-            while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '-' || s[i] == '_'))
+            var result = new System.Text.StringBuilder();
+
+            while (i < s.Length)
+            {
+                char c = s[i];
+                if (char.IsLetterOrDigit(c) || c == '-' || c == '_' || c > 127)
+                {
+                    result.Append(c);
+                    i++;
+                    continue;
+                }
+
+                if (c == '\\')
+                {
+                    if (!TryReadEscapedCodePoint(s, ref i, out var escaped))
+                    {
+                        break;
+                    }
+
+                    result.Append(escaped);
+                    continue;
+                }
+
+                break;
+            }
+
+            return result.ToString();
+        }
+
+        private static string UnescapeCssValue(string raw)
+        {
+            if (string.IsNullOrEmpty(raw))
+            {
+                return string.Empty;
+            }
+
+            var result = new System.Text.StringBuilder(raw.Length);
+            int i = 0;
+            while (i < raw.Length)
+            {
+                if (raw[i] == '\\')
+                {
+                    if (!TryReadEscapedCodePoint(raw, ref i, out var escaped))
+                    {
+                        break;
+                    }
+
+                    result.Append(escaped);
+                    continue;
+                }
+
+                result.Append(raw[i]);
                 i++;
-            return s.Substring(start, i - start);
+            }
+
+            return result.ToString();
+        }
+
+        private static bool TryReadEscapedCodePoint(string s, ref int i, out string escaped)
+        {
+            escaped = string.Empty;
+            if (i >= s.Length || s[i] != '\\')
+            {
+                return false;
+            }
+
+            i++;
+            if (i >= s.Length)
+            {
+                return false;
+            }
+
+            int hexStart = i;
+            int hexLen = 0;
+            while (i < s.Length && hexLen < 6 && IsHexDigit(s[i]))
+            {
+                i++;
+                hexLen++;
+            }
+
+            if (hexLen > 0)
+            {
+                string hex = s.Substring(hexStart, hexLen);
+                if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
+                {
+                    escaped = char.ConvertFromUtf32(Math.Clamp(codePoint, 0, 0x10FFFF));
+                }
+                else
+                {
+                    escaped = s.Substring(hexStart, hexLen);
+                }
+
+                if (i < s.Length && char.IsWhiteSpace(s[i]))
+                {
+                    i++;
+                }
+
+                return true;
+            }
+
+            escaped = s[i].ToString();
+            i++;
+            return true;
+        }
+
+        private static bool IsHexDigit(char c)
+        {
+            return (c >= '0' && c <= '9') ||
+                   (c >= 'a' && c <= 'f') ||
+                   (c >= 'A' && c <= 'F');
         }
 
         private static (AttributeSelector attr, int endPos) ParseAttributeSelector(string s, int start)
@@ -337,7 +492,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (opIdx >= 0)
             {
-                attr.Name = content.Substring(0, opIdx).Trim();
+                attr.Name = UnescapeCssValue(content.Substring(0, opIdx).Trim());
                 attr.Operator = matchedOperator;
 
                 var rhs = content.Substring(opIdx + matchedOperator.Length).Trim();
@@ -347,7 +502,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
             else
             {
-                attr.Name = content;
+                attr.Name = UnescapeCssValue(content);
                 attr.Operator = null; // Presence check
             }
 
@@ -470,18 +625,33 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (endQuote >= rhs.Length)
                 {
-                    value = rhs.Substring(1);
+                    value = UnescapeCssValue(rhs.Substring(1));
                     return;
                 }
 
-                value = rhs.Substring(1, Math.Max(0, endQuote - 1));
+                value = UnescapeCssValue(rhs.Substring(1, Math.Max(0, endQuote - 1)));
                 tail = rhs.Substring(endQuote + 1).Trim();
             }
             else
             {
                 int ws = 0;
-                while (ws < rhs.Length && !char.IsWhiteSpace(rhs[ws])) ws++;
-                value = rhs.Substring(0, ws).Trim();
+                while (ws < rhs.Length)
+                {
+                    if (rhs[ws] == '\\' && ws + 1 < rhs.Length)
+                    {
+                        ws += 2;
+                        continue;
+                    }
+
+                    if (char.IsWhiteSpace(rhs[ws]))
+                    {
+                        break;
+                    }
+
+                    ws++;
+                }
+
+                value = UnescapeCssValue(rhs.Substring(0, ws).Trim());
                 tail = ws < rhs.Length ? rhs.Substring(ws).Trim() : string.Empty;
             }
 
@@ -705,19 +875,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "nth-last-child": return MatchesNthLastChild(el, args, parsedArgs, depth + 1);
                 case "nth-of-type": return MatchesNthOfType(el, args);
                 case "nth-last-of-type": return MatchesNthLastOfType(el, args);
-                case "checked": return ElementStateManager.Instance.IsChecked(el);
-                case "disabled": return ElementStateManager.Instance.IsDisabled(el);
-                case "enabled": return !ElementStateManager.Instance.IsDisabled(el);
+                case "checked": return IsCheckedFormControl(el);
+                case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
+                case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);
                 case "focus": return ElementStateManager.Instance.IsFocused(el);
                 case "hover": return ElementStateManager.Instance.IsHovered(el);
                 case "active": return ElementStateManager.Instance.IsActive(el);
-                case "visited": return false; // History not tracked
+                case "visited": return ElementStateManager.Instance.IsVisited(el);
                 case "link": 
                 case "any-link":
                     if (!string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
                         !string.Equals(el.TagName, "area", StringComparison.OrdinalIgnoreCase))
                         return false;
-                     return !string.IsNullOrWhiteSpace(el.GetAttribute("href"));
+                    if (string.IsNullOrWhiteSpace(el.GetAttribute("href")))
+                        return false;
+                    return string.Equals(name, "any-link", StringComparison.OrdinalIgnoreCase) || !ElementStateManager.Instance.IsVisited(el);
                 
                 // Shadow DOM Scoping
                 case "host": 
@@ -771,7 +943,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parent = el.ParentNode as ContainerNode; // Cast to ContainerNode
             if (parent == null) return true;
-            return parent.ChildNodes.FirstOrDefault(c => !c.IsText()) == el; // IsText check via extension or flag
+            return parent.ChildNodes.OfType<Element>().FirstOrDefault() == el;
         }
 
         private static bool IsEmptyElement(Element el)
@@ -786,6 +958,49 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return true;
         }
 
+        private static bool SupportsEnabledDisabledPseudoClass(Element el)
+        {
+            var tagName = el?.TagName;
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                return false;
+            }
+
+            return string.Equals(tagName, "input", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "button", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "select", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "fieldset", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsCheckedFormControl(Element el)
+        {
+            var tagName = el?.TagName;
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                return false;
+            }
+
+            if (string.Equals(tagName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return el.HasAttribute("selected");
+            }
+
+            if (!string.Equals(tagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = el.GetAttribute("type");
+            if (!string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return ElementStateManager.Instance.IsChecked(el);
+        }
+
         private static bool IsScope(Element el)
         {
             // For stylesheet matching without an explicit query scope context,
@@ -797,7 +1012,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return true;
-            return parent.ChildNodes.LastOrDefault(c => !c.IsText()) == el;
+            return parent.ChildNodes.OfType<Element>().LastOrDefault() == el;
         }
 
         private static bool IsOnlyChild(Element el)

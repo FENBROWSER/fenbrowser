@@ -436,6 +436,13 @@ namespace FenBrowser.FenEngine.Rendering
                     var parts = inner.Replace("/", ",").Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length >= 3)
                     {
+                        bool hasExplicitPercentSaturation = parts[1].Trim().EndsWith("%", StringComparison.Ordinal);
+                        bool hasExplicitPercentLightness = parts[2].Trim().EndsWith("%", StringComparison.Ordinal);
+                        if (!hasExplicitPercentSaturation || !hasExplicitPercentLightness)
+                        {
+                            return null;
+                        }
+
                         // H: 0-360 degrees (may have deg suffix)
                         var hRaw = parts[0].Trim().ToLowerInvariant().Replace("deg", "");
                         double h;

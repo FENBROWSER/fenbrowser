@@ -414,11 +414,13 @@ namespace FenBrowser.FenEngine.Rendering
                 return ElementStateManager.Instance.IsFocusVisible(element);
             }
             // Other state pseudo-classes that still need attribute checking
-            if (pseudoClass == ":visited" || pseudoClass == ":link")
+            if (pseudoClass == ":visited")
             {
-                // :visited - we don't track history, so never match
-                // :link - handled via attribute check elsewhere
-                return false;
+                return ElementStateManager.Instance.IsVisited(element);
+            }
+            if (pseudoClass == ":link")
+            {
+                return element.HasAttribute("href") && !ElementStateManager.Instance.IsVisited(element);
             }
             if (pseudoClass == ":checked" || pseudoClass == ":disabled" || pseudoClass == ":enabled")
             {

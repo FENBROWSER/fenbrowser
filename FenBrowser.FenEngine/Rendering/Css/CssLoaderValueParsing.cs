@@ -242,29 +242,39 @@ namespace FenBrowser.FenEngine.Rendering
                 return TryPx(p, out val, emBase);
             }
 
-            if (parts.Length == 1) { 
-                if (ParsePart(parts[0], out a)) th = new Thickness(a);
-                return true; 
+            if (parts.Length == 1)
+            {
+                if (!ParsePart(parts[0], out a)) return false;
+                th = new Thickness(a);
+                return true;
             }
             if (parts.Length == 2)
             {
-                ParsePart(parts[0], out a);
-                ParsePart(parts[1], out b);
-                th = new Thickness(b, a, b, a); return true;
+                if (!ParsePart(parts[0], out a) || !ParsePart(parts[1], out b)) return false;
+                th = new Thickness(b, a, b, a);
+                return true;
             }
             if (parts.Length == 3)
             {
-                ParsePart(parts[0], out a);
-                ParsePart(parts[1], out b);
-                ParsePart(parts[2], out c);
-                th = new Thickness(b, a, b, c); return true;
+                if (!ParsePart(parts[0], out a) || !ParsePart(parts[1], out b) || !ParsePart(parts[2], out c)) return false;
+                th = new Thickness(b, a, b, c);
+                return true;
             }
-            // 4+
-            ParsePart(parts[0], out a);
-            ParsePart(parts[1], out b);
-            ParsePart(parts[2], out c);
-            ParsePart(parts[3], out d);
-            th = new Thickness(d, a, b, c); return true;
+            if (parts.Length != 4)
+            {
+                return false;
+            }
+
+            if (!ParsePart(parts[0], out a) ||
+                !ParsePart(parts[1], out b) ||
+                !ParsePart(parts[2], out c) ||
+                !ParsePart(parts[3], out d))
+            {
+                return false;
+            }
+
+            th = new Thickness(d, a, b, c);
+            return true;
         }
 
         private static SKColor FromHex(string hex)
@@ -323,23 +333,39 @@ namespace FenBrowser.FenEngine.Rendering
             if (map.TryGetValue("background-color", out v) && !string.IsNullOrWhiteSpace(v)) return v;
             if (map.TryGetValue("background", out v) && !string.IsNullOrWhiteSpace(v))
             {
-                var matches = Regex.Matches(v, @"(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\)|[a-zA-Z]+)");
-                foreach (Match m in matches)
+                string sanitized = Regex.Replace(v, @"url\([^)]+\)", " ", RegexOptions.IgnoreCase);
+                sanitized = Regex.Replace(sanitized, @"(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\([^)]+\)", " ", RegexOptions.IgnoreCase);
+
+                foreach (var token in SplitCssValues(sanitized))
                 {
-                    var val = m.Value;
+                    var val = token.Trim();
+                    if (string.IsNullOrEmpty(val))
+                    {
+                        continue;
+                    }
+
                     if (val.Equals("none", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("url", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("repeat", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("repeat-x", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("repeat-y", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("no-repeat", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("scroll", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("fixed", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("local", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("cover", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("contain", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("center", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("top", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("bottom", StringComparison.OrdinalIgnoreCase) ||
                         val.Equals("left", StringComparison.OrdinalIgnoreCase) ||
-                        val.Equals("right", StringComparison.OrdinalIgnoreCase))
+                        val.Equals("right", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("/", StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    return val;
+                    if (TryColor(val).HasValue)
+                    {
+                        return val;
+                    }
                 }
             }
             return null;

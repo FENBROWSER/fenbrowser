@@ -3411,16 +3411,67 @@ private static double? ExtractPx(string text, string prop)
 
             string bgImage = DictGet(css.Map, "background-image");
             var bgShorthandRaw = DictGet(css.Map, "background");
-            if (string.IsNullOrWhiteSpace(bgImage)) bgImage = bgShorthandRaw;
+            if (string.IsNullOrWhiteSpace(bgImage))
+            {
+                bgImage = ParseBackgroundImage(bgShorthandRaw);
+            }
+            else
+            {
+                // Some cascade paths still preserve the original shorthand text in
+                // background-image; normalize to a concrete url(...) token so paint
+                // code can load the image reliably.
+                var normalizedBgImage = ParseBackgroundImage(bgImage);
+                if (!string.IsNullOrWhiteSpace(normalizedBgImage))
+                {
+                    bgImage = normalizedBgImage;
+                }
+            }
 
+            var authoredBackgroundAttachment = Safe(DictGet(css.Map, "background-attachment"));
             if (string.IsNullOrWhiteSpace(css.BackgroundAttachment))
             {
                 css.BackgroundAttachment = ExtractBackgroundAttachmentFromShorthand(bgShorthandRaw);
             }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundAttachment) ||
+                     string.Equals(authoredBackgroundAttachment, "scroll", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandAttachment = ExtractBackgroundAttachmentFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandAttachment))
+                {
+                    css.BackgroundAttachment = shorthandAttachment;
+                }
+            }
 
+            var authoredBackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"));
             if (string.IsNullOrWhiteSpace(css.BackgroundRepeat))
             {
                 css.BackgroundRepeat = ExtractBackgroundRepeatFromShorthand(bgShorthandRaw);
+            }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundRepeat) ||
+                     string.Equals(authoredBackgroundRepeat, "repeat", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandRepeat = ExtractBackgroundRepeatFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandRepeat))
+                {
+                    css.BackgroundRepeat = shorthandRepeat;
+                }
+            }
+
+            var authoredBackgroundPosition = Safe(DictGet(css.Map, "background-position"));
+            if (string.IsNullOrWhiteSpace(css.BackgroundPosition))
+            {
+                css.BackgroundPosition = ExtractBackgroundPositionFromShorthand(bgShorthandRaw);
+            }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundPosition) ||
+                     string.Equals(authoredBackgroundPosition, "0% 0%", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(authoredBackgroundPosition, "0 0", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(authoredBackgroundPosition, "left top", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandPosition = ExtractBackgroundPositionFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandPosition))
+                {
+                    css.BackgroundPosition = shorthandPosition;
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(bgImage))
@@ -3671,6 +3722,12 @@ private static double? ExtractPx(string text, string prop)
                 css.BorderStyleBottom = bsBottom;
                 css.BorderStyleLeft = bsLeft;
             }
+
+            bool hasExplicitBorderStyleShorthand = !string.IsNullOrEmpty(borderStyleValue);
+            bool hasExplicitBorderTopStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-top-style")));
+            bool hasExplicitBorderRightStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-right-style")));
+            bool hasExplicitBorderBottomStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-bottom-style")));
+            bool hasExplicitBorderLeftStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-left-style")));
             
             // Also check for style in "border" shorthand
             var borderShorthand = Safe(DictGet(css.Map, "border"));
@@ -3679,10 +3736,10 @@ private static double? ExtractPx(string text, string prop)
                 var bStyle = ExtractBorderSideStyle(borderShorthand);
                 if (bStyle != "none")
                 {
-                    css.BorderStyleTop = bStyle;
-                    css.BorderStyleRight = bStyle;
-                    css.BorderStyleBottom = bStyle;
-                    css.BorderStyleLeft = bStyle;
+                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderTopStyle) css.BorderStyleTop = bStyle;
+                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderRightStyle) css.BorderStyleRight = bStyle;
+                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderBottomStyle) css.BorderStyleBottom = bStyle;
+                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderLeftStyle) css.BorderStyleLeft = bStyle;
                 }
             }
             
@@ -3833,6 +3890,7 @@ private static double? ExtractPx(string text, string prop)
             css.Display = Safe(DictGet(css.Map, "display"));
             css.Position = Safe(DictGet(css.Map, "position"));
             css.Float = Safe(DictGet(css.Map, "float"));
+            css.Clear = Safe(DictGet(css.Map, "clear"));
             css.Overflow = Safe(DictGet(css.Map, "overflow"));
 
             css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
@@ -3910,10 +3968,17 @@ private static double? ExtractPx(string text, string prop)
             if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
                 css.ZIndex = zIndex;
 
-            if (TryPx(DictGet(css.Map, "top"), out posVal)) css.Top = posVal;
-            if (TryPx(DictGet(css.Map, "right"), out posVal)) css.Right = posVal;
-            if (TryPx(DictGet(css.Map, "bottom"), out posVal)) css.Bottom = posVal;
-            if (TryPx(DictGet(css.Map, "left"), out posVal)) css.Left = posVal;
+            // Preserve the earlier offset parse that used `currentEmBase`.
+            // Re-parsing here with default TryPx semantics can override `em` values
+            // with a different base (often 16px), which breaks positioned layout.
+            if (!css.Top.HasValue && !css.TopPercent.HasValue && TryPx(DictGet(css.Map, "top"), out posVal, currentEmBase))
+                css.Top = posVal;
+            if (!css.Right.HasValue && !css.RightPercent.HasValue && TryPx(DictGet(css.Map, "right"), out posVal, currentEmBase))
+                css.Right = posVal;
+            if (!css.Bottom.HasValue && !css.BottomPercent.HasValue && TryPx(DictGet(css.Map, "bottom"), out posVal, currentEmBase))
+                css.Bottom = posVal;
+            if (!css.Left.HasValue && !css.LeftPercent.HasValue && TryPx(DictGet(css.Map, "left"), out posVal, currentEmBase))
+                css.Left = posVal;
             css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
             css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
             css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
@@ -4421,33 +4486,45 @@ private static double? ExtractPx(string text, string prop)
                 foreach (var pseudo in seg.PseudoClasses)
                 foreach (var psObj in seg.PseudoClasses)
                 {
-                    string ps = psObj.Name;
+                    string ps = (psObj.Name ?? string.Empty).Trim();
+                    string normalizedPs = ps.TrimStart(':');
                     string args = psObj.Args;
 
                     // Handle pseudo-elements first
-                    if (ps.StartsWith(":") && (ps.Contains("before") || ps.Contains("after") || ps.Contains("placeholder")))
+                    if (string.Equals(normalizedPs, "before", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(normalizedPs, "after", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(normalizedPs, "placeholder", StringComparison.OrdinalIgnoreCase))
                     {
                         // For now, pseudo-elements do not match real elements
                         return false;
                     }
 
-                    if (string.Equals(ps, "first-child", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(normalizedPs, "first-child", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (n.ParentNode == null || n.ParentNode.FirstChild == null || n.ParentNode.FirstChild != n) return false;
+                        var parent = n.ParentNode;
+                        if (parent == null) return false;
+                        var firstElement = parent.ChildNodes.OfType<Element>().FirstOrDefault();
+                        if (firstElement != n) return false;
                     }
-                    else if (string.Equals(ps, "last-child", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "last-child", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (n.ParentNode == null || n.ParentNode.LastChild == null || n.ParentNode.LastChild != n) return false;
+                        var parent = n.ParentNode;
+                        if (parent == null) return false;
+                        var lastElement = parent.ChildNodes.OfType<Element>().LastOrDefault();
+                        if (lastElement != n) return false;
                     }
-                    else if (string.Equals(ps, "root", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "root", StringComparison.OrdinalIgnoreCase))
                     {
                         if (!string.Equals(n.TagName, "html", StringComparison.OrdinalIgnoreCase)) return false;
                     }
-                    else if (string.Equals(ps, "only-child", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "only-child", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (n.ParentNode == null || n.ParentNode.FirstChild != n.ParentNode.LastChild || n.ParentNode.FirstChild != n) return false;
+                        var parent = n.ParentNode;
+                        if (parent == null) return false;
+                        var elementChildren = parent.ChildNodes.OfType<Element>().ToList();
+                        if (elementChildren.Count != 1 || elementChildren[0] != n) return false;
                     }
-                    else if (ps.StartsWith("nth-child", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("nth-child", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = args ?? ExtractPseudoArg(ps); // Use pre-parsed args if available, else extract
                         int a, b;
@@ -4461,7 +4538,7 @@ private static double? ExtractPx(string text, string prop)
                             return false; // Invalid nth-expression
                         }
                     }
-                    else if (ps.StartsWith("nth-of-type", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("nth-of-type", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = args ?? ExtractPseudoArg(ps);
                         int a, b;
@@ -4475,30 +4552,30 @@ private static double? ExtractPx(string text, string prop)
                             return false; // Invalid nth-expression
                         }
                     }
-                    else if (ps.StartsWith("matches(", StringComparison.OrdinalIgnoreCase) || 
-                             ps.StartsWith("is(", StringComparison.OrdinalIgnoreCase) || 
-                             ps.StartsWith("where(", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("matches(", StringComparison.OrdinalIgnoreCase) || 
+                             normalizedPs.StartsWith("is(", StringComparison.OrdinalIgnoreCase) || 
+                             normalizedPs.StartsWith("where(", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = ExtractPseudoArg(ps);
                         if (!MatchesSelectorList(n, arg)) return false;
                     }
-                    else if (ps.StartsWith("has(", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("has(", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = ExtractPseudoArg(ps);
                         if (!MatchesHas(n, arg)) return false;
                     }
-                    else if (ps.StartsWith("not(", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("not(", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = ExtractPseudoArg(ps);
                         if (MatchesSelectorList(n, arg)) return false;
                     }
                     // Keep existing :not implementation for backward compat if needed, but the above covers it generally if arg is complex
                     // The existing parser might have stored :not as not(xyz) in PseudoClasses
-                    else if (string.Equals(ps, "empty", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "empty", StringComparison.OrdinalIgnoreCase))
                     {
                          if (n.Children != null && n.Children.Any(c => !c.IsText() || !string.IsNullOrWhiteSpace(c.Text))) return false;
                     }
-                    else if (ps.StartsWith("nth-last-child", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("nth-last-child", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = args ?? ExtractPseudoArg(ps);
                         int a, b;
@@ -4512,7 +4589,7 @@ private static double? ExtractPx(string text, string prop)
                             return false; // Invalid nth-expression
                         }
                     }
-                    else if (ps.StartsWith("nth-last-of-type", StringComparison.OrdinalIgnoreCase))
+                    else if (normalizedPs.StartsWith("nth-last-of-type", StringComparison.OrdinalIgnoreCase))
                     {
                         var arg = args ?? ExtractPseudoArg(ps);
                         int a, b;
@@ -4526,7 +4603,7 @@ private static double? ExtractPx(string text, string prop)
                             return false; // Invalid nth-expression
                         }
                     }
-                    else if (string.Equals(ps, "first-of-type", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "first-of-type", StringComparison.OrdinalIgnoreCase))
                     {
                         if (n == null || n.ParentNode == null || string.IsNullOrEmpty(n.TagName)) return false;
 
@@ -4543,7 +4620,7 @@ private static double? ExtractPx(string text, string prop)
                         }
                         if (firstOfType != n) return false;
                     }
-                    else if (string.Equals(ps, "not", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "not", StringComparison.OrdinalIgnoreCase))
                     {
                          // Handle :not with pre-parsed args or string args
                          if (psObj.ParsedArgs != null && psObj.ParsedArgs.Count > 0)
@@ -4557,7 +4634,7 @@ private static double? ExtractPx(string text, string prop)
                              if (MatchesSelectorList(n, args)) return false;
                          }
                     }
-                    else if (string.Equals(ps, "is", StringComparison.OrdinalIgnoreCase) || string.Equals(ps, "where", StringComparison.OrdinalIgnoreCase))
+                    else if (string.Equals(normalizedPs, "is", StringComparison.OrdinalIgnoreCase) || string.Equals(normalizedPs, "where", StringComparison.OrdinalIgnoreCase))
                     {
                          bool match = false;
                          if (psObj.ParsedArgs != null && psObj.ParsedArgs.Count > 0)
@@ -6134,14 +6211,63 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ParseBackgroundImage(string value)
         {
-            // Just return the raw value if it looks like a URL
-            if (string.IsNullOrWhiteSpace(value)) return null;
-            if (value.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (string.IsNullOrWhiteSpace(value))
             {
-                 // Simplify: return the whole string or just the url part? 
-                 // For now, return the whole property value so the renderer can parse it.
-                 return value;
+                return null;
             }
+
+            int urlIndex = value.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+            if (urlIndex < 0)
+            {
+                return null;
+            }
+
+            int depth = 0;
+            int end = -1;
+            for (int i = urlIndex; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '(')
+                {
+                    depth++;
+                }
+                else if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        end = i;
+                        break;
+                    }
+                }
+            }
+
+            if (end <= urlIndex)
+            {
+                return null;
+            }
+
+            return value.Substring(urlIndex, end - urlIndex + 1).Trim();
+        }
+
+        private static string ParseBackgroundImageOrGradient(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var urlValue = ParseBackgroundImage(value);
+            if (!string.IsNullOrWhiteSpace(urlValue))
+            {
+                return urlValue;
+            }
+
+            if (value.Contains("gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                return value.Trim();
+            }
+
             return null;
         }
 
@@ -6200,6 +6326,123 @@ private static double? ExtractPx(string text, string prop)
             }
 
             return null;
+        }
+
+        private static string ExtractBackgroundPositionFromShorthand(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var tokens = SplitCssShorthandTokens(value);
+            if (tokens.Count == 0)
+            {
+                return null;
+            }
+
+            var position = new List<string>(2);
+            foreach (var token in tokens)
+            {
+                var lower = token.ToLowerInvariant();
+
+                if (lower == "/" ||
+                    lower.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
+                    lower.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (lower == "repeat" || lower == "no-repeat" || lower == "repeat-x" || lower == "repeat-y" ||
+                    lower == "space" || lower == "round" ||
+                    lower == "fixed" || lower == "scroll" || lower == "local")
+                {
+                    continue;
+                }
+
+                if (TryColor(lower).HasValue)
+                {
+                    continue;
+                }
+
+                if (IsBackgroundPositionToken(lower))
+                {
+                    position.Add(lower);
+                    if (position.Count == 2)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (position.Count == 0)
+            {
+                return null;
+            }
+
+            return string.Join(" ", position);
+        }
+
+        private static List<string> SplitCssShorthandTokens(string value)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return result;
+            }
+
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '(') depth++;
+                else if (c == ')') depth = Math.Max(0, depth - 1);
+                else if (char.IsWhiteSpace(c) && depth == 0)
+                {
+                    if (i > start)
+                    {
+                        result.Add(value.Substring(start, i - start));
+                    }
+                    start = i + 1;
+                }
+            }
+
+            if (start < value.Length)
+            {
+                result.Add(value.Substring(start));
+            }
+
+            return result;
+        }
+
+        private static bool IsBackgroundPositionToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            if (token == "left" || token == "right" || token == "top" || token == "bottom" || token == "center")
+            {
+                return true;
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal))
+            {
+                return double.TryParse(token[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+            }
+
+            if (token.EndsWith("px", StringComparison.Ordinal) ||
+                token.EndsWith("em", StringComparison.Ordinal) ||
+                token.EndsWith("rem", StringComparison.Ordinal) ||
+                token.EndsWith("pt", StringComparison.Ordinal))
+            {
+                return double.TryParse(token[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+            }
+
+            return token == "0";
         }
 
         private static string ParseGradient(string css)
