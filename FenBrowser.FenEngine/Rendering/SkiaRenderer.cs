@@ -7,6 +7,7 @@ using FenBrowser.FenEngine.Rendering.Css;
 using System;
 using System.IO;
 using System.Collections.Generic;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -173,7 +174,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
-                if (!ShouldCaptureDebugScreenshot(screenshotPath, tree.NodeCount))
+                if (!ShouldCaptureDebugScreenshot(screenshotPath, tree.NodeCount, viewport))
                 {
                     return;
                 }
@@ -187,13 +188,18 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     var offCanvas = surface.Canvas;
-                    // Recursive delegation would be cleaner but for now just use local backend
+                    // Capture the same viewport-relative pixels the host presents, not raw
+                    // document-space coordinates. This keeps debug_screenshot.png aligned
+                    // with scroll/fragment navigations such as Acid2 #top.
+                    offCanvas.Clear(backgroundColor);
+                    offCanvas.Save();
+                    offCanvas.Translate(-viewport.Left, -viewport.Top);
                     var backend = new SkiaRenderBackend(offCanvas);
-                    backend.Clear(backgroundColor);
                     foreach (var root in tree.Roots)
                     {
                         DrawNodeSafe(backend, root, viewport);
                     }
+                    offCanvas.Restore();
 
                     using (var image = surface.Snapshot())
                     {
@@ -214,7 +220,7 @@ namespace FenBrowser.FenEngine.Rendering
                             using (var stream = File.Open(screenshotPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                             {
                                 data.SaveTo(stream);
-                                WriteDebugScreenshotMetadata(screenshotPath, tree.NodeCount);
+                                WriteDebugScreenshotMetadata(screenshotPath, tree.NodeCount, viewport);
                                 FenLogger.Debug($"[SkiaRenderer] Wrote debug_screenshot.png to {screenshotPath} ({viewport.Width}x{viewport.Height}, NodeCount={tree.NodeCount})", LogCategory.Rendering);
                                 FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(screenshotPath);
                             }
@@ -225,7 +231,7 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex) { FenLogger.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
         }
 
-        private static bool ShouldCaptureDebugScreenshot(string screenshotPath, int nodeCount)
+        private static bool ShouldCaptureDebugScreenshot(string screenshotPath, int nodeCount, SKRect viewport)
         {
             var metadataPath = screenshotPath + ".meta";
 
@@ -236,9 +242,17 @@ namespace FenBrowser.FenEngine.Rendering
                     return true;
                 }
 
-                if (TryReadDebugScreenshotMetadata(metadataPath, out var lastCapturedUtc, out var lastNodeCount))
+                if (TryReadDebugScreenshotMetadata(metadataPath, out var lastCapturedUtc, out var lastNodeCount, out var lastViewport))
                 {
                     if (lastNodeCount != nodeCount)
+                    {
+                        return true;
+                    }
+
+                    if (Math.Abs(lastViewport.Left - viewport.Left) > 0.5f ||
+                        Math.Abs(lastViewport.Top - viewport.Top) > 0.5f ||
+                        Math.Abs(lastViewport.Width - viewport.Width) > 0.5f ||
+                        Math.Abs(lastViewport.Height - viewport.Height) > 0.5f)
                     {
                         return true;
                     }
@@ -255,13 +269,20 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static void WriteDebugScreenshotMetadata(string screenshotPath, int nodeCount)
+        private static void WriteDebugScreenshotMetadata(string screenshotPath, int nodeCount, SKRect viewport)
         {
             try
             {
                 File.WriteAllText(
                     screenshotPath + ".meta",
-                    $"{DateTime.UtcNow.Ticks}|{nodeCount}");
+                    string.Join(
+                        "|",
+                        DateTime.UtcNow.Ticks,
+                        nodeCount,
+                        viewport.Left,
+                        viewport.Top,
+                        viewport.Width,
+                        viewport.Height));
             }
             catch
             {
@@ -269,10 +290,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static bool TryReadDebugScreenshotMetadata(string metadataPath, out DateTime capturedUtc, out int nodeCount)
+        private static bool TryReadDebugScreenshotMetadata(string metadataPath, out DateTime capturedUtc, out int nodeCount, out SKRect viewport)
         {
             capturedUtc = default;
             nodeCount = 0;
+            viewport = SKRect.Empty;
 
             try
             {
@@ -283,20 +305,36 @@ namespace FenBrowser.FenEngine.Rendering
 
                 var parts = File.ReadAllText(metadataPath)
                     .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (parts.Length != 2 ||
+
+                if (parts.Length == 2 &&
+                    long.TryParse(parts[0], out var legacyTicks) &&
+                    int.TryParse(parts[1], out nodeCount))
+                {
+                    capturedUtc = new DateTime(legacyTicks, DateTimeKind.Utc);
+                    viewport = SKRect.Empty;
+                    return true;
+                }
+
+                if (parts.Length != 6 ||
                     !long.TryParse(parts[0], out var ticks) ||
-                    !int.TryParse(parts[1], out nodeCount))
+                    !int.TryParse(parts[1], out nodeCount) ||
+                    !float.TryParse(parts[2], out var left) ||
+                    !float.TryParse(parts[3], out var top) ||
+                    !float.TryParse(parts[4], out var width) ||
+                    !float.TryParse(parts[5], out var height))
                 {
                     return false;
                 }
 
                 capturedUtc = new DateTime(ticks, DateTimeKind.Utc);
+                viewport = new SKRect(left, top, left + width, top + height);
                 return true;
             }
             catch
             {
                 capturedUtc = default;
                 nodeCount = 0;
+                viewport = SKRect.Empty;
                 return false;
             }
         }
@@ -635,6 +673,13 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (!node.Color.HasValue && node.Gradient == null) return;
             if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0) return;
+
+            if (node.SourceNode is Element bgElement && ShouldTraceAcid2FaceElement(bgElement))
+            {
+                DiagnosticPaths.AppendRootText(
+                    "debug_paint_start.txt",
+                    $"[DRAW-BG] <{bgElement.TagName}> id='{bgElement.Id}' class='{bgElement.GetAttribute("class")}' bounds={node.Bounds}\n");
+            }
             
             bool hasRadius = node.BorderRadius != null && HasNonZeroRadius(node.BorderRadius);
             
@@ -706,7 +751,13 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawBorder(IRenderBackend backend, BorderPaintNode node)
         {
             if (node.Widths == null || node.Colors == null) return;
-            if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0) return;
+
+            if (node.SourceNode is Element borderElement && ShouldTraceAcid2FaceElement(borderElement))
+            {
+                DiagnosticPaths.AppendRootText(
+                    "debug_paint_start.txt",
+                    $"[DRAW-BORDER] <{borderElement.TagName}> id='{borderElement.Id}' class='{borderElement.GetAttribute("class")}' bounds={node.Bounds} widths={string.Join("/", node.Widths)}\n");
+            }
             
             // Construct BorderStyle for backend
             // SkiaRenderer previously had logic to simplify rounded borders to uniform stroke
@@ -722,7 +773,11 @@ namespace FenBrowser.FenEngine.Rendering
                 TopColor = node.Colors[0],
                 RightColor = node.Colors.Length > 1 ? node.Colors[1] : node.Colors[0],
                 BottomColor = node.Colors.Length > 2 ? node.Colors[2] : node.Colors[0],
-                LeftColor = node.Colors.Length > 3 ? node.Colors[3] : (node.Colors.Length > 1 ? node.Colors[1] : node.Colors[0])
+                LeftColor = node.Colors.Length > 3 ? node.Colors[3] : (node.Colors.Length > 1 ? node.Colors[1] : node.Colors[0]),
+                TopStyle = node.Styles != null && node.Styles.Length > 0 ? node.Styles[0] : "solid",
+                RightStyle = node.Styles != null && node.Styles.Length > 1 ? node.Styles[1] : "solid",
+                BottomStyle = node.Styles != null && node.Styles.Length > 2 ? node.Styles[2] : "solid",
+                LeftStyle = node.Styles != null && node.Styles.Length > 3 ? node.Styles[3] : "solid"
             };
             
             // Apply radii if present
@@ -780,7 +835,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
-                textWidth = cleanText.Length * fontSize * 0.6f;
+                textWidth = MeasureRenderedTextWidth(cleanText, fontSize, typeface);
             }
             else if (node.Glyphs != null && node.Glyphs.Count > 0)
             {
@@ -828,6 +883,23 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         // Removed DrawGlyphs (logic moved to DrawText/Backend)
+
+        internal static float MeasureRenderedTextWidth(string text, float fontSize, SKTypeface typeface)
+        {
+            if (string.IsNullOrEmpty(text) || fontSize <= 0)
+            {
+                return 0;
+            }
+
+            using var paint = new SKPaint
+            {
+                Typeface = typeface ?? SKTypeface.Default,
+                TextSize = fontSize,
+                IsAntialias = true
+            };
+
+            return paint.MeasureText(text);
+        }
         
         private void DrawTextDecorations(IRenderBackend backend, TextPaintNode node, float textWidth, float fontSize, SKColor color)
         {
@@ -900,6 +972,12 @@ namespace FenBrowser.FenEngine.Rendering
                     FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Invalid bitmap dimensions");
                     return;
                 }
+
+                if (node.IsBackgroundImage)
+                {
+                    DrawBackgroundImageNode(backend, node);
+                    return;
+                }
                 
                 SKRect srcRect = node.SourceRect ?? new SKRect(0, 0, node.Bitmap.Width, node.Bitmap.Height);
                 SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit);
@@ -937,6 +1015,19 @@ namespace FenBrowser.FenEngine.Rendering
                 // Catch any other unexpected errors to prevent renderer crash
                 FenLogger.Error($"[SkiaRenderer] DrawImage failed: {ex.Message}");
             }
+        }
+
+        private void DrawBackgroundImageNode(IRenderBackend backend, ImagePaintNode node)
+        {
+            float anchorX = node.BackgroundAttachmentFixed ? node.FixedViewportOrigin.X : node.BackgroundOrigin.X;
+            float anchorY = node.BackgroundAttachmentFixed ? node.FixedViewportOrigin.Y : node.BackgroundOrigin.Y;
+
+            var matrix = SKMatrix.CreateTranslation(
+                anchorX + node.BackgroundPosition.X,
+                anchorY + node.BackgroundPosition.Y);
+
+            using var shader = SKShader.CreateBitmap(node.Bitmap, node.TileModeX, node.TileModeY, matrix);
+            backend.DrawRect(node.Bounds, shader);
         }
 
         // Removed DrawDiagnosticPlaceholder
@@ -1043,14 +1134,62 @@ namespace FenBrowser.FenEngine.Rendering
                    radius[2].X > 0 || radius[2].Y > 0 || 
                    radius[3].X > 0 || radius[3].Y > 0;
         }
+
+        private static bool ShouldTraceAcid2FaceElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            string id = element.Id ?? string.Empty;
+            if (id is "eyes-b" or "eyes-c" or "smile-outer" or "smile-inner" or "smile-span" or "parser" or "tail")
+            {
+                return true;
+            }
+
+            string className = element.GetAttribute("class") ?? string.Empty;
+            return className.Contains("smile", StringComparison.OrdinalIgnoreCase) ||
+                   className.Contains("chin", StringComparison.OrdinalIgnoreCase) ||
+                   className.Contains("parser", StringComparison.OrdinalIgnoreCase) ||
+                   className.Contains("nose", StringComparison.OrdinalIgnoreCase) ||
+                   className.Contains("empty", StringComparison.OrdinalIgnoreCase);
+        }
         
         private static SKPath CreateRoundedRectPath(SKRect bounds, SKPoint[] radius)
         {
+            // Clamp radii to geometry bounds to avoid pathological capsules/overdraw artifacts.
+            var clamped = NormalizeCornerRadii(bounds, radius);
             var path = new SKPath();
             var rrect = new SKRoundRect();
-            rrect.SetRectRadii(bounds, radius);
+            rrect.SetRectRadii(bounds, clamped);
             path.AddRoundRect(rrect);
             return path;
+        }
+
+        private static SKPoint[] NormalizeCornerRadii(SKRect bounds, SKPoint[] radius)
+        {
+            if (radius == null || radius.Length < 4)
+            {
+                return new[] { SKPoint.Empty, SKPoint.Empty, SKPoint.Empty, SKPoint.Empty };
+            }
+
+            float width = Math.Max(0f, bounds.Width);
+            float height = Math.Max(0f, bounds.Height);
+            if (width <= 0f || height <= 0f)
+            {
+                return new[] { SKPoint.Empty, SKPoint.Empty, SKPoint.Empty, SKPoint.Empty };
+            }
+
+            var normalized = new SKPoint[4];
+            for (int i = 0; i < 4; i++)
+            {
+                float rx = Math.Max(0f, radius[i].X);
+                float ry = Math.Max(0f, radius[i].Y);
+                normalized[i] = new SKPoint(Math.Min(rx, width * 0.5f), Math.Min(ry, height * 0.5f));
+            }
+
+            return normalized;
         }
 
         private static bool TryIntersect(SKRect a, SKRect b, out SKRect intersection)

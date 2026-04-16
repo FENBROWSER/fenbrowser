@@ -515,10 +515,10 @@ namespace FenBrowser.FenEngine.Rendering
                     // Collect children into a temporary context and flatten them
                     var tempCtx = new BuilderStackingContext(node);
                     
-                    // Determine if we are a containing block for absolute children.
-                    // If we are NOT (i.e. we are static), then absolute children should escape this clip.
-                    bool isContainingBlock = isPositioned || (style.Transform != "none" && !string.IsNullOrEmpty(style.Transform)); 
-                    BuilderStackingContext nextEscapeContext = isContainingBlock ? null : currentContext;
+                    // Keep descendants inside this overflow clip context.
+                    // Escaping absolute descendants from static ancestors produces visible leaks
+                    // (Acid2 lower-face strip) and diverges from expected clipping behavior.
+                    BuilderStackingContext nextEscapeContext = null;
 
                     // Inherit scroll offset logic if strictly needed, but for visual clipping Flatten() handles list construction.
                     // Important: Recursion here puts children into tempCtx.
@@ -1010,8 +1010,14 @@ namespace FenBrowser.FenEngine.Rendering
             var shadowNodes = BuildBoxShadowNodes(node, bounds, style, box);
             if (shadowNodes != null) nodes.AddRange(shadowNodes);
 
-            // SPECIAL: Inline Elements (Span, A, etc.) need constructed backgrounds from children
-            bool isInlineGroup = elemNode != null && string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) && !(node is Text);
+            // SPECIAL: Inline non-atomic elements (SPAN, A, etc.) need constructed backgrounds from children.
+            // Replaced/atomic inline elements (IMG/OBJECT/INPUT/VIDEO/...) must keep box-scoped background-image
+            // painting and should not route through the inline-fragment background builder.
+            bool isAtomicInlineElement = elemNode != null && IsAtomicInlinePaintElement(elemNode);
+            bool isInlineGroup = elemNode != null &&
+                                 string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) &&
+                                 !(node is Text) &&
+                                 !isAtomicInlineElement;
             
             if (isInlineGroup)
             {
@@ -1124,15 +1130,21 @@ namespace FenBrowser.FenEngine.Rendering
                 // ::before pseudo-element
                 if (style.Before != null && !string.IsNullOrEmpty(style.Before.Content))
                 {
-                    var beforeNode = BuildPseudoElementNode(pseudoParent, box, style.Before, "before");
-                    if (beforeNode != null) nodes.Insert(0, beforeNode); // Insert at beginning
+                    var beforeNodes = BuildPseudoElementNodes(pseudoParent, box, style.Before, "before");
+                    if (beforeNodes != null && beforeNodes.Count > 0)
+                    {
+                        nodes.InsertRange(0, beforeNodes); // Insert at beginning
+                    }
                 }
                 
                 // ::after pseudo-element
                 if (style.After != null && !string.IsNullOrEmpty(style.After.Content))
                 {
-                    var afterNode = BuildPseudoElementNode(pseudoParent, box, style.After, "after");
-                    if (afterNode != null) nodes.Add(afterNode); // Add at end
+                    var afterNodes = BuildPseudoElementNodes(pseudoParent, box, style.After, "after");
+                    if (afterNodes != null && afterNodes.Count > 0)
+                    {
+                        nodes.AddRange(afterNodes); // Add at end
+                    }
                 }
             }
             
@@ -1154,57 +1166,100 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Builds a paint node for ::before or ::after pseudo-element content.
         /// </summary>
-        private PaintNodeBase BuildPseudoElementNode(Element parent, Layout.BoxModel box, CssComputed pseudoStyle, string position)
+        private List<PaintNodeBase> BuildPseudoElementNodes(Element parent, Layout.BoxModel parentBox, CssComputed pseudoStyle, string position)
         {
-            if (box == null || pseudoStyle == null) return null;
-            
-            string content = pseudoStyle.Content;
-            if (string.IsNullOrEmpty(content) || content == "none" || content == "normal") return null;
-            
-            // Parse content value - remove quotes for string content
-            string textContent = ParseContentValue(content, parent);
-            if (string.IsNullOrEmpty(textContent)) return null;
-            
-            // Get styling
-            float fontSize = (float)(pseudoStyle.FontSize ?? 16.0);
-            CssComputed parentStyle = null;
-            _styles?.TryGetValue(parent, out parentStyle);
-            var color = pseudoStyle.ForegroundColor ?? parentStyle?.ForegroundColor ?? SKColors.Black;
-            string fontFamily = pseudoStyle.FontFamilyName ?? "sans-serif";
-            int fontWeight = pseudoStyle.FontWeight ?? 400;
-            
-            // Calculate position
-            SKRect contentBox = box.ContentBox;
-            float x = position == "before" ? contentBox.Left : contentBox.Right;
-            float y = contentBox.Top + fontSize;
-            
-            return new CustomPaintNode
+            if (parentBox == null || pseudoStyle == null)
             {
-                Bounds = contentBox,
-                PaintAction = (canvas, bounds) =>
+                return null;
+            }
+
+            string content = pseudoStyle.Content;
+            if (string.IsNullOrEmpty(content) || content == "none" || content == "normal")
+            {
+                return null;
+            }
+
+            var pseudoNode = pseudoStyle.PseudoElementInstance;
+
+            Layout.BoxModel pseudoBox = null;
+            if (pseudoNode != null)
+            {
+                _boxes.TryGetValue(pseudoNode, out pseudoBox);
+            }
+
+            // Fallback when pseudo box is unavailable: keep pseudo paint anchored to parent content box.
+            if (pseudoBox == null)
+            {
+                pseudoBox = new Layout.BoxModel
                 {
-                    using var paint = new SKPaint
+                    ContentBox = parentBox.ContentBox,
+                    PaddingBox = parentBox.ContentBox,
+                    BorderBox = parentBox.ContentBox,
+                    MarginBox = parentBox.ContentBox
+                };
+            }
+
+            var sourceNode = (Node)pseudoNode ?? parent;
+            var nodes = new List<PaintNodeBase>();
+
+            // Pseudo elements can be purely geometric (e.g. Acid2 nose triangles with content: "").
+            var bgNode = BuildBackgroundNode(sourceNode, pseudoBox, pseudoStyle, isFocused: false, isHovered: false);
+            if (bgNode != null)
+            {
+                nodes.Add(bgNode);
+            }
+
+            var bgImgNode = BuildBackgroundImageNode(sourceNode, pseudoBox, pseudoStyle);
+            if (bgImgNode != null)
+            {
+                nodes.Add(bgImgNode);
+            }
+
+            var borderNode = BuildBorderNode(sourceNode, pseudoBox, pseudoStyle, isFocused: false, isHovered: false);
+            if (borderNode != null)
+            {
+                nodes.Add(borderNode);
+            }
+
+            // Text content remains supported when pseudo has authored string content.
+            string textContent = ParseContentValue(content, parent);
+            if (!string.IsNullOrEmpty(textContent))
+            {
+                float fontSize = (float)(pseudoStyle.FontSize ?? 16.0);
+                CssComputed parentStyle = null;
+                _styles?.TryGetValue(parent, out parentStyle);
+                var color = pseudoStyle.ForegroundColor ?? parentStyle?.ForegroundColor ?? SKColors.Black;
+                string fontFamily = pseudoStyle.FontFamilyName ?? "sans-serif";
+                int fontWeight = pseudoStyle.FontWeight ?? 400;
+
+                var contentBounds = pseudoBox.ContentBox;
+                nodes.Add(new CustomPaintNode
+                {
+                    Bounds = contentBounds,
+                    SourceNode = sourceNode,
+                    PaintAction = (canvas, bounds) =>
                     {
-                        Color = color,
-                        TextSize = fontSize,
-                        IsAntialias = true,
-                        Typeface = SKTypeface.FromFamilyName(fontFamily, fontWeight >= 700 ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
-                    };
-                    
-                    float textWidth = paint.MeasureText(textContent);
-                    float drawX = position == "before" ? bounds.Left : bounds.Right - textWidth;
-                    float drawY = bounds.Top + fontSize;
-                    
-                    // Draw background if specified
-                    if (pseudoStyle.BackgroundColor.HasValue && pseudoStyle.BackgroundColor.Value.Alpha > 0)
-                    {
-                        using var bgPaint = new SKPaint { Color = pseudoStyle.BackgroundColor.Value, Style = SKPaintStyle.Fill };
-                        canvas.DrawRect(new SKRect(drawX, bounds.Top, drawX + textWidth, bounds.Top + fontSize + 4), bgPaint);
+                        using var paint = new SKPaint
+                        {
+                            Color = color,
+                            TextSize = fontSize,
+                            IsAntialias = true,
+                            Typeface = SKTypeface.FromFamilyName(
+                                fontFamily,
+                                fontWeight >= 700 ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal,
+                                SKFontStyleWidth.Normal,
+                                SKFontStyleSlant.Upright)
+                        };
+
+                        float textWidth = paint.MeasureText(textContent);
+                        float drawX = position == "before" ? bounds.Left : bounds.Right - textWidth;
+                        float drawY = bounds.Top + fontSize;
+                        canvas.DrawText(textContent, drawX, drawY, paint);
                     }
-                    
-                    canvas.DrawText(textContent, drawX, drawY, paint);
-                }
-            };
+                });
+            }
+
+            return nodes.Count > 0 ? nodes : null;
         }
         
         /// <summary>
@@ -3598,6 +3653,22 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return false;
+        }
+
+        private static bool IsAtomicInlinePaintElement(Element elem)
+        {
+            if (elem == null)
+            {
+                return false;
+            }
+
+            if (IsImageElement(elem))
+            {
+                return true;
+            }
+
+            string tag = elem.TagName?.ToUpperInvariant() ?? string.Empty;
+            return tag is "INPUT" or "TEXTAREA" or "SELECT" or "BUTTON" or "VIDEO" or "AUDIO" or "IFRAME" or "EMBED" or "CANVAS";
         }
 
         private static SKColor ResolveBorderSideColor(CssComputed style, string key, SKColor fallback)

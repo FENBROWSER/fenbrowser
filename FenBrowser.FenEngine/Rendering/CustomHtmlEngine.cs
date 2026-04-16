@@ -1093,6 +1093,27 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var box = _cachedRenderer.GetElementBox(element);
+                if (box == null)
+                {
+                    var elementId = element.GetAttribute("id");
+                    if (!string.IsNullOrWhiteSpace(elementId))
+                    {
+                        var root = (_activeDom as Element) ?? element.OwnerDocument?.DocumentElement;
+                        if (root != null)
+                        {
+                            var mapped = root.SelfAndDescendants()
+                                .OfType<Element>()
+                                .FirstOrDefault(candidate =>
+                                    !ReferenceEquals(candidate, element) &&
+                                    string.Equals(candidate.GetAttribute("id"), elementId, StringComparison.Ordinal));
+                            if (mapped != null)
+                            {
+                                box = _cachedRenderer.GetElementBox(mapped);
+                            }
+                        }
+                    }
+                }
+
                 return box?.BorderBox;
             });
 
@@ -1322,6 +1343,8 @@ namespace FenBrowser.FenEngine.Rendering
                              if (kvp.Key != null) kvp.Key.ComputedStyle = kvp.Value;
                      }
 
+                     ClearStyleDirtyFlags(dom);
+
                      // Sync _activeDom to the real parsed DOM (dom parameter) so that when
                      // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
                      // are the keys in LastComputedStyles.  Without this fix _activeDom would
@@ -1440,17 +1463,46 @@ namespace FenBrowser.FenEngine.Rendering
             if (dirtyRoots.Count == 0)
             {
                 // No dirty nodes — still fire repaint in case layout changed
-                FenLogger.Warn(
-                    "[CustomHtmlEngine] Incremental recascade found no dirty roots; routing through full recascade to avoid stale inline-style state.",
+                FenLogger.Debug(
+                    "[CustomHtmlEngine] Incremental recascade found no dirty roots; skipping no-op recascade.",
                     LogCategory.CSS);
-                await RecascadeAsync().ConfigureAwait(false);
                 return;
             }
 
-            FenLogger.Warn(
-                $"[CustomHtmlEngine] Incremental recascade requested for {dirtyRoots.Count} dirty subtree(s); routing through full recascade to preserve selector correctness.",
+            FenLogger.Info(
+                $"[CustomHtmlEngine] Incremental recascade: Processing {dirtyRoots.Count} dirty subtree(s)...",
                 LogCategory.CSS);
-            await RecascadeAsync().ConfigureAwait(false);
+
+            foreach (var root in dirtyRoots)
+            {
+                try
+                {
+                    // Compute styles for this subtree only
+                    var subtreeStyles = await CssLoader.ComputeAsync(root, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
+                    
+                    if (subtreeStyles != null)
+                    {
+                        lock (_renderStateLock)
+                        {
+                            // Merge into main styles dictionary
+                            foreach (var kvp in subtreeStyles)
+                            {
+                                LastComputedStyles[kvp.Key] = kvp.Value;
+                                kvp.Key.ComputedStyle = kvp.Value;
+                            }
+                        }
+                    }
+                    
+                    ClearStyleDirtyFlags(root);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn($"[CustomHtmlEngine] Incremental subtree recascade failed for <{root.TagName}>: {ex.Message}", LogCategory.CSS);
+                }
+            }
+
+            // Trigger repaint with updated styles
+            OnRepaintReady(domEl);
         }
 
         /// <summary>
@@ -1542,6 +1594,36 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return false;
+        }
+
+        private static void ClearStyleDirtyFlags(Node root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                node.ClearDirty(InvalidationKind.Style);
+
+                var children = node.ChildNodes;
+                if (children == null || children.Length == 0)
+                {
+                    continue;
+                }
+
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    if (children[i] != null)
+                    {
+                        stack.Push(children[i]);
+                    }
+                }
+            }
         }
 
         private JavaScriptEngine SetupJavaScriptEngine(

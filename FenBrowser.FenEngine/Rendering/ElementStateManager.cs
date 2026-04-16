@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -68,6 +69,11 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Track checked state for checkboxes/radios (synced with DOM attribute)
         private readonly HashSet<Element> _checkedElements = new HashSet<Element>();
+        private readonly HashSet<Element> _trackedCheckedElements = new HashSet<Element>();
+
+        // Track visited URLs for :visited/:link matching.
+        private readonly HashSet<string> _visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly object _visitedUrlsLock = new object();
         
         // Callback for when styles need to be recomputed
         public event Action<Element> OnStateChanged;
@@ -120,6 +126,7 @@ namespace FenBrowser.FenEngine.Rendering
             // hover repaint without forcing a full-viewport redraw on every mouse move.
             foreach (var el in toUpdate)
             {
+                el?.MarkDirty(InvalidationKind.Style);
                 OnStateChanged?.Invoke(el);
             }
         }
@@ -190,6 +197,7 @@ namespace FenBrowser.FenEngine.Rendering
             // can be localized by paint-tree diffing instead of falling back to full-frame repaint.
             foreach (var el in toUpdate)
             {
+                el?.MarkDirty(InvalidationKind.Style);
                 OnStateChanged?.Invoke(el);
             }
         }
@@ -347,11 +355,12 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (element == null)
                 return;
-                
-            bool wasChecked = _checkedElements.Contains(element);
+
+            bool wasChecked = IsChecked(element);
             if (wasChecked == isChecked)
                 return;
-                
+
+            _trackedCheckedElements.Add(element);
             if (isChecked)
                 _checkedElements.Add(element);
             else
@@ -368,7 +377,11 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (element == null)
                 return false;
-            return _checkedElements.Contains(element);
+
+            if (_trackedCheckedElements.Contains(element))
+                return _checkedElements.Contains(element);
+
+            return element.Attr?.ContainsKey("checked") == true;
         }
 
         /// <summary>
@@ -378,6 +391,126 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (element == null) return false;
             return element.Attr?.ContainsKey("disabled") == true;
+        }
+        #endregion
+
+        #region Link State
+        public void RecordVisitedUrl(Uri uri)
+        {
+            string normalized = NormalizeVisitedUrl(uri);
+            if (string.IsNullOrEmpty(normalized))
+                return;
+
+            bool added;
+            lock (_visitedUrlsLock)
+            {
+                added = _visitedUrls.Add(normalized);
+            }
+
+            if (added)
+            {
+                RequestFullRepaint();
+                OnStateChanged?.Invoke(null);
+            }
+        }
+
+        public bool IsVisited(Element element)
+        {
+            if (element == null)
+                return false;
+
+            string tag = element.TagName?.ToLowerInvariant();
+            if (tag != "a" && tag != "area")
+                return false;
+
+            string href = element.GetAttribute("href");
+            if (string.IsNullOrWhiteSpace(href))
+                return false;
+
+            Uri resolved = ResolveElementHref(element, href);
+            if (resolved == null)
+                return false;
+
+            string normalized = NormalizeVisitedUrl(resolved);
+            if (string.IsNullOrEmpty(normalized))
+                return false;
+
+            lock (_visitedUrlsLock)
+            {
+                if (_visitedUrls.Contains(normalized))
+                {
+                    return true;
+                }
+            }
+
+            // Iframe navigations are currently synthetic in FenBrowser, so a same-document
+            // browsing context can reach a URL without the network stack persisting history.
+            // Treat actively loaded iframe targets as visited so :visited/:link reflect the
+            // current browsing session state.
+            var documentRoot = element.OwnerDocument?.DocumentElement;
+            if (documentRoot != null)
+            {
+                foreach (var frame in documentRoot.Descendants().OfType<Element>())
+                {
+                    if (!string.Equals(frame.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var frameSrc = frame.GetAttribute("src");
+                    if (string.IsNullOrWhiteSpace(frameSrc))
+                    {
+                        continue;
+                    }
+
+                    var frameResolved = ResolveElementHref(frame, frameSrc);
+                    if (frameResolved == null)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(NormalizeVisitedUrl(frameResolved), normalized, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static Uri ResolveElementHref(Element element, string href)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(href))
+                return null;
+
+            if (Uri.TryCreate(href, UriKind.Absolute, out var absolute))
+                return absolute;
+
+            string baseUrl =
+                element.OwnerDocument?.BaseURI ??
+                element.OwnerDocument?.DocumentURI ??
+                element.OwnerDocument?.URL;
+
+            if (string.IsNullOrWhiteSpace(baseUrl) ||
+                !Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
+            {
+                return null;
+            }
+
+            return Uri.TryCreate(baseUri, href, out var resolved) ? resolved : null;
+        }
+
+        private static string NormalizeVisitedUrl(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+                return null;
+
+            var builder = new UriBuilder(uri)
+            {
+                Fragment = string.Empty
+            };
+            return builder.Uri.AbsoluteUri;
         }
         #endregion
         
@@ -554,6 +687,7 @@ namespace FenBrowser.FenEngine.Rendering
             _hoverChain.Clear();
             _focusWithinChain.Clear();
             _checkedElements.Clear();
+            _trackedCheckedElements.Clear();
             Interlocked.Exchange(ref _fullRepaintRequested, 0);
         }
 
@@ -586,6 +720,8 @@ namespace FenBrowser.FenEngine.Rendering
                     return IsFocusVisible(element);
                 case "active":
                     return IsActive(element);
+                case "visited":
+                    return IsVisited(element);
                 // checked, disabled, enabled are attribute-based - handled separately
                 default:
                     return false;

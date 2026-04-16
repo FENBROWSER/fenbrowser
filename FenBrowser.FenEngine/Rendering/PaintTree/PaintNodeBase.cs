@@ -207,6 +207,43 @@ namespace FenBrowser.FenEngine.Rendering
         /// Object-fit mode: "fill", "contain", "cover", "none", "scale-down"
         /// </summary>
         public string ObjectFit { get; init; } = "fill";
+
+        /// <summary>
+        /// Whether this image node represents a CSS background image rather than a replaced element.
+        /// Background images can tile and anchor to the viewport.
+        /// </summary>
+        public bool IsBackgroundImage { get; init; }
+
+        /// <summary>
+        /// Background tiling mode along the X axis.
+        /// </summary>
+        public SKShaderTileMode TileModeX { get; init; } = SKShaderTileMode.Clamp;
+
+        /// <summary>
+        /// Background tiling mode along the Y axis.
+        /// </summary>
+        public SKShaderTileMode TileModeY { get; init; } = SKShaderTileMode.Clamp;
+
+        /// <summary>
+        /// CSS background-position offset in px.
+        /// </summary>
+        public SKPoint BackgroundPosition { get; init; }
+
+        /// <summary>
+        /// Top-left of the box used for background-position/background-origin.
+        /// Defaults to the paint bounds when not explicitly provided.
+        /// </summary>
+        public SKPoint BackgroundOrigin { get; init; }
+
+        /// <summary>
+        /// When true, the image is anchored to the viewport instead of the element box.
+        /// </summary>
+        public bool BackgroundAttachmentFixed { get; init; }
+
+        /// <summary>
+        /// Document-space top-left of the current viewport for fixed backgrounds.
+        /// </summary>
+        public SKPoint FixedViewportOrigin { get; init; }
         
         public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
     }

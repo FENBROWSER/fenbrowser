@@ -116,6 +116,16 @@ namespace FenBrowser.FenEngine.Rendering.Backends
 
         public void DrawBorder(SKRect rect, BorderStyle border)
         {
+            bool paintTop = IsPaintableBorderStyle(border.TopStyle) && border.TopWidth > 0;
+            bool paintRight = IsPaintableBorderStyle(border.RightStyle) && border.RightWidth > 0;
+            bool paintBottom = IsPaintableBorderStyle(border.BottomStyle) && border.BottomWidth > 0;
+            bool paintLeft = IsPaintableBorderStyle(border.LeftStyle) && border.LeftWidth > 0;
+
+            if (!paintTop && !paintRight && !paintBottom && !paintLeft)
+            {
+                return;
+            }
+
             bool isUniformColor = border.TopColor == border.RightColor &&
                                   border.TopColor == border.BottomColor &&
                                   border.TopColor == border.LeftColor;
@@ -123,13 +133,16 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             bool isUniformWidth = Math.Abs(border.TopWidth - border.RightWidth) < 0.01f &&
                                   Math.Abs(border.TopWidth - border.BottomWidth) < 0.01f &&
                                   Math.Abs(border.TopWidth - border.LeftWidth) < 0.01f;
+            bool isUniformStyle = string.Equals(border.TopStyle, border.RightStyle, StringComparison.OrdinalIgnoreCase) &&
+                                  string.Equals(border.TopStyle, border.BottomStyle, StringComparison.OrdinalIgnoreCase) &&
+                                  string.Equals(border.TopStyle, border.LeftStyle, StringComparison.OrdinalIgnoreCase);
 
             bool hasRadius = border.TopLeftRadius.X > 0 || border.TopLeftRadius.Y > 0 ||
                              border.TopRightRadius.X > 0 || border.TopRightRadius.Y > 0 ||
                              border.BottomRightRadius.X > 0 || border.BottomRightRadius.Y > 0 ||
                              border.BottomLeftRadius.X > 0 || border.BottomLeftRadius.Y > 0;
 
-            if (isUniformColor && isUniformWidth && border.TopWidth > 0)
+            if (isUniformColor && isUniformWidth && isUniformStyle && paintTop && paintRight && paintBottom && paintLeft)
             {
                 using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
                 float inset = border.TopWidth / 2.0f;
@@ -167,33 +180,10 @@ namespace FenBrowser.FenEngine.Rendering.Backends
 
             try
             {
-                if (border.TopWidth > 0)
-                {
-                    using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
-                    float y = rect.Top + border.TopWidth / 2;
-                    _canvas.DrawLine(rect.Left, y, rect.Right, y, paint);
-                }
-
-                if (border.RightWidth > 0)
-                {
-                    using var paint = CreateBorderPaint(border.RightColor, border.RightWidth);
-                    float x = rect.Right - border.RightWidth / 2;
-                    _canvas.DrawLine(x, rect.Top, x, rect.Bottom, paint);
-                }
-
-                if (border.BottomWidth > 0)
-                {
-                    using var paint = CreateBorderPaint(border.BottomColor, border.BottomWidth);
-                    float y = rect.Bottom - border.BottomWidth / 2;
-                    _canvas.DrawLine(rect.Right, y, rect.Left, y, paint);
-                }
-
-                if (border.LeftWidth > 0)
-                {
-                    using var paint = CreateBorderPaint(border.LeftColor, border.LeftWidth);
-                    float x = rect.Left + border.LeftWidth / 2;
-                    _canvas.DrawLine(x, rect.Bottom, x, rect.Top, paint);
-                }
+                DrawBorderSlice(new SKRect(rect.Left, rect.Top, rect.Right, rect.Top + border.TopWidth), border.TopColor, paintTop);
+                DrawBorderSlice(new SKRect(rect.Right - border.RightWidth, rect.Top, rect.Right, rect.Bottom), border.RightColor, paintRight);
+                DrawBorderSlice(new SKRect(rect.Left, rect.Bottom - border.BottomWidth, rect.Right, rect.Bottom), border.BottomColor, paintBottom);
+                DrawBorderSlice(new SKRect(rect.Left, rect.Top, rect.Left + border.LeftWidth, rect.Bottom), border.LeftColor, paintLeft);
             }
             finally
             {
@@ -202,6 +192,29 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                     _canvas.RestoreToCount(saveCount);
                 }
             }
+        }
+
+        private void DrawBorderSlice(SKRect rect, SKColor color, bool enabled)
+        {
+            if (!enabled || rect.Width <= 0 || rect.Height <= 0 || color.Alpha == 0)
+            {
+                return;
+            }
+
+            using var paint = new SKPaint
+            {
+                Color = color,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+            _canvas.DrawRect(rect, paint);
+        }
+
+        private static bool IsPaintableBorderStyle(string style)
+        {
+            return !string.IsNullOrWhiteSpace(style) &&
+                   !string.Equals(style, "none", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(style, "hidden", StringComparison.OrdinalIgnoreCase);
         }
 
         private static SKPath CreateRoundedRectPath(SKRect bounds, SKPoint[] radius)

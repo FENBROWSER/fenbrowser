@@ -58,6 +58,20 @@ namespace FenBrowser.Tests.Architecture
             // Assert
             Assert.Equal(30f, metrics.LineHeight); // 20 * 1.5 = 30
         }
+
+        [Fact]
+        public void FromSkia_ExplicitLineHeight_DoesNotExpandToContentHeight()
+        {
+            var typeface = SKTypeface.Default;
+            using var font = new SKFont(typeface, 100f);
+            var skMetrics = font.Metrics;
+
+            var metrics = NormalizedFontMetrics.FromSkia(skMetrics, 100f, 0.8f);
+
+            Assert.Equal(80f, metrics.LineHeight);
+            Assert.True(metrics.ContentHeight > metrics.LineHeight);
+            Assert.True(metrics.Leading < 0f);
+        }
         
         [Fact]
         public void GetBaselineOffset_ReturnsPositiveValue()

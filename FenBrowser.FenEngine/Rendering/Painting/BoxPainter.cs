@@ -1,6 +1,7 @@
 using FenBrowser.Core.Css;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 using FenBrowser.Core;
@@ -79,6 +80,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         {
             var box = bgBox;
             var bgSize = style.BackgroundSize?.ToLowerInvariant() ?? "auto";
+            var bgAttachment = style.BackgroundAttachment?.ToLowerInvariant() ?? "scroll";
             var bgRepeat = style.BackgroundRepeat?.ToLowerInvariant() ?? "repeat";
             var bgPos = style.BackgroundPosition?.ToLowerInvariant() ?? "0% 0%";
 
@@ -123,7 +125,11 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Handle background origin
             SKRect originBox = borderBox;
             var origin = style.BackgroundOrigin?.ToLowerInvariant();
-            if (origin == "padding-box")
+            if (bgAttachment == "fixed")
+            {
+                originBox = canvas.LocalClipBounds;
+            }
+            else if (origin == "padding-box")
             {
                 var b = style.BorderThickness;
                 originBox = new SKRect(borderBox.Left + (float)b.Left, borderBox.Top + (float)b.Top, borderBox.Right - (float)b.Right, borderBox.Bottom - (float)b.Bottom);
@@ -135,16 +141,16 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 originBox = new SKRect(borderBox.Left + (float)b.Left + (float)p.Left, borderBox.Top + (float)b.Top + (float)p.Top, borderBox.Right - (float)b.Right - (float)p.Right, borderBox.Bottom - (float)b.Bottom - (float)p.Bottom);
             }
 
-            if (bgPos.Contains("center")) 
-            { 
-               transX = (originBox.Width - bitmap.Width * scaleX) / 2;
-               transY = (originBox.Height - bitmap.Height * scaleY) / 2;
-            }
-            else if (bgPos.Contains("right")) { transX = originBox.Width - bitmap.Width * scaleX; }
-            else if (bgPos.Contains("bottom")) { transY = originBox.Height - bitmap.Height * scaleY; }
+            ResolveBackgroundPosition(
+                bgPos,
+                originBox,
+                bitmap.Width * scaleX,
+                bitmap.Height * scaleY,
+                out transX,
+                out transY);
 
             var matrix = SKMatrix.CreateScale(scaleX, scaleY);
-            matrix = matrix.PostConcat(SKMatrix.CreateTranslation(originBox.Left + transX, originBox.Top + transY));
+            matrix = matrix.PostConcat(SKMatrix.CreateTranslation(originBox.Left - transX, originBox.Top - transY));
 
             using var shader = SKShader.CreateBitmap(bitmap, tileX, tileY, matrix);
             using var paint = new SKPaint
@@ -160,6 +166,129 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                  radius = CssCornerRadius.Empty;
             }
             DrawWithRadius(canvas, bgBox, radius, paint);
+        }
+
+        private static void ResolveBackgroundPosition(
+            string bgPos,
+            SKRect originBox,
+            float renderedWidth,
+            float renderedHeight,
+            out float transX,
+            out float transY)
+        {
+            transX = 0f;
+            transY = 0f;
+
+            if (string.IsNullOrWhiteSpace(bgPos))
+            {
+                return;
+            }
+
+            var parts = bgPos
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim().ToLowerInvariant())
+                .ToArray();
+
+            if (parts.Length == 0)
+            {
+                return;
+            }
+
+            if (TryResolveBackgroundPositionComponent(parts[0], originBox.Width, renderedWidth, isHorizontal: true, out var resolvedX))
+            {
+                transX = resolvedX;
+            }
+
+            string verticalToken = parts.Length > 1 ? parts[1] : null;
+            if (!string.IsNullOrEmpty(verticalToken) &&
+                TryResolveBackgroundPositionComponent(verticalToken, originBox.Height, renderedHeight, isHorizontal: false, out var resolvedY))
+            {
+                transY = resolvedY;
+            }
+            else if (parts.Length == 1)
+            {
+                if (parts[0] == "top" || parts[0] == "bottom")
+                {
+                    if (TryResolveBackgroundPositionComponent(parts[0], originBox.Height, renderedHeight, isHorizontal: false, out resolvedY))
+                    {
+                        transY = resolvedY;
+                        transX = 0f;
+                    }
+                }
+                else if (parts[0] == "center")
+                {
+                    transX = (originBox.Width - renderedWidth) / 2f;
+                    transY = (originBox.Height - renderedHeight) / 2f;
+                }
+            }
+        }
+
+        private static bool TryResolveBackgroundPositionComponent(
+            string token,
+            float axisLength,
+            float renderedLength,
+            bool isHorizontal,
+            out float translation)
+        {
+            translation = 0f;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            switch (token)
+            {
+                case "left":
+                case "top":
+                    translation = 0f;
+                    return true;
+                case "center":
+                    translation = (axisLength - renderedLength) / 2f;
+                    return true;
+                case "right":
+                case "bottom":
+                    translation = axisLength - renderedLength;
+                    return true;
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal) &&
+                float.TryParse(token[..^1], out var percent))
+            {
+                translation = (axisLength - renderedLength) * (percent / 100f);
+                return true;
+            }
+
+            if (TryParseCssLengthPx(token, out var px))
+            {
+                translation = px;
+                return true;
+            }
+
+            // Single-keyword vertical positions like `top`/`bottom` should not be consumed
+            // as horizontal offsets.
+            if (isHorizontal && (token == "top" || token == "bottom"))
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseCssLengthPx(string token, out float px)
+        {
+            px = 0f;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            string normalized = token.Trim().ToLowerInvariant();
+            if (normalized.EndsWith("px", StringComparison.Ordinal))
+            {
+                normalized = normalized[..^2];
+            }
+
+            return float.TryParse(normalized, out px);
         }
 
         private SKShader CreateShaderFromBrush(object brush, SKRect bounds, float opacity)
@@ -228,7 +357,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             };
 
             // Top
-            if (thickness.Top > 0 && style.BorderStyleTop != "none")
+            if (thickness.Top > 0 && IsPaintableBorderStyle(style.BorderStyleTop))
             {
                 paint.StrokeWidth = (float)thickness.Top;
                 SetupBorderStyle(paint, style.BorderStyleTop, paint.StrokeWidth);
@@ -237,7 +366,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             // Right
-            if (thickness.Right > 0 && style.BorderStyleRight != "none")
+            if (thickness.Right > 0 && IsPaintableBorderStyle(style.BorderStyleRight))
             {
                 paint.StrokeWidth = (float)thickness.Right;
                 SetupBorderStyle(paint, style.BorderStyleRight, paint.StrokeWidth);
@@ -246,7 +375,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             // Bottom
-            if (thickness.Bottom > 0 && style.BorderStyleBottom != "none")
+            if (thickness.Bottom > 0 && IsPaintableBorderStyle(style.BorderStyleBottom))
             {
                 paint.StrokeWidth = (float)thickness.Bottom;
                 SetupBorderStyle(paint, style.BorderStyleBottom, paint.StrokeWidth);
@@ -255,13 +384,24 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             // Left
-            if (thickness.Left > 0 && style.BorderStyleLeft != "none")
+            if (thickness.Left > 0 && IsPaintableBorderStyle(style.BorderStyleLeft))
             {
                 paint.StrokeWidth = (float)thickness.Left;
                 SetupBorderStyle(paint, style.BorderStyleLeft, paint.StrokeWidth);
                 float x = box.Left + (float)thickness.Left / 2;
                 canvas.DrawLine(x, box.Top, x, box.Bottom, paint);
             }
+        }
+
+        private static bool IsPaintableBorderStyle(string borderStyle)
+        {
+            if (string.IsNullOrWhiteSpace(borderStyle))
+            {
+                return false;
+            }
+
+            return !string.Equals(borderStyle, "none", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(borderStyle, "hidden", StringComparison.OrdinalIgnoreCase);
         }
 
         private void SetupBorderStyle(SKPaint paint, string borderStyle, float strokeWidth)
