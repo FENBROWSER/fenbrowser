@@ -1081,9 +1081,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             else if (box.ComputedStyle?.HeightPercent.HasValue == true)
             {
-                float parentHeight = state.AvailableSize.Height;
-                if (float.IsInfinity(parentHeight) || parentHeight <= 0)
-                    parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
                 if (!float.IsInfinity(parentHeight) && parentHeight > 0)
                     height = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * parentHeight);
             }
@@ -1142,8 +1140,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (box.ComputedStyle.MinHeight.HasValue) minH = (float)box.ComputedStyle.MinHeight.Value;
                 else if (box.ComputedStyle.MinHeightPercent.HasValue == true)
                 {
-                    float parentHeight = state.AvailableSize.Height;
-                    if (float.IsInfinity(parentHeight) || parentHeight <= 0) parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                    float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
                     if (parentHeight > 0) minH = (float)(box.ComputedStyle.MinHeightPercent.Value / 100.0 * parentHeight);
                 }
                 else if (!string.IsNullOrEmpty(box.ComputedStyle.MinHeightExpression))
@@ -1185,8 +1182,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (box.ComputedStyle.MaxHeight.HasValue) maxH = (float)box.ComputedStyle.MaxHeight.Value;
                 else if (box.ComputedStyle.MaxHeightPercent.HasValue == true)
                 {
-                    float parentHeight = state.AvailableSize.Height;
-                    if (float.IsInfinity(parentHeight) || parentHeight <= 0) parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                    float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
                     if (parentHeight > 0) maxH = (float)(box.ComputedStyle.MaxHeightPercent.Value / 100.0 * parentHeight);
                 }
                 else if (!string.IsNullOrEmpty(box.ComputedStyle.MaxHeightExpression))
@@ -1341,6 +1337,69 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Sync boxes (Content -> Padding -> Border -> Margin)
             LayoutBoxOps.ComputeBoxModelFromContent(box, width, height);
+        }
+
+        private static float ResolveDefinitePercentageHeightBasis(LayoutBox box, LayoutState state)
+        {
+            if (box?.Parent == null)
+            {
+                float basis = state.ContainingBlockHeight;
+                if (!float.IsFinite(basis) || basis <= 0f)
+                {
+                    basis = state.AvailableSize.Height;
+                }
+
+                if (!float.IsFinite(basis) || basis <= 0f)
+                {
+                    basis = state.ViewportHeight;
+                }
+
+                return basis;
+            }
+
+            if (!HasDefiniteContainingBlockHeight(box.Parent))
+            {
+                return float.NaN;
+            }
+
+            float parentHeight = state.ContainingBlockHeight;
+            if (!float.IsFinite(parentHeight) || parentHeight <= 0f)
+            {
+                parentHeight = state.AvailableSize.Height;
+            }
+
+            return parentHeight;
+        }
+
+        private static bool HasDefiniteContainingBlockHeight(LayoutBox box)
+        {
+            if (box == null)
+            {
+                return true;
+            }
+
+            var style = box.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Height.HasValue || !string.IsNullOrWhiteSpace(style.HeightExpression))
+            {
+                return true;
+            }
+
+            if (string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (style.HeightPercent.HasValue)
+            {
+                return HasDefiniteContainingBlockHeight(box.Parent);
+            }
+
+            return false;
         }
 
         private static float GetColumnMainSize(LayoutBox item)

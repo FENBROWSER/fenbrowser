@@ -75,9 +75,20 @@ namespace FenBrowser.FenEngine.Layout
             // New Pipeline Entry Point (Active)
             DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] ComputeLayout Called for {node?.GetType().Name}\n");
 
+            Node layoutRoot = node;
+            if (layoutRoot is Document doc)
+            {
+                layoutRoot = doc.DocumentElement ?? doc.FirstChild;
+            }
+
+            if (layoutRoot == null)
+            {
+                return null;
+            }
+
             // 1. Build Box Tree
             var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles);
-            var rootBox = builder.Build(node);
+            var rootBox = builder.Build(layoutRoot);
             
             if (rootBox == null)
             {
@@ -192,7 +203,7 @@ namespace FenBrowser.FenEngine.Layout
                 else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
             }
 
-            string position = style?.Position?.Trim().ToLowerInvariant();
+            string position = LayoutStyleResolver.GetEffectivePosition(style);
             bool isFixed = position == "fixed";
             if (!isFixed)
             {
@@ -231,27 +242,28 @@ namespace FenBrowser.FenEngine.Layout
 
             if (box.SourceNode != null)
             {
-                if (!dict.ContainsKey(box.SourceNode))
+                var absModel = new BoxModel
                 {
-                    var absModel = new BoxModel
-                    {
-                        ContentBox = box.Geometry.ContentBox,
-                        PaddingBox = box.Geometry.PaddingBox,
-                        BorderBox = box.Geometry.BorderBox,
-                        MarginBox = box.Geometry.MarginBox,
-                        Lines = box.Geometry.Lines,  // Copy text lines for proper rendering
-                        Baseline = box.Geometry.Baseline,
-                        LineHeight = box.Geometry.LineHeight,
-                        Ascent = box.Geometry.Ascent,
-                        Descent = box.Geometry.Descent
-                    };
+                    ContentBox = box.Geometry.ContentBox,
+                    PaddingBox = box.Geometry.PaddingBox,
+                    BorderBox = box.Geometry.BorderBox,
+                    MarginBox = box.Geometry.MarginBox,
+                    Lines = box.Geometry.Lines,  // Copy text lines for proper rendering
+                    Baseline = box.Geometry.Baseline,
+                    LineHeight = box.Geometry.LineHeight,
+                    Ascent = box.Geometry.Ascent,
+                    Descent = box.Geometry.Descent
+                };
 
-                    // Formatting contexts position the full subtree into document coordinates
-                    // before LayoutEngine materializes renderer-facing boxes. Re-applying the
-                    // parent content origin here double-shifts nested descendants and produces
-                    // ghost borders/backgrounds detached from their content.
-                    FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, relOffsetX, relOffsetY);
+                // Formatting contexts position the full subtree into document coordinates
+                // before LayoutEngine materializes renderer-facing boxes. Re-applying the
+                // parent content origin here double-shifts nested descendants and produces
+                // ghost borders/backgrounds detached from their content.
+                FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, relOffsetX, relOffsetY);
 
+                if (!dict.TryGetValue(box.SourceNode, out var existingModel) ||
+                    ShouldPreferMaterializedBox(existingModel, absModel))
+                {
                     dict[box.SourceNode] = absModel;
                 }
             }
@@ -261,6 +273,39 @@ namespace FenBrowser.FenEngine.Layout
 
             foreach(var c in box.Children)
                 CollectBoxesAbsolute(c, dict, currentContentAbsX, currentContentAbsY);
+        }
+
+        private static bool ShouldPreferMaterializedBox(BoxModel existingModel, BoxModel candidateModel)
+        {
+            if (existingModel == null)
+            {
+                return true;
+            }
+
+            static float Area(SKRect rect)
+            {
+                return Math.Max(0f, rect.Width) * Math.Max(0f, rect.Height);
+            }
+
+            float existingArea = Area(existingModel.BorderBox);
+            float candidateArea = Area(candidateModel.BorderBox);
+            if (candidateArea > existingArea + 0.5f)
+            {
+                return true;
+            }
+
+            bool existingHasLines = existingModel.Lines != null && existingModel.Lines.Count > 0;
+            bool candidateHasLines = candidateModel.Lines != null && candidateModel.Lines.Count > 0;
+            if (!existingHasLines && candidateHasLines)
+            {
+                return true;
+            }
+
+            bool existingEmpty = existingArea <= 0.5f &&
+                                 Math.Max(0f, existingModel.ContentBox.Width) * Math.Max(0f, existingModel.ContentBox.Height) <= 0.5f;
+            bool candidateVisible = candidateArea > 0.5f ||
+                                    (Math.Max(0f, candidateModel.ContentBox.Width) * Math.Max(0f, candidateModel.ContentBox.Height) > 0.5f);
+            return existingEmpty && candidateVisible;
         }
 
         private void FlattenBoxTreeAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Element, ElementGeometry> rects, LayoutContext context, float parentContentAbsX, float parentContentAbsY)
@@ -449,6 +494,9 @@ namespace FenBrowser.FenEngine.Layout
             string rectStr = $"[{r.Left:F1}, {r.Top:F1} {r.Width:F1}x{r.Height:F1}]";
             string extra = "";
             if (box.ComputedStyle?.Display == "flex") extra += " (FLEX)";
+            var position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
+            if (!string.IsNullOrEmpty(position)) extra += $" pos={position}";
+            if (box.IsOutOfFlow) extra += " oof";
             
             DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"{indent}{tagName} {rectStr}{extra}\n");
             

@@ -51,8 +51,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             get
             {
-                if (ComputedStyle?.Position == null) return false;
-                var pos = ComputedStyle.Position.ToLowerInvariant();
+                var pos = LayoutStyleResolver.GetEffectivePosition(ComputedStyle);
+                if (string.IsNullOrEmpty(pos)) return false;
                 return pos == "absolute" || pos == "fixed";
             }
         }

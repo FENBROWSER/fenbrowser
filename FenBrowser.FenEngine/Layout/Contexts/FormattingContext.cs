@@ -59,6 +59,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (display == "flex" || display == "inline-flex")
                 return FlexFormattingContext.Instance;
 
+            // Table contexts
+            if (display == "table" ||
+                display == "inline-table" ||
+                display == "table-row-group" ||
+                display == "table-header-group" ||
+                display == "table-footer-group" ||
+                display == "table-row")
+            {
+                return TableFormattingContext.Instance;
+            }
+
             // Flow-root establishes a new BFC
             if (display == "flow-root")
                 return BlockFormattingContext.Instance;

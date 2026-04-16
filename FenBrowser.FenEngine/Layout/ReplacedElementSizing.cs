@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Layout
@@ -12,6 +13,64 @@ namespace FenBrowser.FenEngine.Layout
     /// </summary>
     public static class ReplacedElementSizing
     {
+        public static bool ShouldTreatAsAtomicReplacedElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            string tagUpper = element.TagName?.Trim().ToUpperInvariant() ?? string.Empty;
+            if (!IsReplacedElementTag(tagUpper))
+            {
+                return false;
+            }
+
+            if (string.Equals(tagUpper, "OBJECT", StringComparison.Ordinal))
+            {
+                return !ShouldUseObjectFallbackContent(element);
+            }
+
+            return true;
+        }
+
+        public static bool ShouldUseObjectFallbackContent(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(element.TagName, "OBJECT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (element.ChildNodes == null || element.ChildNodes.Length == 0)
+            {
+                return false;
+            }
+
+            if (TryResolveObjectBitmapIntrinsicSize(element, out _, out _))
+            {
+                return false;
+            }
+
+            string type = element.GetAttribute("type")?.Trim();
+            if (!string.IsNullOrEmpty(type) && IsDirectRenderableObjectMimeType(type))
+            {
+                return false;
+            }
+
+            string data = element.GetAttribute("data")?.Trim();
+            if (!string.IsNullOrEmpty(data) && IsDirectRenderableObjectDataUrl(data))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         public static bool IsReplacedElementTag(string tagUpper)
         {
             if (string.IsNullOrEmpty(tagUpper)) return false;
@@ -136,8 +195,148 @@ namespace FenBrowser.FenEngine.Layout
                     return true;
                 }
             }
+            else if (string.Equals(tagUpper, "IMG", StringComparison.Ordinal))
+            {
+                if (TryResolveImageBitmapIntrinsicSize(element, out width, out height))
+                {
+                    return true;
+                }
+            }
+            else if (string.Equals(tagUpper, "OBJECT", StringComparison.Ordinal))
+            {
+                if (TryResolveObjectBitmapIntrinsicSize(element, out width, out height))
+                {
+                    return true;
+                }
+            }
 
             return false;
+        }
+
+        private static bool TryResolveImageBitmapIntrinsicSize(Element element, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (element == null)
+            {
+                return false;
+            }
+
+            string src = element.GetAttribute("src");
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                return false;
+            }
+
+            string resolved = ResolveElementResourceUrl(element, src);
+            if (string.IsNullOrWhiteSpace(resolved))
+            {
+                return false;
+            }
+
+            var bitmap = ImageLoader.GetImage(resolved);
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            width = bitmap.Width;
+            height = bitmap.Height;
+            return width > 0f && height > 0f;
+        }
+
+        private static bool TryResolveObjectBitmapIntrinsicSize(Element element, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            if (element == null)
+            {
+                return false;
+            }
+
+            string data = element.GetAttribute("data");
+            if (string.IsNullOrWhiteSpace(data))
+            {
+                return false;
+            }
+
+            string resolved = ResolveElementResourceUrl(element, data);
+            if (string.IsNullOrWhiteSpace(resolved))
+            {
+                return false;
+            }
+
+            var bitmap = ImageLoader.GetImage(resolved);
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            width = bitmap.Width;
+            height = bitmap.Height;
+            return width > 0f && height > 0f;
+        }
+
+        private static bool IsDirectRenderableObjectMimeType(string type)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                return false;
+            }
+
+            string normalized = type.Trim().ToLowerInvariant();
+            return normalized.StartsWith("image/", StringComparison.Ordinal) ||
+                   normalized.StartsWith("video/", StringComparison.Ordinal) ||
+                   normalized.StartsWith("audio/", StringComparison.Ordinal) ||
+                   string.Equals(normalized, "application/pdf", StringComparison.Ordinal) ||
+                   string.Equals(normalized, "image/svg+xml", StringComparison.Ordinal);
+        }
+
+        private static bool IsDirectRenderableObjectDataUrl(string data)
+        {
+            if (string.IsNullOrWhiteSpace(data))
+            {
+                return false;
+            }
+
+            string normalized = data.Trim().ToLowerInvariant();
+            return normalized.StartsWith("data:image/", StringComparison.Ordinal) ||
+                   normalized.StartsWith("data:video/", StringComparison.Ordinal) ||
+                   normalized.StartsWith("data:audio/", StringComparison.Ordinal) ||
+                   normalized.StartsWith("data:application/pdf", StringComparison.Ordinal);
+        }
+
+        private static string ResolveElementResourceUrl(Element element, string resourceUrl)
+        {
+            if (string.IsNullOrWhiteSpace(resourceUrl))
+            {
+                return resourceUrl;
+            }
+
+            if (Uri.TryCreate(resourceUrl, UriKind.Absolute, out var absolute))
+            {
+                return absolute.ToString();
+            }
+
+            string baseUrl = element?.OwnerDocument?.BaseURI;
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                baseUrl = element?.OwnerDocument?.DocumentURI;
+            }
+
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                baseUrl = element?.OwnerDocument?.URL;
+            }
+
+            if (!string.IsNullOrWhiteSpace(baseUrl) &&
+                Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
+                Uri.TryCreate(baseUri, resourceUrl, out var resolved))
+            {
+                return resolved.ToString();
+            }
+
+            return resourceUrl;
         }
 
         private static bool IsLikelyMaterialIconViewBox(Element element, float viewBoxWidth, float viewBoxHeight)

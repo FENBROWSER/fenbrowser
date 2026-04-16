@@ -30,6 +30,16 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             var result = new List<LayoutBox>();
 
+            if (node is Document documentNode)
+            {
+                foreach (var childNode in documentNode.ChildNodes)
+                {
+                    result.AddRange(ConstructBox(childNode, parentStyle));
+                }
+
+                return result;
+            }
+
             // HTML details/summary behavior:
             // details:not([open]) > :not(summary) must not generate layout boxes.
             var parentElement = node.ParentElement ?? node.ParentNode as Element;
@@ -63,7 +73,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (node is Element e)
             {
                 string tag = e.TagName?.ToUpperInvariant();
-                if (tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "TEMPLATE")
+                if (tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "TEMPLATE" || tag == "MAP" || tag == "AREA")
                     return result;
             }
 
@@ -76,7 +86,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                 // In normal flow, indentation/newline-only text under block/flex/grid containers
                 // should not create standalone layout boxes.
-                if (string.IsNullOrWhiteSpace(textNode.Data))
+                if (FenBrowser.FenEngine.Layout.Contexts.TextWhitespaceClassifier.IsCollapsibleWhitespaceOnly(textNode.Data))
                 {
                     string whiteSpace = parentStyle?.WhiteSpace?.ToLowerInvariant() ?? "normal";
                     bool preserveWhitespace =
@@ -134,11 +144,30 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     box = new BlockBox(node, style);
                 }
 
-                // Recurse on children
                 var childBoxes = new List<LayoutBox>();
+
+                // Prepend ::before pseudo-element
+                if (style.Before != null && IsVisiblePseudo(style.Before))
+                {
+                    if (style.Before.PseudoElementInstance == null)
+                        style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
+                    EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
+                    childBoxes.AddRange(ConstructBox(style.Before.PseudoElementInstance, style));
+                }
+
+                // Recurse on children
                 foreach (var childNode in GetChildren(element))
                 {
                     childBoxes.AddRange(ConstructBox(childNode, style));
+                }
+
+                // Append ::after pseudo-element
+                if (style.After != null && IsVisiblePseudo(style.After))
+                {
+                    if (style.After.PseudoElementInstance == null)
+                        style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
+                    EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
+                    childBoxes.AddRange(ConstructBox(style.After.PseudoElementInstance, style));
                 }
 
                 // Handle Block-in-Inline Splitting (CSS 2.1 Section 9.2.1.1)
@@ -167,6 +196,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private IEnumerable<Node> GetChildren(Element element)
         {
+            if (element != null && ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
+            {
+                return Array.Empty<Node>();
+            }
+
             if (element.ShadowRoot != null) return element.ShadowRoot.ChildNodes;
             return element.ChildNodes;
         }
@@ -203,7 +237,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             // CSS 2.1 Section 9.7: Blockify display for floated or absolutely-positioned elements.
             // float: left/right or position: absolute/fixed converts inline-level display to block-level.
             string floatVal = style?.Float?.Trim().ToLowerInvariant();
-            string posVal = style?.Position?.Trim().ToLowerInvariant();
+            string posVal = LayoutStyleResolver.GetEffectivePosition(style);
             bool isFloated = floatVal == "left" || floatVal == "right";
             bool isAbsFixed = posVal == "absolute" || posVal == "fixed";
 
@@ -327,15 +361,59 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             bool hasBlockChildren = false;
             bool hasInlineChildren = false;
+            bool hasInFlowBlockChildren = false;
+            bool hasFloatChildren = false;
 
             foreach (var child in box.Children)
             {
                 if (IsBlockLevel(child)) hasBlockChildren = true;
                 if (IsInlineLevel(child)) hasInlineChildren = true;
+                if (IsFloated(child)) hasFloatChildren = true;
+                if (IsBlockLevel(child) && !IsFloated(child) && !child.IsOutOfFlow) hasInFlowBlockChildren = true;
             }
 
             // If homogeneous, no fixup needed
             if (!hasBlockChildren || !hasInlineChildren) return;
+
+            // Floats are blockified for layout, but inline text around them should still
+            // participate in one anonymous inline flow rather than being split into
+            // separate anonymous blocks before and after the float.
+            if (!hasInFlowBlockChildren && hasFloatChildren)
+            {
+                var floatChildren = new List<LayoutBox>();
+                AnonymousBlockBox inlineFlow = null;
+
+                foreach (var child in box.Children)
+                {
+                    if (IsFloated(child))
+                    {
+                        floatChildren.Add(child);
+                        continue;
+                    }
+
+                    if (IsInlineLevel(child))
+                    {
+                        inlineFlow ??= new AnonymousBlockBox(box.ComputedStyle);
+                        inlineFlow.AddChild(child);
+                        child.Parent = inlineFlow;
+                    }
+                }
+
+                box.Children.Clear();
+                foreach (var floatedChild in floatChildren)
+                {
+                    floatedChild.Parent = box;
+                    box.Children.Add(floatedChild);
+                }
+
+                if (inlineFlow != null)
+                {
+                    inlineFlow.Parent = box;
+                    box.Children.Add(inlineFlow);
+                }
+
+                return;
+            }
 
             // Mixed content found!
             // Strategy: Group consecutive inline children into an AnonymousBlockBox
@@ -373,6 +451,69 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private bool IsBlockLevel(LayoutBox box) => box is BlockBox; // Includes AnonymousBlockBox
         private bool IsInlineLevel(LayoutBox box) => box is InlineBox || box is TextLayoutBox;
+        private static bool IsFloated(LayoutBox box)
+        {
+            var floatValue = box.ComputedStyle?.Float?.Trim().ToLowerInvariant();
+            return floatValue == "left" || floatValue == "right";
+        }
+
+        private static bool IsVisiblePseudo(CssComputed pseudoStyle)
+        {
+            if (pseudoStyle == null)
+            {
+                return false;
+            }
+
+            string content = pseudoStyle.Content;
+            if (content == null)
+            {
+                return false;
+            }
+
+            return !string.Equals(content, "none", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(content, "normal", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void EnsurePseudoTextContent(PseudoElement pseudoElement, string rawContent)
+        {
+            if (pseudoElement == null) return;
+
+            var text = NormalizePseudoText(rawContent);
+            if (string.IsNullOrEmpty(text)) return;
+
+            if (pseudoElement.ChildNodes.Length == 0)
+            {
+                pseudoElement.AppendChild(new Text(text));
+                return;
+            }
+
+            if (pseudoElement.ChildNodes[0] is Text existingText && pseudoElement.ChildNodes.Length == 1)
+            {
+                if (!string.Equals(existingText.Data, text, StringComparison.Ordinal))
+                {
+                    existingText.Data = text;
+                }
+                return;
+            }
+
+            // Fallback clear and append
+            for (int i = 0; i < pseudoElement.ChildNodes.Length; i++)
+            {
+                if (pseudoElement.ChildNodes[i] is Text textNode)
+                {
+                    textNode.Data = ""; // Clear existing, but really should detach
+                }
+            }
+            pseudoElement.AppendChild(new Text(text));
+        }
+
+        private static string NormalizePseudoText(string rawContent)
+        {
+            if (string.IsNullOrWhiteSpace(rawContent)) return null;
+            if (string.Equals(rawContent, "none", StringComparison.OrdinalIgnoreCase)) return null;
+            if (rawContent.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0) return null;
+            return rawContent.Trim().Trim('"', '\'');
+        }
     }
 }
 

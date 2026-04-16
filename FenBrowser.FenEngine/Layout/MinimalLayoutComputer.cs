@@ -311,7 +311,19 @@ namespace FenBrowser.FenEngine.Layout
 
         private static bool IsVisiblePseudo(CssComputed pseudoStyle)
         {
-            return !string.IsNullOrEmpty(pseudoStyle.Content) && pseudoStyle.Content != "none";
+            if (pseudoStyle == null)
+            {
+                return false;
+            }
+
+            string content = pseudoStyle.Content;
+            if (content == null)
+            {
+                return false;
+            }
+
+            return !string.Equals(content, "none", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(content, "normal", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void EnsurePseudoTextContent(PseudoElement pseudoElement, string rawContent)
