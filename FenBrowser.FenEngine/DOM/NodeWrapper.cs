@@ -98,10 +98,14 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("dispatchEvent", DispatchEvent));
 
                 // Constants
+                case "ATTRIBUTE_NODE": return FenValue.FromNumber(2);
                 case "ELEMENT_NODE": return FenValue.FromNumber(1);
                 case "TEXT_NODE": return FenValue.FromNumber(3);
                 case "COMMENT_NODE": return FenValue.FromNumber(8);
                 case "DOCUMENT_NODE": return FenValue.FromNumber(9);
+                case "DOCUMENT_TYPE_NODE": return FenValue.FromNumber(10);
+                case "DOCUMENT_FRAGMENT_NODE": return FenValue.FromNumber(11);
+                case "PROCESSING_INSTRUCTION_NODE": return FenValue.FromNumber(7);
             }
 
             if (_expandoProperties.TryGetValue(key, out var expando))

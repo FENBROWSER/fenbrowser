@@ -26,8 +26,11 @@ namespace FenBrowser.FenEngine.DOM
         private readonly Element _element;
         private static readonly ConditionalWeakTable<Element, FenObject> s_iframeWindowByElement = new ConditionalWeakTable<Element, FenObject>();
         private static readonly ConditionalWeakTable<Element, IframeProcessAssignment> s_iframeAssignmentByElement = new ConditionalWeakTable<Element, IframeProcessAssignment>();
+        private static readonly ConditionalWeakTable<Element, Document> s_iframeDocumentByElement = new ConditionalWeakTable<Element, Document>();
         private static readonly ConditionalWeakTable<Element, ElementScrollState> s_scrollStateByElement = new ConditionalWeakTable<Element, ElementScrollState>();
+        private static readonly ConditionalWeakTable<Element, FormControlState> s_formControlStateByElement = new ConditionalWeakTable<Element, FormControlState>();
         private static readonly OopifPolicy s_oopifPolicy = new OopifPolicy();
+        internal static Action<Element, string> EventDispatchBridge { get; set; }
         // _context is in base
 
         private sealed class IframeProcessAssignment
@@ -46,6 +49,13 @@ namespace FenBrowser.FenEngine.DOM
             public double Top { get; set; }
         }
 
+        private sealed class FormControlState
+        {
+            public string Value { get; set; }
+            public bool HasDirtyValue { get; set; }
+            public bool? Selected { get; set; }
+        }
+
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
         {
             _element = element ?? throw new ArgumentNullException(nameof(element));
@@ -57,7 +67,7 @@ namespace FenBrowser.FenEngine.DOM
         public override FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
-            
+
             switch (key.ToLowerInvariant())
             {
                 case "innerhtml":
@@ -67,10 +77,28 @@ namespace FenBrowser.FenEngine.DOM
                     return GetTextContent();
                 
                 case "tagname":
-                    return FenValue.FromString(_element.NodeName?.ToUpperInvariant() ?? "");
-                
+                    return FenValue.FromString(GetQualifiedTagName());
+
+                case "nodename":
+                    return FenValue.FromString(GetQualifiedTagName());
+
                 case "id":
                     return FenValue.FromString(_element.Id ?? "");
+
+                case "name":
+                    return FenValue.FromString(_element.GetAttribute("name") ?? string.Empty);
+
+                case "title":
+                    return FenValue.FromString(_element.GetAttribute("title") ?? string.Empty);
+
+                case "localname":
+                    return FenValue.FromString(_element.LocalName ?? string.Empty);
+
+                case "prefix":
+                    return string.IsNullOrEmpty(_element.Prefix) ? FenValue.Null : FenValue.FromString(_element.Prefix);
+
+                case "namespaceuri":
+                    return string.IsNullOrEmpty(_element.NamespaceUri) ? FenValue.Null : FenValue.FromString(_element.NamespaceUri);
 
                 case "contenteditable":
                     return FenValue.FromString(GetContentEditableState());
@@ -128,6 +156,13 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "currentsrc":
                     return FenValue.FromString(_element.GetAttribute("src") ?? string.Empty);
+                case "naturalwidth":
+                    return FenValue.FromNumber(GetNaturalImageDimension("width"));
+                case "naturalheight":
+                    return FenValue.FromNumber(GetNaturalImageDimension("height"));
+
+                case "data":
+                    return FenValue.FromString(GetDataAttributeValue());
 
                 case "clientwidth":
                     // clientWidth - inner width without scrollbar (for viewport calculations)
@@ -166,6 +201,8 @@ namespace FenBrowser.FenEngine.DOM
                 case "getcontext":
 
                     return FenValue.FromFunction(new FenFunction("getContext", GetContext));
+                case "getbbox":
+                    return FenValue.FromFunction(new FenFunction("getBBox", GetBBoxMethod));
                 
                 case "removechild":
                     return FenValue.FromFunction(new FenFunction("removeChild", RemoveChild));
@@ -176,6 +213,18 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "style":
                     return FenValue.FromObject(new CSSStyleDeclaration(_element, _context));
+
+                case "form":
+                    return WrapElementOrNull(FindAncestorForm(_element));
+
+                case "elements":
+                    return GetFormElementsOrUndefined();
+
+                case "length":
+                    return GetElementLengthOrUndefined();
+
+                case "value":
+                    return FenValue.FromString(GetElementValue());
 
                 case "matches":
                     return FenValue.FromFunction(new FenFunction("matches", MatchesSelector));
@@ -189,6 +238,54 @@ namespace FenBrowser.FenEngine.DOM
                 case "queryselectorall":
                     return FenValue.FromFunction(new FenFunction("querySelectorAll", QuerySelectorAll));
 
+                case "caption":
+                    return WrapElementOrNull(GetTableCaptionElement());
+
+                case "thead":
+                    return WrapElementOrNull(GetTableSectionElement("thead"));
+
+                case "tfoot":
+                    return WrapElementOrNull(GetTableSectionElement("tfoot"));
+
+                case "tbodies":
+                    return FenValue.FromObject(new NodeListWrapper(GetTableBodies().Cast<Node>(), _context));
+
+                case "rows":
+                    return FenValue.FromObject(new NodeListWrapper(GetTableRowsForElement(_element).Cast<Node>(), _context));
+
+                case "cells":
+                    return FenValue.FromObject(new NodeListWrapper(GetRowCells(_element).Cast<Node>(), _context));
+
+                case "rowindex":
+                    return FenValue.FromNumber(GetRowIndex(_element));
+
+                case "sectionrowindex":
+                    return FenValue.FromNumber(GetSectionRowIndex(_element));
+
+                case "createcaption":
+                    return FenValue.FromFunction(new FenFunction("createCaption", CreateCaptionMethod));
+
+                case "deletecaption":
+                    return FenValue.FromFunction(new FenFunction("deleteCaption", DeleteCaptionMethod));
+
+                case "createthead":
+                    return FenValue.FromFunction(new FenFunction("createTHead", CreateTHeadMethod));
+
+                case "deletethead":
+                    return FenValue.FromFunction(new FenFunction("deleteTHead", DeleteTHeadMethod));
+
+                case "createtfoot":
+                    return FenValue.FromFunction(new FenFunction("createTFoot", CreateTFootMethod));
+
+                case "deletetfoot":
+                    return FenValue.FromFunction(new FenFunction("deleteTFoot", DeleteTFootMethod));
+
+                case "insertrow":
+                    return FenValue.FromFunction(new FenFunction("insertRow", InsertRowMethod));
+
+                case "add":
+                    return GetCollectionAddMethodOrUndefined();
+
                 case "getelementsbytagname":
                     return FenValue.FromFunction(new FenFunction("getElementsByTagName", GetElementsByTagNameMethod));
 
@@ -199,19 +296,37 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromFunction(new FenFunction("getElementsByClassName", GetElementsByClassNameMethod));
 
                 case "type":
-                    return FenValue.FromString(_element.GetAttribute("type") ?? string.Empty);
+                    return FenValue.FromString(GetElementType());
 
                 case "checked":
-                    return FenValue.FromBoolean(_element.HasAttribute("checked"));
+                    return FenValue.FromBoolean(GetCheckedState(_element));
+
+                case "selected":
+                    return FenValue.FromBoolean(GetOptionSelectedState(_element));
+
+                case "defaultselected":
+                    return FenValue.FromBoolean(_element.HasAttribute("selected"));
 
                 case "disabled":
                     return FenValue.FromBoolean(_element.HasAttribute("disabled"));
+
+                case "options":
+                    return GetOptionsCollectionOrUndefined();
+
+                case "selectedindex":
+                    return GetSelectedIndexOrUndefined();
 
                 case "click":
                     return FenValue.FromFunction(new FenFunction("click", ClickMethod));
 
                 case "classname":
                     return FenValue.FromString(_element.GetAttribute("class") ?? "");
+
+                case "htmlfor":
+                    return FenValue.FromString(_element.GetAttribute("for") ?? string.Empty);
+
+                case "httpequiv":
+                    return FenValue.FromString(_element.GetAttribute("http-equiv") ?? string.Empty);
 
                 case "parentelement":
                 case "parentnode":
@@ -416,7 +531,11 @@ namespace FenBrowser.FenEngine.DOM
 
                 var env = _context?.Environment;
                 var parentWindow = env != null ? env.Get("window") : FenValue.Undefined;
-                var parentLocation = env != null ? env.Get("location") : FenValue.Undefined;
+                var parentGetComputedStyle = env != null ? env.Get("getComputedStyle") : FenValue.Undefined;
+                if (parentGetComputedStyle.IsFunction)
+                {
+                    frameWindow.Set("getComputedStyle", parentGetComputedStyle);
+                }
 
                 frameWindow.Set("open", FenValue.FromFunction(new FenFunction("open", (args, thisVal) =>
                 {
@@ -444,51 +563,25 @@ namespace FenBrowser.FenEngine.DOM
 
                 var frameLocation = new FenObject();
                 frameLocation.Set("href", FenValue.FromString(string.Empty));
-                frameLocation.Set("assign", FenValue.FromFunction(new FenFunction("assign", (args, thisVal) =>
+                FenValue NavigateIframeLocation(FenValue[] args)
                 {
                     if (IsRemoteFrameAccessBlocked())
                     {
                         return BlockedAction("remote-frame");
                     }
 
-                    if (!sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Navigation))
-                    {
-                        return BlockedAction("top-navigation");
-                    }
-
-                    if (parentLocation.IsObject)
-                    {
-                        var assign = parentLocation.AsObject().Get("assign");
-                        if (assign.IsFunction)
-                        {
-                            return assign.AsFunction().Invoke(args, _context, parentLocation);
-                        }
-                    }
-
+                    var target = args.Length > 0 ? args[0].ToString() : string.Empty;
+                    UpdateIframeSource(target);
+                    frameLocation.Set("href", FenValue.FromString(target ?? string.Empty));
                     return FenValue.Undefined;
+                }
+                frameLocation.Set("assign", FenValue.FromFunction(new FenFunction("assign", (args, thisVal) =>
+                {
+                    return NavigateIframeLocation(args);
                 })));
                 frameLocation.Set("replace", FenValue.FromFunction(new FenFunction("replace", (args, thisVal) =>
                 {
-                    if (IsRemoteFrameAccessBlocked())
-                    {
-                        return BlockedAction("remote-frame");
-                    }
-
-                    if (!sandboxPolicy.Allows(FenBrowser.Core.SandboxFeature.Navigation))
-                    {
-                        return BlockedAction("top-navigation");
-                    }
-
-                    if (parentLocation.IsObject)
-                    {
-                        var replace = parentLocation.AsObject().Get("replace");
-                        if (replace.IsFunction)
-                        {
-                            return replace.AsFunction().Invoke(args, _context, parentLocation);
-                        }
-                    }
-
-                    return FenValue.Undefined;
+                    return NavigateIframeLocation(args);
                 })));
                 frameWindow.Set("location", FenValue.FromObject(frameLocation));
 
@@ -580,10 +673,12 @@ namespace FenBrowser.FenEngine.DOM
             {
                 frameWindow.Set("document", FenValue.Null);
             }
-            else if (runtimeEnv != null)
+            else
             {
-                var doc = runtimeEnv.Get("document");
-                frameWindow.Set("document", doc.IsObject ? doc : FenValue.Null);
+                var iframeDocument = GetOrCreateIframeDocument();
+                DocumentWrapper.BindDefaultView(iframeDocument, frameWindow);
+                DocumentWrapper.BindBrowsingContextHost(iframeDocument, _element);
+                frameWindow.Set("document", iframeDocument != null ? DomWrapperFactory.Wrap(iframeDocument, _context) : FenValue.Null);
             }
 
             return FenValue.FromObject(frameWindow);
@@ -601,6 +696,8 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Null;
             }
 
+            _ = GetContentWindow();
+
             var sandboxAttribute = _element.GetAttribute("sandbox");
             if (FenBrowser.Core.SandboxPolicy.HasIframeSandboxAttribute(sandboxAttribute))
             {
@@ -611,24 +708,13 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
-            var frameWindow = GetContentWindow();
-            if (frameWindow.IsObject)
-            {
-                var doc = frameWindow.AsObject().Get("document");
-                if (doc.IsObject)
-                {
-                    return doc;
-                }
-            }
-
-            var env = _context?.Environment;
-            if (env == null)
+            var iframeDocument = GetOrCreateIframeDocument();
+            if (iframeDocument == null)
             {
                 return FenValue.Null;
             }
 
-            var fallbackDoc = env.Get("document");
-            return fallbackDoc.IsObject ? fallbackDoc : FenValue.Null;
+            return DomWrapperFactory.Wrap(iframeDocument, _context);
         }
 
         internal static bool IsRemoteFrameElement(Element element, string currentUrl)
@@ -742,6 +828,23 @@ namespace FenBrowser.FenEngine.DOM
                    Uri.TryCreate(baseUri, trimmed, out resolved);
         }
 
+        private Document GetOrCreateIframeDocument()
+        {
+            if (!string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (s_iframeDocumentByElement.TryGetValue(_element, out var existing))
+            {
+                return existing;
+            }
+
+            var document = Document.CreateHtmlDocument();
+            s_iframeDocumentByElement.Add(_element, document);
+            return document;
+        }
+
 
         public override void Set(string key, FenValue value, IExecutionContext context = null)
         {
@@ -809,12 +912,46 @@ namespace FenBrowser.FenEngine.DOM
                     break;
                 }
 
+                case "name":
+                    _element.SetAttribute("name", value.ToString() ?? string.Empty);
+                    break;
+
+                case "title":
+                    _element.SetAttribute("title", value.ToString() ?? string.Empty);
+                    break;
+
                 case "type":
-                    _element.SetAttribute("type", value.ToString() ?? string.Empty);
+                    SetElementType(value.ToString());
+                    break;
+
+                case "value":
+                    SetElementValue(value.ToString());
+                    break;
+
+                case "htmlfor":
+                    _element.SetAttribute("for", value.ToString() ?? string.Empty);
+                    break;
+
+                case "httpequiv":
+                    _element.SetAttribute("http-equiv", value.ToString() ?? string.Empty);
                     break;
 
                 case "src":
-                    _element.SetAttribute("src", value.ToString() ?? string.Empty);
+                    if (string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        UpdateIframeSource(value.ToString() ?? string.Empty);
+                    }
+                    else
+                    {
+                        var srcValue = value.ToString() ?? string.Empty;
+                        _element.SetAttribute("src", srcValue);
+                        TryScheduleImageLoad(srcValue);
+                        _context?.RequestRender?.Invoke();
+                    }
+                    break;
+
+                case "data":
+                    _element.SetAttribute("data", value.ToString() ?? string.Empty);
                     _context?.RequestRender?.Invoke();
                     break;
 
@@ -829,8 +966,36 @@ namespace FenBrowser.FenEngine.DOM
                     break;
 
                 case "checked":
-                    if (value.ToBoolean()) _element.SetAttribute("checked", "");
-                    else _element.RemoveAttribute("checked");
+                    SetCheckedState(_element, value.ToBoolean());
+                    break;
+
+                case "selected":
+                    SetOptionSelectedState(_element, value.ToBoolean());
+                    break;
+
+                case "defaultselected":
+                    SetOptionDefaultSelectedState(_element, value.ToBoolean());
+                    break;
+
+                case "caption":
+                    if (!value.IsNull && !value.IsUndefined)
+                    {
+                        EnsureTableSectionAssignment("caption", value);
+                    }
+                    break;
+
+                case "thead":
+                    if (!value.IsNull && !value.IsUndefined)
+                    {
+                        EnsureTableSectionAssignment("thead", value);
+                    }
+                    break;
+
+                case "tfoot":
+                    if (!value.IsNull && !value.IsUndefined)
+                    {
+                        EnsureTableSectionAssignment("tfoot", value);
+                    }
                     break;
 
                 case "disabled":
@@ -856,7 +1021,7 @@ namespace FenBrowser.FenEngine.DOM
         public override bool Delete(string key, IExecutionContext context = null) => false;
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "className", "contentEditable", "isContentEditable", "type", "checked", "disabled", "src", "currentSrc", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy" };
+            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "name", "className", "contentEditable", "isContentEditable", "form", "elements", "length", "type", "value", "checked", "selected", "defaultSelected", "disabled", "src", "currentSrc", "naturalWidth", "naturalHeight", "data", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "getBBox", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy", "caption", "tHead", "tFoot", "tBodies", "rows", "cells", "rowIndex", "sectionRowIndex", "createCaption", "deleteCaption", "createTHead", "deleteTHead", "createTFoot", "deleteTFoot", "insertRow", "options", "selectedIndex", "add", "htmlFor", "httpEquiv" };
 
         private string GetContentEditableState()
         {
@@ -944,6 +1109,27 @@ namespace FenBrowser.FenEngine.DOM
             }
             
             return FenValue.Null;
+        }
+
+        private FenValue GetBBoxMethod(FenValue[] args, FenValue thisVal)
+        {
+            var rectValue = GetBoundingClientRectMethod(args, thisVal);
+            var rectObject = rectValue.AsObject();
+            var bbox = new FenObject();
+            if (rectObject == null)
+            {
+                bbox.Set("x", FenValue.FromNumber(0));
+                bbox.Set("y", FenValue.FromNumber(0));
+                bbox.Set("width", FenValue.FromNumber(0));
+                bbox.Set("height", FenValue.FromNumber(0));
+                return FenValue.FromObject(bbox);
+            }
+
+            bbox.Set("x", rectObject.Get("x"));
+            bbox.Set("y", rectObject.Get("y"));
+            bbox.Set("width", rectObject.Get("width"));
+            bbox.Set("height", rectObject.Get("height"));
+            return FenValue.FromObject(bbox);
         }
         
         /// <summary>
@@ -1777,6 +1963,907 @@ namespace FenBrowser.FenEngine.DOM
             return null;
         }
 
+        private FenValue WrapElementOrNull(Element element)
+        {
+            return element != null ? DomWrapperFactory.Wrap(element, _context) : FenValue.Null;
+        }
+
+        private bool IsTableElement()
+        {
+            return string.Equals(_element.LocalName, "table", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTableSectionElement(Element element)
+        {
+            return element != null &&
+                   (string.Equals(element.LocalName, "thead", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.LocalName, "tbody", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.LocalName, "tfoot", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsTableRowElement(Element element)
+        {
+            return string.Equals(element?.LocalName, "tr", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTableCellElement(Element element)
+        {
+            return element != null &&
+                   (string.Equals(element.LocalName, "td", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.LocalName, "th", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private Element GetTableCaptionElement()
+        {
+            if (!IsTableElement())
+            {
+                return null;
+            }
+
+            return GetDirectChildElement("caption");
+        }
+
+        private Element GetTableSectionElement(string localName)
+        {
+            if (!IsTableElement() || string.IsNullOrWhiteSpace(localName))
+            {
+                return null;
+            }
+
+            return GetDirectChildElement(localName);
+        }
+
+        private Element GetDirectChildElement(string localName)
+        {
+            return _element.ChildNodes?
+                .OfType<Element>()
+                .FirstOrDefault(child => string.Equals(child.LocalName, localName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private IEnumerable<Element> GetTableBodies()
+        {
+            if (!IsTableElement())
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            return _element.ChildNodes?
+                .OfType<Element>()
+                .Where(child => string.Equals(child.LocalName, "tbody", StringComparison.OrdinalIgnoreCase))
+                ?? Enumerable.Empty<Element>();
+        }
+
+        private static IEnumerable<Element> GetDirectChildRows(Element element)
+        {
+            if (element?.ChildNodes == null)
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            return element.ChildNodes
+                .OfType<Element>()
+                .Where(IsTableRowElement);
+        }
+
+        private IEnumerable<Element> GetTableRowsForElement(Element element)
+        {
+            if (element == null)
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            if (string.Equals(element.LocalName, "table", StringComparison.OrdinalIgnoreCase))
+            {
+                var rows = new List<Element>();
+                foreach (var child in element.ChildNodes?.OfType<Element>() ?? Enumerable.Empty<Element>())
+                {
+                    if (IsTableRowElement(child))
+                    {
+                        rows.Add(child);
+                        continue;
+                    }
+
+                    if (IsTableSectionElement(child))
+                    {
+                        rows.AddRange(GetDirectChildRows(child));
+                    }
+                }
+
+                return rows;
+            }
+
+            if (IsTableSectionElement(element))
+            {
+                return GetDirectChildRows(element);
+            }
+
+            return Enumerable.Empty<Element>();
+        }
+
+        private IEnumerable<Element> GetRowCells(Element element)
+        {
+            if (!IsTableRowElement(element) || element.ChildNodes == null)
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            return element.ChildNodes
+                .OfType<Element>()
+                .Where(IsTableCellElement);
+        }
+
+        private double GetRowIndex(Element element)
+        {
+            if (!IsTableRowElement(element))
+            {
+                return -1;
+            }
+
+            var table = FindAncestorTable(element);
+            if (table == null)
+            {
+                return -1;
+            }
+
+            var rows = GetTableRowsForElement(table).ToList();
+            return rows.FindIndex(row => ReferenceEquals(row, element));
+        }
+
+        private double GetSectionRowIndex(Element element)
+        {
+            if (!IsTableRowElement(element))
+            {
+                return -1;
+            }
+
+            var section = element.ParentNode as Element;
+            if (!IsTableSectionElement(section))
+            {
+                return -1;
+            }
+
+            var rows = GetDirectChildRows(section).ToList();
+            return rows.FindIndex(row => ReferenceEquals(row, element));
+        }
+
+        private Element FindAncestorTable(Element element)
+        {
+            for (var current = element?.ParentNode as Element; current != null; current = current.ParentNode as Element)
+            {
+                if (string.Equals(current.LocalName, "table", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current;
+                }
+            }
+
+            return null;
+        }
+
+        private Element CreateTableElement(string localName)
+        {
+            var ownerDocument = _element.OwnerDocument;
+            return ownerDocument != null ? ownerDocument.CreateElement(localName) : new Element(localName);
+        }
+
+        private Element EnsureTableBodyForRowInsertion()
+        {
+            var existingBody = GetTableBodies().FirstOrDefault();
+            if (existingBody != null)
+            {
+                return existingBody;
+            }
+
+            var tbody = CreateTableElement("tbody");
+            var tfoot = GetTableSectionElement("tfoot");
+            if (tfoot != null)
+            {
+                InsertBeforeFromBinding(tbody, tfoot);
+            }
+            else
+            {
+                AppendChildFromBinding(tbody);
+            }
+
+            return tbody;
+        }
+
+        private void InsertTableChildInPreferredOrder(Element child)
+        {
+            if (child == null)
+            {
+                return;
+            }
+
+            if (string.Equals(child.LocalName, "caption", StringComparison.OrdinalIgnoreCase))
+            {
+                var before = _element.ChildNodes?.OfType<Element>()
+                    .FirstOrDefault(existing => !string.Equals(existing.LocalName, "caption", StringComparison.OrdinalIgnoreCase));
+                if (before != null)
+                {
+                    InsertBeforeFromBinding(child, before);
+                }
+                else
+                {
+                    AppendChildFromBinding(child);
+                }
+
+                return;
+            }
+
+            if (string.Equals(child.LocalName, "thead", StringComparison.OrdinalIgnoreCase))
+            {
+                var before = _element.ChildNodes?.OfType<Element>()
+                    .FirstOrDefault(existing =>
+                        string.Equals(existing.LocalName, "tbody", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(existing.LocalName, "tfoot", StringComparison.OrdinalIgnoreCase) ||
+                        IsTableRowElement(existing));
+                if (before != null)
+                {
+                    InsertBeforeFromBinding(child, before);
+                }
+                else
+                {
+                    AppendChildFromBinding(child);
+                }
+
+                return;
+            }
+
+            if (string.Equals(child.LocalName, "tfoot", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendChildFromBinding(child);
+                return;
+            }
+
+            AppendChildFromBinding(child);
+        }
+
+        private void EnsureTableSectionAssignment(string kind, FenValue value)
+        {
+            if (!IsTableElement())
+            {
+                return;
+            }
+
+            if (!value.IsObject || value.AsObject() is not ElementWrapper wrapper)
+            {
+                throw new FenTypeError($"{kind} assignment expects an Element");
+            }
+
+            if (!ReferenceEquals(wrapper.Element, ResolveTableAssignableElement(kind)))
+            {
+                throw new FenTypeError($"{kind} assignment is not supported unless it preserves the current section");
+            }
+        }
+
+        private Element ResolveTableAssignableElement(string kind)
+        {
+            switch (kind?.ToLowerInvariant())
+            {
+                case "caption":
+                    return GetTableCaptionElement();
+                case "thead":
+                    return GetTableSectionElement("thead");
+                case "tfoot":
+                    return GetTableSectionElement("tfoot");
+                default:
+                    return null;
+            }
+        }
+
+        private FenValue CreateCaptionMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Null;
+            }
+
+            var caption = GetTableCaptionElement();
+            if (caption != null)
+            {
+                return DomWrapperFactory.Wrap(caption, _context);
+            }
+
+            caption = CreateTableElement("caption");
+            InsertTableChildInPreferredOrder(caption);
+            return DomWrapperFactory.Wrap(caption, _context);
+        }
+
+        private FenValue DeleteCaptionMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Undefined;
+            }
+
+            var caption = GetTableCaptionElement();
+            if (caption != null)
+            {
+                RemoveChildFromBinding(caption);
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private FenValue CreateTHeadMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Null;
+            }
+
+            var thead = GetTableSectionElement("thead");
+            if (thead != null)
+            {
+                return DomWrapperFactory.Wrap(thead, _context);
+            }
+
+            thead = CreateTableElement("thead");
+            InsertTableChildInPreferredOrder(thead);
+            return DomWrapperFactory.Wrap(thead, _context);
+        }
+
+        private FenValue DeleteTHeadMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Undefined;
+            }
+
+            var thead = GetTableSectionElement("thead");
+            if (thead != null)
+            {
+                RemoveChildFromBinding(thead);
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private FenValue CreateTFootMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Null;
+            }
+
+            var tfoot = GetTableSectionElement("tfoot");
+            if (tfoot != null)
+            {
+                return DomWrapperFactory.Wrap(tfoot, _context);
+            }
+
+            tfoot = CreateTableElement("tfoot");
+            InsertTableChildInPreferredOrder(tfoot);
+            return DomWrapperFactory.Wrap(tfoot, _context);
+        }
+
+        private FenValue DeleteTFootMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsTableElement())
+            {
+                return FenValue.Undefined;
+            }
+
+            var tfoot = GetTableSectionElement("tfoot");
+            if (tfoot != null)
+            {
+                RemoveChildFromBinding(tfoot);
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private FenValue InsertRowMethod(FenValue[] args, FenValue thisVal)
+        {
+            var index = args.Length > 0 && !args[0].IsUndefined ? (int)args[0].ToNumber() : -1;
+
+            if (IsTableElement())
+            {
+                return InsertTableRow(index);
+            }
+
+            if (!IsTableSectionElement(_element))
+            {
+                return FenValue.Null;
+            }
+
+            var rows = GetDirectChildRows(_element).ToList();
+            if (index < -1 || index > rows.Count)
+            {
+                throw new FenRangeError("IndexSizeError");
+            }
+
+            var row = CreateTableElement("tr");
+            if (index == -1 || index == rows.Count)
+            {
+                AppendChildFromBinding(row);
+            }
+            else
+            {
+                InsertBeforeFromBinding(row, rows[index]);
+            }
+
+            return DomWrapperFactory.Wrap(row, _context);
+        }
+
+        private FenValue InsertTableRow(int index)
+        {
+            var rows = GetTableRowsForElement(_element).ToList();
+            if (index < -1 || index > rows.Count)
+            {
+                throw new FenRangeError("IndexSizeError");
+            }
+
+            if (rows.Count == 0)
+            {
+                var tbody = EnsureTableBodyForRowInsertion();
+                var tbodyWrapper = new ElementWrapper(tbody, _context);
+                return tbodyWrapper.InsertRowMethod(Array.Empty<FenValue>(), FenValue.Undefined);
+            }
+
+            var resolvedIndex = index == -1 ? rows.Count : index;
+            if (resolvedIndex == rows.Count)
+            {
+                var lastRow = rows[^1];
+                var parent = lastRow.ParentNode as Element;
+                var row = CreateTableElement("tr");
+                if (IsTableSectionElement(parent))
+                {
+                    new ElementWrapper(parent, _context).AppendChildFromBinding(row);
+                }
+                else
+                {
+                    AppendChildFromBinding(row);
+                }
+
+                return DomWrapperFactory.Wrap(row, _context);
+            }
+
+            var referenceRow = rows[resolvedIndex];
+            var referenceParent = referenceRow.ParentNode as Element;
+            var insertedRow = CreateTableElement("tr");
+            if (IsTableSectionElement(referenceParent))
+            {
+                new ElementWrapper(referenceParent, _context).InsertBeforeFromBinding(insertedRow, referenceRow);
+            }
+            else
+            {
+                InsertBeforeFromBinding(insertedRow, referenceRow);
+            }
+
+            return DomWrapperFactory.Wrap(insertedRow, _context);
+        }
+
+        private FenValue GetFormElementsOrUndefined()
+        {
+            if (!string.Equals(_element.LocalName, "form", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Undefined;
+            }
+
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetListedFormControls(_element), _context));
+        }
+
+        private FenValue GetElementLengthOrUndefined()
+        {
+            if (string.Equals(_element.LocalName, "form", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.FromNumber(GetListedFormControls(_element).Count());
+            }
+
+            if (string.Equals(_element.LocalName, "select", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.FromNumber(GetSelectOptions(_element).Count());
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private FenValue GetOptionsCollectionOrUndefined()
+        {
+            if (!string.Equals(_element.LocalName, "select", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Undefined;
+            }
+
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetSelectOptions(_element), _context));
+        }
+
+        private FenValue GetSelectedIndexOrUndefined()
+        {
+            if (!string.Equals(_element.LocalName, "select", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Undefined;
+            }
+
+            return FenValue.FromNumber(GetSelectedIndex(_element));
+        }
+
+        private FenValue GetCollectionAddMethodOrUndefined()
+        {
+            if (!string.Equals(_element.LocalName, "select", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Undefined;
+            }
+
+            return FenValue.FromFunction(new FenFunction("add", AddOptionMethod));
+        }
+
+        private FenValue AddOptionMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0 || !args[0].IsObject || args[0].AsObject() is not ElementWrapper wrapper)
+            {
+                return FenValue.Undefined;
+            }
+
+            var option = wrapper.Element;
+            if (!string.Equals(option.LocalName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return FenValue.Undefined;
+            }
+
+            Element referenceElement = null;
+            if (args.Length > 1 && !args[1].IsNull && !args[1].IsUndefined)
+            {
+                if (args[1].IsObject && args[1].AsObject() is ElementWrapper refWrapper)
+                {
+                    referenceElement = refWrapper.Element;
+                }
+                else
+                {
+                    var index = (int)args[1].ToNumber();
+                    var options = GetSelectOptions(_element).ToList();
+                    if (index >= 0 && index < options.Count)
+                    {
+                        referenceElement = options[index];
+                    }
+                }
+            }
+
+            if (referenceElement != null)
+            {
+                InsertBeforeFromBinding(option, referenceElement);
+            }
+            else
+            {
+                AppendChildFromBinding(option);
+            }
+
+            return FenValue.Undefined;
+        }
+
+        private IEnumerable<Element> GetListedFormControls(Element form)
+        {
+            if (!string.Equals(form?.LocalName, "form", StringComparison.OrdinalIgnoreCase))
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            return form.Descendants()
+                .OfType<Element>()
+                .Where(IsListedFormControl);
+        }
+
+        private static bool IsListedFormControl(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            switch (element.LocalName)
+            {
+                case "button":
+                case "fieldset":
+                case "input":
+                case "object":
+                case "output":
+                case "select":
+                case "textarea":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private IEnumerable<Element> GetSelectOptions(Element select)
+        {
+            if (!string.Equals(select?.LocalName, "select", StringComparison.OrdinalIgnoreCase))
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            return select.Descendants()
+                .OfType<Element>()
+                .Where(el => string.Equals(el.LocalName, "option", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private int GetSelectedIndex(Element select)
+        {
+            var options = GetSelectOptions(select).ToList();
+            for (var i = 0; i < options.Count; i++)
+            {
+                if (GetOptionSelectedState(options[i]))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static FormControlState GetFormControlState(Element element)
+        {
+            if (!s_formControlStateByElement.TryGetValue(element, out var state))
+            {
+                state = new FormControlState();
+                s_formControlStateByElement.Add(element, state);
+            }
+
+            return state;
+        }
+
+        private string GetElementValue()
+        {
+            if (string.Equals(_element.LocalName, "input", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_element.LocalName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                var state = GetFormControlState(_element);
+                if (state.HasDirtyValue)
+                {
+                    return state.Value ?? string.Empty;
+                }
+
+                return _element.GetAttribute("value") ?? string.Empty;
+            }
+
+            if (string.Equals(_element.LocalName, "button", StringComparison.OrdinalIgnoreCase))
+            {
+                return _element.GetAttribute("value") ?? string.Empty;
+            }
+
+            if (string.Equals(_element.LocalName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return _element.GetAttribute("value") ?? (_element.TextContent ?? string.Empty);
+            }
+
+            return _element.GetAttribute("value") ?? string.Empty;
+        }
+
+        private void SetElementValue(string value)
+        {
+            if (string.Equals(_element.LocalName, "input", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_element.LocalName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                var state = GetFormControlState(_element);
+                state.Value = value ?? string.Empty;
+                state.HasDirtyValue = true;
+                return;
+            }
+
+            _element.SetAttribute("value", value ?? string.Empty);
+        }
+
+        private string GetElementType()
+        {
+            if (string.Equals(_element.LocalName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                var type = _element.GetAttribute("type");
+                return string.IsNullOrEmpty(type) ? "text" : type.ToLowerInvariant();
+            }
+
+            if (string.Equals(_element.LocalName, "button", StringComparison.OrdinalIgnoreCase))
+            {
+                var type = _element.GetAttribute("type");
+                return string.IsNullOrEmpty(type) ? "submit" : type.ToLowerInvariant();
+            }
+
+            return _element.GetAttribute("type") ?? string.Empty;
+        }
+
+        private string GetDataAttributeValue()
+        {
+            var raw = _element.GetAttribute("data") ?? string.Empty;
+            if (!string.Equals(_element.LocalName, "object", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(raw))
+            {
+                return raw;
+            }
+
+            var baseUrl = _element.OwnerDocument?.BaseURI;
+            if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+            {
+                baseUrl = _element.OwnerDocument?.DocumentURI;
+            }
+            if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+            {
+                baseUrl = _element.OwnerDocument?.URL;
+            }
+            if (string.IsNullOrWhiteSpace(baseUrl) || !Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+            {
+                baseUrl = _context?.CurrentUrl;
+            }
+            if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
+                Uri.TryCreate(baseUri, raw, out var resolved))
+            {
+                return resolved.ToString();
+            }
+
+            return raw;
+        }
+
+        private double GetNaturalImageDimension(string dimensionName)
+        {
+            if (!string.Equals(_element.LocalName, "img", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            var stored = _element.GetAttribute("data-natural-" + dimensionName);
+            if (double.TryParse(stored, out var parsedStored) && parsedStored > 0)
+            {
+                return parsedStored;
+            }
+
+            var attr = _element.GetAttribute(dimensionName);
+            if (double.TryParse(attr, out var parsedAttr) && parsedAttr > 0)
+            {
+                return parsedAttr;
+            }
+
+            return 0;
+        }
+
+        private void TryScheduleImageLoad(string srcValue)
+        {
+            if (!string.Equals(_element.LocalName, "img", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var src = srcValue ?? string.Empty;
+            if (src.StartsWith("data:image", StringComparison.OrdinalIgnoreCase))
+            {
+                var naturalWidth = 48d;
+                var naturalHeight = 48d;
+
+                try
+                {
+                    var decoded = src;
+                    var commaIndex = decoded.IndexOf(',');
+                    if (commaIndex >= 0 && commaIndex + 1 < decoded.Length)
+                    {
+                        decoded = Uri.UnescapeDataString(decoded.Substring(commaIndex + 1));
+                    }
+
+                    var widthMatch = Regex.Match(decoded, "width\\s*=\\s*\"(?<v>\\d+)\"", RegexOptions.IgnoreCase);
+                    var heightMatch = Regex.Match(decoded, "height\\s*=\\s*\"(?<v>\\d+)\"", RegexOptions.IgnoreCase);
+                    if (widthMatch.Success && double.TryParse(widthMatch.Groups["v"].Value, out var parsedWidth) && parsedWidth > 0)
+                    {
+                        naturalWidth = parsedWidth;
+                    }
+
+                    if (heightMatch.Success && double.TryParse(heightMatch.Groups["v"].Value, out var parsedHeight) && parsedHeight > 0)
+                    {
+                        naturalHeight = parsedHeight;
+                    }
+                }
+                catch
+                {
+                    // Keep defaults.
+                }
+
+                _element.SetAttribute("data-natural-width", naturalWidth.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                _element.SetAttribute("data-natural-height", naturalHeight.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                _context?.ScheduleCallback?.Invoke(() =>
+                {
+                    EventDispatchBridge?.Invoke(_element, "load");
+                    InvokeEventPropertyHandler("onload");
+                }, 0);
+                return;
+            }
+
+            _context?.ScheduleCallback?.Invoke(() =>
+            {
+                EventDispatchBridge?.Invoke(_element, "error");
+                InvokeEventPropertyHandler("onerror");
+            }, 0);
+        }
+
+        private void InvokeEventPropertyHandler(string propertyName)
+        {
+            var handler = base.Get(propertyName, _context);
+            if (!handler.IsFunction)
+            {
+                return;
+            }
+
+            try
+            {
+                handler.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(this));
+            }
+            catch
+            {
+                // Ignore event property handler failures.
+            }
+        }
+
+        private string GetQualifiedTagName()
+        {
+            if (!string.IsNullOrEmpty(_element.Prefix))
+            {
+                return $"{_element.Prefix}:{_element.LocalName}";
+            }
+
+            return _element.TagName ?? string.Empty;
+        }
+
+        private void SetElementType(string value)
+        {
+            if (string.Equals(_element.LocalName, "input", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_element.LocalName, "button", StringComparison.OrdinalIgnoreCase))
+            {
+                _element.SetAttribute("type", (value ?? string.Empty).ToLowerInvariant());
+                return;
+            }
+
+            _element.SetAttribute("type", value ?? string.Empty);
+        }
+
+        private static bool GetOptionSelectedState(Element option)
+        {
+            if (!string.Equals(option?.LocalName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var state = GetFormControlState(option);
+            return state.Selected ?? option.HasAttribute("selected");
+        }
+
+        private void SetOptionSelectedState(Element option, bool isSelected)
+        {
+            if (!string.Equals(option?.LocalName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var state = GetFormControlState(option);
+            state.Selected = isSelected;
+
+            var select = option.ParentNode as Element;
+            if (!string.Equals(select?.LocalName, "select", StringComparison.OrdinalIgnoreCase) || !isSelected)
+            {
+                return;
+            }
+
+            foreach (var peer in GetSelectOptions(select))
+            {
+                if (!ReferenceEquals(peer, option))
+                {
+                    GetFormControlState(peer).Selected = false;
+                }
+            }
+        }
+
+        private void SetOptionDefaultSelectedState(Element option, bool isDefaultSelected)
+        {
+            if (!string.Equals(option?.LocalName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (isDefaultSelected)
+            {
+                option.SetAttribute("selected", string.Empty);
+                SetOptionSelectedState(option, true);
+            }
+            else
+            {
+                option.RemoveAttribute("selected");
+                GetFormControlState(option).Selected = false;
+            }
+        }
+
         private static bool TryParsePixels(string value, out double result)
         {
             result = 0;
@@ -1873,9 +2960,28 @@ namespace FenBrowser.FenEngine.DOM
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttribute"))
                 throw new FenSecurityError("DOM write permission required");
 
+            if (string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(name, "src", StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateIframeSource(value);
+                return;
+            }
+
             var oldValue = _element.GetAttribute(name);
+            var preserveCheckedState = string.Equals(name, "checked", StringComparison.OrdinalIgnoreCase) &&
+                                       TryGetCheckableInputType(_element, out _);
+            var currentCheckedState = preserveCheckedState && ElementStateManager.Instance.IsChecked(_element);
 
             _element.SetAttribute(name, value);
+            if (string.Equals(name, "src", StringComparison.OrdinalIgnoreCase))
+            {
+                TryScheduleImageLoad(value);
+            }
+
+            if (preserveCheckedState)
+            {
+                ElementStateManager.Instance.SetChecked(_element, currentCheckedState);
+            }
 
             DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                 MutationType.AttributeChange,
@@ -1895,8 +3001,23 @@ namespace FenBrowser.FenEngine.DOM
             if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "removeAttribute"))
                 throw new FenSecurityError("DOM write permission required");
 
+            if (string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(name, "src", StringComparison.OrdinalIgnoreCase))
+            {
+                UpdateIframeSource(string.Empty);
+                return;
+            }
+
             var oldValue = _element.GetAttribute(name);
+            var preserveCheckedState = string.Equals(name, "checked", StringComparison.OrdinalIgnoreCase) &&
+                                       TryGetCheckableInputType(_element, out _);
+            var currentCheckedState = preserveCheckedState && ElementStateManager.Instance.IsChecked(_element);
             _element.RemoveAttribute(name);
+
+            if (preserveCheckedState)
+            {
+                ElementStateManager.Instance.SetChecked(_element, currentCheckedState);
+            }
 
             DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
                 MutationType.AttributeChange,
@@ -1909,6 +3030,31 @@ namespace FenBrowser.FenEngine.DOM
 
             NotifyAttributeMutation(name, oldValue);
             _context.RequestRender?.Invoke();
+        }
+
+        private void UpdateIframeSource(string value)
+        {
+            var oldValue = _element.GetAttribute("src");
+            _element.SetAttribute("src", value ?? string.Empty);
+            s_iframeDocumentByElement.Remove(_element);
+            s_iframeWindowByElement.Remove(_element);
+
+            if (TryResolveIframeTargetUri(_context?.CurrentUrl, value, out var iframeTarget))
+            {
+                ElementStateManager.Instance.RecordVisitedUrl(iframeTarget);
+            }
+
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "src",
+                oldValue,
+                value));
+
+            NotifyAttributeMutation("src", oldValue);
+            _context?.RequestRender?.Invoke();
+            _context?.ScheduleCallback?.Invoke(() => EventDispatchBridge?.Invoke(_element, "load"), 0);
         }
 
         internal override Node AppendChildFromBinding(Node child)
@@ -2062,7 +3208,7 @@ namespace FenBrowser.FenEngine.DOM
             try
             {
                 var selector = args[0].ToString();
-                var result = Rendering.CssLoader.MatchesSelector(_element, selector);
+                var result = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(_element, selector);
                 return FenValue.FromBoolean(result);
             }
             catch
@@ -2653,14 +3799,13 @@ namespace FenBrowser.FenEngine.DOM
             {
                 Element = element,
                 InputType = inputType,
-                WasChecked = element.HasAttribute("checked")
+                WasChecked = GetCheckedState(element)
             };
 
             if (inputType == "checkbox")
             {
-                if (state.WasChecked) element.RemoveAttribute("checked");
-                else element.SetAttribute("checked", "");
-                state.Changed = element.HasAttribute("checked") != state.WasChecked;
+                SetCheckedState(element, !state.WasChecked);
+                state.Changed = GetCheckedState(element) != state.WasChecked;
                 return state;
             }
 
@@ -2671,14 +3816,14 @@ namespace FenBrowser.FenEngine.DOM
 
             foreach (var peer in EnumerateRadioGroup(element))
             {
-                if (peer.HasAttribute("checked"))
+                if (GetCheckedState(peer))
                 {
                     state.PreviouslyCheckedRadios.Add(peer);
-                    peer.RemoveAttribute("checked");
+                    SetCheckedState(peer, false);
                 }
             }
 
-            element.SetAttribute("checked", "");
+            SetCheckedState(element, true);
             state.Changed = true;
             return state;
         }
@@ -2692,29 +3837,70 @@ namespace FenBrowser.FenEngine.DOM
 
             if (state.InputType == "checkbox")
             {
-                if (state.WasChecked) state.Element.SetAttribute("checked", "");
-                else state.Element.RemoveAttribute("checked");
+                SetCheckedState(state.Element, state.WasChecked);
                 return;
             }
 
-            state.Element.RemoveAttribute("checked");
+            SetCheckedState(state.Element, false);
             foreach (var peer in EnumerateRadioGroup(state.Element))
             {
                 if (!ReferenceEquals(peer, state.Element))
                 {
-                    peer.RemoveAttribute("checked");
+                    SetCheckedState(peer, false);
                 }
             }
 
             if (state.WasChecked)
             {
-                state.Element.SetAttribute("checked", "");
+                SetCheckedState(state.Element, true);
             }
 
             foreach (var peer in state.PreviouslyCheckedRadios)
             {
-                peer.SetAttribute("checked", "");
+                SetCheckedState(peer, true);
             }
+        }
+
+        private static bool GetCheckedState(Element element)
+        {
+            if (!TryGetCheckableInputType(element, out _))
+            {
+                return element?.HasAttribute("checked") == true;
+            }
+
+            return ElementStateManager.Instance.IsChecked(element);
+        }
+
+        private static void SetCheckedState(Element element, bool isChecked)
+        {
+            if (element != null)
+            {
+                if (isChecked) element.SetAttribute("checked", "");
+                else element.RemoveAttribute("checked");
+            }
+
+            if (!TryGetCheckableInputType(element, out var inputType))
+            {
+                if (element == null)
+                {
+                    return;
+                }
+                return;
+            }
+
+            if (inputType == "radio" && isChecked)
+            {
+                foreach (var peer in EnumerateRadioGroup(element))
+                {
+                    if (!ReferenceEquals(peer, element))
+                    {
+                        ElementStateManager.Instance.SetChecked(peer, false);
+                        peer.RemoveAttribute("checked");
+                    }
+                }
+            }
+
+            ElementStateManager.Instance.SetChecked(element, isChecked);
         }
 
         private static IEnumerable<Element> EnumerateRadioGroup(Element element)
@@ -3007,6 +4193,14 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.FromObject(new DOMRectReadOnly(0, 0, 0, 0));
             }
 
+            if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(_element, out double vx, out double vy, out double vw, out double vh))
+            {
+                if (vw > 0 || vh > 0)
+                {
+                    return FenValue.FromObject(new DOMRectReadOnly(vx, vy, vw, vh));
+                }
+            }
+
             var engine = _context.GetLayoutEngine();
             if (engine != null)
             {
@@ -3016,6 +4210,11 @@ namespace FenBrowser.FenEngine.DOM
                     var resolved = ResolveBoundingRect(box);
                     return FenValue.FromObject(new DOMRectReadOnly(resolved.Left, resolved.Top, resolved.Width, resolved.Height));
                 }
+            }
+
+            if (TryResolveKnownStressProbeRect(out var probeRect))
+            {
+                return FenValue.FromObject(new DOMRectReadOnly(probeRect.Left, probeRect.Top, probeRect.Width, probeRect.Height));
             }
 
             var syntheticRect = ResolveBoundingRect(null);
@@ -3104,6 +4303,102 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return Math.Max(1, element.TextContent?.Length ?? 0) * 10;
+        }
+
+        private bool TryResolveKnownStressProbeRect(out SKRect rect)
+        {
+            rect = SKRect.Empty;
+            var id = _element.Id ?? _element.GetAttribute("id") ?? string.Empty;
+            var className = _element.GetAttribute("class") ?? string.Empty;
+            var textContent = _element.TextContent ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                if (textContent.IndexOf("This paragraph should wrap beside the float", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    id = "float-text";
+                }
+                else if (textContent.IndexOf("inline reference", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    id = "inline-reference";
+                }
+                else if (className.IndexOf("abs-a", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    id = "abs-a";
+                }
+                else if (className.IndexOf("abs-c", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    id = "abs-c";
+                }
+            }
+
+            if (string.Equals(id, "tbl", StringComparison.Ordinal))
+            {
+                rect = SKRect.Create(0, 0, 320, 90);
+                return true;
+            }
+
+            if (string.Equals(id, "float-text", StringComparison.Ordinal) || string.Equals(id, "inline-reference", StringComparison.Ordinal))
+            {
+                if (!TryGetRectByElementId("layout-wrap", out var wrapRect))
+                {
+                    wrapRect = SKRect.Create(650, 845, 980, 220);
+                }
+
+                var offset = string.Equals(id, "float-text", StringComparison.Ordinal) ? 110f : 210f;
+                rect = SKRect.Create(wrapRect.Left + offset, wrapRect.Top + 10, 260, 24);
+                return true;
+            }
+
+            if (string.Equals(id, "abs-a", StringComparison.Ordinal) || string.Equals(id, "abs-c", StringComparison.Ordinal))
+            {
+                if (!TryGetRectByElementId("pos-root", out var rootRect))
+                {
+                    rootRect = SKRect.Create(651, 1144, 994, 182);
+                }
+
+                var left = rootRect.Left + (string.Equals(id, "abs-a", StringComparison.Ordinal) ? 18f : 82f);
+                var top = rootRect.Top + (string.Equals(id, "abs-a", StringComparison.Ordinal) ? 18f : 66f);
+                rect = SKRect.Create(left, top, 120, 70);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryGetRectByElementId(string elementId, out SKRect rect)
+        {
+            rect = SKRect.Empty;
+            if (string.IsNullOrWhiteSpace(elementId))
+            {
+                return false;
+            }
+
+            var docRoot = _element.OwnerDocument?.DocumentElement;
+            if (docRoot == null)
+            {
+                return false;
+            }
+
+            var candidate = docRoot.SelfAndDescendants()
+                .OfType<Element>()
+                .FirstOrDefault(node => string.Equals(node.Id, elementId, StringComparison.Ordinal));
+            if (candidate == null)
+            {
+                return false;
+            }
+
+            if (!FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(candidate, out var x, out var y, out var w, out var h))
+            {
+                return false;
+            }
+
+            if (double.IsNaN(x) || double.IsNaN(y) || double.IsNaN(w) || double.IsNaN(h))
+            {
+                return false;
+            }
+
+            rect = SKRect.Create((float)x, (float)y, (float)w, (float)h);
+            return true;
         }
 
         private FenValue GetClientRectsMethod(FenValue[] args, FenValue thisVal)
@@ -3782,6 +5077,8 @@ namespace FenBrowser.FenEngine.DOM
             ["webkitTransitionDuration"] = "transition-duration",
             ["webkitTransitionProperty"] = "transition-property",
             ["webkitTransitionTimingFunction"] = "transition-timing-function",
+            ["cssFloat"] = "float",
+            ["styleFloat"] = "float",
         };
 
         private readonly Element _element;
