@@ -1,0 +1,2872 @@
+[
+  {
+    "original_sha": "68ac3d687652f2515bac45a5cb223cd164a19296",
+    "commits": [
+      {
+        "sha": "c951034631d0de83dea63e1e683ae86fd2db1361",
+        "type": "chore: mechanical preparations for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 6
+      },
+      {
+        "sha": "a4111cdbd3e355e0423f0000e4a7947132da6699",
+        "type": "core: contracts for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 2
+      },
+      {
+        "sha": "d4034e9aba337732833c8171bb0ec8608aefa3f3",
+        "type": "dom: model tracking for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 2
+      },
+      {
+        "sha": "474af7a4d47478e0ba69a9b051aecd96d3581aae",
+        "type": "css: cascade tracking for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 4
+      },
+      {
+        "sha": "4e646259c864a18258fd5c00a8786b2fc6686a5d",
+        "type": "layout: structure tracking for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 1
+      },
+      {
+        "sha": "664901fe8cbb73277d714ea3f992f290bb7b58ff",
+        "type": "render: pipeline tracking for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 20
+      },
+      {
+        "sha": "2cdd650a58bd338fb94dcd8018cd1d9195523fec",
+        "type": "js: bindings for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 7
+      },
+      {
+        "sha": "e350c13829d24e9c7896ba2ac1619f89f7962709",
+        "type": "ui: host wiring for Implement JavaScript loops (while, for) and operators (new, comma) plus null/undefined literals",
+        "files": 11
+      },
+      {
+        "sha": "aed937e61dbd15fda4e8d7d4dece1e3f44b76cff",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a5eaa451ef29730b252669bf9feaaf0e3b19f846",
+    "commits": [
+      {
+        "sha": "d52b3c694d394e48bed2f6b905962b78236eb4f1",
+        "type": "chore: mechanical preparations for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 2
+      },
+      {
+        "sha": "84130fb00c50a8240b58ac32563b365e8fb99faa",
+        "type": "core: contracts for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 1
+      },
+      {
+        "sha": "e81d37fa3f9089ef8329acbee0d1049fb2075f2c",
+        "type": "css: cascade tracking for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 2
+      },
+      {
+        "sha": "2232b66fd8ee21ea5702083cc432a7245ba42e6d",
+        "type": "render: pipeline tracking for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 6
+      },
+      {
+        "sha": "65e1c408437190f9172d3976670d3bd94f472279",
+        "type": "js: bindings for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 1
+      },
+      {
+        "sha": "8429db2e4809e15fe718e509dde5d93ca632d753",
+        "type": "ui: host wiring for feat: Implement initial FenBrowser application with core networking, rendering engine, and UI components.",
+        "files": 10
+      },
+      {
+        "sha": "134ec016d98d9580bba5ada1c0dd5be85a76fdb6",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "e4c721ace2c1518f8875ba223bede2d148d74481",
+    "commits": [
+      {
+        "sha": "d7e51d2d5d323ef6fe225471512a306f2347d88b",
+        "type": "chore: mechanical preparations for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 4
+      },
+      {
+        "sha": "ddd3a2b40e9d9a7be964c7f275c19105ea306d6c",
+        "type": "core: contracts for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 1
+      },
+      {
+        "sha": "d82b3bef8f607c26acd730739a2939881d66cacd",
+        "type": "dom: model tracking for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 2
+      },
+      {
+        "sha": "dfc7a0f14b60e21b2d62e9cfca78bd0a5f15e61b",
+        "type": "css: cascade tracking for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 2
+      },
+      {
+        "sha": "e183eb7ac80213d8892d4ffa27f0b843d4bc32ca",
+        "type": "render: pipeline tracking for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 3
+      },
+      {
+        "sha": "604c4b668d7d841935e94c4960edbf1d1037917e",
+        "type": "ui: host wiring for feat: Implement core browser engine components including lexing, parsing, interpreting, DOM, CSS rendering, and UI integration.",
+        "files": 2
+      },
+      {
+        "sha": "d718f1c6562b9da91d3320c1c0d5d27dffbf7d97",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "e3aabf8d2d920da56368e80073cd8e1d0ff7598c",
+    "commits": [
+      {
+        "sha": "cdf87f9312b9f1c2e14f593617c197f85701317c",
+        "type": "chore: mechanical preparations for feat: Implement CSS calc() and fetch() API",
+        "files": 1
+      },
+      {
+        "sha": "1dda3ebed17e4dd830ea2d5069646de870dc56dd",
+        "type": "render: pipeline tracking for feat: Implement CSS calc() and fetch() API",
+        "files": 4
+      },
+      {
+        "sha": "35157625e65591757296a8ea318a2ec1a088f500",
+        "type": "ui: host wiring for feat: Implement CSS calc() and fetch() API",
+        "files": 3
+      },
+      {
+        "sha": "6b9e2c71e30b2b80c7ca4fc6ec7724f3295bbaa3",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b6523e535e70bcffe0ad48e1f769fae73e770aee",
+    "commits": [
+      {
+        "sha": "907052f646b66da0904b6e626763db4e8546f50c",
+        "type": "chore: mechanical preparations for feat: Implement 7 technical priority features",
+        "files": 1
+      },
+      {
+        "sha": "8a39b8850e8f86004235f42b08b3fded48531126",
+        "type": "css: cascade tracking for feat: Implement 7 technical priority features",
+        "files": 1
+      },
+      {
+        "sha": "0307223cf0a81e012f6322624074cac2bd768aa4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "380a6c3583cb28b18de3bae06e9f7cffadbd04c4",
+    "commits": [
+      {
+        "sha": "41d31b572162bc886dbdfaee41281febf6376f8e",
+        "type": "render: pipeline tracking for fix: Disable visibility:hidden to show Google.com fallback content",
+        "files": 1
+      },
+      {
+        "sha": "1f1059bc3c6908ed553b7f4ec56c1ec9ba929e38",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "9c615a5b7beb54dd21a51da842ed2b09d54fb023",
+    "commits": [
+      {
+        "sha": "9e16104b17e88d0246e411cfd2af6e08a1733d21",
+        "type": "chore: mechanical preparations for feat: Implement Canvas 2D Context support (rendering, DOM interaction, array prototype)",
+        "files": 3
+      },
+      {
+        "sha": "54b5e1c2551ebec230122ae148cf78f2c964d4bf",
+        "type": "dom: model tracking for feat: Implement Canvas 2D Context support (rendering, DOM interaction, array prototype)",
+        "files": 2
+      },
+      {
+        "sha": "adcaa769ab690693f7a45252a58e3e5055729596",
+        "type": "css: cascade tracking for feat: Implement Canvas 2D Context support (rendering, DOM interaction, array prototype)",
+        "files": 2
+      },
+      {
+        "sha": "eab91187d9fb28b305249816bc3f26abdb0933d4",
+        "type": "render: pipeline tracking for feat: Implement Canvas 2D Context support (rendering, DOM interaction, array prototype)",
+        "files": 6
+      },
+      {
+        "sha": "a1f41a31d317b345b0e19ea0020643be1da2d68e",
+        "type": "js: bindings for feat: Implement Canvas 2D Context support (rendering, DOM interaction, array prototype)",
+        "files": 2
+      },
+      {
+        "sha": "7d66de96ff627ea7687fb6ea3c0881fd809df649",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "75018b61828dfa703d776989b8d25aa1bb47764f",
+    "commits": [
+      {
+        "sha": "41f355366c3504670333526c108329f79ef2aa20",
+        "type": "chore: mechanical preparations for feat: Add core UI structure, browser settings, theming, and initial rendering engine components.",
+        "files": 3
+      },
+      {
+        "sha": "32bc210696438de4911ecfa2078898ac157e1c48",
+        "type": "render: pipeline tracking for feat: Add core UI structure, browser settings, theming, and initial rendering engine components.",
+        "files": 1
+      },
+      {
+        "sha": "710ec2a453bc4fc4eb8f1d8ba240f24392a2da2f",
+        "type": "ui: host wiring for feat: Add core UI structure, browser settings, theming, and initial rendering engine components.",
+        "files": 8
+      },
+      {
+        "sha": "b4db1c1597824a05928bcd864a9ea7db606954cc",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f157a19eeab89119d91323f105a560556d39b742",
+    "commits": [
+      {
+        "sha": "50976fe03bd5f031838c14509685ae3a80858cfb",
+        "type": "chore: mechanical preparations for feat(webdriver): Implement comprehensive WPT-compatible WebDriver with Alerts, Actions, Windows, Cookies, and Screenshots support",
+        "files": 2
+      },
+      {
+        "sha": "8bb3d2766baeebd297e358b5e6fe4e9b3427ee23",
+        "type": "render: pipeline tracking for feat(webdriver): Implement comprehensive WPT-compatible WebDriver with Alerts, Actions, Windows, Cookies, and Screenshots support",
+        "files": 2
+      },
+      {
+        "sha": "c0154e6ca7ca83261c29e86a2c0d1ae84291c1ae",
+        "type": "js: bindings for feat(webdriver): Implement comprehensive WPT-compatible WebDriver with Alerts, Actions, Windows, Cookies, and Screenshots support",
+        "files": 1
+      },
+      {
+        "sha": "82145c2f230345591a7904fc679206390ba82c95",
+        "type": "ui: host wiring for feat(webdriver): Implement comprehensive WPT-compatible WebDriver with Alerts, Actions, Windows, Cookies, and Screenshots support",
+        "files": 14
+      },
+      {
+        "sha": "16c6bde357b7b01b9df6fc3e281c8877dd29f03e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "4d7d43ec3a3b06dcc0994a9cb8e16a4866fc5576",
+    "commits": [
+      {
+        "sha": "bd3e5321e561894324098aefd7eb1a32cb011ab2",
+        "type": "chore: mechanical preparations for feat: Complete Security & Privacy Features (Category 5)",
+        "files": 1
+      },
+      {
+        "sha": "7e8b5e98225ed21369be69bb2402ab6c783a135f",
+        "type": "render: pipeline tracking for feat: Complete Security & Privacy Features (Category 5)",
+        "files": 4
+      },
+      {
+        "sha": "fb6fb76f68b288b13820ef2f9c3e7dc7cee81b96",
+        "type": "js: bindings for feat: Complete Security & Privacy Features (Category 5)",
+        "files": 1
+      },
+      {
+        "sha": "386623fba8d6017effef54907f183135285bcd1c",
+        "type": "ui: host wiring for feat: Complete Security & Privacy Features (Category 5)",
+        "files": 7
+      },
+      {
+        "sha": "2dbb65ec9e01055ff5cad7337665433b818e2651",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "ec74ea0d9cf0a294325533b192ae8d9ff147dccb",
+    "commits": [
+      {
+        "sha": "8c9b81c662370bc83616adfdd58050f1d51ce892",
+        "type": "chore: mechanical preparations for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 2
+      },
+      {
+        "sha": "2858d4079404edce0d3efefc5fdd27c26fe7f794",
+        "type": "dom: model tracking for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 2
+      },
+      {
+        "sha": "bf44cb777e9b8576ccda9a5126dbc3ab43f18276",
+        "type": "css: cascade tracking for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 1
+      },
+      {
+        "sha": "8be1c8738cacba044d4c00b3642a653573db22d7",
+        "type": "render: pipeline tracking for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 4
+      },
+      {
+        "sha": "ec000eecc9800b0e0e670658c83c211cd48d2a97",
+        "type": "js: bindings for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 1
+      },
+      {
+        "sha": "1b9ea1e33d1df74f2f94ae07b01ba685f23dbecb",
+        "type": "ui: host wiring for Fix JS Timers, Event Bubbling, and implement Universal Logging",
+        "files": 3
+      },
+      {
+        "sha": "583234dda9aabe9957c8476329864e70af943908",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8136e97f6b64b8e4d972d829272b59a62ba1c8be",
+    "commits": [
+      {
+        "sha": "b6695f330a5a4e14147285fa0b0ddb1b245e2c18",
+        "type": "chore: mechanical preparations for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 4
+      },
+      {
+        "sha": "d58fee78bf8904ba9a4da95b2c75853dde212c27",
+        "type": "dom: model tracking for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 1
+      },
+      {
+        "sha": "6b48744e0622e34bbb8be7ea21c3085da3e718e0",
+        "type": "css: cascade tracking for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 2
+      },
+      {
+        "sha": "ebdbd6b41799f7ba4d0e409e40596684ea6fa22a",
+        "type": "render: pipeline tracking for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 9
+      },
+      {
+        "sha": "32501e4a791906b58ac154fa60affc23f66d1318",
+        "type": "js: bindings for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 2
+      },
+      {
+        "sha": "8814043a2a73d0c16c2d6e0abaa41ba8a595c2ab",
+        "type": "ui: host wiring for Fix Skia rendering issues: flickering, invisible icons, and toolbar overwriting",
+        "files": 4
+      },
+      {
+        "sha": "197789aed136c1aa81dfb64b214956bb424178f8",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "d5a5f80dfcb554a6c8ed136df336e25762396dbc",
+    "commits": [
+      {
+        "sha": "e2c40fc88faa6111a8ae5f8ccf25df3d02a60100",
+        "type": "chore: mechanical preparations for feat: Implement core rendering engine, JavaScript engine, browser API, and a new logging framework, replacing old logging files.",
+        "files": 8
+      },
+      {
+        "sha": "1a62c0e153573f335fd6d8e8aaba9ff6a71a13ca",
+        "type": "css: cascade tracking for feat: Implement core rendering engine, JavaScript engine, browser API, and a new logging framework, replacing old logging files.",
+        "files": 3
+      },
+      {
+        "sha": "980c82963d8d3bfa905af84f531959e014ac4607",
+        "type": "render: pipeline tracking for feat: Implement core rendering engine, JavaScript engine, browser API, and a new logging framework, replacing old logging files.",
+        "files": 8
+      },
+      {
+        "sha": "996d036f9b27d38b859365078f8af4472ef3f44d",
+        "type": "js: bindings for feat: Implement core rendering engine, JavaScript engine, browser API, and a new logging framework, replacing old logging files.",
+        "files": 2
+      },
+      {
+        "sha": "7d58e8c094ef7b596540b8fdd8030324fb1d7c0c",
+        "type": "ui: host wiring for feat: Implement core rendering engine, JavaScript engine, browser API, and a new logging framework, replacing old logging files.",
+        "files": 2
+      },
+      {
+        "sha": "066b974479df7132108f8f98521f84a709ce5294",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a747c4f6263e7e41568505f8643692b86c78b1f4",
+    "commits": [
+      {
+        "sha": "d632e9a48964453bbe54b2d7506cf18931c7b003",
+        "type": "chore: mechanical preparations for feat(DevTools): Revamp Console UI with Edge-style design and fix console.log propagation",
+        "files": 1
+      },
+      {
+        "sha": "79299e1905936ff35edbfafd5ace69b39f6775e5",
+        "type": "css: cascade tracking for feat(DevTools): Revamp Console UI with Edge-style design and fix console.log propagation",
+        "files": 1
+      },
+      {
+        "sha": "71a2a28eb545826601b1712153c1201934c430dd",
+        "type": "render: pipeline tracking for feat(DevTools): Revamp Console UI with Edge-style design and fix console.log propagation",
+        "files": 2
+      },
+      {
+        "sha": "d25d481b9f66b8d5a222d73ea5d9e921437d845f",
+        "type": "js: bindings for feat(DevTools): Revamp Console UI with Edge-style design and fix console.log propagation",
+        "files": 2
+      },
+      {
+        "sha": "cc92f4fa2334f2d5d289c815daa69410ea0032a8",
+        "type": "ui: host wiring for feat(DevTools): Revamp Console UI with Edge-style design and fix console.log propagation",
+        "files": 4
+      },
+      {
+        "sha": "5001b02ceb2b83838fbd7716f073d41efc0c139a",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "217ca4000f888df22d681581d44936430d720119",
+    "commits": [
+      {
+        "sha": "869c05d1e89cbc2ea572827d3cf8fb059e892e43",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "e4d85c82892323bbcf789578d3861e3e25ee9a09",
+    "commits": [
+      {
+        "sha": "675d2b46f52324652ddc8768c0a1012230963925",
+        "type": "js: bindings for Fix script execution timeout in DevTools console - Reset execution timer for each script execution in ExecuteSimple() - Implement IObject interface on JsDocument, JsDomElement, JsCssDeclaration for proper interpreter access - Add using directives for IObject interface",
+        "files": 1
+      },
+      {
+        "sha": "e452b24ff8f35b7fd54d7c665c7b45545a06eae1",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c270a2daa6facee35333bde7f99cbf14bd4d23f1",
+    "commits": [
+      {
+        "sha": "1b7968d17cb4ccb5e1000cb958bb6e0b5a171b37",
+        "type": "dom: model tracking for Fix inline style rendering in DevTools console - Sync JS engine DOM with renderer DOM in CaptureActiveContext - Add DomRoot property to JavaScriptEngine for DOM access - Ensure style changes from document.body.style.X are visible on repaint",
+        "files": 2
+      },
+      {
+        "sha": "bc23376703421bd4445b46801ea8372c4485c69a",
+        "type": "css: cascade tracking for Fix inline style rendering in DevTools console - Sync JS engine DOM with renderer DOM in CaptureActiveContext - Add DomRoot property to JavaScriptEngine for DOM access - Ensure style changes from document.body.style.X are visible on repaint",
+        "files": 1
+      },
+      {
+        "sha": "04bc51193a79438d9c3ed187d5b5572d563244b5",
+        "type": "render: pipeline tracking for Fix inline style rendering in DevTools console - Sync JS engine DOM with renderer DOM in CaptureActiveContext - Add DomRoot property to JavaScriptEngine for DOM access - Ensure style changes from document.body.style.X are visible on repaint",
+        "files": 1
+      },
+      {
+        "sha": "bec42241b02c6b077be5ee28489983571b480008",
+        "type": "js: bindings for Fix inline style rendering in DevTools console - Sync JS engine DOM with renderer DOM in CaptureActiveContext - Add DomRoot property to JavaScriptEngine for DOM access - Ensure style changes from document.body.style.X are visible on repaint",
+        "files": 1
+      },
+      {
+        "sha": "96b1a3e33a25d3912cac73852e6f5d59cb8de5fa",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a8e1ea831f30ca07d40ea2e52f1f57044f42309b",
+    "commits": [
+      {
+        "sha": "9ab29a21d12e447767caac2176c48f3e7f7bd25e",
+        "type": "render: pipeline tracking for Remove all traces of NiL.JS - Removed USE_NILJS blocks, host classes, and package references (verified clean)",
+        "files": 1
+      },
+      {
+        "sha": "cd3700293f5fe60f92a98a34afb9ca5406bcf8d5",
+        "type": "js: bindings for Remove all traces of NiL.JS - Removed USE_NILJS blocks, host classes, and package references (verified clean)",
+        "files": 1
+      },
+      {
+        "sha": "e112b08a8289ae1c6a634c14547a4daad114d0da",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b0893de268d45ddf6dd15e4dcc68a4406d6d26f8",
+    "commits": [
+      {
+        "sha": "2390bfc671a0dbeace0995eda00f9d08081b1569",
+        "type": "css: cascade tracking for feat(Rendering): Add CSS/HTML features to SkiaDomRenderer",
+        "files": 1
+      },
+      {
+        "sha": "93e5c3bc0f3f3bff69dd0857999ba1b7b922e09b",
+        "type": "render: pipeline tracking for feat(Rendering): Add CSS/HTML features to SkiaDomRenderer",
+        "files": 1
+      },
+      {
+        "sha": "a8c0411035f412ef7cbed9c5e9209cf14dc8e612",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "4b1e2f99aa1a589e5edce9ef75a004ad66f1f7d7",
+    "commits": [
+      {
+        "sha": "801d93bd0f60fa1c2cf311afebf84f1de0b41c3f",
+        "type": "chore: mechanical preparations for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 1
+      },
+      {
+        "sha": "aae6231b32872661fad1aa1698719fa9ea208e1a",
+        "type": "dom: model tracking for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 7
+      },
+      {
+        "sha": "a29e7507a706688019b9a169adf611f9d062387a",
+        "type": "css: cascade tracking for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 6
+      },
+      {
+        "sha": "4f12753aaefa1894fda4ae3d4e080d20dd8df417",
+        "type": "render: pipeline tracking for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 13
+      },
+      {
+        "sha": "00255beb37943362ca7cd4f39d9401416f23f2ca",
+        "type": "js: bindings for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 1
+      },
+      {
+        "sha": "0ff9cc83884df5cf568bd7173a944dbb89327dee",
+        "type": "ui: host wiring for Feat: Complete MutationObserver and ElementWrapper implementation (10/10 compliance)",
+        "files": 4
+      },
+      {
+        "sha": "2d2e93f4c18473eb5ef03b15ee19031655a1d963",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f9fa5ba44a6edc10312446f8781c765d0fe328db",
+    "commits": [
+      {
+        "sha": "a9d8a18e3c49129d857cb8bf1d7126789838e645",
+        "type": "dom: model tracking for Fix Google Layout Regression: Footer spreading and Language Links stacking",
+        "files": 1
+      },
+      {
+        "sha": "884c6cf468767f3ae1bcb8e3296aa46856c3e89b",
+        "type": "css: cascade tracking for Fix Google Layout Regression: Footer spreading and Language Links stacking",
+        "files": 1
+      },
+      {
+        "sha": "034b9cc393ae7142fb8668fc6d27d4af979255e0",
+        "type": "render: pipeline tracking for Fix Google Layout Regression: Footer spreading and Language Links stacking",
+        "files": 5
+      },
+      {
+        "sha": "2fea2f0f0836e5611cc2b76bd3fc5b98b54dd473",
+        "type": "js: bindings for Fix Google Layout Regression: Footer spreading and Language Links stacking",
+        "files": 1
+      },
+      {
+        "sha": "c9da03f0a1ee70dac63589330c5c8db9acf6e457",
+        "type": "ui: host wiring for Fix Google Layout Regression: Footer spreading and Language Links stacking",
+        "files": 3
+      },
+      {
+        "sha": "1b37a6ad19709e15854fcaaf0dda6505b9de8a0a",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "d90f26a37c39af4648bccdc10614253d05b3fc09",
+    "commits": [
+      {
+        "sha": "996043f20cb1b49293b9f30522b48169ee8ee0da",
+        "type": "parser: tree building for feat: Add modular Rendering Engine components (Layout, Painting, CSS, Performance)",
+        "files": 1
+      },
+      {
+        "sha": "ef1d08c1cb35a40c543b27e7633d13a8849da952",
+        "type": "css: cascade tracking for feat: Add modular Rendering Engine components (Layout, Painting, CSS, Performance)",
+        "files": 2
+      },
+      {
+        "sha": "eab79ac1310ef85d6c649f1e73b50cedcef9c966",
+        "type": "layout: structure tracking for feat: Add modular Rendering Engine components (Layout, Painting, CSS, Performance)",
+        "files": 8
+      },
+      {
+        "sha": "8b52d1d194490c61e0f06b4c4d11f1588a565ebc",
+        "type": "render: pipeline tracking for feat: Add modular Rendering Engine components (Layout, Painting, CSS, Performance)",
+        "files": 12
+      },
+      {
+        "sha": "785f6fd54c530b0dee75a8da60da00d7b3416cd6",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "68aa6a6be891cccdc6e22d0aece94b0b06271e57",
+    "commits": [
+      {
+        "sha": "039d02d5b7ef407a11142ea449db842f1c215c76",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "e8decb47f3945b38b787f14a713fa358789389f6",
+    "commits": [
+      {
+        "sha": "b9cd9c3371f4f63bbd7b1f1633d08274a04dfd4e",
+        "type": "chore: mechanical preparations for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 2
+      },
+      {
+        "sha": "922edf4ea0796cd801529d4e32ca67eef90ba208",
+        "type": "parser: tree building for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 4
+      },
+      {
+        "sha": "07fd46ec9f7b80906bfa0bc7caaf66505f4be09a",
+        "type": "css: cascade tracking for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 5
+      },
+      {
+        "sha": "d0229da0070f770d52a2677c734d08bbc6e913f4",
+        "type": "render: pipeline tracking for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 11
+      },
+      {
+        "sha": "2366cd8448699e53851d0f5ffca89e809dd53e1a",
+        "type": "js: bindings for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 1
+      },
+      {
+        "sha": "ffc906f5301db44d7192340f86f5c08254120507",
+        "type": "ui: host wiring for feat: Implement CSS Grid Auto-Placement, implicit tracks, and update analysis",
+        "files": 2
+      },
+      {
+        "sha": "d8d673f2c463aaf87323cc6a454a3d788dc1611f",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b406e300b7b724846dddcfbf9ec3e40555e670fa",
+    "commits": [
+      {
+        "sha": "5dee679a6904f4c4d6505d628acce6e93b222ee6",
+        "type": "chore: mechanical preparations for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 2
+      },
+      {
+        "sha": "133bc0c8f1091d533790bf61d3797a2f005ecefa",
+        "type": "css: cascade tracking for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 5
+      },
+      {
+        "sha": "bb6aec29461679e051d81944d034db86b4f7b5c7",
+        "type": "layout: structure tracking for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 8
+      },
+      {
+        "sha": "3c1f01c2c2bf8e2a15f0fb3b94d7961152c362be",
+        "type": "render: pipeline tracking for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 26
+      },
+      {
+        "sha": "4e25252db2b0d71d54fa71eeae6aaca3d9462744",
+        "type": "js: bindings for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 1
+      },
+      {
+        "sha": "c825a4348bcaead319cc8f99029fa71197cf2b0e",
+        "type": "ui: host wiring for refactor: Phase 1 - Decouple FenEngine from Avalonia, replace with SkiaSharp",
+        "files": 2
+      },
+      {
+        "sha": "8f9a04c73bd56f40b36d5e666014be0cb670cf69",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c215281ef294c0c00af3b6ef8865683d4088aac6",
+    "commits": [
+      {
+        "sha": "fb8a750d2465d63ca62e5dd4558d4adf5d841322",
+        "type": "render: pipeline tracking for Layout fixes: Expansion cache, force width override, and debug instrumentation for Google language links",
+        "files": 1
+      },
+      {
+        "sha": "5bdbe260c879a5122509601a71cc22edbef22f16",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c439348d1704705b65ec197f8a1e48daf9b65d41",
+    "commits": [
+      {
+        "sha": "323b58abb54e988be466726b70fd0756eb93380a",
+        "type": "chore: mechanical preparations for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 19
+      },
+      {
+        "sha": "3e4d4a70721a4a98660009b353f514c84c83bc7d",
+        "type": "core: contracts for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 1
+      },
+      {
+        "sha": "51708b4071b413cf548ab1d49d5c39293a8ce417",
+        "type": "parser: tree building for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 2
+      },
+      {
+        "sha": "ec808a54a85c883ebe365963549ff51db5ebb6b6",
+        "type": "dom: model tracking for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 9
+      },
+      {
+        "sha": "ddd2d901cdc187e8cb752db67efaf8d0396ec337",
+        "type": "css: cascade tracking for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 7
+      },
+      {
+        "sha": "8459f2d10bb9d71672918f727d7977ca981b6332",
+        "type": "layout: structure tracking for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 2
+      },
+      {
+        "sha": "9bad114eb013b89a0d018f09c93ca70d84d8f502",
+        "type": "render: pipeline tracking for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 20
+      },
+      {
+        "sha": "112f65e731edf78202efd543a7da1ca2eaf629a8",
+        "type": "js: bindings for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 6
+      },
+      {
+        "sha": "cc5e9b585ad24b96a5a92961e92a041c889d3510",
+        "type": "ui: host wiring for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 4
+      },
+      {
+        "sha": "82a87b46b25d5aec5b4759d2cd180c139888173e",
+        "type": "test: validations for Phase E & F: Storage (Partitioned) and ServiceWorker (Read-Only Interception)",
+        "files": 19
+      },
+      {
+        "sha": "dbc5a30f0f82e3eb1ff2e9e812d339b3d4272005",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "5655f7de26f4b826d8a5a29b8bafbc4f939464aa",
+    "commits": [
+      {
+        "sha": "36d498e78efbf7b84b5cda145902377edfeccfe4",
+        "type": "chore: mechanical preparations for feat(Phase E-2.5): Execution Semantics Lock - TaskQueue, MicrotaskQueue, checkpoint rules",
+        "files": 1
+      },
+      {
+        "sha": "57776c6a2787519e1d067029a099d3a2c2335837",
+        "type": "test: validations for feat(Phase E-2.5): Execution Semantics Lock - TaskQueue, MicrotaskQueue, checkpoint rules",
+        "files": 4
+      },
+      {
+        "sha": "c34778e4c059f68e3b6b70d973adad4c1b2fda72",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c2392ef46095d3fb92d1914dff43ba643d0b353f",
+    "commits": [
+      {
+        "sha": "5e138bace3965c180026875ee36b7f88bc5e9996",
+        "type": "chore: mechanical preparations for Implement PWA Lifecycle, Service Worker Interception, and fix Web Worker isolation (Phase G)",
+        "files": 1
+      },
+      {
+        "sha": "15f1ec055ae640ede3a0baa26a92f48793b3f912",
+        "type": "js: bindings for Implement PWA Lifecycle, Service Worker Interception, and fix Web Worker isolation (Phase G)",
+        "files": 1
+      },
+      {
+        "sha": "e8f73eaa8a9c3ff26d6ee92c803e9d53cb28d92e",
+        "type": "test: validations for Implement PWA Lifecycle, Service Worker Interception, and fix Web Worker isolation (Phase G)",
+        "files": 2
+      },
+      {
+        "sha": "58fd5392e17163faf607176420af108a59489611",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "156a9c092c1d99fbfe6dd9d0fbb62f4c14d33630",
+    "commits": [
+      {
+        "sha": "828bd534a7210a71e7e64cdc8ada2edddf750aae",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2e3755124afe984f93d9c9c501b60ef9d1e82179",
+    "commits": [
+      {
+        "sha": "00f7fda71ce06cbf934796d76d5a8bf37a8b7685",
+        "type": "layout: structure tracking for Implement modular layout engine architecture",
+        "files": 9
+      },
+      {
+        "sha": "e9f499fae4749a7de69c07a11a7f60f8ef693b67",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "097f937af35db8a326a296ec68c44925c54ad717",
+    "commits": [
+      {
+        "sha": "000a465d3d1d4d983f8fcfcf01922b02870d095d",
+        "type": "render: pipeline tracking for Add Core Rendering infrastructure (DisplayList, SkiaRenderer)",
+        "files": 7
+      }
+    ]
+  },
+  {
+    "original_sha": "a9c52b90a4bc7083d6f69e5b2d6ef560acb4092f",
+    "commits": [
+      {
+        "sha": "ff58dad5a9e2d406e5ca1165abbcb628113bf824",
+        "type": "css: cascade tracking for Update Rendering Engine logic and interaction handling",
+        "files": 1
+      },
+      {
+        "sha": "00ed4a114443b376a6a1bec363bf1aaf178b35c1",
+        "type": "render: pipeline tracking for Update Rendering Engine logic and interaction handling",
+        "files": 6
+      }
+    ]
+  },
+  {
+    "original_sha": "a836c00d4b259fcc9d27495d92a384c38bcedfe3",
+    "commits": [
+      {
+        "sha": "82c109848fd9703792cbdd74dee232f7149e597f",
+        "type": "render: pipeline tracking for Add PaintTree infrastructure for optimized rendering",
+        "files": 8
+      }
+    ]
+  },
+  {
+    "original_sha": "9ef151f5ba88b5edf8733590aa919ed1b6914410",
+    "commits": [
+      {
+        "sha": "a514a0d45f9c4d0486c94d867a4ab028ecfc64c3",
+        "type": "chore: mechanical preparations for Update window resolution to full screen and cleanup legacy analysis files",
+        "files": 7
+      },
+      {
+        "sha": "4ce2aabcf7a2760b26669998090aeaa113ee2166",
+        "type": "ui: host wiring for Update window resolution to full screen and cleanup legacy analysis files",
+        "files": 2
+      },
+      {
+        "sha": "a82654413479783b489c2636fc5439dc71b14907",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "d206ce6c063f35fba3b042f8fbd82893d2597a98",
+    "commits": [
+      {
+        "sha": "d92ce1da8d8bc287533ebd6bb4836e9916a19273",
+        "type": "ui: host wiring for Fix Home button visibility, modernize toolbar styling, and improve settings interaction",
+        "files": 5
+      },
+      {
+        "sha": "5b599133df1aa97720efd0f5e7afab8f3a36db45",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "d726cd6860e2287c073a2956264a949cac7cf65e",
+    "commits": [
+      {
+        "sha": "ede1ec5c80846415beba763b0e50f733689b37e9",
+        "type": "chore: mechanical preparations for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 2
+      },
+      {
+        "sha": "5b5389f0ba1f6c821933724c4ff090b5a962782a",
+        "type": "parser: tree building for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 6
+      },
+      {
+        "sha": "3a6f83ee73e6de28673eadea3d28fa89a2041188",
+        "type": "dom: model tracking for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 4
+      },
+      {
+        "sha": "b651e22d398e9770a5dcdab0efd742d055d0a33c",
+        "type": "css: cascade tracking for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 20
+      },
+      {
+        "sha": "bb50adecf67f7ca15116ec872a0540a3b68f8acb",
+        "type": "layout: structure tracking for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 9
+      },
+      {
+        "sha": "ce2969af28bd4da7fa5fcc30f856cd182ed98a6b",
+        "type": "render: pipeline tracking for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 28
+      },
+      {
+        "sha": "68cb510777a7bd71d991dafdbbc94a63b4198de0",
+        "type": "js: bindings for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 3
+      },
+      {
+        "sha": "e9bcac15d31e74b71a1da79dc5720aeddd4da161",
+        "type": "ui: host wiring for Refactor Rendering Engine: Update CSS/Box Model architecture and remove legacy implementations",
+        "files": 2
+      },
+      {
+        "sha": "9151701e3fdaf90f0cfad8fd4ae21c62b05c9bc4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "656f0973f16a6b1c32b9ee029049289597c3276e",
+    "commits": [
+      {
+        "sha": "8464c8e55cd5c2b278b86bae7361e609a001e904",
+        "type": "chore: mechanical preparations for Update documentation and comprehensive test suite",
+        "files": 6
+      },
+      {
+        "sha": "e87d9f318b7c125c0333f7b5a8c124958e66e2c1",
+        "type": "test: validations for Update documentation and comprehensive test suite",
+        "files": 13
+      }
+    ]
+  },
+  {
+    "original_sha": "273fe41b230a3e5044923914defd327aa2765da7",
+    "commits": [
+      {
+        "sha": "dddcbc69098e0bea6d4583460d346e2fa3c498d1",
+        "type": "chore: mechanical preparations for Update DevTools implementation and project references",
+        "files": 1
+      },
+      {
+        "sha": "f1e78c4ac2b6e206c8bc339f2e8e3c6bf102d5a6",
+        "type": "css: cascade tracking for Update DevTools implementation and project references",
+        "files": 1
+      },
+      {
+        "sha": "b53ca111184fe39d5058ccae6956f0a2c7177f50",
+        "type": "ui: host wiring for Update DevTools implementation and project references",
+        "files": 1
+      },
+      {
+        "sha": "5f17b9bb331742126cf93d313ad6c333bf5a3e80",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "3421e9fd5f481916dc1b284919cd2e5c382ac0ba",
+    "commits": [
+      {
+        "sha": "4bfaca830abe8fd2aa898820de9840541fa8674d",
+        "type": "parser: tree building for feat(core): enhance networking, logging, and resource management",
+        "files": 1
+      },
+      {
+        "sha": "90c693275396402f6b491f63d7d8a3dce3a52084",
+        "type": "css: cascade tracking for feat(core): enhance networking, logging, and resource management",
+        "files": 3
+      },
+      {
+        "sha": "e586bebdf2540d16a12ce3a5c336764f5d4acb17",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "5d3112ec115287f2ddc8061a231808f1a93b973b",
+    "commits": [
+      {
+        "sha": "5b1eb2e6b10a5292e1a0c86c976a7cc2e302ee3d",
+        "type": "layout: structure tracking for feat(layout): add grid, table, and multi-column layout support",
+        "files": 13
+      },
+      {
+        "sha": "55ddb53582eb55d16b87200893d396b4b72bef8a",
+        "type": "test: validations for feat(layout): add grid, table, and multi-column layout support",
+        "files": 4
+      }
+    ]
+  },
+  {
+    "original_sha": "1731e208b3d8ef54dc1672d352a0d3db4f6d3db8",
+    "commits": [
+      {
+        "sha": "4ae9bd333afdb0e2c7ee3ac3e32a29c2d15499d1",
+        "type": "chore: mechanical preparations for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 6
+      },
+      {
+        "sha": "81aca3c50161abb112da84cc8c55251dff0bc942",
+        "type": "parser: tree building for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 1
+      },
+      {
+        "sha": "647c96b60e614715c133419aeeb4bae4a244635a",
+        "type": "dom: model tracking for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 2
+      },
+      {
+        "sha": "883b2dd5cbfce4678c14f01bcc7ea07b66efd373",
+        "type": "css: cascade tracking for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 13
+      },
+      {
+        "sha": "d3e83f8a5e8d9518a8ed435883329aecb6e9dbf4",
+        "type": "render: pipeline tracking for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 24
+      },
+      {
+        "sha": "4a1fd0b868c8cd3b3b7e105bde232ee865b82611",
+        "type": "js: bindings for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 1
+      },
+      {
+        "sha": "6f5a7b8005722671acaf9ca80903662c65010617",
+        "type": "ui: host wiring for feat(rendering): update rendering pipeline, css parsers, and typography",
+        "files": 47
+      },
+      {
+        "sha": "05c4371fc0e204935b5efa97daa44364ee8d6de4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "054ee9ad008ad10d2b1b7804d5d94af3a389598b",
+    "commits": [
+      {
+        "sha": "0b0ef5dc064bc6717784c228c337bc4941a40714",
+        "type": "ui: host wiring for refactor(host): Simplify Program.cs to bootstrapper (1161 -> 62 lines)",
+        "files": 1
+      },
+      {
+        "sha": "e19fa9eb2805565ba9e002b684920face64e948d",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "df5480e754b165e4b0b5ae48255beb409c2eb03e",
+    "commits": [
+      {
+        "sha": "49fe4a054d92a30ef2a819a175726a295f0453c0",
+        "type": "parser: tree building for feat(layout): Enhance MinimalLayoutComputer, Grid, and AbsolutePosition solvers",
+        "files": 1
+      },
+      {
+        "sha": "8c21afb480b03a2f5ab0cf2ee0914a113d73f8b1",
+        "type": "layout: structure tracking for feat(layout): Enhance MinimalLayoutComputer, Grid, and AbsolutePosition solvers",
+        "files": 4
+      },
+      {
+        "sha": "c45374ec4067ee664535ca6bf685f562448c155e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "01f45a1c9bf1d89f15f0d159b5065f69c055bfb6",
+    "commits": [
+      {
+        "sha": "86b5925c521b473f7222318329f64e669d2974dd",
+        "type": "ui: host wiring for feat(testing): add Test262 and WPT runners with headless CLI support",
+        "files": 1
+      },
+      {
+        "sha": "7b9fcd75542911eafb038ea53ad272600659fbf2",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2cc4b657136e201eb4b8bb762a3d953494d156a7",
+    "commits": [
+      {
+        "sha": "62cab6b3018d058c37b45ede9a922f128bcec3fa",
+        "type": "chore: mechanical preparations for feat(webdriver): add initial WebDriver implementation and host adapter",
+        "files": 2
+      },
+      {
+        "sha": "92cfdbbb2739a98e61899482ccf9613a179a2f41",
+        "type": "ui: host wiring for feat(webdriver): add initial WebDriver implementation and host adapter",
+        "files": 1
+      },
+      {
+        "sha": "8ff0fdc12105f6c0ebbe09cd6311bd4c718a2852",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "4c64d15d581b2b31a180161b12d76635dd543218",
+    "commits": [
+      {
+        "sha": "a0b42902053287bb9c86055de5610d1f5db65271",
+        "type": "dom: model tracking for DOM: Add managed interoperability wrappers (Node, Element, Range, ShadowRoot) to expose internal DOM to JS",
+        "files": 11
+      },
+      {
+        "sha": "c233a28e30ab4090a2f306614904f40db98e149f",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "4feed6b39ba481a57717c1ef0314ca20ef3cf7a2",
+    "commits": [
+      {
+        "sha": "39ba18147f069fabf59c91d6535e779f8803dbb3",
+        "type": "layout: structure tracking for Layout: Enhance Box Tree construction and extend Formatting Contexts (Block, Flex, Inline) for CSS compliance",
+        "files": 9
+      }
+    ]
+  },
+  {
+    "original_sha": "958b8ca943dd68ce391555327ef6285edbfb394d",
+    "commits": [
+      {
+        "sha": "e29a2d7aba87e6662442e571b20dcfe54857db1e",
+        "type": "parser: tree building for Rendering: Optimize HTML parsing pipeline and Paint Tree diffing for incremental updates",
+        "files": 1
+      },
+      {
+        "sha": "58ef9f2f018de7c9202db7ebe60e48d9f756ccb6",
+        "type": "css: cascade tracking for Rendering: Optimize HTML parsing pipeline and Paint Tree diffing for incremental updates",
+        "files": 1
+      },
+      {
+        "sha": "2f249105852c6e11b73537867b1fd347781aa40e",
+        "type": "render: pipeline tracking for Rendering: Optimize HTML parsing pipeline and Paint Tree diffing for incremental updates",
+        "files": 1
+      },
+      {
+        "sha": "8cb853158353394099a2ce3708b30bcd7d5568f4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "69053e1764fd9f40eaa0063b6c6beba27d3e894b",
+    "commits": [
+      {
+        "sha": "9f657bc3a543c787e045af34a5e14e77a8fcc1df",
+        "type": "dom: model tracking for Chore: Cleanup deleted artifacts (verification images)",
+        "files": 1
+      },
+      {
+        "sha": "34a265752fb06b4e7cf22ffbd3dd6f0cac7c2cda",
+        "type": "css: cascade tracking for Chore: Cleanup deleted artifacts (verification images)",
+        "files": 6
+      },
+      {
+        "sha": "7cbed4454fae7836a355e4de3b31580e5cd4cab2",
+        "type": "layout: structure tracking for Chore: Cleanup deleted artifacts (verification images)",
+        "files": 2
+      },
+      {
+        "sha": "d0bcded839b3be6247c339e2f8dcb814529734f1",
+        "type": "render: pipeline tracking for Chore: Cleanup deleted artifacts (verification images)",
+        "files": 10
+      },
+      {
+        "sha": "592524053303599ce863d9cf6a5070b572b7d142",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f27faff72129ce1e9840f714bfc7bba020699f23",
+    "commits": [
+      {
+        "sha": "c3f5a9a3b5f757ada03267639c550bcbd834007a",
+        "type": "css: cascade tracking for refactor(engine): optimize layout and rendering pipeline",
+        "files": 6
+      },
+      {
+        "sha": "4e3fa5e9e474a52fdc2406aa76f94c82d705ac5e",
+        "type": "layout: structure tracking for refactor(engine): optimize layout and rendering pipeline",
+        "files": 19
+      },
+      {
+        "sha": "5317ad44f32a851d192a76f038aa99bf0a5fdbf4",
+        "type": "render: pipeline tracking for refactor(engine): optimize layout and rendering pipeline",
+        "files": 12
+      },
+      {
+        "sha": "050347ab230753742e3d14883e36fa40a47c6108",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "04c42cb07be45cf262adf453dcf1b34ca71ee978",
+    "commits": [
+      {
+        "sha": "d59884b41bf64eb2217458b242dbe66e0a0ee5ce",
+        "type": "core: contracts for feat(core): implement FenValue runtime and core infrastructure",
+        "files": 3
+      },
+      {
+        "sha": "484041aea2df6027313c3fed5eddf07c686a281d",
+        "type": "parser: tree building for feat(core): implement FenValue runtime and core infrastructure",
+        "files": 4
+      },
+      {
+        "sha": "1d777072fb064a6184f3bae15bd3013057042d83",
+        "type": "css: cascade tracking for feat(core): implement FenValue runtime and core infrastructure",
+        "files": 2
+      },
+      {
+        "sha": "884fca0a7d8e7f7a7a144bf9597fe369ecea57f1",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2f08470067978ed20137235b424de861838f2fea",
+    "commits": [
+      {
+        "sha": "130dda219fdd517800c9a7195b6561f992cb3aab",
+        "type": "css: cascade tracking for feat(css): Update rendering-specific CSS values and UA stylesheet",
+        "files": 14
+      },
+      {
+        "sha": "3f51ce5d8b01980c2d22935d65b0b273e34dd5c9",
+        "type": "render: pipeline tracking for feat(css): Update rendering-specific CSS values and UA stylesheet",
+        "files": 1
+      },
+      {
+        "sha": "dc2e0d7ac75c3a420b1bc90bb2fd05ddfc2f0f2f",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "fa87ad2867125fde65fe78a0ce1e11dde43f2d7e",
+    "commits": [
+      {
+        "sha": "e88c40886bd86ecfdd7d3f7a6275b571d6ed9448",
+        "type": "dom: model tracking for feat(dom): Update DOM core and V2 implementation",
+        "files": 22
+      },
+      {
+        "sha": "224fcdd6c41566cedb2a979d865454cf72d1bea5",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a8848daaa256c0f4bf186cdc34eebe0a59122f71",
+    "commits": [
+      {
+        "sha": "fa5dccab2f635778a1d9af16c8726050cc7dbbab",
+        "type": "css: cascade tracking for feat(layout): Enhance rendering pipeline, SVG support, and layout debugging",
+        "files": 1
+      },
+      {
+        "sha": "852ecf1dd4221ed4c6724e1de4f3e70c94d01bbd",
+        "type": "layout: structure tracking for feat(layout): Enhance rendering pipeline, SVG support, and layout debugging",
+        "files": 32
+      },
+      {
+        "sha": "c9d194efc09239a9cce1f7450e0f89473bd35fd5",
+        "type": "render: pipeline tracking for feat(layout): Enhance rendering pipeline, SVG support, and layout debugging",
+        "files": 29
+      },
+      {
+        "sha": "63999779274d54bf056a8ade65846792f5f1f70d",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "5607d48957d98b89f9109c49f78aca12ba6dbd87",
+    "commits": [
+      {
+        "sha": "ec6987d417e83ea10c42f86f7a209d05f2bdaebf",
+        "type": "test: validations for test: Add comprehensive tests for DOM and Rendering",
+        "files": 5
+      },
+      {
+        "sha": "27848f48faaef071ae8aab678495fc0c700dd0f4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "1c2062121c6f21b25174ce34426fd3ec1594d583",
+    "commits": [
+      {
+        "sha": "e03793392a5e6c1193fefea6e2b13f4e70aaa85d",
+        "type": "parser: tree building for feat(html): Update tokenizer and tree builder logic",
+        "files": 1
+      },
+      {
+        "sha": "8bd7ad84f72e600f70ac8ffd40e0b62c89da9eb5",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8b14e3bc57f792c2a1878b4a1cbc41190aceb7ee",
+    "commits": [
+      {
+        "sha": "42d4bea1b3e16d0210dcd0bb7794e128b4d7a6e9",
+        "type": "chore: mechanical preparations for docs: Remove deprecated specification files",
+        "files": 5
+      },
+      {
+        "sha": "bc9e6637c0b22e013019c27eae84a98c2a685f61",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "61a713100448e70680f8fb2f6e0cf7e347c09aba",
+    "commits": [
+      {
+        "sha": "dcf4ce568d1747c8594df5e17df68ede5e851c7d",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "01e15e29a6268dba0f2a5f57208eb04fa07640c2",
+    "commits": [
+      {
+        "sha": "8dbd1916223fe90cf4a06bad9f67c962d9f682a6",
+        "type": "chore: mechanical preparations for test: add Test262 runner integration and regression tests",
+        "files": 1
+      },
+      {
+        "sha": "da1e26ac58f4cf5eecf0697f43b82fbfe653932f",
+        "type": "test: validations for test: add Test262 runner integration and regression tests",
+        "files": 3
+      },
+      {
+        "sha": "44c0fdfe7593f158004e833527d3f4d677f1eefc",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "5416d0f8a4e5dd237fcd67854058b40535ee9164",
+    "commits": [
+      {
+        "sha": "0e8e94a632edea209b94024dd888eb195b54ae64",
+        "type": "core: contracts for feat(engine): implement strict mode, property descriptors, and enhanced type support",
+        "files": 2
+      },
+      {
+        "sha": "b968a98ec4d8c229b4bb688a03083bd3e40a810d",
+        "type": "js: bindings for feat(engine): implement strict mode, property descriptors, and enhanced type support",
+        "files": 1
+      },
+      {
+        "sha": "7e7e241680f94348e7848aaa1ffe013f29e794d2",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "1600d7c1d4a6b2a1adcd9f700cc29fdf595554f7",
+    "commits": [
+      {
+        "sha": "85ee0a05bab71fbc524cc897b07b0c278d753555",
+        "type": "chore: mechanical preparations for Test(Test262): Add Test262 harness adapter and scripts",
+        "files": 5
+      },
+      {
+        "sha": "3c689c8d3d79384a9d60e51bf8bbf9168f6a4903",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "45b6ced56e842e349bef151d9f442726df48add2",
+    "commits": [
+      {
+        "sha": "60de405b11a92182fec6e65e5aac727bed5eb0be",
+        "type": "css: cascade tracking for Refactor(Engine): Update layout computers and CSS/DOM handling",
+        "files": 1
+      },
+      {
+        "sha": "82ddaaf62b6a7ce79194cb44824114e221fd7cc4",
+        "type": "layout: structure tracking for Refactor(Engine): Update layout computers and CSS/DOM handling",
+        "files": 11
+      },
+      {
+        "sha": "7791e7b192f510427eaa3fe449cb9fbb96a9bf29",
+        "type": "render: pipeline tracking for Refactor(Engine): Update layout computers and CSS/DOM handling",
+        "files": 1
+      },
+      {
+        "sha": "593af08c231d11ee311358c7541514b267689636",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f5a0ec3f081f39c277f32623af0dafde3af7badf",
+    "commits": [
+      {
+        "sha": "92b9706fa6f27edc9272ee02e42ac7583817a3ec",
+        "type": "chore: mechanical preparations for Refactor(Core): Remove legacy DOM implementations and add Range support",
+        "files": 1
+      },
+      {
+        "sha": "77cbe8fac4ef266d35efe7e4386c20972f3c4d96",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "fcfc8cf73a0dc4e6a0c1b3b39b9f73726cdb295d",
+    "commits": [
+      {
+        "sha": "a322e71d112a6028bbeeba83ccefb7cade0bb853",
+        "type": "chore: mechanical preparations for Refactor(Engine): Finalize DOM wrappers and rendering updates",
+        "files": 1
+      },
+      {
+        "sha": "5225f2fda4609c0967fa928fcbbb2b1868fd78ef",
+        "type": "core: contracts for Refactor(Engine): Finalize DOM wrappers and rendering updates",
+        "files": 2
+      },
+      {
+        "sha": "d4126ec53b60418a2ed03e18f42fe663ebec211f",
+        "type": "dom: model tracking for Refactor(Engine): Finalize DOM wrappers and rendering updates",
+        "files": 8
+      },
+      {
+        "sha": "ecb26586fb1dc818e5d4558d7460f6e467eaec2d",
+        "type": "render: pipeline tracking for Refactor(Engine): Finalize DOM wrappers and rendering updates",
+        "files": 4
+      },
+      {
+        "sha": "dbd45b1b7d1b3fa36b161e0c0d9f56419eb0ddfd",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b34afc29027245a804017ee38295c55bf4ab4261",
+    "commits": [
+      {
+        "sha": "d7030b139efe560fe61ad4b4bbd106db57b3bc65",
+        "type": "chore: mechanical preparations for phase-5: complete webdriver surface, storage coordinator wiring, and runtime policy enforcement",
+        "files": 6
+      },
+      {
+        "sha": "88104d8f07094062d15abd891ce795a267be8d04",
+        "type": "render: pipeline tracking for phase-5: complete webdriver surface, storage coordinator wiring, and runtime policy enforcement",
+        "files": 2
+      },
+      {
+        "sha": "70284ab4f4c10ce0d976d8da10ee7ce824d1d7e8",
+        "type": "js: bindings for phase-5: complete webdriver surface, storage coordinator wiring, and runtime policy enforcement",
+        "files": 1
+      },
+      {
+        "sha": "ac3b2c52a3f0126648c75c3ca9ea02d80f39a624",
+        "type": "ui: host wiring for phase-5: complete webdriver surface, storage coordinator wiring, and runtime policy enforcement",
+        "files": 3
+      },
+      {
+        "sha": "710ee0f3d02715ff460ed264b2a55172205c00f2",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c9fc19d680024c38831f5e9cb2983762040c38dc",
+    "commits": [
+      {
+        "sha": "a0dbc72ac90788d4db5181d164faeb187d201ee6",
+        "type": "chore: mechanical preparations for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 8
+      },
+      {
+        "sha": "8205d10db3ab07d25b4ac2cc4eb28e31020af3a5",
+        "type": "dom: model tracking for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 1
+      },
+      {
+        "sha": "46988b04ce376a27130861607bdf1183de13388f",
+        "type": "render: pipeline tracking for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 2
+      },
+      {
+        "sha": "0e9ad6475c0041c7230fc18da5c5fbfb134bba01",
+        "type": "js: bindings for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 1
+      },
+      {
+        "sha": "f2b71dc4ac19b4775b1ba08fbb01754d558e6c0b",
+        "type": "ui: host wiring for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 5
+      },
+      {
+        "sha": "5166c11e04a9add4c7aa413547090af072d7aa9a",
+        "type": "test: validations for engine/host: harden worker-fetch pipeline and complete architecture docs",
+        "files": 2
+      },
+      {
+        "sha": "82deae40a272a0a3adf25cc1bad81c6c89bb6c98",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "9b4094e3647f53826cd3fedf49a9622cdccc9544",
+    "commits": [
+      {
+        "sha": "3968e93999420dbc65833f88fa9d815bf230e5a4",
+        "type": "chore: mechanical preparations for engine+host: close residual audit gaps and wire brokered renderer IPC",
+        "files": 8
+      },
+      {
+        "sha": "897380555f037f976ab91c4ce3edd8bbea84166a",
+        "type": "js: bindings for engine+host: close residual audit gaps and wire brokered renderer IPC",
+        "files": 1
+      },
+      {
+        "sha": "ec43d6a0c59e9b90ca3d994fd83fd719f03881ed",
+        "type": "ui: host wiring for engine+host: close residual audit gaps and wire brokered renderer IPC",
+        "files": 15
+      },
+      {
+        "sha": "009599bc4bc4de3dd44a812504765842d2639943",
+        "type": "test: validations for engine+host: close residual audit gaps and wire brokered renderer IPC",
+        "files": 3
+      },
+      {
+        "sha": "d7d25c942d58cd7239bc1eb58a0a6bb7347ff8aa",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "07116007e65763a0fead54f2e816814124b27cbe",
+    "commits": [
+      {
+        "sha": "08ffadcca551451b590393ca15dd8ddf18168f5f",
+        "type": "chore: mechanical preparations for docs(PC-3/PC-4/PC-5): update final_gap_system.md - Paint/Compositing 76->90",
+        "files": 1
+      }
+    ]
+  },
+  {
+    "original_sha": "d39e3af2c12fb97b4c1a35f7da1304a9f37ee063",
+    "commits": [
+      {
+        "sha": "619f71b77bc1be7a9b1631605b9e9b070eacd8d2",
+        "type": "chore: mechanical preparations for docs: update architecture, engine comparisons, and system manifests",
+        "files": 13
+      }
+    ]
+  },
+  {
+    "original_sha": "92bcd9764b0dd1591c2dc97e16ff09cd8e0f3c77",
+    "commits": [
+      {
+        "sha": "7bbcf090abaa3c4759294b51755df59d6504073c",
+        "type": "core: contracts for feat(core): implement robust object/value definitions and engine context",
+        "files": 2
+      },
+      {
+        "sha": "ec7667e06d8730e9805e9400521419aa8dc14068",
+        "type": "parser: tree building for feat(core): implement robust object/value definitions and engine context",
+        "files": 2
+      },
+      {
+        "sha": "679b146664ed631e8ab52ffb4f716076ceef2949",
+        "type": "js: bindings for feat(core): implement robust object/value definitions and engine context",
+        "files": 2
+      },
+      {
+        "sha": "b8df4353ec105f34369f18305d43e16960592cc0",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c8841f1bc6256c83213e2f205999734686df17c1",
+    "commits": [
+      {
+        "sha": "c8b25ba44d44b8204ecadc49a8d9699d75c9280f",
+        "type": "parser: tree building for feat(layout): implement advanced grid, flex, and block layout engine logic",
+        "files": 1
+      },
+      {
+        "sha": "9b3defc00f4bd038bf5fbfb9bb44214107b21ca6",
+        "type": "layout: structure tracking for feat(layout): implement advanced grid, flex, and block layout engine logic",
+        "files": 14
+      }
+    ]
+  },
+  {
+    "original_sha": "058e0497355b44ff5eaaa01f6778f2a9b49f7dbc",
+    "commits": [
+      {
+        "sha": "7db32650a0a345d29cb4e500314d91406929ebd3",
+        "type": "css: cascade tracking for feat(rendering): implement base frame reuse and compositing policies",
+        "files": 4
+      },
+      {
+        "sha": "c724f83afab403678228198b70688af737bec7a6",
+        "type": "layout: structure tracking for feat(rendering): implement base frame reuse and compositing policies",
+        "files": 1
+      },
+      {
+        "sha": "2f806c49da3d7b4b22d1b67575eefd3277b1c41b",
+        "type": "render: pipeline tracking for feat(rendering): implement base frame reuse and compositing policies",
+        "files": 16
+      },
+      {
+        "sha": "08d1c286569e634ce11066e6ae64731e0d46164e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2772ab5d0e46fcb496644a645bcae0948ca42e37",
+    "commits": [
+      {
+        "sha": "1cf930bc465dd770451cbf6599eba0b7131924a9",
+        "type": "chore: mechanical preparations for test: add comprehensive engine, layout, and WebAPI test suites",
+        "files": 1
+      },
+      {
+        "sha": "fa81c98b6efb6865b49cd42225faa97528e437b9",
+        "type": "test: validations for test: add comprehensive engine, layout, and WebAPI test suites",
+        "files": 44
+      },
+      {
+        "sha": "8e2c0c5a1ec73d487d55d78ba2338f488199f0cd",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "6c3bfcf6c8483208b653a9c77de40994d4cba3a6",
+    "commits": [
+      {
+        "sha": "af19e656126c1817047b479219694b86d299db48",
+        "type": "chore: mechanical preparations for Implement try...catch...finally, iterators, and logical operators in VM",
+        "files": 4
+      },
+      {
+        "sha": "907ff5d3136ad6983b91fde286a8ffc1563c25a5",
+        "type": "css: cascade tracking for Implement try...catch...finally, iterators, and logical operators in VM",
+        "files": 1
+      },
+      {
+        "sha": "845439ce4e43a2b4f34053b89fb1bfa69ece10a4",
+        "type": "js: bindings for Implement try...catch...finally, iterators, and logical operators in VM",
+        "files": 1
+      },
+      {
+        "sha": "622b5bb6c637586bf0e12f720cf50569aac699d7",
+        "type": "test: validations for Implement try...catch...finally, iterators, and logical operators in VM",
+        "files": 1
+      },
+      {
+        "sha": "08f0b5cc573c8c18a94d3923d6ebc3d41d8d0264",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a06a5152700da1413b88c70250a2eba409132920",
+    "commits": [
+      {
+        "sha": "8f4d61b0d127878bb15c1723489d4d1aae9a8f98",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "19062d3b6275551e8f577a20179461ed03fa035b",
+    "commits": [
+      {
+        "sha": "8499c0d69a2030203a0c461e486e7097f0339b19",
+        "type": "chore: mechanical preparations for docs: record JS-BC-21 destructuring bytecode tranche and verification",
+        "files": 2
+      }
+    ]
+  },
+  {
+    "original_sha": "635ce39d74c92f30cccaaa22f9aca8eb31984bb7",
+    "commits": [
+      {
+        "sha": "f89bb18180c04230141f0b11b350cf8cf51765b2",
+        "type": "test: validations for JS-BC-28: VM AST fallback for bytecode call/construct",
+        "files": 2
+      },
+      {
+        "sha": "0aa77afa22ba36c18c2af52f4c93ef50345caec1",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "7e1e7ca8251a738a7ed616e7ffc36bf417db5a1a",
+    "commits": [
+      {
+        "sha": "a6391af128a64606697af85517f1611fae38df37",
+        "type": "js: bindings for feat(fenengine): remove interpreter and enforce bytecode-only runtime paths",
+        "files": 4
+      },
+      {
+        "sha": "9e014b34cce863bf356f5c387431bd98e20f42da",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "9e2546a6ab16f39cabd6559b3a2705df202f74d2",
+    "commits": [
+      {
+        "sha": "2f03d24fe3cc0ecd39011ab0e0edc67a92bb3c16",
+        "type": "chore: mechanical preparations for build(conformance): add conformance, test262, and wpt runner projects",
+        "files": 5
+      },
+      {
+        "sha": "f776b2043c4a7fdb1f78af4e873794feafae3b3e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "9aea3b569b564e53f02114c186f8fd907a182575",
+    "commits": [
+      {
+        "sha": "19adf9579da853ab9ecf551fe83f6f02f402c0ec",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "c948218e9af1eb5133e4aa0161747535dc53532b",
+    "commits": [
+      {
+        "sha": "4a52c0a5d759914ff31a21d7ad1dfd2be191f28b",
+        "type": "core: contracts for Update JS Engine Core, Bytecode VM, and Types",
+        "files": 1
+      },
+      {
+        "sha": "3211305f1a6a32abeaa6276733570ebc32c2060c",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "cf260f565239fc135838d257adfdbfcd7a9e7ec7",
+    "commits": [
+      {
+        "sha": "6bdd7e2b1f4dfedf7ae9b70dd413da4bda238f24",
+        "type": "dom: model tracking for Update DOM Wrapper API and Event Integration",
+        "files": 10
+      },
+      {
+        "sha": "30e568589ea799c817497a7d25c9347a16a0b4f1",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "dbca033290f472cc418e1a916d1b92ad255338c2",
+    "commits": [
+      {
+        "sha": "a77315dbdd9e32a530e35b5dab3a2d69684b6aa6",
+        "type": "chore: mechanical preparations for Update Test suites: WPT, Test262, and Unit tests",
+        "files": 1
+      },
+      {
+        "sha": "5c88d615cb57a4931bd4fabe399ff0d8ca95b03a",
+        "type": "test: validations for Update Test suites: WPT, Test262, and Unit tests",
+        "files": 5
+      },
+      {
+        "sha": "9cc5b85ec7fa4d25b8b90ed9d30aaa08ebbf195c",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "4b3f8553183d6d1d6000f3866f23fd317ebc7bc6",
+    "commits": [
+      {
+        "sha": "25f47e318d8581b5d240b86651e86492afc1c20c",
+        "type": "chore: mechanical preparations for Add fengine audit scan output 03042026",
+        "files": 1
+      }
+    ]
+  },
+  {
+    "original_sha": "1edbc7858855b8c1784b01c25926747819cb46ac",
+    "commits": [
+      {
+        "sha": "3e67e526d96c37894d1454d084fa5b762d990891",
+        "type": "chore: mechanical preparations for docs(audit): record zero-empty-catch milestone and line recheck artifacts",
+        "files": 5
+      }
+    ]
+  },
+  {
+    "original_sha": "7987473323da3e543bbd0fec38a535f204034549",
+    "commits": [
+      {
+        "sha": "7d647599aa4ca37f118a14056f4ae0e1f9f319ec",
+        "type": "chore: mechanical preparations for feat(sal-pal): implement Security and Platform Abstraction Layers",
+        "files": 1
+      },
+      {
+        "sha": "afbf5c867278671b02c1aed492ec1e6d5c050e45",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2f5a824720a05ef75db899c6104a195dd7218a75",
+    "commits": [
+      {
+        "sha": "dfd0c3976dfd06ac1469802e3092753c14d15a8d",
+        "type": "ui: host wiring for feat(sandbox): Windows AppContainer + Job Object process sandboxing",
+        "files": 1
+      },
+      {
+        "sha": "d190db29f8bfdf61bb73fbd7ee05988502612e9f",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8bd8719bd50ea6a8df903bdd98f2f073007d62d7",
+    "commits": [
+      {
+        "sha": "199f8e91345454fdd00528220e5fa13c13905751",
+        "type": "chore: mechanical preparations for feat(core): add conformance and security scaffolding",
+        "files": 2
+      },
+      {
+        "sha": "f3f91931497a7746654542ffc91d0035ff0df682",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "47696f56c033181c9c6a517b06d8a35a4b86a3dc",
+    "commits": [
+      {
+        "sha": "657d548f7202b2cd793f418f043ea8b209d4c07d",
+        "type": "chore: mechanical preparations for feat(webidl): add generator and binding outputs",
+        "files": 3
+      },
+      {
+        "sha": "7f0f2e1b6de33179cd134ef7db5cc120a654c0b1",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8550509d053346ea27a19597b491357a9b6def61",
+    "commits": [
+      {
+        "sha": "2ec8f7e0c42d0861fdd09822395537346adb78c5",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "aadf344d5d2bdf1d07c2aa1464884ed8d0c05057",
+    "commits": [
+      {
+        "sha": "15489699bfc84329d10988e7d035f2716fd28d8c",
+        "type": "parser: tree building for feat(dom): harden wrappers events and rendering paths",
+        "files": 1
+      },
+      {
+        "sha": "143d5f56a244206005d2fedd91836b32a125bcbc",
+        "type": "dom: model tracking for feat(dom): harden wrappers events and rendering paths",
+        "files": 15
+      },
+      {
+        "sha": "24bf50bed9500cd960daeabbe83001313329104c",
+        "type": "render: pipeline tracking for feat(dom): harden wrappers events and rendering paths",
+        "files": 2
+      },
+      {
+        "sha": "d8a12acbc882058634246814150811024ca52067",
+        "type": "js: bindings for feat(dom): harden wrappers events and rendering paths",
+        "files": 2
+      },
+      {
+        "sha": "acb0780e86de863a90f0b4789aa1c42e02a97457",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "001d06fa555ee5051b064d2941c277a2332015df",
+    "commits": [
+      {
+        "sha": "8e847c8558e26dd194ff52afbe2305ad31c06722",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8261e060a647e716eb70b38cae88c94f500e5887",
+    "commits": [
+      {
+        "sha": "7930e5d9f63cbcb32f953273fe87c32d7e67c451",
+        "type": "ui: host wiring for feat(host): extend isolation devtools and conformance runners",
+        "files": 22
+      },
+      {
+        "sha": "a199f6dcf8a1bc63899646c520210ab9ab1294bc",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "7d09a05166b78122e47e39e1c15271434041fd75",
+    "commits": [
+      {
+        "sha": "6e082aa79a421c2118b5b64cbc77769a9aa99dff",
+        "type": "chore: mechanical preparations for test: add regression coverage across engine host and web APIs",
+        "files": 1
+      },
+      {
+        "sha": "bae82fcb76146bac374e244de9ac4488dd9336a1",
+        "type": "test: validations for test: add regression coverage across engine host and web APIs",
+        "files": 27
+      }
+    ]
+  },
+  {
+    "original_sha": "d6668c3f1b53b42c3d02b169af47424894ef0c51",
+    "commits": [
+      {
+        "sha": "c156c370c0428ee97a617a69f053f6a1e5658f50",
+        "type": "chore: mechanical preparations for docs: refresh architecture tasks and verification notes",
+        "files": 23
+      }
+    ]
+  },
+  {
+    "original_sha": "b6e5df026c2238766501c8560fc54c693c9adf90",
+    "commits": [
+      {
+        "sha": "48e867f5a5f7c3a93a6f1c08a95daf4014f06982",
+        "type": "test: validations for fix(parser): close tagged template and early-error gaps",
+        "files": 2
+      },
+      {
+        "sha": "8d2e8bd52f534002f76d514daa9cd1143026c6ec",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "77778b3b58756052b55f9dcc7aab372df4c92e86",
+    "commits": [
+      {
+        "sha": "3cca64ee725bf2af3d0f933d92ae885df979e1e4",
+        "type": "dom: model tracking for feat(dom): add font loading and highlight api surfaces",
+        "files": 4
+      },
+      {
+        "sha": "fd97123e2650fa8a33dcaadc9e579b9acbef43ac",
+        "type": "test: validations for feat(dom): add font loading and highlight api surfaces",
+        "files": 2
+      },
+      {
+        "sha": "a39ba748a41cd81bfbec12156808ee190c1e93f4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "d0b7ee5d3197bb4cdbb6fd2d028ddb08bd4f03ad",
+    "commits": [
+      {
+        "sha": "f463ce7ad6372e0430f7b39fd75607da7c5d4906",
+        "type": "chore: mechanical preparations for feat(wpt): expand headless runner coverage and triage",
+        "files": 2
+      },
+      {
+        "sha": "2fadb5c3cbd63f81c312427a469b96adbd3971ef",
+        "type": "test: validations for feat(wpt): expand headless runner coverage and triage",
+        "files": 1
+      },
+      {
+        "sha": "65910a5f7cb81e92430c867054b635471c724c9f",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "04d39cbcab4f1fd7189d466d3b8d39cf997d03ce",
+    "commits": [
+      {
+        "sha": "36ea62d8ea1a2b774ba40706a321da31ffa4c252",
+        "type": "core: contracts for feat(runtime): extend host interop and builtin compliance",
+        "files": 1
+      },
+      {
+        "sha": "b674fdd2a2c5f42e0506d483b451709b5b63d1e8",
+        "type": "js: bindings for feat(runtime): extend host interop and builtin compliance",
+        "files": 3
+      },
+      {
+        "sha": "087eb990e7d0f45ced97f9ac8177c0f80af117c8",
+        "type": "test: validations for feat(runtime): extend host interop and builtin compliance",
+        "files": 4
+      },
+      {
+        "sha": "72149eaff094e41dde740bf5eebaed76f273ba9b",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "86a1e86cdf1ed0c211f862ca4c1e3d00a9f7f844",
+    "commits": [
+      {
+        "sha": "c28775292825b405e9359444c42abdf6725a303a",
+        "type": "test: validations for feat(parser): expand bytecode and module compliance",
+        "files": 4
+      },
+      {
+        "sha": "27795809e482e69e575ce1893193691972e9b818",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "3e77031404df14e6f8838ee6404b19ba2760e284",
+    "commits": [
+      {
+        "sha": "ef689930b1e87139389022a02e32348dd9e2264b",
+        "type": "js: bindings for feat(scripting): update JavaScript Engine, VM, parser and runtime with robust tests",
+        "files": 1
+      },
+      {
+        "sha": "f57cf4975511a46b58384493628b6f4cc8131c3d",
+        "type": "test: validations for feat(scripting): update JavaScript Engine, VM, parser and runtime with robust tests",
+        "files": 3
+      },
+      {
+        "sha": "f0f5bc100d99bf163396de1ca9c542b8e28817d6",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "0dae836d94bc8e8f6c7067e49f4ceded6f1e5e61",
+    "commits": [
+      {
+        "sha": "ddafe232a88036e0e2ed53960351c6c0cf3cd06b",
+        "type": "chore: mechanical preparations for docs: update system manifest volumes and codebase analysis",
+        "files": 3
+      }
+    ]
+  },
+  {
+    "original_sha": "f413ad83a00577783a0b6c3903d66288b3877e61",
+    "commits": [
+      {
+        "sha": "9d3976605b73bc8222c9e649972a0102d0a8396e",
+        "type": "test: validations for fix(js): harden parser and bytecode for minified bundles",
+        "files": 2
+      },
+      {
+        "sha": "cf468c02c5563bdf766def3c15d489a4dec2bfd6",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "64d2b59fc14ac0413a7fa2c74dc9f7591597824b",
+    "commits": [
+      {
+        "sha": "9ad3abb133035fde73f594cccd81eba07a7cd77b",
+        "type": "chore: mechanical preparations for Engine/Core: Refine Javascript engine, VM, proxy and runtime semantics",
+        "files": 1
+      },
+      {
+        "sha": "0bbb49784d4aaa77f7731c3863beb0fb709a9167",
+        "type": "core: contracts for Engine/Core: Refine Javascript engine, VM, proxy and runtime semantics",
+        "files": 1
+      },
+      {
+        "sha": "07a32a553cc01c43b89254ed2f75f67308d722b8",
+        "type": "js: bindings for Engine/Core: Refine Javascript engine, VM, proxy and runtime semantics",
+        "files": 3
+      },
+      {
+        "sha": "d975aad1e903e98b398352d526d8474b2f5edaa2",
+        "type": "test: validations for Engine/Core: Refine Javascript engine, VM, proxy and runtime semantics",
+        "files": 11
+      },
+      {
+        "sha": "598cec4082c0f1b768542350f80a25a89abbf9a6",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b2c479d14c53a3e9099e554caa1979a9107bc2eb",
+    "commits": [
+      {
+        "sha": "3674649e4567f53b4d117766079add1e2a37b1ce",
+        "type": "css: cascade tracking for Engine/Rendering: Enhance SKIA renderers, Paint Tree and state managers",
+        "files": 1
+      },
+      {
+        "sha": "34dc93cabfddd8591e9a07437c65db106a95d9ec",
+        "type": "render: pipeline tracking for Engine/Rendering: Enhance SKIA renderers, Paint Tree and state managers",
+        "files": 9
+      },
+      {
+        "sha": "2c22a6ea91837fe0fcefd2c9d06a20c2a544fd9d",
+        "type": "ui: host wiring for Engine/Rendering: Enhance SKIA renderers, Paint Tree and state managers",
+        "files": 1
+      },
+      {
+        "sha": "75f8b6f22efe7e0337d23457a21096fae1244ec4",
+        "type": "test: validations for Engine/Rendering: Enhance SKIA renderers, Paint Tree and state managers",
+        "files": 4
+      }
+    ]
+  },
+  {
+    "original_sha": "1e7d038c2024c2f8d2423849a3cbedc675e607a1",
+    "commits": [
+      {
+        "sha": "28d66c24482bf901524d7b6be1769d83b995a10e",
+        "type": "chore: mechanical preparations for Engine/APIs: Implement HistoryBridge, Observers and resolve unit tests",
+        "files": 1
+      },
+      {
+        "sha": "80ec950feb2d028ab352bbbedad38fde98cdb21a",
+        "type": "test: validations for Engine/APIs: Implement HistoryBridge, Observers and resolve unit tests",
+        "files": 4
+      },
+      {
+        "sha": "ec579ffc48c446bfa442484abe04ec743437bcda",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "2f6563a6159231c9bfa534ebf91d174e3a8dfbac",
+    "commits": [
+      {
+        "sha": "9332681fddbb7541c7f2e609ce29c1b421bd597b",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "89a51729069e59694dd344d1c04c837a76535258",
+    "commits": [
+      {
+        "sha": "2da0e229c92107897546e8a5e4d5659cc357a2fb",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "10fa0f85e5e6864d29bd65fb572cb3706174123f",
+    "commits": [
+      {
+        "sha": "53c5fd15b16bcbb89d35f33f58391d4b453905f0",
+        "type": "ui: host wiring for Expand DevTools: add debugger domain, sources panel, network DTOs",
+        "files": 3
+      },
+      {
+        "sha": "70e0ff5cbf9e22c8978627c5ab2ca5dce2f1fa4e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "891e6ef913c0b302fa871a1af9a42bcc52c4e325",
+    "commits": [
+      {
+        "sha": "a4b0d593328d4d0f1564052a8e1a8dbe412d30ed",
+        "type": "test: validations for Add engine audit, promise conformance, and test262 runner tests",
+        "files": 3
+      }
+    ]
+  },
+  {
+    "original_sha": "1b59f3ac36fdad63d53aa0fdde962aaafa4e467e",
+    "commits": [
+      {
+        "sha": "5d9fd29b4421b3086bdfe8a5924a13eedca653f1",
+        "type": "test: validations for Add JS execution limits: instruction count and memory caps",
+        "files": 1
+      },
+      {
+        "sha": "abaf8c27a8b4bc2dc02558240165020e1a779636",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "e997d8fb11b7c8b1467442716c8a8cf0dbd97d5a",
+    "commits": [
+      {
+        "sha": "5df5f06542891f84570f9e961f1f9c97b0ef75e6",
+        "type": "chore: mechanical preparations for Update documentation for engine and devtools changes",
+        "files": 3
+      },
+      {
+        "sha": "54aa69159dbe3ae5e66016c4950fb424879b80ca",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f067ebd88bb2c334d6ceb0da039f59795b68097c",
+    "commits": [
+      {
+        "sha": "9562dc75dfbb8150017d3187606c17c082339842",
+        "type": "chore: mechanical preparations for docs: record service worker promise audit closure",
+        "files": 2
+      }
+    ]
+  },
+  {
+    "original_sha": "0b1849f75a6a6c0bce5dca6097059b7351fd6c3d",
+    "commits": [
+      {
+        "sha": "cba06ff3bd60afcb0a380061f22e3a5d12604773",
+        "type": "js: bindings for fenengine: canonicalize runtime promise and fetch paths",
+        "files": 1
+      },
+      {
+        "sha": "f2e46c6e2a23313385f23b3917d794ffec8ca551",
+        "type": "test: validations for fenengine: canonicalize runtime promise and fetch paths",
+        "files": 1
+      },
+      {
+        "sha": "893bdda67b46651b7e621dd8410baecbf42dfdfb",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "f70c2e8e47d3c588ef7dd17a36a14c653965fe01",
+    "commits": [
+      {
+        "sha": "6bd0b6b269eb013f8d2ad8fad09648e38a7f8893",
+        "type": "js: bindings for fenengine: remove simulated media runtime surfaces",
+        "files": 1
+      },
+      {
+        "sha": "89b60afbaaf3e5ee28671e0247b30d6ef90cc8c7",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "b31dd7220eb1a0f3690513ce99719564226f5852",
+    "commits": [
+      {
+        "sha": "b1676cf01d26b3dc5ee68587e8af02a1cf205f20",
+        "type": "chore: mechanical preparations for fenengine: harden bootstrap, runtime policy, and vm safety",
+        "files": 1
+      },
+      {
+        "sha": "2f5bc1a293a6809c7b6cd80dff401ffa7d36ac9c",
+        "type": "dom: model tracking for fenengine: harden bootstrap, runtime policy, and vm safety",
+        "files": 2
+      },
+      {
+        "sha": "96c12a6276e7e46d9c1ee62d73cb5cdd0e57c438",
+        "type": "js: bindings for fenengine: harden bootstrap, runtime policy, and vm safety",
+        "files": 4
+      },
+      {
+        "sha": "05dc75c85437088edaa6c0b5f8f425305031b647",
+        "type": "ui: host wiring for fenengine: harden bootstrap, runtime policy, and vm safety",
+        "files": 1
+      },
+      {
+        "sha": "7eeaa4be06d7e2d164f0573acd91a732a39fd83c",
+        "type": "test: validations for fenengine: harden bootstrap, runtime policy, and vm safety",
+        "files": 3
+      },
+      {
+        "sha": "67f4be02e7173fd3378c5e14f76c7f7be38955a4",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "544026c4f16385db8102be5a5d37af22520740ae",
+    "commits": [
+      {
+        "sha": "ce2627f90f2aa752e440dacb49b3fa2ae6afc04c",
+        "type": "chore: mechanical preparations for refactor(tooling): move browser tooling out of FenBrowser.Host",
+        "files": 7
+      },
+      {
+        "sha": "bc7f10bcc9159fffeeb931b0f3d9e17bca7b1282",
+        "type": "render: pipeline tracking for refactor(tooling): move browser tooling out of FenBrowser.Host",
+        "files": 2
+      },
+      {
+        "sha": "198b7acbd33a3a116529fe325ca013417847f64e",
+        "type": "js: bindings for refactor(tooling): move browser tooling out of FenBrowser.Host",
+        "files": 1
+      },
+      {
+        "sha": "7698c877a70570a53129cc830d1824d701602357",
+        "type": "ui: host wiring for refactor(tooling): move browser tooling out of FenBrowser.Host",
+        "files": 8
+      },
+      {
+        "sha": "a44d3c4f6de0aad1f3666701db1c6ed543cb8da7",
+        "type": "test: validations for refactor(tooling): move browser tooling out of FenBrowser.Host",
+        "files": 1
+      },
+      {
+        "sha": "d732369c79c98c546af448aacad01b00d86346b8",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8a4ddccd1c6430c9db42def549f944e8ce1b8fc0",
+    "commits": [
+      {
+        "sha": "8ca323a48540e78ced31a6735d3cdd34d6739249",
+        "type": "parser: tree building for refactor(parsing): make FenBrowser.Core the single HTML stack",
+        "files": 1
+      },
+      {
+        "sha": "23d84db2fb3cf256922be77c466085a8504f5622",
+        "type": "dom: model tracking for refactor(parsing): make FenBrowser.Core the single HTML stack",
+        "files": 1
+      },
+      {
+        "sha": "5c31b7adc6f6516e08575486f0bc21bb985b8498",
+        "type": "js: bindings for refactor(parsing): make FenBrowser.Core the single HTML stack",
+        "files": 1
+      },
+      {
+        "sha": "26cf532f81f911ff7f74e65ddec2bc5747f96636",
+        "type": "test: validations for refactor(parsing): make FenBrowser.Core the single HTML stack",
+        "files": 2
+      },
+      {
+        "sha": "a0d5301af7cbc6e40f328a1a912597c13ecb7a71",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "21060557d859749e22d62a8cc68e8c19680891a8",
+    "commits": [
+      {
+        "sha": "d1be46cb5fa5a022512981020f0828c0f95b48d5",
+        "type": "render: pipeline tracking for feat(core): harden DOM and engine lifecycle contracts",
+        "files": 1
+      },
+      {
+        "sha": "ddc2e8dde50f576d33ff37657b845dedb07f1d64",
+        "type": "test: validations for feat(core): harden DOM and engine lifecycle contracts",
+        "files": 6
+      },
+      {
+        "sha": "c77709837bd3f9cbbabdb4ec9570c1c4d163af89",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "a1fe8db5d6405490416c097d931236e5232a6f3b",
+    "commits": [
+      {
+        "sha": "ac43a9f682864bf4584f172461aec1d877268b5b",
+        "type": "render: pipeline tracking for feat(renderer): add backend-safe perf benchmark gates",
+        "files": 5
+      },
+      {
+        "sha": "4e12af219d969bae48d72e7c36ff061c80254883",
+        "type": "test: validations for feat(renderer): add backend-safe perf benchmark gates",
+        "files": 2
+      },
+      {
+        "sha": "73c3c948619308d6b60555b8218522aa9916d03e",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "986c5acc8a276c988dd31173d1246b29fa06bbed",
+    "commits": [
+      {
+        "sha": "0b7beb9ee67ff60d7a06d19d9ccc4d1fb0d452fe",
+        "type": "test: validations for core: unify browser surface headers and cookies",
+        "files": 4
+      },
+      {
+        "sha": "a7f0ec00e40ed963270b28f46aa31f2ee36c8721",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "def75deb1baef1aeb82762e0253bf73547d5024b",
+    "commits": [
+      {
+        "sha": "0d14d3e070f5449ae6bced58ae1cbe03526defe5",
+        "type": "dom: model tracking for engine: sync runtime with browser surface",
+        "files": 1
+      },
+      {
+        "sha": "26fdc4b5c14ddcabbb00c137781a23cb889af6b8",
+        "type": "css: cascade tracking for engine: sync runtime with browser surface",
+        "files": 1
+      },
+      {
+        "sha": "49c66fa1f6166567759586cc6578d62002892ea4",
+        "type": "render: pipeline tracking for engine: sync runtime with browser surface",
+        "files": 2
+      },
+      {
+        "sha": "46f96370daf0fdd21f61bd39e97a8f736cd00a09",
+        "type": "js: bindings for engine: sync runtime with browser surface",
+        "files": 2
+      },
+      {
+        "sha": "5f4132abea09fb0cc6f8816afbcceda67f32aa99",
+        "type": "ui: host wiring for engine: sync runtime with browser surface",
+        "files": 3
+      },
+      {
+        "sha": "9c4178010ae708aeefe70d7fb7ef1e945bff0a0e",
+        "type": "test: validations for engine: sync runtime with browser surface",
+        "files": 2
+      },
+      {
+        "sha": "dcdd5c2bc3c6474e150caf64903b534a189ca055",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "8f1e70f3482dc6af336d9582d88a554ac9e5579b",
+    "commits": [
+      {
+        "sha": "65e0facdf47df31cbea943b642ff00db2f665fd7",
+        "type": "css: cascade tracking for engine: harden layout and paint regressions",
+        "files": 3
+      },
+      {
+        "sha": "694aea88954669753618b2ff6e23efa7a28cb022",
+        "type": "layout: structure tracking for engine: harden layout and paint regressions",
+        "files": 8
+      },
+      {
+        "sha": "b56da4b924bf57aba837512420e5fb289a44349e",
+        "type": "render: pipeline tracking for engine: harden layout and paint regressions",
+        "files": 7
+      },
+      {
+        "sha": "33860007aeb450cdf3f0b56115509271a42e6586",
+        "type": "test: validations for engine: harden layout and paint regressions",
+        "files": 7
+      },
+      {
+        "sha": "7c8cc8433b007cb0cb94162a5c8fa91ae664f071",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "abbd3240b4d0c997d34d06261c926c746307fb58",
+    "commits": [
+      {
+        "sha": "5363072998e4e1d85062320074d8da0d39a258f4",
+        "type": "chore: mechanical preparations for docs: remove obsolete audit reports",
+        "files": 17
+      },
+      {
+        "sha": "2e3ee5aa075f9e034839dc75aee47548287b6f11",
+        "type": "test: validations for docs: remove obsolete audit reports",
+        "files": 1
+      },
+      {
+        "sha": "ca2a1630cdeb267958fc0a21fb39f6f619d69fc8",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "3fbcdd76d68a5b8e74cdf556e3fbee0109b7e9ea",
+    "commits": [
+      {
+        "sha": "9868314ed0daf52fd3b42fdf5bb86252323afe09",
+        "type": "dom: model tracking for engine: harden DOM event dispatch semantics",
+        "files": 6
+      },
+      {
+        "sha": "921d9821b70ad3238af8eda83c396feca84a637b",
+        "type": "js: bindings for engine: harden DOM event dispatch semantics",
+        "files": 1
+      },
+      {
+        "sha": "f24b6607fb4945e53c9689209a97ce8b0b956235",
+        "type": "test: validations for engine: harden DOM event dispatch semantics",
+        "files": 3
+      }
+    ]
+  },
+  {
+    "original_sha": "25884411ded74ae182a2c85f65d059a34fd9eec1",
+    "commits": [
+      {
+        "sha": "17db7e65d01d9705883d4978de6c98f82bf35063",
+        "type": "core: contracts for engine: add runtime compatibility shims for web workloads",
+        "files": 1
+      },
+      {
+        "sha": "c02c15f7633678165dc1194ff7ab056bb8301d71",
+        "type": "dom: model tracking for engine: add runtime compatibility shims for web workloads",
+        "files": 1
+      },
+      {
+        "sha": "85c67754d759135992ce07d53a98226f06ffcc95",
+        "type": "layout: structure tracking for engine: add runtime compatibility shims for web workloads",
+        "files": 1
+      },
+      {
+        "sha": "4cc30caa155034bc46883d4a179910bb8fe67273",
+        "type": "render: pipeline tracking for engine: add runtime compatibility shims for web workloads",
+        "files": 1
+      },
+      {
+        "sha": "d76edfb3ae8ec544eab49e12ab604280b7d69979",
+        "type": "js: bindings for engine: add runtime compatibility shims for web workloads",
+        "files": 4
+      },
+      {
+        "sha": "389473b3c6600da7dc6d579b4a31fc745031c6c1",
+        "type": "test: validations for engine: add runtime compatibility shims for web workloads",
+        "files": 6
+      },
+      {
+        "sha": "1400070d4eee546ac70aac8b3e335fb66af31d99",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "bc66db6f17b146f7f8fdf34fbb2a725b3a8b5882",
+    "commits": [
+      {
+        "sha": "ad030400fb9b01c55b02171e43bec9a08440ef55",
+        "type": "chore: mechanical preparations for perf: cut google.com first-render latency by bounding CSS/JS hot path",
+        "files": 3
+      },
+      {
+        "sha": "0ae57088edc2940aeab0d80bbf2ac970144c0544",
+        "type": "parser: tree building for perf: cut google.com first-render latency by bounding CSS/JS hot path",
+        "files": 1
+      },
+      {
+        "sha": "4acc625866814807078944ec66db0d65da5cf0c6",
+        "type": "css: cascade tracking for perf: cut google.com first-render latency by bounding CSS/JS hot path",
+        "files": 2
+      },
+      {
+        "sha": "5a4fe2f42b8345693978b0cd262ce58c712c507b",
+        "type": "js: bindings for perf: cut google.com first-render latency by bounding CSS/JS hot path",
+        "files": 2
+      }
+    ]
+  },
+  {
+    "original_sha": "eba723b4f576573fa9591abf3bb424ad354a1a58",
+    "commits": [
+      {
+        "sha": "622ed279f673754e0ad5239edb89b42f62de9ec0",
+        "type": "parser: tree building for feat(css): implement structured CascadeKey and StyleSet for robust CSS modeling",
+        "files": 1
+      },
+      {
+        "sha": "dd45739cc65318ee48c7195af84e0a9bfa137bba",
+        "type": "css: cascade tracking for feat(css): implement structured CascadeKey and StyleSet for robust CSS modeling",
+        "files": 12
+      },
+      {
+        "sha": "aa9165678834402d0289aa53c0668b66c108a54b",
+        "type": "test: validations for feat(css): implement structured CascadeKey and StyleSet for robust CSS modeling",
+        "files": 4
+      }
+    ]
+  },
+  {
+    "original_sha": "4de3689ca54b0293daad36ce1a43c0b5f3385cd0",
+    "commits": [
+      {
+        "sha": "6eabf3b5ccbc9f99add1da67e654c3cee373ab75",
+        "type": "layout: structure tracking for feat(layout): introduce TextWhitespaceClassifier and TableFormattingContext",
+        "files": 16
+      },
+      {
+        "sha": "a585afbfdec5a123c4fa16f40dfc34d090b3d50f",
+        "type": "test: validations for feat(layout): introduce TextWhitespaceClassifier and TableFormattingContext",
+        "files": 7
+      }
+    ]
+  },
+  {
+    "original_sha": "48c9badc9c7b41422f54f0a237985a17872f15a5",
+    "commits": [
+      {
+        "sha": "bac5f121274984dfdc4184ca92afece691421868",
+        "type": "chore: mechanical preparations for feat(render): optimize Skia rendering pipelines and PaintTree nodes",
+        "files": 2
+      },
+      {
+        "sha": "a369315507ccc41fd9bf4b2c06eb5a280df35249",
+        "type": "render: pipeline tracking for feat(render): optimize Skia rendering pipelines and PaintTree nodes",
+        "files": 11
+      },
+      {
+        "sha": "e64444ede8efbf06b5925350e501a450d7a6c212",
+        "type": "test: validations for feat(render): optimize Skia rendering pipelines and PaintTree nodes",
+        "files": 8
+      },
+      {
+        "sha": "cb3bf2d64be5290f164119cc45f552346adfbf24",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  },
+  {
+    "original_sha": "ec6a5f94087a76eb8bd4eed7e7821d6736191795",
+    "commits": [
+      {
+        "sha": "150b6f2a413ac0b2fe9f9e8ceb97da5d70d7b498",
+        "type": "parser: tree building for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 2
+      },
+      {
+        "sha": "530abc2d352c4de744c89db0a760f73e74d548f0",
+        "type": "dom: model tracking for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 4
+      },
+      {
+        "sha": "f4790f533e01fa93d79380a49fe39c44bc613e4a",
+        "type": "render: pipeline tracking for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 1
+      },
+      {
+        "sha": "4a3d811b57f3a5aadf7c3d57f2bb14710e1d311b",
+        "type": "js: bindings for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 1
+      },
+      {
+        "sha": "9da8054006d245fad3eca11af0be09dc56b84752",
+        "type": "ui: host wiring for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 1
+      },
+      {
+        "sha": "931b20d169002c52f1471708dac81d7dfd202fca",
+        "type": "test: validations for feat(dom): expand DOM element wrappers and HTML tokenizer",
+        "files": 6
+      },
+      {
+        "sha": "b1feb8ed07c1711c1f6a9b9a40e5e409cb5e4427",
+        "type": "remainder",
+        "tag": ""
+      }
+    ]
+  }
+]
