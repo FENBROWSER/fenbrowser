@@ -6865,3 +6865,23 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `dom_dump.txt`,
     - `logs/fenbrowser_20260417_012005.log`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`11/11`) on `2026-04-17`.
+
+## 2.225 Google Access-Trouble Fallback Banner Removal (2026-04-17)
+
+- Scope:
+  - Fixed recurrence of the visible fallback text banner (“If you're having trouble accessing Google Search … send feedback”) after submit and safe-mode changes.
+  - Handles cases where this banner appears as explicit visible DOM content, not only hidden fallback blocks.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - Added `RemoveGoogleAccessTroubleBanners(...)` helper:
+      - active only for Google hosts,
+      - removes elements whose decoded text matches `trouble accessing Google Search` + fallback action text (`click here` / `send feedback`).
+    - Wired helper into no-JS fallback sanitization flow and marks DOM as mutated so CSS is recomputed in the same pass.
+  - `FenBrowser.Tests/Engine/CustomHtmlEngineFallbackPromotionTests.cs`
+    - Added regressions:
+      - removes banner on Google hosts,
+      - does not remove same text on non-Google hosts.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`13/13`) on `2026-04-17`.

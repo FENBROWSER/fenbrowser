@@ -30,6 +30,17 @@ namespace FenBrowser.Tests.Engine
             return Assert.IsType<bool>(result);
         }
 
+        private static int InvokeRemoveGoogleAccessTroubleBanners(Node domRoot, Uri baseUri)
+        {
+            var method = typeof(CustomHtmlEngine).GetMethod(
+                "RemoveGoogleAccessTroubleBanners",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+            var result = method.Invoke(null, new object[] { domRoot, baseUri });
+            return Assert.IsType<int>(result);
+        }
+
         private static Element BuildHiddenFallbackCandidate()
         {
             var root = new Element("div");
@@ -70,6 +81,32 @@ namespace FenBrowser.Tests.Engine
             var fallback = Assert.IsType<Element>(root.ChildNodes[0]);
             var style = fallback.GetAttribute("style") ?? string.Empty;
             Assert.DoesNotContain("display:none", style, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void RemoveGoogleAccessTroubleBanners_RemovesTroubleMessageOnGoogleHosts()
+        {
+            var root = new Element("div");
+            var banner = new Element("div");
+            banner.TextContent = "If you're having trouble accessing Google Search, please click here, or send feedback.";
+            root.AppendChild(banner);
+
+            var removed = InvokeRemoveGoogleAccessTroubleBanners(root, new Uri("https://www.google.com/"));
+            Assert.Equal(1, removed);
+            Assert.Empty(root.ChildNodes);
+        }
+
+        [Fact]
+        public void RemoveGoogleAccessTroubleBanners_DoesNotRemoveOnNonGoogleHosts()
+        {
+            var root = new Element("div");
+            var banner = new Element("div");
+            banner.TextContent = "If you're having trouble accessing Google Search, please click here, or send feedback.";
+            root.AppendChild(banner);
+
+            var removed = InvokeRemoveGoogleAccessTroubleBanners(root, new Uri("https://example.test/"));
+            Assert.Equal(0, removed);
+            Assert.Single(root.ChildNodes);
         }
     }
 }

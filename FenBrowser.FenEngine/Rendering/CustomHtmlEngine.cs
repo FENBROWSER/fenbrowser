@@ -481,6 +481,49 @@ namespace FenBrowser.FenEngine.Rendering
                    host.Contains(".google.", StringComparison.Ordinal);
         }
 
+        private static int RemoveGoogleAccessTroubleBanners(Node domRoot, Uri baseUri)
+        {
+            if (domRoot == null || !IsGoogleHost(baseUri))
+            {
+                return 0;
+            }
+
+            var toRemove = new List<Element>();
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                var text = WebUtility.HtmlDecode(element.Text ?? string.Empty);
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                var hasTroubleMessage =
+                    text.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    text.IndexOf("having trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!hasTroubleMessage)
+                {
+                    continue;
+                }
+
+                var hasFallbackActionText =
+                    text.IndexOf("click here", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    text.IndexOf("send feedback", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!hasFallbackActionText)
+                {
+                    continue;
+                }
+
+                toRemove.Add(element);
+            }
+
+            foreach (var element in toRemove)
+            {
+                element.Remove();
+            }
+
+            return toRemove.Count;
+        }
+
         private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
         {
             if (noscriptElements == null)
@@ -2111,6 +2154,15 @@ namespace FenBrowser.FenEngine.Rendering
                             fallbackDomMutated = true;
                             FenLogger.Debug(
                                 $"[CustomHtmlEngine] Promoted {promotedFallbacks} hidden fallback block(s); removed {removedNoscriptBootstrap} encoded <noscript> bootstrap block(s)",
+                                LogCategory.Rendering);
+                        }
+
+                        var removedGoogleTroubleBanners = RemoveGoogleAccessTroubleBanners(dom, baseUri);
+                        if (removedGoogleTroubleBanners > 0)
+                        {
+                            fallbackDomMutated = true;
+                            FenLogger.Debug(
+                                $"[CustomHtmlEngine] Removed {removedGoogleTroubleBanners} Google access-trouble fallback banner block(s)",
                                 LogCategory.Rendering);
                         }
 
