@@ -4168,7 +4168,20 @@ pre {{
 
         public Task HandleKeyPress(string key)
         {
-            if (_focusedElement == null) return Task.CompletedTask;
+            if (_focusedElement == null)
+            {
+                var recovered = RecoverFocusedElementForTyping();
+                if (recovered == null)
+                {
+                    return Task.CompletedTask;
+                }
+
+                SetFocusedElementState(recovered, fromKeyboard: true);
+                bool recoveredIsContentEditable = string.Equals(recovered.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                var recoveredValue = recoveredIsContentEditable ? (recovered.TextContent ?? string.Empty) : GetTextEntryValue(recovered);
+                _cursorIndex = recoveredValue.Length;
+                _selectionAnchor = -1;
+            }
             
             try
             {
@@ -4360,6 +4373,63 @@ pre {{
             }
             
             return Task.CompletedTask;
+        }
+
+        private Element RecoverFocusedElementForTyping()
+        {
+            var fromLastClick = ResolveEditableCandidate(_lastClickTarget);
+            if (fromLastClick != null)
+            {
+                return fromLastClick;
+            }
+
+            var activeDom = _engine?.GetActiveDom();
+            var activeDocument = activeDom as Document ?? activeDom?.OwnerDocument;
+            var fromActiveElement = ResolveEditableCandidate(activeDocument?.ActiveElement);
+            if (fromActiveElement != null)
+            {
+                return fromActiveElement;
+            }
+
+            if (activeDom != null)
+            {
+                var firstEditable = activeDom
+                    .Descendants()
+                    .OfType<Element>()
+                    .FirstOrDefault(IsTextEntryElement);
+                if (firstEditable != null)
+                {
+                    return firstEditable;
+                }
+            }
+
+            return null;
+        }
+
+        private static Element ResolveEditableCandidate(Element candidate)
+        {
+            if (candidate == null)
+            {
+                return null;
+            }
+
+            if (IsTextEntryElement(candidate))
+            {
+                return candidate;
+            }
+
+            for (Element ancestor = candidate.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+            {
+                if (IsTextEntryElement(ancestor))
+                {
+                    return ancestor;
+                }
+            }
+
+            return candidate
+                .Descendants()
+                .OfType<Element>()
+                .FirstOrDefault(IsTextEntryElement);
         }
 
         public Task ReleaseActionsAsync()

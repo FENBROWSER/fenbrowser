@@ -6769,3 +6769,24 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 - Verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~InputOverlayColorTests" -v q`: pass (`1/1`) on `2026-04-17`.
+
+## 2.221 Wrapper-Click Typing Focus Recovery For Google-Style Search UIs (2026-04-17)
+
+- Scope:
+  - Hardened text input routing when keypress arrives with no active focused editable element.
+  - Targets wrapper-first DOM interaction patterns where click lands on a container while the real editable node is a descendant (`textarea`/`input`/`contenteditable`).
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+    - `HandleKeyPress(...)` now attempts focus recovery before early-returning on null `_focusedElement`.
+    - Added `RecoverFocusedElementForTyping()`:
+      - first tries `_lastClickTarget`,
+      - then active document `ActiveElement`,
+      - then first editable in active DOM as fallback.
+    - Added `ResolveEditableCandidate(...)` to resolve editable from direct candidate, ancestor chain, or descendants.
+  - `FenBrowser.Tests/Rendering/BrowserHostTextareaStateTests.cs`
+    - Fixed reflection map typing for current `_elementMap` shape (`Dictionary<string, Element>`).
+    - Added regression: `HandleKeyPress_RecoversFocusableTextareaFromLastClickWrapper`.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`4/4`) on `2026-04-17`.

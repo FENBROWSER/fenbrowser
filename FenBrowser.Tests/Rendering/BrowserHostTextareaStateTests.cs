@@ -45,12 +45,33 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal("fen", textarea.TextContent);
         }
 
+        [Fact]
+        public async Task HandleKeyPress_RecoversFocusableTextareaFromLastClickWrapper()
+        {
+            var host = new BrowserHost();
+            var wrapper = new Element("div");
+            var textarea = new Element("textarea");
+            textarea.SetAttribute("value", string.Empty);
+            textarea.TextContent = string.Empty;
+            wrapper.AppendChild(textarea);
+
+            SetPrivateField(host, "_lastClickTarget", wrapper);
+            SetPrivateField(host, "_focusedElement", null);
+
+            await host.HandleKeyPress("f");
+            await host.HandleKeyPress("e");
+            await host.HandleKeyPress("n");
+
+            Assert.Equal("fen", textarea.GetAttribute("value"));
+            Assert.Equal("fen", textarea.TextContent);
+        }
+
         private static void RegisterElement(BrowserHost host, string elementId, Element element)
         {
             var mapField = typeof(BrowserHost).GetField("_elementMap", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(mapField);
 
-            var elementMap = mapField!.GetValue(host) as Dictionary<string, Node>;
+            var elementMap = mapField!.GetValue(host) as Dictionary<string, Element>;
             Assert.NotNull(elementMap);
 
             elementMap![elementId] = element;
@@ -61,6 +82,13 @@ namespace FenBrowser.Tests.Rendering
             var focusedField = typeof(BrowserHost).GetField("_focusedElement", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(focusedField);
             focusedField!.SetValue(host, element);
+        }
+
+        private static void SetPrivateField(BrowserHost host, string fieldName, object value)
+        {
+            var field = typeof(BrowserHost).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            field!.SetValue(host, value);
         }
     }
 }
