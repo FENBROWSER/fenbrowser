@@ -161,10 +161,25 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         private static string ReadIdent(string input, ref int i)
         {
             var sb = new StringBuilder();
-            while (i < input.Length && IsIdentChar(input[i]))
+            while (i < input.Length)
             {
-                sb.Append(input[i]);
-                i++;
+                if (IsIdentChar(input[i]))
+                {
+                    sb.Append(input[i]);
+                    i++;
+                    continue;
+                }
+
+                if (input[i] == '\\')
+                {
+                    if (!TryReadEscapedCodePoint(input, ref i, out var escaped))
+                        break;
+
+                    sb.Append(escaped);
+                    continue;
+                }
+
+                break;
             }
             return sb.ToString();
         }
@@ -290,12 +305,56 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static bool IsIdentStart(char c)
         {
-            return char.IsLetter(c) || c == '_' || c == '-' || c > 127;
+            return char.IsLetter(c) || c == '_' || c == '-' || c == '\\' || c > 127;
         }
 
         private static bool IsIdentChar(char c)
         {
-            return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c > 127;
+            return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '\\' || c > 127;
+        }
+
+        private static bool TryReadEscapedCodePoint(string input, ref int i, out string escaped)
+        {
+            escaped = string.Empty;
+            if (i >= input.Length || input[i] != '\\')
+                return false;
+
+            i++;
+            if (i >= input.Length)
+                return false;
+
+            int hexStart = i;
+            int hexLen = 0;
+            while (i < input.Length && hexLen < 6 && IsHexDigit(input[i]))
+            {
+                i++;
+                hexLen++;
+            }
+
+            if (hexLen > 0)
+            {
+                var hex = input.Substring(hexStart, hexLen);
+                if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
+                    escaped = char.ConvertFromUtf32(Math.Clamp(codePoint, 0, 0x10FFFF));
+                else
+                    escaped = hex;
+
+                if (i < input.Length && char.IsWhiteSpace(input[i]))
+                    i++;
+
+                return true;
+            }
+
+            escaped = input[i].ToString();
+            i++;
+            return true;
+        }
+
+        private static bool IsHexDigit(char c)
+        {
+            return (c >= '0' && c <= '9') ||
+                   (c >= 'a' && c <= 'f') ||
+                   (c >= 'A' && c <= 'F');
         }
 
         // --- Parser ---

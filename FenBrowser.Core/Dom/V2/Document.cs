@@ -416,15 +416,71 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(qualifiedName))
                 throw new DomException("InvalidCharacterError", "Element name cannot be empty");
 
-            // Extract local name
+            if (!IsValidQualifiedName(qualifiedName))
+                throw new DomException("InvalidCharacterError", $"'{qualifiedName}' is not a valid qualified name");
+
             int colon = qualifiedName.IndexOf(':');
+            if (colon == 0 || colon == qualifiedName.Length - 1 || qualifiedName.IndexOf(':', colon + 1) >= 0)
+                throw new DomException("NamespaceError", $"'{qualifiedName}' is not a valid namespace-qualified name");
+
+            var prefix = colon >= 0 ? qualifiedName.Substring(0, colon) : null;
             var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
 
+            if (prefix != null && string.IsNullOrEmpty(namespaceUri))
+                throw new DomException("NamespaceError", "Qualified names with a prefix require a namespace URI");
+
+            if (string.Equals(prefix, "xml", StringComparison.Ordinal) &&
+                !string.Equals(namespaceUri, "http://www.w3.org/XML/1998/namespace", StringComparison.Ordinal))
+            {
+                throw new DomException("NamespaceError", "xml prefix requires the XML namespace");
+            }
+
+            if (string.Equals(prefix, "xmlns", StringComparison.Ordinal) &&
+                !string.Equals(namespaceUri, "http://www.w3.org/2000/xmlns/", StringComparison.Ordinal))
+            {
+                throw new DomException("NamespaceError", "xmlns prefix requires the XMLNS namespace");
+            }
+
+            if (string.Equals(namespaceUri, "http://www.w3.org/2000/xmlns/", StringComparison.Ordinal) &&
+                !string.Equals(prefix, "xmlns", StringComparison.Ordinal) &&
+                !string.Equals(qualifiedName, "xmlns", StringComparison.Ordinal))
+            {
+                throw new DomException("NamespaceError", "XMLNS namespace requires xmlns-qualified names");
+            }
+
             var el = new Element(localName, this, namespaceUri);
-            if (colon >= 0)
-                el.Prefix = qualifiedName.Substring(0, colon);
+            if (prefix != null)
+                el.Prefix = prefix;
 
             return el;
+        }
+
+        private static bool IsValidQualifiedName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+
+            var colonSeen = false;
+            for (int i = 0; i < name.Length; i++)
+            {
+                var c = name[i];
+                if (c == ':')
+                {
+                    if (colonSeen) return false;
+                    colonSeen = true;
+                    continue;
+                }
+
+                if (i == 0 || (i > 0 && name[i - 1] == ':'))
+                {
+                    if (!IsNameStartChar(c)) return false;
+                }
+                else if (!IsNameChar(c))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>

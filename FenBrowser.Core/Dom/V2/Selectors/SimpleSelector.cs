@@ -291,9 +291,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "last-child" => element.NextElementSibling == null,
                 "only-child" => element.PreviousElementSibling == null &&
                                 element.NextElementSibling == null,
-                "enabled" => !HasAttribute(element, "disabled"),
-                "disabled" => HasAttribute(element, "disabled"),
-                "checked" => HasAttribute(element, "checked"),
+                "enabled" => SupportsEnabledDisabledPseudoClass(element) && !HasAttribute(element, "disabled"),
+                "disabled" => SupportsEnabledDisabledPseudoClass(element) && HasAttribute(element, "disabled"),
+                "checked" => IsCheckedFormControl(element),
                 "required" => HasAttribute(element, "required"),
                 "optional" => !HasAttribute(element, "required"),
                 "read-only" => HasAttribute(element, "readonly"),
@@ -307,7 +307,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "defined" => !element.TagName.Contains('-') ||
                              StateProvider(element, "defined"),
                 // :visited — intentionally not tracked for privacy
-                "visited" => false,
+                "visited" => StateProvider(element, "visited"),
                 _ => false
             };
         }
@@ -315,6 +315,49 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         private static bool HasAttribute(Element el, string name)
         {
             return el.HasAttribute(name);
+        }
+
+        private static bool SupportsEnabledDisabledPseudoClass(Element element)
+        {
+            var tagName = element?.TagName;
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                return false;
+            }
+
+            return string.Equals(tagName, "INPUT", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "BUTTON", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "SELECT", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "TEXTAREA", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "FIELDSET", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsCheckedFormControl(Element element)
+        {
+            var tagName = element?.TagName;
+            if (string.IsNullOrWhiteSpace(tagName))
+            {
+                return false;
+            }
+
+            if (string.Equals(tagName, "OPTION", StringComparison.OrdinalIgnoreCase))
+            {
+                return HasAttribute(element, "selected");
+            }
+
+            if (!string.Equals(tagName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = element.GetAttribute("type");
+            if (!string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return HasAttribute(element, "checked");
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
