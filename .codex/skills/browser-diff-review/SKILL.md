@@ -1,3 +1,8 @@
+---
+name: browser-diff-review
+description: Review browser diffs for correctness, regression risk, architecture drift, and verification impact.
+---
+
 # Skill: browser-diff-review
 
 Use when:

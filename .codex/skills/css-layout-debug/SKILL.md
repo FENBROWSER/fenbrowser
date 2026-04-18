@@ -1,3 +1,8 @@
+---
+name: css-layout-debug
+description: Diagnose CSS and layout mismatches by locating the earliest broken rendering stage.
+---
+
 # Skill: css-layout-debug
 
 Use when:

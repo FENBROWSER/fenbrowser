@@ -1,3 +1,8 @@
+---
+name: js-runtime-triage
+description: Triage JavaScript runtime issues by isolating the first failing execution stage and applying focused fixes.
+---
+
 # Skill: js-runtime-triage
 
 Use when:

@@ -1,3 +1,8 @@
+---
+name: html-parser-triage
+description: Triage HTML parser issues by isolating tokenization/tree-construction failures with minimal scope.
+---
+
 # Skill: html-parser-triage
 
 Use when:

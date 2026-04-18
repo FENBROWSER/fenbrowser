@@ -1,3 +1,8 @@
+---
+name: docs-sync-fenbrowser
+description: Update only affected canonical FenBrowser docs when behavior, architecture, or workflow changes.
+---
+
 # Skill: docs-sync-fenbrowser
 
 Use when:

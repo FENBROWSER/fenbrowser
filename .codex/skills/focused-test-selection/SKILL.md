@@ -1,3 +1,8 @@
+---
+name: focused-test-selection
+description: Select the smallest meaningful build and test slice to verify a change with minimal cost.
+---
+
 # Skill: focused-test-selection
 
 Use when:

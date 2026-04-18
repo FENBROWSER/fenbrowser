@@ -1,3 +1,8 @@
+---
+name: render-regression-check
+description: Diagnose rendering regressions by finding and fixing the earliest broken stage with minimal scope.
+---
+
 # Skill: render-regression-check
 
 Use when:

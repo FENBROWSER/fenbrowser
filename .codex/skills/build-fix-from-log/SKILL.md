@@ -1,3 +1,8 @@
+---
+name: build-fix-from-log
+description: Triage build failures from logs and apply the smallest correct fix at the first meaningful error.
+---
+
 # Skill: build-fix-from-log
 
 Use when:
