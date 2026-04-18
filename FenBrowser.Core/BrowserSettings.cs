@@ -74,6 +74,18 @@ namespace FenBrowser.Core
 
         private static string GetDefaultLogPath()
         {
+            var workspaceRoot = FindWorkspaceRoot(SafeGetCurrentDirectory());
+            if (!string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                return Path.Combine(workspaceRoot, "logs");
+            }
+
+            workspaceRoot = FindWorkspaceRoot(AppContext.BaseDirectory);
+            if (!string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                return Path.Combine(workspaceRoot, "logs");
+            }
+
             try
             {
                 var cwd = Directory.GetCurrentDirectory();
@@ -88,6 +100,47 @@ namespace FenBrowser.Core
             }
 
             return Path.Combine(AppContext.BaseDirectory, "logs");
+        }
+
+        private static string SafeGetCurrentDirectory()
+        {
+            try
+            {
+                return Directory.GetCurrentDirectory();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string FindWorkspaceRoot(string startDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(startDirectory))
+            {
+                return null;
+            }
+
+            try
+            {
+                var current = new DirectoryInfo(startDirectory);
+                while (current != null)
+                {
+                    if (File.Exists(Path.Combine(current.FullName, "FenBrowser.sln")) ||
+                        Directory.Exists(Path.Combine(current.FullName, ".git")))
+                    {
+                        return current.FullName;
+                    }
+
+                    current = current.Parent;
+                }
+            }
+            catch
+            {
+                // Ignore and let caller fallback.
+            }
+
+            return null;
         }
     }
 

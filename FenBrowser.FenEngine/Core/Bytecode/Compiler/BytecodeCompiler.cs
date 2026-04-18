@@ -33,12 +33,15 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private bool _currentCompileIsStrict;
         private AstNode _compileRoot;
         private int _visitDepth;
-        // Production bundles routinely exceed small synthetic depth caps through
-        // nested expression trees and generated wrapper functions.
-        private const int MaxVisitDepth = 4096;
+        // Production bundles can contain deeply nested generated expression trees.
+        // Keep this high enough for realistic scripts; linear hot paths are flattened
+        // to avoid consuming CLR stack proportionally to chain length.
+        private const int MaxVisitDepth = 384;
         [ThreadStatic]
         private static int _compileDepth;
-        private const int MaxCompileDepth = 256;
+        // Nested function compilation can recurse through Compile(...) calls.
+        // Keep this bounded well below CLR stack exhaustion.
+        private const int MaxCompileDepth = 32;
         private int _syntheticNameCounter;
         private int _scopeDepth;
         private bool _insideBlock;
@@ -749,17 +752,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is MemberExpression memberExpr)
             {
-                Visit(memberExpr.Object);
-                int idx = AddConstant(FenValue.FromString(memberExpr.Property));
-                Emit(OpCode.LoadConst);
-                EmitInt32(idx);
-                Emit(OpCode.LoadProp);
+                if (!TryEmitLinearPropertyLoadChain(memberExpr))
+                {
+                    Visit(memberExpr.Object);
+                    int idx = AddConstant(FenValue.FromString(memberExpr.Property));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(idx);
+                    Emit(OpCode.LoadProp);
+                }
             }
             else if (node is IndexExpression indexExpr)
             {
-                Visit(indexExpr.Left);
-                Visit(indexExpr.Index);
-                Emit(OpCode.LoadProp);
+                if (!TryEmitLinearPropertyLoadChain(indexExpr))
+                {
+                    Visit(indexExpr.Left);
+                    Visit(indexExpr.Index);
+                    Emit(OpCode.LoadProp);
+                }
             }
             else if (node is PrefixExpression prefixExpr)
             {
@@ -769,6 +778,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else
                 {
+                    if (TryEmitLinearPrefixExpression(prefixExpr))
+                    {
+                    }
+                    else
+                    {
                     if (prefixExpr.Operator == "delete")
                     {
                         EmitDeleteExpression(prefixExpr.Right);
@@ -815,6 +829,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                                     break;
                             }
                         }
+                    }
                     }
                 }
             }
@@ -1339,6 +1354,167 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 _visitDepth--;
             }
+        }
+
+        private bool TryEmitLinearPrefixExpression(PrefixExpression prefixExpr)
+        {
+            if (prefixExpr == null)
+            {
+                return false;
+            }
+
+            var operators = new List<string>();
+            Expression current = prefixExpr;
+
+            while (current is PrefixExpression nested &&
+                   nested.Right != null &&
+                   nested.Operator != "++" &&
+                   nested.Operator != "--" &&
+                   nested.Operator != "delete" &&
+                   !(nested.Operator == "typeof" && nested.Right is Identifier))
+            {
+                if (!IsLinearPrefixOperator(nested.Operator))
+                {
+                    return false;
+                }
+
+                operators.Add(nested.Operator);
+                current = nested.Right;
+
+                if (operators.Count > MaxVisitDepth)
+                {
+                    throw new InvalidOperationException("Bytecode compiler recursion depth exceeded");
+                }
+            }
+
+            if (operators.Count <= 1)
+            {
+                return false;
+            }
+
+            Visit(current);
+            for (int i = operators.Count - 1; i >= 0; i--)
+            {
+                EmitPrefixUnaryOp(operators[i]);
+            }
+
+            return true;
+        }
+
+        private static bool IsLinearPrefixOperator(string op)
+        {
+            return op == "+" ||
+                   op == "-" ||
+                   op == "!" ||
+                   op == "~" ||
+                   op == "void" ||
+                   op == "typeof";
+        }
+
+        private void EmitPrefixUnaryOp(string op)
+        {
+            switch (op)
+            {
+                case "+": Emit(OpCode.ToNumber); break;
+                case "-": Emit(OpCode.Negate); break;
+                case "!": Emit(OpCode.LogicalNot); break;
+                case "~": Emit(OpCode.BitwiseNot); break;
+                case "void":
+                    Emit(OpCode.Pop);
+                    Emit(OpCode.LoadUndefined);
+                    break;
+                case "typeof":
+                    Emit(OpCode.Typeof);
+                    break;
+                default:
+                    throw new InvalidOperationException($"SyntaxError: Prefix operator '{op}' not supported.");
+            }
+        }
+
+        private bool TryEmitLinearPropertyLoadChain(AstNode node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            var steps = new List<PropertyLoadStep>();
+            AstNode current = node;
+
+            while (true)
+            {
+                if (current is MemberExpression member)
+                {
+                    if (member.Object == null || member.Property == null)
+                    {
+                        return false;
+                    }
+
+                    steps.Add(PropertyLoadStep.ForMember(member.Property));
+                    current = member.Object;
+                    continue;
+                }
+
+                if (current is IndexExpression index)
+                {
+                    if (index.Left == null || index.Index == null)
+                    {
+                        return false;
+                    }
+
+                    steps.Add(PropertyLoadStep.ForIndex(index.Index));
+                    current = index.Left;
+                    continue;
+                }
+
+                break;
+            }
+
+            // Mixed chains require preserving authored order; rebuild by unwinding from leaf.
+            if (steps.Count == 0)
+            {
+                return false;
+            }
+
+            Visit(current);
+            for (int i = steps.Count - 1; i >= 0; i--)
+            {
+                var step = steps[i];
+                if (step.IsComputed)
+                {
+                    Visit(step.IndexExpression);
+                }
+                else
+                {
+                    int idx = AddConstant(FenValue.FromString(step.PropertyName));
+                    Emit(OpCode.LoadConst);
+                    EmitInt32(idx);
+                }
+
+                Emit(OpCode.LoadProp);
+            }
+
+            return true;
+        }
+
+        private readonly struct PropertyLoadStep
+        {
+            public bool IsComputed { get; }
+            public string PropertyName { get; }
+            public Expression IndexExpression { get; }
+
+            private PropertyLoadStep(bool isComputed, string propertyName, Expression indexExpression)
+            {
+                IsComputed = isComputed;
+                PropertyName = propertyName;
+                IndexExpression = indexExpression;
+            }
+
+            public static PropertyLoadStep ForMember(string propertyName)
+                => new PropertyLoadStep(false, propertyName, null);
+
+            public static PropertyLoadStep ForIndex(Expression indexExpression)
+                => new PropertyLoadStep(true, null, indexExpression);
         }
 
         private bool TryEmitLinearInfixExpression(InfixExpression root)

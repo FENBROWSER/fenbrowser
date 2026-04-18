@@ -365,7 +365,7 @@ namespace FenBrowser.Core.Logging
                 // Fall back to AppContext below.
             }
 
-            return Path.Combine(AppContext.BaseDirectory, "logs");
+            return Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "logs");
         }
     }
     

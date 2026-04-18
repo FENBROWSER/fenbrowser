@@ -21,13 +21,26 @@ namespace FenBrowser.Core.Logging
                 return envRoot;
             }
 
-            var cwd = Directory.GetCurrentDirectory();
+            var cwd = SafeGetCurrentDirectory();
+            var workspaceFromCwd = FindWorkspaceRoot(cwd);
+            if (!string.IsNullOrWhiteSpace(workspaceFromCwd))
+            {
+                return workspaceFromCwd;
+            }
+
+            var appBase = AppContext.BaseDirectory;
+            var workspaceFromBase = FindWorkspaceRoot(appBase);
+            if (!string.IsNullOrWhiteSpace(workspaceFromBase))
+            {
+                return workspaceFromBase;
+            }
+
             if (!string.IsNullOrWhiteSpace(cwd))
             {
                 return cwd;
             }
 
-            return AppContext.BaseDirectory;
+            return appBase;
         }
 
         public static string GetLogsDirectory()
@@ -88,6 +101,47 @@ namespace FenBrowser.Core.Logging
             {
                 // Ignore diagnostics path setup failures.
             }
+        }
+
+        private static string SafeGetCurrentDirectory()
+        {
+            try
+            {
+                return Directory.GetCurrentDirectory();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string FindWorkspaceRoot(string startDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(startDirectory))
+            {
+                return null;
+            }
+
+            try
+            {
+                var current = new DirectoryInfo(startDirectory);
+                while (current != null)
+                {
+                    if (File.Exists(Path.Combine(current.FullName, "FenBrowser.sln")) ||
+                        Directory.Exists(Path.Combine(current.FullName, ".git")))
+                    {
+                        return current.FullName;
+                    }
+
+                    current = current.Parent;
+                }
+            }
+            catch
+            {
+                // Ignore and fall through to caller fallback.
+            }
+
+            return null;
         }
     }
 }

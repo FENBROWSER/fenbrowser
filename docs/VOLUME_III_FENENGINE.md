@@ -7113,3 +7113,34 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added regression coverage for stale-base-frame-age rejection.
 - Rationale:
   - Base-frame reuse must stay explicit and bounded so long-running pages do not accumulate stale assumptions across many repaint cycles.
+
+## 2.178 Bytecode Compiler Recursion Guard Hardening (2026-04-18)
+
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Lowered AST visit recursion ceiling from `4096` to `768` so compiler recursion fails early with a managed exception instead of hitting CLR stack overflow on very deep generated script trees.
+  - Lowered nested compiler invocation ceiling from `256` to `64` for deeply nested function-compilation chains.
+- `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+  - Added `Bytecode_CompilerVisitDepthGuard_ThrowsBeforeClrStackOverflow` to verify deep nested prefix-expression trees trigger the compiler depth guard deterministically.
+- Impact:
+  - Large sites with highly nested/minified bundles (including GitHub-class payloads) now degrade safely under pathological compile depth rather than crashing host process with `System.StackOverflowException`.
+
+## 2.234 Bytecode Visit Guard Tightening For GitHub-Class Bundles (2026-04-18)
+
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Tightened `MaxVisitDepth` from `1024` to `384` so deep AST recursion fails with deterministic managed guard exceptions before CLR stack exhaustion.
+  - Existing linear-chain lowering paths remain in place (`TryEmitLinearInfixExpression`, `TryEmitLinearPrefixExpression`, `TryEmitLinearPropertyLoadChain`) to keep valid production bundles compiling while reducing recursion risk.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~Bytecode_StackOverflowProtection_ShouldNotCrashHost|FullyQualifiedName~Bytecode_CompilerVisitDepthGuard_ThrowsBeforeClrStackOverflow" --verbosity minimal`
+    - passed (`2/2`) on `2026-04-18`.
+
+## 2.235 Diagnostics Path Normalization To `<root>/logs` (2026-04-18)
+
+- `FenBrowser.Core/Logging/DiagnosticPaths.cs`
+  - Added workspace-root discovery by walking up from current directory/base directory until `FenBrowser.sln` or `.git` is found.
+  - `GetWorkspaceRoot()` now prefers discovered workspace root over transient launch directories (for example `bin/Debug/net8.0`).
+- `FenBrowser.Core/BrowserSettings.cs`
+  - `LogSettings.GetDefaultLogPath()` now uses the same workspace-root discovery before falling back, ensuring default log output resolves to `<workspace>/logs`.
+- `FenBrowser.Core/Logging/StructuredLogger.cs`
+  - Fallback base path now anchors to `DiagnosticPaths.GetWorkspaceRoot()` instead of `AppContext.BaseDirectory`.
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Removed tiny-tree early return from debug screenshot capture so `debug_screenshot.png` is still emitted for diagnostics runs even when paint tree size is small.

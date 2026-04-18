@@ -304,6 +304,26 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_CompilerVisitDepthGuard_ThrowsBeforeClrStackOverflow()
+        {
+            Expression expr = new BooleanLiteral { Value = true };
+            for (int i = 0; i < 2000; i++)
+            {
+                expr = new PrefixExpression
+                {
+                    Operator = "!",
+                    Right = expr
+                };
+            }
+
+            var program = new Program();
+            program.Statements.Add(new ExpressionStatement { Expression = expr });
+
+            var ex = Assert.Throws<InvalidOperationException>(() => _compiler.Compile(program));
+            Assert.Contains("recursion depth exceeded", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void Bytecode_OperandStackOverflow_IsCatchableRangeError()
         {
             var args = string.Join(",", Enumerable.Repeat("0", 17000));

@@ -167,12 +167,6 @@ namespace FenBrowser.FenEngine.Rendering
                     return;
                 }
 
-                if (tree.NodeCount <= 2)
-                {
-                    FenLogger.Debug($"[SkiaRenderer] Skipping debug_screenshot.png capture due to tiny paint tree NodeCount={tree.NodeCount}", LogCategory.Rendering);
-                    return;
-                }
-
                 var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
                 if (!ShouldCaptureDebugScreenshot(screenshotPath, tree.NodeCount, viewport))
                 {
@@ -484,7 +478,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Interaction feedback (Focus Ring & Hover Highlight)
             if (node.IsHovered) DrawHoverHighlight(backend, node);
-            if (node.IsFocused) DrawFocusRing(backend, node);
+            if (node.IsFocused && ShouldDrawGenericFocusRing(node)) DrawFocusRing(backend, node);
             
             // Draw children in order (recursive traversal)
             if (node.Children != null)
@@ -587,6 +581,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             backend.DrawBorder(ringRect, borderStyle);
+        }
+
+        private static bool ShouldDrawGenericFocusRing(PaintNodeBase node)
+        {
+            if (node is TextPaintNode)
+            {
+                return false;
+            }
+
+            if (node.SourceNode is Element element)
+            {
+                var tag = element.TagName?.ToLowerInvariant();
+                if (tag is "input" or "textarea" or "select")
+                {
+                    return false;
+                }
+
+                if (element.Attr?.TryGetValue("contenteditable", out var editable) == true &&
+                    !string.Equals(editable, "false", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
         
         /// <summary>
