@@ -377,10 +377,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void HoistVarDeclarations(AstNode root)
         {
             var hoistedNames = new HashSet<string>(StringComparer.Ordinal);
+            var visited = new HashSet<AstNode>(ReferenceEqualityComparer.Instance);
 
-            void Collect(AstNode node)
+            void Collect(AstNode node, int depth)
             {
                 if (node == null)
+                {
+                    return;
+                }
+
+                if (depth > MaxVisitDepth)
+                {
+                    throw new InvalidOperationException($"Bytecode compiler hoist traversal depth exceeded ({MaxVisitDepth}).");
+                }
+
+                if (!visited.Add(node))
                 {
                     return;
                 }
@@ -390,13 +401,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     case Program program:
                         foreach (var statement in program.Statements)
                         {
-                            Collect(statement);
+                            Collect(statement, depth + 1);
                         }
                         break;
                     case BlockStatement block:
                         foreach (var statement in block.Statements)
                         {
-                            Collect(statement);
+                            Collect(statement, depth + 1);
                         }
                         break;
                     case LetStatement letStatement when letStatement.Kind == DeclarationKind.Var:
@@ -410,33 +421,33 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         {
                             hoistedNames.Add(forInStatement.Variable.Value);
                         }
-                        Collect(forInStatement.Body);
+                        Collect(forInStatement.Body, depth + 1);
                         break;
                     case ForOfStatement forOfStatement when forOfStatement.BindingKind == DeclarationKind.Var:
                         if (!string.IsNullOrEmpty(forOfStatement.Variable?.Value))
                         {
                             hoistedNames.Add(forOfStatement.Variable.Value);
                         }
-                        Collect(forOfStatement.Body);
+                        Collect(forOfStatement.Body, depth + 1);
                         break;
                     case IfStatement ifStatement:
-                        Collect(ifStatement.Consequence);
-                        Collect(ifStatement.Alternative);
+                        Collect(ifStatement.Consequence, depth + 1);
+                        Collect(ifStatement.Alternative, depth + 1);
                         break;
                     case WhileStatement whileStatement:
-                        Collect(whileStatement.Body);
+                        Collect(whileStatement.Body, depth + 1);
                         break;
                     case DoWhileStatement doWhileStatement:
-                        Collect(doWhileStatement.Body);
+                        Collect(doWhileStatement.Body, depth + 1);
                         break;
                     case ForStatement forStatement:
-                        Collect(forStatement.Init);
-                        Collect(forStatement.Body);
+                        Collect(forStatement.Init, depth + 1);
+                        Collect(forStatement.Body, depth + 1);
                         break;
                     case TryStatement tryStatement:
-                        Collect(tryStatement.Block);
-                        Collect(tryStatement.CatchBlock);
-                        Collect(tryStatement.FinallyBlock);
+                        Collect(tryStatement.Block, depth + 1);
+                        Collect(tryStatement.CatchBlock, depth + 1);
+                        Collect(tryStatement.FinallyBlock, depth + 1);
                         break;
                     case SwitchStatement switchStatement:
                         if (switchStatement.Cases != null)
@@ -450,13 +461,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
                                 foreach (var statement in switchCase.Consequent)
                                 {
-                                    Collect(statement);
+                                    Collect(statement, depth + 1);
                                 }
                             }
                         }
                         break;
                     case LabeledStatement labeledStatement:
-                        Collect(labeledStatement.Body);
+                        Collect(labeledStatement.Body, depth + 1);
                         break;
                     case FunctionDeclarationStatement:
                     case FunctionLiteral:
@@ -465,7 +476,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
             }
 
-            Collect(root);
+            Collect(root, 0);
 
             foreach (var hoistedName in hoistedNames)
             {
@@ -4697,10 +4708,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             var lexicalBlockers = new Stack<HashSet<string>>();
             var parameterBlockers = new Stack<HashSet<string>>();
+            var visited = new HashSet<AstNode>(ReferenceEqualityComparer.Instance);
 
-            void Traverse(AstNode node, bool isTopLevel)
+            void Traverse(AstNode node, bool isTopLevel, int depth)
             {
                 if (node == null)
+                {
+                    return;
+                }
+
+                if (depth > MaxVisitDepth)
+                {
+                    throw new InvalidOperationException($"Bytecode compiler Annex B traversal depth exceeded ({MaxVisitDepth}).");
+                }
+
+                if (!visited.Add(node))
                 {
                     return;
                 }
@@ -4712,7 +4734,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         parameterBlockers.Push(new HashSet<string>(StringComparer.Ordinal));
                         foreach (var statement in program.Statements)
                         {
-                            Traverse(statement, true);
+                            Traverse(statement, true, depth + 1);
                         }
                         parameterBlockers.Pop();
                         lexicalBlockers.Pop();
@@ -4722,7 +4744,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         lexicalBlockers.Push(CollectImmediateLexicalNames(block.Statements));
                         foreach (var statement in block.Statements)
                         {
-                            Traverse(statement, false);
+                            Traverse(statement, false, depth + 1);
                         }
                         lexicalBlockers.Pop();
                         break;
@@ -4760,42 +4782,42 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         break;
 
                     case IfStatement ifStatement:
-                        Traverse(ifStatement.Consequence, false);
-                        Traverse(ifStatement.Alternative, false);
+                        Traverse(ifStatement.Consequence, false, depth + 1);
+                        Traverse(ifStatement.Alternative, false, depth + 1);
                         break;
 
                     case WhileStatement whileStatement:
-                        Traverse(whileStatement.Body, false);
+                        Traverse(whileStatement.Body, false, depth + 1);
                         break;
 
                     case DoWhileStatement doWhileStatement:
-                        Traverse(doWhileStatement.Body, false);
+                        Traverse(doWhileStatement.Body, false, depth + 1);
                         break;
 
                     case ForStatement forStatement:
-                        Traverse(forStatement.Body, false);
+                        Traverse(forStatement.Body, false, depth + 1);
                         break;
 
                     case ForInStatement forInStatement:
-                        Traverse(forInStatement.Body, false);
+                        Traverse(forInStatement.Body, false, depth + 1);
                         break;
 
                     case ForOfStatement forOfStatement:
-                        Traverse(forOfStatement.Body, false);
+                        Traverse(forOfStatement.Body, false, depth + 1);
                         break;
 
                     case TryStatement tryStatement:
                     {
-                        Traverse(tryStatement.Block, false);
+                        Traverse(tryStatement.Block, false, depth + 1);
                         if (tryStatement.CatchBlock != null)
                         {
                             var catchNames = new HashSet<string>(StringComparer.Ordinal);
                             AddLexicalName(catchNames, tryStatement.CatchParameter);
                             lexicalBlockers.Push(catchNames);
-                            Traverse(tryStatement.CatchBlock, false);
+                            Traverse(tryStatement.CatchBlock, false, depth + 1);
                             lexicalBlockers.Pop();
                         }
-                        Traverse(tryStatement.FinallyBlock, false);
+                        Traverse(tryStatement.FinallyBlock, false, depth + 1);
                         break;
                     }
 
@@ -4815,14 +4837,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                             lexicalBlockers.Push(CollectImmediateLexicalNames(switchCase.Consequent));
                             foreach (var statement in switchCase.Consequent)
                             {
-                                Traverse(statement, false);
+                                Traverse(statement, false, depth + 1);
                             }
                             lexicalBlockers.Pop();
                         }
                         break;
 
                     case LabeledStatement labeledStatement:
-                        Traverse(labeledStatement.Body, false);
+                        Traverse(labeledStatement.Body, false, depth + 1);
                         break;
 
                     case FunctionLiteral functionLiteral:
@@ -4837,14 +4859,14 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         }
 
                         parameterBlockers.Push(parameterNames);
-                        Traverse(functionLiteral.Body, true);
+                        Traverse(functionLiteral.Body, true, depth + 1);
                         parameterBlockers.Pop();
                         break;
                     }
                 }
             }
 
-            Traverse(root, true);
+            Traverse(root, true, 0);
         }
 
         private void VisitFunctionWithInferredName(AstNode node, string inferredName)

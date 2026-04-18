@@ -324,6 +324,8 @@ namespace FenBrowser.Host
         private void OnActiveTabChanged(BrowserTab tab)
         {
             _processIsolation?.OnTabActivated(tab);
+            _isDragging = false;
+            InputManager.Instance.ReleaseCapture();
 
             if (_currentActiveTab != null)
             {
@@ -346,6 +348,12 @@ namespace FenBrowser.Host
                 WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
                 _statusBar.SetLoading(tab.IsLoading);
                 tab.Browser.RequestRepaint();
+
+                if (tab.Url.StartsWith("fen://newtab", StringComparison.OrdinalIgnoreCase))
+                {
+                    InputManager.Instance.RequestFocus(_toolbar.AddressBar);
+                    _toolbar.AddressBar.SelectAll();
+                }
             }
             else
             {

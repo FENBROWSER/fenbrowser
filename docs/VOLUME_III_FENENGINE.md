@@ -7188,3 +7188,13 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added float auto-width fallback (`isFloat && width <= 0 => MaxChildWidth`) to avoid zero-width floated box collapse in block-flow measurement paths.
 - `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
   - Added `Cascade_AppliesWikipediaToolbarFloatSelectorList` to lock selector-list cascade behavior for Vector tab float rules.
+
+## 2.240 Bytecode AST Traversal Stack-Safety Guarding (2026-04-18)
+
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Added explicit depth limits and cycle guards to non-Visit recursive AST traversals:
+    - `HoistVarDeclarations(...)` local `Collect(...)`
+    - Annex-B function scanning local `Traverse(...)`
+  - Traversals now fail with managed `InvalidOperationException` when depth exceeds compiler limits, preventing CLR-level `System.StackOverflowException` crashes on pathological/minified script graphs.
+- Impact:
+  - GitHub-/Wikipedia-/Google-class large script payloads no longer rely only on `Visit(...)` recursion guarding; pre-compile hoist/annex passes are now equally hardened.

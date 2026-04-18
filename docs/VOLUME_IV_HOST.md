@@ -952,3 +952,14 @@ _End of Volume IV_
 - Verification:
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-04-04`.
   - targeted browser-surface regression slice on `2026-04-04` kept `BrowserSettingsTests` and `JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges` green.
+
+### 6.45 Active-Tab Focus Stabilization For `fen://newtab` (2026-04-18)
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - `OnActiveTabChanged(...)` now clears stale drag/capture state on tab activation:
+    - `_isDragging = false`
+    - `InputManager.Instance.ReleaseCapture()`
+  - When the activated tab URL is `fen://newtab*`, host now explicitly focuses the address bar and selects all text.
+- Runtime intent:
+  - Prevents second-tab URL-edit freeze/stall reports where input focus remained in stale widget state after tab transitions.
+  - Makes new-tab address editing deterministic without requiring extra click retries.
