@@ -1094,26 +1094,30 @@ public class BrowserIntegration
             canvas.Save();
             canvas.Translate(0, -_scrollY);
 
-            var frameResult = _renderer.RenderFrame(new RenderFrameRequest
+            RenderFrameResult frameResult;
+            using (_browser.EnterImageLoaderContext())
             {
-                Root = _root,
-                Canvas = canvas,
-                Styles = _styles,
-                Viewport = scrolledViewport,
-                BaseUrl = _browser.CurrentUri?.AbsoluteUri,
-                OnLayoutUpdated = (contentSize, overlays) =>
+                frameResult = _renderer.RenderFrame(new RenderFrameRequest
                 {
-                    _contentHeight = contentSize.Height;
-                    frameOverlays = overlays != null
-                        ? new List<InputOverlayData>(overlays)
-                        : new List<InputOverlayData>();
-                },
-                SeparateLayoutViewport = viewportSize,
-                HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
-                InvalidationReason = invalidationReasons,
-                RequestedBy = requestedBy,
-                EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
-            });
+                    Root = _root,
+                    Canvas = canvas,
+                    Styles = _styles,
+                    Viewport = scrolledViewport,
+                    BaseUrl = _browser.CurrentUri?.AbsoluteUri,
+                    OnLayoutUpdated = (contentSize, overlays) =>
+                    {
+                        _contentHeight = contentSize.Height;
+                        frameOverlays = overlays != null
+                            ? new List<InputOverlayData>(overlays)
+                            : new List<InputOverlayData>();
+                    },
+                    SeparateLayoutViewport = viewportSize,
+                    HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
+                    InvalidationReason = invalidationReasons,
+                    RequestedBy = requestedBy,
+                    EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
+                });
+            }
 
             canvas.Restore();
 

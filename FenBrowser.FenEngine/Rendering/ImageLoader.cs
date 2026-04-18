@@ -75,6 +75,41 @@ namespace FenBrowser.FenEngine.Rendering
 
     public static class ImageLoader
     {
+        public sealed class ImageLoaderRequestContext
+        {
+            public string OwnerId { get; set; }
+            public Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
+            public Action RequestRepaint { get; set; }
+            public Action RequestRelayout { get; set; }
+        }
+
+        private sealed class ContextScope : IDisposable
+        {
+            private readonly ImageLoaderRequestContext _previousContext;
+            private bool _disposed;
+
+            public ContextScope(ImageLoaderRequestContext context)
+            {
+                _previousContext = _ambientContext.Value;
+                _ambientContext.Value = context;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _ambientContext.Value = _previousContext;
+                _disposed = true;
+            }
+        }
+
+        private static readonly AsyncLocal<ImageLoaderRequestContext> _ambientContext = new AsyncLocal<ImageLoaderRequestContext>();
+        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>> _pendingLoadContexts =
+            new ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>>(StringComparer.Ordinal);
+
         // Main cache with metadata for memory tracking
         private static readonly ConcurrentDictionary<string, ImageCacheEntry> _memoryCache = 
             new ConcurrentDictionary<string, ImageCacheEntry>();
@@ -135,6 +170,27 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Callback to request a full re-layout when image dimensions are resolved
         public static Action RequestRelayout { get; set; }
+
+        public static IDisposable EnterRequestContext(ImageLoaderRequestContext context)
+        {
+            return new ContextScope(context);
+        }
+
+        public static Task<byte[]> FetchBytesForCurrentContextAsync(Uri uri)
+        {
+            if (uri == null)
+            {
+                return Task.FromResult<byte[]>(null);
+            }
+
+            var fetcher = _ambientContext.Value?.FetchBytesAsync ?? FetchBytesAsync;
+            if (fetcher == null)
+            {
+                return Task.FromResult<byte[]>(null);
+            }
+
+            return fetcher(uri);
+        }
 
         // Emits authoritative pending network-image load count changes.
         public static event Action<int> PendingLoadCountChanged;
@@ -230,7 +286,7 @@ namespace FenBrowser.FenEngine.Rendering
                     kvp.Value.LoadStarted = true;
                     if (TryRegisterPendingLoad(kvp.Key))
                     {
-                        _ = LoadImageAsync(kvp.Key, isLazy: true);
+                        _ = LoadImageAsync(kvp.Key, isLazy: true, context: GetPendingLoadContext(kvp.Key));
                     }
                 }
             }
@@ -250,6 +306,7 @@ namespace FenBrowser.FenEngine.Rendering
         public static void ClearLazyRegistry()
         {
             _lazyRegistry.Clear();
+            _pendingLoadContexts.Clear();
             lock (_pendingLock)
             {
                 _pendingLoads.Clear();
@@ -683,8 +740,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// Request a debounced repaint. Multiple calls within DEBOUNCE_DELAY_MS
         /// will result in only a single repaint after the delay.
         /// </summary>
-        private static void RequestDebouncedRepaint()
+        private static void RequestDebouncedRepaint(string url = null, ImageLoaderRequestContext fallbackContext = null)
         {
+            var callbackTargets = CollectPendingLoadContexts(url, fallbackContext);
             lock (_timerLock)
             {
                 _repaintPending = true;
@@ -698,15 +756,16 @@ namespace FenBrowser.FenEngine.Rendering
                         if (_repaintPending)
                         {
                             _repaintPending = false;
-                            RequestRepaint?.Invoke();
+                            InvokeRepaint(callbackTargets);
                         }
                     }
                 }, null, DEBOUNCE_DELAY_MS, Timeout.Infinite);
             }
         }
 
-        private static void RequestDebouncedRelayout()
+        private static void RequestDebouncedRelayout(string url = null, ImageLoaderRequestContext fallbackContext = null)
         {
+            var callbackTargets = CollectPendingLoadContexts(url, fallbackContext);
             lock (_relayoutTimerLock)
             {
                 _relayoutPending = true;
@@ -719,10 +778,91 @@ namespace FenBrowser.FenEngine.Rendering
                         if (_relayoutPending)
                         {
                             _relayoutPending = false;
-                            RequestRelayout?.Invoke();
+                            InvokeRelayout(callbackTargets);
                         }
                     }
                 }, null, DEBOUNCE_DELAY_MS, Timeout.Infinite);
+            }
+        }
+
+        private static List<ImageLoaderRequestContext> CollectPendingLoadContexts(string url, ImageLoaderRequestContext fallbackContext)
+        {
+            var contexts = new Dictionary<string, ImageLoaderRequestContext>(StringComparer.Ordinal);
+
+            if (!string.IsNullOrWhiteSpace(url) && _pendingLoadContexts.TryGetValue(url, out var urlContexts))
+            {
+                foreach (var context in urlContexts.Values)
+                {
+                    if (context == null)
+                    {
+                        continue;
+                    }
+
+                    var ownerId = string.IsNullOrWhiteSpace(context.OwnerId) ? "_default" : context.OwnerId;
+                    contexts[ownerId] = context;
+                }
+            }
+
+            if (fallbackContext != null)
+            {
+                var ownerId = string.IsNullOrWhiteSpace(fallbackContext.OwnerId) ? "_default" : fallbackContext.OwnerId;
+                contexts[ownerId] = fallbackContext;
+            }
+
+            return contexts.Values.ToList();
+        }
+
+        private static void InvokeRepaint(List<ImageLoaderRequestContext> contexts)
+        {
+            if (contexts != null && contexts.Count > 0)
+            {
+                foreach (var context in contexts)
+                {
+                    try
+                    {
+                        context?.RequestRepaint?.Invoke();
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return;
+            }
+
+            try
+            {
+                RequestRepaint?.Invoke();
+            }
+            catch
+            {
+            }
+        }
+
+        private static void InvokeRelayout(List<ImageLoaderRequestContext> contexts)
+        {
+            if (contexts != null && contexts.Count > 0)
+            {
+                foreach (var context in contexts)
+                {
+                    try
+                    {
+                        context?.RequestRelayout?.Invoke();
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return;
+            }
+
+            try
+            {
+                RequestRelayout?.Invoke();
+            }
+            catch
+            {
             }
         }
 
@@ -780,6 +920,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     FenLogger.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
+                    CapturePendingLoadContext(url);
                     RegisterLazyImage(url, elementBounds.Value);
                     return null; // Renderer should show placeholder
                 }
@@ -811,6 +952,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Either not lazy, or in viewport - load immediately
             FenLogger.Debug($"[ImageLoader] Queueing load for: {url}", LogCategory.Rendering);
+            CapturePendingLoadContext(url);
             if (!TryRegisterPendingLoad(url))
             {
                 FenLogger.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
@@ -818,7 +960,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             FenLogger.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
-            _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight);
+            _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight, GetPendingLoadContext(url));
             return null;
         }
 
@@ -941,7 +1083,12 @@ namespace FenBrowser.FenEngine.Rendering
             return (bmp, isLazy);
         }
 
-        private static async Task LoadImageAsync(string url, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
+        private static async Task LoadImageAsync(
+            string url,
+            bool isLazy = false,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            ImageLoaderRequestContext context = null)
         {
             try
             {
@@ -964,7 +1111,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return;
                 }
 
-                var fetcher = FetchBytesAsync;
+                var fetcher = context?.FetchBytesAsync ?? _ambientContext.Value?.FetchBytesAsync ?? FetchBytesAsync;
                 if (fetcher == null)
                 {
                     FenLogger.Warn("[ImageLoader] FetchBytesAsync delegate is not configured; skipping image load", LogCategory.Rendering);
@@ -983,8 +1130,8 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (TryStoreDecodedBitmap(url, bitmap, isLazy))
                     {
-                        RequestDebouncedRepaint();
-                        RequestDebouncedRelayout();
+                        RequestDebouncedRepaint(url, context);
+                        RequestDebouncedRelayout(url, context);
                     }
                     else
                     {
@@ -1139,6 +1286,54 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
+        private static void CapturePendingLoadContext(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return;
+            }
+
+            var context = _ambientContext.Value;
+            if (context == null)
+            {
+                return;
+            }
+
+            var ownerId = string.IsNullOrWhiteSpace(context.OwnerId) ? "_default" : context.OwnerId;
+            var contexts = _pendingLoadContexts.GetOrAdd(
+                url,
+                _ => new ConcurrentDictionary<string, ImageLoaderRequestContext>(StringComparer.Ordinal));
+            contexts[ownerId] = context;
+        }
+
+        private static ImageLoaderRequestContext GetPendingLoadContext(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            if (!_pendingLoadContexts.TryGetValue(url, out var contexts) || contexts == null || contexts.IsEmpty)
+            {
+                return _ambientContext.Value;
+            }
+
+            if (_ambientContext.Value != null)
+            {
+                return _ambientContext.Value;
+            }
+
+            foreach (var entry in contexts.Values)
+            {
+                if (entry != null)
+                {
+                    return entry;
+                }
+            }
+
+            return null;
+        }
+
         private static bool TryRegisterPendingLoad(string url)
         {
             if (string.IsNullOrEmpty(url))
@@ -1178,6 +1373,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 changed = _pendingLoads.Remove(url);
             }
+            _pendingLoadContexts.TryRemove(url, out _);
 
             if (changed)
             {

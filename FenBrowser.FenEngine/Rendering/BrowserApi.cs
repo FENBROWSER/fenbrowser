@@ -224,6 +224,8 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Stack<Element> _frameContextStack = new Stack<Element>();
         private Element _currentFrameElement;
         private Action<string> _fontLoadedHandler;
+        private readonly ImageLoader.ImageLoaderRequestContext _imageLoaderContext;
+        private readonly string _imageLoaderContextId = Guid.NewGuid().ToString("N");
 
         // External renderer reference: BrowserIntegration injects the actual renderer used for
         // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
@@ -881,40 +883,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 TryInvokeNavigationLifecycleChanged(transition);
             };
-            
-            ImageLoader.FetchBytesAsync = async (uri) =>
-            {
-                if (uri == null) return null;
-                var fetchUri = MapRuntimeUri(uri);
-                return await _resources.FetchBytesAsync(
-                        fetchUri,
-                        referer: _current,
-                        accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                        secFetchDest: "image")
-                    .ConfigureAwait(false);
-            };
-
-            // Wire up ImageLoader to trigger RepaintReady when images finish loading
-            ImageLoader.RequestRepaint = () =>
-            {
-                try
-                {
-                    FenLogger.Debug($"[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
-                    RepaintReady?.Invoke(this, null);
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
-            };
-
-            ImageLoader.RequestRelayout = () =>
-            {
-                try
-                {
-                    FenLogger.Debug($"[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
-                    var dom = _engine.GetActiveDom();
-                    if (dom != null) RepaintReady?.Invoke(this, dom);
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
-            };
+            _imageLoaderContext = CreateImageLoaderContext();
 
             // Wire up FontRegistry to trigger full relayout/repaint when fonts finish loading
             _fontLoadedHandler = (family) =>
@@ -931,6 +900,62 @@ namespace FenBrowser.FenEngine.Rendering
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
             };
             FontRegistry.FontLoaded += _fontLoadedHandler;
+        }
+
+        private ImageLoader.ImageLoaderRequestContext CreateImageLoaderContext()
+        {
+            return new ImageLoader.ImageLoaderRequestContext
+            {
+                OwnerId = _imageLoaderContextId,
+                FetchBytesAsync = async uri =>
+                {
+                    if (uri == null)
+                    {
+                        return null;
+                    }
+
+                    var fetchUri = MapRuntimeUri(uri);
+                    return await _resources.FetchBytesAsync(
+                            fetchUri,
+                            referer: _current,
+                            accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            secFetchDest: "image")
+                        .ConfigureAwait(false);
+                },
+                RequestRepaint = () =>
+                {
+                    try
+                    {
+                        FenLogger.Debug("[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
+                        RepaintReady?.Invoke(this, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}");
+                    }
+                },
+                RequestRelayout = () =>
+                {
+                    try
+                    {
+                        FenLogger.Debug("[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
+                        var dom = _engine.GetActiveDom();
+                        if (dom != null)
+                        {
+                            RepaintReady?.Invoke(this, dom);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}");
+                    }
+                }
+            };
+        }
+
+        public IDisposable EnterImageLoaderContext()
+        {
+            return ImageLoader.EnterRequestContext(_imageLoaderContext);
         }
 
         private Uri MapRuntimeUri(Uri uri)
@@ -1068,7 +1093,10 @@ namespace FenBrowser.FenEngine.Rendering
                     try
                     {
                         var viewportHint = GetRenderViewportHint();
-                        elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                        using (EnterImageLoaderContext())
+                        {
+                            elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                        }
                     }
                     finally
                     {
@@ -1325,7 +1353,10 @@ pre {{
                 try
                 {
                     var viewportHint = GetRenderViewportHint();
-                    elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                    using (EnterImageLoaderContext())
+                    {
+                        elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                    }
                 }
                 finally
                 {

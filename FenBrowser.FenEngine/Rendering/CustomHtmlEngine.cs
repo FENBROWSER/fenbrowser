@@ -984,19 +984,15 @@ namespace FenBrowser.FenEngine.Rendering
                         await gate.WaitAsync().ConfigureAwait(false);
                         try
                         {
-                            var bytesFetcher = ImageLoader.FetchBytesAsync;
-                            if (bytesFetcher != null)
+                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs).ConfigureAwait(false);
+                            if (data != null && data.Length > 0)
                             {
                                 try
                                 {
-                                    var data = await bytesFetcher(abs).ConfigureAwait(false);
-                                    if (data != null && data.Length > 0)
+                                    using var memory = new MemoryStream(data, writable: false);
+                                    if (await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, memory).ConfigureAwait(false))
                                     {
-                                        using var memory = new MemoryStream(data, writable: false);
-                                        if (await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, memory).ConfigureAwait(false))
-                                        {
-                                            return;
-                                        }
+                                        return;
                                     }
                                 }
                                 catch (Exception ex)
