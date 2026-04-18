@@ -314,6 +314,41 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task Cascade_AppliesWikipediaToolbarFloatSelectorList()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .vector-menu-tabs .mw-list-item,.vector-page-toolbar-container .vector-dropdown { float: left; margin-bottom: 0; }
+    </style>
+</head>
+<body>
+    <div class='vector-page-toolbar-container'>
+        <div class='vector-menu-tabs'>
+            <ul class='vector-menu-content-list'>
+                <li id='ca-view' class='selected vector-tab-noicon mw-list-item'>Read</li>
+                <li id='ca-viewsource' class='vector-tab-noicon mw-list-item'>View source</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://en.wikipedia.org"), null);
+
+            var readTab = ById(doc, "ca-view");
+            var sourceTab = ById(doc, "ca-viewsource");
+
+            Assert.Equal("left", computed[readTab].Float);
+            Assert.Equal("left", computed[sourceTab].Float);
+        }
+
+        [Fact]
         public async Task Cascade_AppliesFirstChildPseudoClassRule_ToLeadingHeading()
         {
             const string html = @"

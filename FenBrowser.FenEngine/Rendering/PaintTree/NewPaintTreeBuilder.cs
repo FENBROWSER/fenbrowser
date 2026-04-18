@@ -97,7 +97,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Build the root stacking context
             var rootContext = new BuilderStackingContext(root);
-            builder.BuildRecursive(root, rootContext, 0);
+            builder.BuildRecursive(root, rootContext, 0, null, false);
             
             // Flatten stacking contexts into paint order
             var rootNodes = rootContext.Flatten();
@@ -126,7 +126,7 @@ namespace FenBrowser.FenEngine.Rendering
                         // Render Modal
                         // We use a fresh stacking context for the modal tree
                         var modalContext = new BuilderStackingContext(modal);
-                        builder.BuildRecursive(modal, modalContext, 0);
+                        builder.BuildRecursive(modal, modalContext, 0, null, false);
                         var modalNodes = modalContext.Flatten();
                         rootNodes.AddRange(modalNodes);
                     }
@@ -140,7 +140,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Recursively builds paint nodes for an element and its children.
         /// </summary>
-        private void BuildRecursive(Node node, BuilderStackingContext currentContext, int depth, BuilderStackingContext escapeContext = null)
+        private void BuildRecursive(Node node, BuilderStackingContext currentContext, int depth, BuilderStackingContext escapeContext = null, bool ancestorVisibilityHidden = false)
         {
             if (depth > 128) return; 
             try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
@@ -162,7 +162,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Process children for Document/Fragment even if they don't have boxes themselves
             if (node is Document || node is DocumentFragment)
             {
-                ProcessChildren(node, currentContext, depth + 1);
+                ProcessChildren(node, currentContext, depth + 1, escapeContext, ancestorVisibilityHidden);
                 return;
             }
             
@@ -196,7 +196,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // This prevents small inline wrappers (e.g., SPAN around SVG icons) from swallowing content.
                 if (node is Element && !ShouldHide(node, style))
                 {
-                    ProcessChildren(node, currentContext, depth + 1, escapeContext);
+                    ProcessChildren(node, currentContext, depth + 1, escapeContext, ancestorVisibilityHidden);
                 }
                 return;
             }
@@ -241,8 +241,14 @@ namespace FenBrowser.FenEngine.Rendering
             // Build paint nodes for this element
             // VISIBILITY CHECK: If visibility is hidden, we do NOT generate visual paint nodes for this element
             // However, we MUST still traverse children (as they might be visible) and handle stacking contexts/opacity/overflow.
+            string visibility = style?.Visibility?.Trim().ToLowerInvariant();
+            bool isExplicitlyVisible = string.Equals(visibility, "visible", StringComparison.OrdinalIgnoreCase);
+            bool isExplicitlyHidden = string.Equals(visibility, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(visibility, "collapse", StringComparison.OrdinalIgnoreCase);
+            bool nodeVisibilityHidden = isExplicitlyHidden || (ancestorVisibilityHidden && !isExplicitlyVisible);
+
             List<PaintNodeBase> paintNodes = null;
-            if (style?.Visibility != "hidden")
+            if (!nodeVisibilityHidden)
             {
                 paintNodes = BuildPaintNodesForElement(node, box, style);
             }
@@ -446,7 +452,7 @@ namespace FenBrowser.FenEngine.Rendering
                 currentContext.AddChildContext(childContext);
                 
                 // Process children in the new context
-                ProcessChildren(node, childContext, depth + 1);
+                ProcessChildren(node, childContext, depth + 1, null, nodeVisibilityHidden);
             }
             else
             {
@@ -522,7 +528,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // Inherit scroll offset logic if strictly needed, but for visual clipping Flatten() handles list construction.
                     // Important: Recursion here puts children into tempCtx.
-                    ProcessChildren(node, tempCtx, depth + 1, nextEscapeContext);
+                    ProcessChildren(node, tempCtx, depth + 1, nextEscapeContext, nodeVisibilityHidden);
                     
                     var clippedChildren = tempCtx.Flatten();
                     
@@ -549,7 +555,7 @@ namespace FenBrowser.FenEngine.Rendering
                 else
                 {
                     // No clipping - process children directly into current context
-                    ProcessChildren(node, currentContext, depth + 1, escapeContext);
+                    ProcessChildren(node, currentContext, depth + 1, escapeContext, nodeVisibilityHidden);
                 }
             }
         }
@@ -951,7 +957,7 @@ namespace FenBrowser.FenEngine.Rendering
             return age <= TimeSpan.FromMilliseconds(600);
         }
         
-        private void ProcessChildren(Node node, BuilderStackingContext context, int depth, BuilderStackingContext escapeContext = null)
+        private void ProcessChildren(Node node, BuilderStackingContext context, int depth, BuilderStackingContext escapeContext = null, bool ancestorVisibilityHidden = false)
         {
             // Form controls (INPUT, TEXTAREA) are replaced elements; we handle their content rendering explicitly.
             // Skipping children prevents double-rendering of text.
@@ -964,21 +970,21 @@ namespace FenBrowser.FenEngine.Rendering
             // 1. ::before
             if (style?.Before?.PseudoElementInstance != null)
             {
-                BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext);
+                BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
             if (node != null && node.Children != null)
             {
                 foreach (var child in node.Children)
                 {
-                    BuildRecursive(child, context, depth + 1, escapeContext);
+                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
                 }
             }
 
             // 2. ::after
             if (style?.After?.PseudoElementInstance != null)
             {
-                BuildRecursive(style.After.PseudoElementInstance, context, depth + 1, escapeContext);
+                BuildRecursive(style.After.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
         }
         
@@ -2363,25 +2369,9 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Text color
-             SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
-            // If resolved color is fully transparent, walk up ancestors for a visible color.
-            // Transparent text is almost never intended; it typically means the color property
-            // wasn't properly inherited or was set to an initial/empty value.
-            if (color.Alpha == 0)
-            {
-                var ancestor = textNode.ParentElement?.ParentElement;
-                while (ancestor != null)
-                {
-                    if (_styles.TryGetValue(ancestor, out var ancStyle) &&
-                        ancStyle?.ForegroundColor != null && ancStyle.ForegroundColor.Value.Alpha > 0)
-                    {
-                        color = ancStyle.ForegroundColor.Value;
-                        break;
-                    }
-                    ancestor = ancestor.ParentElement;
-                }
-                if (color.Alpha == 0) color = SKColors.Black;
-            }
+            // Respect explicit transparent text. Some pages, including Google's searchbox
+            // mirror layers, intentionally paint hidden overlay text with color: transparent.
+            SKColor color = parentStyle?.ForegroundColor ?? SKColors.Black;
 
             // MULTI-LINE SUPPORT
             // If BoxModel has Lines populated (from TextLayoutComputer), use them.
@@ -3018,6 +3008,7 @@ namespace FenBrowser.FenEngine.Rendering
              return new TextPaintNode
              {
                  Bounds = box.PaddingBox, // Clip to padding box? Or ContentBox? Text usually allowed to overflow into padding? Clipping usually happens at BorderBox.
+                 SourceNode = elem,
                  Color = textColor,
                  FontSize = fontSize,
                  Typeface = typeface,
@@ -3906,8 +3897,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             global::FenBrowser.Core.FenLogger.Info($"[MARKER-BUILD] <{tag}#{id}> Type={type} Display={style?.Display}", global::FenBrowser.Core.Logging.LogCategory.Rendering);
 
-            string listStyleType = style?.ListStyleType ?? "disc"; // Default to disc
+            string listStyleType = ResolveEffectiveListStyleType(elem, style) ?? "disc"; // Default to disc
             string listStylePosition = style?.ListStylePosition ?? "outside";
+
+            if (string.Equals(listStyleType, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
             
             // Check for explicit list-style-image (URL)
             string listStyleImage = style?.ListStyleImage;
@@ -4053,7 +4049,6 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 markerText = "▼"; // Down-pointing triangle (open)
             }
-            else if (listStyleType == "none") return null;
             
             // Calculate Position
             float fontSize = (float)(style?.FontSize ?? 16.0);
@@ -4093,13 +4088,26 @@ namespace FenBrowser.FenEngine.Rendering
             else
             {
                 // Outside: Render to the left of the border box
-                // Ensure it's offset from the content box far enough to be visible.
-                // If ContentBox.Left is small (e.g. 0), we must ensure it's not off-screen.
-                float desiredX = box.ContentBox.Left - markerWidth - 14;
+                float anchorRight = box.ContentBox.Left - 6;
+                var childNodes = elem.ChildNodes;
+                if ((childNodes == null || childNodes.Length == 0) && elem.Children != null)
+                {
+                    childNodes = elem.Children;
+                }
+
+                if (childNodes != null)
+                {
+                    for (int i = 0; i < childNodes.Length; i++)
+                    {
+                        if (_boxes != null && _boxes.TryGetValue(childNodes[i], out var childBox))
+                        {
+                            anchorRight = Math.Min(anchorRight, childBox.ContentBox.Left - 6);
+                        }
+                    }
+                }
+
+                float desiredX = anchorRight - markerWidth;
                 x = Math.Max(4, desiredX); // Safety: at least 4px from left edge
-                
-                // If we had to push it inside, shift the Y slightly to avoid overlap if absolute
-                if (x > desiredX) { /* Keep original Y */ }
             }
             
             return new TextPaintNode
@@ -4116,6 +4124,76 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private string ResolveEffectiveListStyleType(Element element, CssComputed style)
+        {
+            if (style != null)
+            {
+                if (!string.IsNullOrWhiteSpace(style.ListStyleType))
+                {
+                    return style.ListStyleType.Trim().ToLowerInvariant();
+                }
+
+                string localType = ExtractListStyleTypeFromMap(style);
+                if (!string.IsNullOrWhiteSpace(localType))
+                {
+                    return localType;
+                }
+            }
+
+            if (element?.Parent is not Element parentElement)
+            {
+                return null;
+            }
+
+            if (_styles != null && _styles.TryGetValue(parentElement, out var parentStyle))
+            {
+                if (!string.IsNullOrWhiteSpace(parentStyle?.ListStyleType))
+                {
+                    return parentStyle.ListStyleType.Trim().ToLowerInvariant();
+                }
+
+                string parentType = ExtractListStyleTypeFromMap(parentStyle);
+                if (!string.IsNullOrWhiteSpace(parentType))
+                {
+                    return parentType;
+                }
+            }
+
+            return null;
+        }
+
+        private static string ExtractListStyleTypeFromMap(CssComputed style)
+        {
+            if (style?.Map == null)
+            {
+                return null;
+            }
+
+            if (style.Map.TryGetValue("list-style-type", out var explicitType) &&
+                !string.IsNullOrWhiteSpace(explicitType))
+            {
+                return explicitType.Trim().ToLowerInvariant();
+            }
+
+            if (style.Map.TryGetValue("list-style", out var shorthand) &&
+                !string.IsNullOrWhiteSpace(shorthand))
+            {
+                string[] parts = shorthand.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string rawPart in parts)
+                {
+                    string part = rawPart.Trim().ToLowerInvariant();
+                    if (part == "inside" || part == "outside" || part.StartsWith("url(", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    return part;
+                }
+            }
+
+            return null;
+        }
+
         private static bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;
@@ -4125,10 +4203,88 @@ namespace FenBrowser.FenEngine.Rendering
             // Visibility: hidden check removed (handled in BuildRecursive to allow children)
 
             // HTML hidden attribute means the element is not relevant and should not be rendered.
-            if (node is Element elem && elem.HasAttribute("hidden")) return true;
+            if (node is Element elem)
+            {
+                if (elem.HasAttribute("hidden")) return true;
+                if (ShouldHideCollapsedVectorPanel(elem)) return true;
+            }
 
             string tag = node.NodeName?.ToUpperInvariant();
             return tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "IFRAME";
+        }
+
+        private static bool ShouldHideCollapsedVectorPanel(Element element)
+        {
+            if (element == null) return false;
+
+            bool isVectorDropdownContent = HasClassToken(element, "vector-dropdown-content");
+            bool isVectorMenuContent = HasClassToken(element, "vector-menu-content");
+            if (!isVectorDropdownContent && !isVectorMenuContent)
+            {
+                return false;
+            }
+
+            string toggleClass = isVectorDropdownContent ? "vector-dropdown-checkbox" : "vector-menu-checkbox";
+
+            if (element.ParentNode == null || element.ParentNode.ChildNodes == null)
+            {
+                return false;
+            }
+
+            var siblings = element.ParentNode.ChildNodes;
+            int index = -1;
+            for (int i = 0; i < siblings.Length; i++)
+            {
+                if (ReferenceEquals(siblings[i], element))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index <= 0)
+            {
+                return false;
+            }
+
+            for (int i = index - 1; i >= 0; i--)
+            {
+                if (siblings[i] is not Element siblingElement)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(siblingElement.TagName, "input", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!HasClassToken(siblingElement, toggleClass))
+                {
+                    continue;
+                }
+
+                return !siblingElement.HasAttribute("checked");
+            }
+
+            return false;
+        }
+
+        private static bool HasClassToken(Element element, string token)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            string classAttr = element.GetAttribute("class");
+            if (string.IsNullOrWhiteSpace(classAttr))
+            {
+                return false;
+            }
+
+            var parts = classAttr.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            return parts.Any(p => string.Equals(p, token, StringComparison.OrdinalIgnoreCase));
         }
         
         /// <summary>

@@ -1031,6 +1031,12 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     w = m.MaxChildWidth;
                 }
+
+                // Floats with auto width should shrink to content instead of collapsing.
+                if (isFloat && w <= 0)
+                {
+                    w = m.MaxChildWidth;
+                }
             }
 
             // Apply Min/Max Constraints on final calculated dimensions (on Content Box)

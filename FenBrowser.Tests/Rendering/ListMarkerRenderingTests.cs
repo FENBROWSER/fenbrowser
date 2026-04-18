@@ -93,6 +93,86 @@ namespace FenBrowser.Tests.Rendering
             Assert.True(textNode.Bounds.Right <= linkBox.ContentBox.Left - 4);
         }
 
+        [Fact]
+        public void BuildListMarkerNode_SuppressesMarker_WhenParentListStyleIsNone()
+        {
+            var ul = new Element("ul");
+            var li = new Element("li");
+            ul.AppendChild(li);
+
+            var boxes = new Dictionary<Node, BoxModel>();
+            var styles = new Dictionary<Node, CssComputed>();
+            var liBox = new BoxModel
+            {
+                ContentBox = new SKRect(40, 20, 240, 44),
+                Lines = new List<ComputedTextLine>
+                {
+                    new() { Baseline = 16f }
+                }
+            };
+
+            boxes[li] = liBox;
+            var ulStyle = new CssComputed
+            {
+                Display = "block"
+            };
+            ulStyle.Map["list-style"] = "none";
+            styles[ul] = ulStyle;
+            styles[li] = new CssComputed
+            {
+                Display = "list-item",
+                ListStyleType = null,
+                FontSize = 16,
+                ForegroundColor = SKColors.Black
+            };
+
+            object builder = CreateBuilder(boxes, styles);
+            MethodInfo method = typeof(NewPaintTreeBuilder).GetMethod("BuildListMarkerNode", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+
+            object result = method!.Invoke(builder, new object[] { li, liBox, styles[li], false, false });
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public void ShouldHideCollapsedVectorPanel_HidesDropdownContent_WhenToggleUnchecked()
+        {
+            var container = new Element("div");
+            var toggle = new Element("input");
+            toggle.SetAttribute("class", "vector-dropdown-checkbox");
+            var content = new Element("div");
+            content.SetAttribute("class", "vector-dropdown-content");
+            container.AppendChild(toggle);
+            container.AppendChild(content);
+
+            MethodInfo method = typeof(NewPaintTreeBuilder).GetMethod("ShouldHideCollapsedVectorPanel", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+
+            object result = method!.Invoke(null, new object[] { content });
+            Assert.IsType<bool>(result);
+            Assert.True((bool)result);
+        }
+
+        [Fact]
+        public void ShouldHideCollapsedVectorPanel_DoesNotHideDropdownContent_WhenToggleChecked()
+        {
+            var container = new Element("div");
+            var toggle = new Element("input");
+            toggle.SetAttribute("class", "vector-dropdown-checkbox");
+            toggle.SetAttribute("checked", string.Empty);
+            var content = new Element("div");
+            content.SetAttribute("class", "vector-dropdown-content");
+            container.AppendChild(toggle);
+            container.AppendChild(content);
+
+            MethodInfo method = typeof(NewPaintTreeBuilder).GetMethod("ShouldHideCollapsedVectorPanel", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+
+            object result = method!.Invoke(null, new object[] { content });
+            Assert.IsType<bool>(result);
+            Assert.False((bool)result);
+        }
+
         private static object CreateBuilder(IReadOnlyDictionary<Node, BoxModel> boxes, IReadOnlyDictionary<Node, CssComputed> styles)
         {
             var ctor = typeof(NewPaintTreeBuilder).GetConstructor(

@@ -136,6 +136,7 @@ flowchart TD
 ### 2.6.2 Navigation Performance Hardening (2026-04-13)
 
 - `CssLoader.ComputeAsync(...)` no longer blocks the navigation hot-path behind a fixed 20-second stylesheet parse wait; parse waiting now uses a bounded budget (`~3.5s` default, deadline-aware when provided), then continues with the partial `StyleSet` (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
+- `CssLoader` cross-document isolation hardening (2026-04-18): parsed-rule cache keys now include stylesheet base URI (not just CSS text + viewport), and full compute execution is serialized behind a global compute gate to prevent cross-tab races on shared CSS mutable state (`_customProperties`, root-font-size/media context) during concurrent page loads (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
 - `JavaScriptEngine` now defers oversized external page scripts during initial navigation (`RuntimeProfile.DeferOversizedExternalPageScripts`, `RuntimeProfile.OversizedExternalPageScriptBytes`), preventing single megabyte-class scripts from stalling first paint (`FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`, `FenBrowser.FenEngine/Scripting/JavaScriptRuntimeProfile.cs`).
 - Always-on high-volume CSS debug traces (`DIV` cascade/background/max-width diagnostics) are now gated by `DebugConfig.LogCssCascade`, reducing synchronous logging pressure during large-page cascades (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`, `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`).
 - Follow-up hot-path logging reduction gates high-frequency layout diagnostics behind explicit deep-debug flags (`DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints`) across inline and block layout loops plus constraint-resolution traces (`FenBrowser.FenEngine/Layout/InlineLayoutComputer.cs`, `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`, `FenBrowser.FenEngine/Layout/Algorithms/BlockLayoutAlgorithm.cs`, `FenBrowser.FenEngine/Layout/Contexts/LayoutConstraintResolver.cs`, `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).
@@ -7144,3 +7145,45 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Fallback base path now anchors to `DiagnosticPaths.GetWorkspaceRoot()` instead of `AppContext.BaseDirectory`.
 - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
   - Removed tiny-tree early return from debug screenshot capture so `debug_screenshot.png` is still emitted for diagnostics runs even when paint tree size is small.
+
+## 2.236 MediaWiki Dedupe Key Normalization For Wikipedia Inline Styles (2026-04-18)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Added MediaWiki dedupe key normalization for `data-mw-deduplicate` and `mw-deduplicated-inline-style` link `href` values.
+  - Normalization removes optional `mw-data:` prefix so both forms map to the same key:
+    - `TemplateStyles:r123...`
+    - `mw-data:TemplateStyles:r123...`
+  - This restores deduplicated inline style replay on Wikipedia pages where style tags use the unprefixed key and links use the prefixed key.
+- `FenBrowser.Tests/Engine/MediaWikiDeduplicatedInlineStyleTests.cs`
+  - Added regression `MwDeduplicatedInlineStyleLink_Reapplies_WhenStyleKeyOmitsMwDataPrefix`.
+
+## 2.237 List Marker Suppression From Effective List Style (2026-04-18)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - `BuildListMarkerNode(...)` now resolves effective list-style type from:
+    - the list-item computed style,
+    - list shorthand/type values in the item style map,
+    - parent list computed/map style fallback.
+  - Marker rendering is now short-circuited when effective style resolves to `list-style-type: none`, preventing stray bullets on menu/navigation lists where inherited list suppression is authored via parent rules.
+- `FenBrowser.Tests/Rendering/ListMarkerRenderingTests.cs`
+  - Added regression `BuildListMarkerNode_SuppressesMarker_WhenParentListStyleIsNone`.
+
+## 2.238 MediaWiki Vector Collapsed Panel Paint Suppression (2026-04-18)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Added `ShouldHideCollapsedVectorPanel(...)` so Vector dropdown/menu panel containers are skipped when paired checkbox toggles are unchecked.
+  - This prevents hidden navigation/appearance dropdown bodies from painting as expanded blocks during initial Wikipedia load.
+- `FenBrowser.Tests/Rendering/ListMarkerRenderingTests.cs`
+  - Added:
+    - `ShouldHideCollapsedVectorPanel_HidesDropdownContent_WhenToggleUnchecked`
+    - `ShouldHideCollapsedVectorPanel_DoesNotHideDropdownContent_WhenToggleChecked`
+
+## 2.239 Wikipedia Toolbar Layout Fallback + Float Auto-Width Stabilization (2026-04-18)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Added host-scoped (`*.wikipedia.org`, `*.wikimedia.org`) fallback for namespace/view toolbar list items (`#p-associated-pages`, `#p-views`) to force stable tab item display mapping when engine-side float/tab cascade remains incomplete.
+  - Added host-scoped suppression of `.vector-page-toolbar` (`display: none`) to remove the known broken toolbar block while Vector tab rendering remains under active compatibility work.
+- `FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`
+  - Added float auto-width fallback (`isFloat && width <= 0 => MaxChildWidth`) to avoid zero-width floated box collapse in block-flow measurement paths.
+- `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
+  - Added `Cascade_AppliesWikipediaToolbarFloatSelectorList` to lock selector-list cascade behavior for Vector tab float rules.

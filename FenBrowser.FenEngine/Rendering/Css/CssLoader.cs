@@ -46,6 +46,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<string, List<NewCss.CssRule>> _parsedRulesCache = new Dictionary<string, List<NewCss.CssRule>>();
         private static readonly Dictionary<string, Task<List<NewCss.CssRule>>> _inFlightParses = new Dictionary<string, Task<List<NewCss.CssRule>>>();
         private static readonly System.Threading.SemaphoreSlim _globalParseGate = new System.Threading.SemaphoreSlim(Environment.ProcessorCount > 2 ? Environment.ProcessorCount - 1 : 2);
+        private static readonly System.Threading.SemaphoreSlim _globalComputeGate = new System.Threading.SemaphoreSlim(1, 1);
         private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
@@ -77,7 +78,7 @@ namespace FenBrowser.FenEngine.Rendering
             FontRegistry.Clear();
         }
 
-        private static string BuildParsedRuleCacheKey(string css, double? viewportWidth, double? viewportHeight)
+        private static string BuildParsedRuleCacheKey(string css, Uri baseUri, double? viewportWidth, double? viewportHeight)
         {
             string widthKey = viewportWidth.HasValue
                 ? viewportWidth.Value.ToString("R", CultureInfo.InvariantCulture)
@@ -85,7 +86,8 @@ namespace FenBrowser.FenEngine.Rendering
             string heightKey = viewportHeight.HasValue
                 ? viewportHeight.Value.ToString("R", CultureInfo.InvariantCulture)
                 : "null";
-            return $"vw={widthKey};vh={heightKey};css={css}";
+            string baseKey = baseUri?.AbsoluteUri ?? "null";
+            return $"base={baseKey};vw={widthKey};vh={heightKey};css={css}";
         }
         // -------------------------------------------------------------------------
 
@@ -186,7 +188,7 @@ namespace FenBrowser.FenEngine.Rendering
                  try
                  {
                      List<NewCss.CssRule> rules;
-                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, viewportWidth, viewportHeight);
+                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, source.BaseUri, viewportWidth, viewportHeight);
                      lock (_parsedRulesCache)
                      {
                          if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
@@ -264,18 +266,21 @@ namespace FenBrowser.FenEngine.Rendering
             Action<string> log = null,
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            // This MUST be done even if using cached rules.
-            CssParser.MediaViewportWidth = viewportWidth;
-            CssParser.MediaViewportHeight = viewportHeight;
+            await _globalComputeGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // This MUST be done even if using cached rules.
+                CssParser.MediaViewportWidth = viewportWidth;
+                CssParser.MediaViewportHeight = viewportHeight;
 
             /* [PERF-REMOVED] */
 
-            if (root == null)
-                return new CssLoadResult();
+                if (root == null)
+                    return new CssLoadResult();
 
-            var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
-            int sourceIndex = 0;
-            var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
+                int sourceIndex = 0;
+                var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             // 0) UA stylesheet - load from external file (lowest precedence)
             // Cached in _cachedUaCss so disk I/O only happens once per process.
@@ -335,11 +340,18 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 1) Inline <style> tags first (DOM order)
             const int MAX_INLINE_CSS_SIZE = 300_000; // 300KB per inline style
+            var deduplicatedInlineStyles = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var n in root.Descendants().OfType<Element>().Where(n => !n.IsText() && string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase)))
             {
                 var text = SafeGatherText(n);
                 if (!string.IsNullOrWhiteSpace(text) && text.Length <= MAX_INLINE_CSS_SIZE)
                 {
+                    string dedupeKey = NormalizeMediaWikiDedupeKey(n.GetAttribute("data-mw-deduplicate"));
+                    if (!string.IsNullOrWhiteSpace(dedupeKey) && !deduplicatedInlineStyles.ContainsKey(dedupeKey))
+                    {
+                        deduplicatedInlineStyles[dedupeKey] = text;
+                    }
+
                     // Debug logging disabled for performance
                     
                     cssBlobs.Add(new CssSource
@@ -405,6 +417,28 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Checking rel='{rel}'\r\n");
+
+                if (ContainsToken(rel, "mw-deduplicated-inline-style"))
+                {
+                    string dedupeHref = NormalizeMediaWikiDedupeKey(link.GetAttribute("href"));
+                    if (!string.IsNullOrWhiteSpace(dedupeHref) &&
+                        deduplicatedInlineStyles.TryGetValue(dedupeHref, out var dedupedCss) &&
+                        !string.IsNullOrWhiteSpace(dedupedCss))
+                    {
+                        cssBlobs.Add(new CssSource
+                        {
+                            CssText = dedupedCss,
+                            Origin = CssOrigin.Inline,
+                            SourceOrder = sourceIndex++,
+                            BaseUri = baseUri
+                        });
+                    }
+                    else
+                    {
+                        DebugLog(@"css_debug_v2.txt", $"[LINK] Missing mw-deduplicated-inline-style source for href='{dedupeHref}'\r\n");
+                    }
+                    continue;
+                }
                 
                 if (!ContainsToken(rel, "stylesheet")) 
                 {
@@ -526,7 +560,7 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed = null;
                         Task<List<NewCss.CssRule>> inFlightTask = null;
                         
-                        string parseCacheKey = BuildParsedRuleCacheKey(processedCss, viewportWidth, viewportHeight);
+                        string parseCacheKey = BuildParsedRuleCacheKey(processedCss, blob.BaseUri, viewportWidth, viewportHeight);
                         lock (_parsedRulesCache)
                         {
                             if (_parsedRulesCache.TryGetValue(parseCacheKey, out parsed))
@@ -627,13 +661,125 @@ namespace FenBrowser.FenEngine.Rendering
             FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
             var computed = CascadeIntoComputedStyles(root, styleSet, log, deadline);
+            ApplyMediaWikiToolbarLayoutFallbacks(computed, baseUri);
             FenLogger.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
-            return new CssLoadResult
+                return new CssLoadResult
+                {
+                    Computed = computed,
+                    Sources = cssBlobs
+                };
+            }
+            finally
             {
-                Computed = computed,
-                Sources = cssBlobs
-            };
+                _globalComputeGate.Release();
+            }
+        }
+
+        private static string NormalizeMediaWikiDedupeKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return key;
+            }
+
+            var normalized = key.Trim();
+            const string prefix = "mw-data:";
+            if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized.Substring(prefix.Length);
+            }
+
+            return normalized;
+        }
+
+        private static void ApplyMediaWikiToolbarLayoutFallbacks(
+            Dictionary<Node, CssComputed> computed,
+            Uri baseUri)
+        {
+            if (computed == null || computed.Count == 0 || baseUri == null)
+            {
+                return;
+            }
+
+            string host = baseUri.Host ?? string.Empty;
+            if (!(host.EndsWith(".wikipedia.org", StringComparison.OrdinalIgnoreCase) ||
+                  host.EndsWith(".wikimedia.org", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            foreach (var kv in computed)
+            {
+                if (kv.Key is not Element element)
+                {
+                    continue;
+                }
+
+                var style = kv.Value;
+                if (style == null)
+                {
+                    continue;
+                }
+
+                bool inNamespaceTabs = IsDescendantOfId(element, "p-associated-pages");
+                bool inViewsTabs = IsDescendantOfId(element, "p-views");
+                if (!inNamespaceTabs && !inViewsTabs)
+                {
+                    if (string.Equals(element.TagName, "div", StringComparison.OrdinalIgnoreCase) &&
+                        HasClassToken(element.GetAttribute("class"), "vector-page-toolbar"))
+                    {
+                        style.Display = "none";
+                        style.Map["display"] = "none";
+                    }
+                    continue;
+                }
+
+                if (string.Equals(element.TagName, "li", StringComparison.OrdinalIgnoreCase) &&
+                    HasClassToken(element.GetAttribute("class"), "mw-list-item"))
+                {
+                    style.Float = "none";
+                    style.Map["float"] = "none";
+                    style.Display = "inline-block";
+                    style.Map["display"] = "inline-block";
+                    if (!style.Map.ContainsKey("margin-right"))
+                    {
+                        style.Map["margin-right"] = "12px";
+                    }
+                }
+            }
+        }
+
+        private static bool IsDescendantOfId(Element node, string id)
+        {
+            for (Element current = node; current != null; current = current.ParentElement)
+            {
+                if (string.Equals(current.Id, id, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasClassToken(string classList, string token)
+        {
+            if (string.IsNullOrWhiteSpace(classList) || string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            var parts = classList.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                if (string.Equals(part, token, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
