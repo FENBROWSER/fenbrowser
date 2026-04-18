@@ -117,9 +117,9 @@ Avoid:
 ## Debug and artifact workflow
 
 For runtime/rendering issues, prefer this diagnostic order:
-1. `FenBrowser.Host/bin/Debug/net8.0/debug_screenshot.png`
+1. `logs/debug_screenshot.png`
 2. `logs/raw_source_*.html`
-3. `dom_dump.txt`
+3. `logs/dom_dump.txt`
 4. `logs/fenbrowser_*.log`
 
 Default clean-state workflow:
@@ -129,8 +129,15 @@ Default clean-state workflow:
 4. allow startup/navigation enough time to settle
 5. inspect screenshot + DOM/log artifacts before patching
 
-Do not assume an old hard-coded fallback logs folder is correct.
-Prefer workspace-root `logs/` and the current build output/artifact paths.
+Diagnostics path policy (strict):
+- Runtime artifacts must be written under workspace-root `logs/` only.
+- Do not write diagnostics to repository root.
+- Do not write diagnostics to `docs/`.
+- Applies to generated `.txt`, `.png`, `.png.meta`, `.js`, `.html` artifacts.
+
+Result/report policy:
+- Use workspace-root `Results/` for generated reports and result bundles.
+- Keep `docs/` limited to maintained documentation sources, not runtime outputs.
 
 ## Threading boundaries
 
