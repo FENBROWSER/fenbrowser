@@ -396,47 +396,12 @@ namespace FenBrowser.FenEngine.Core
             if (CurTokenIs(TokenType.Catch))
             {
                 _errors.Add($"SyntaxError: Orphaned 'catch' clause (no preceding try block) at line {_curToken.Line}, col {_curToken.Column} - skipping clause body");
-                // Skip optional catch parameter
-                if (PeekTokenIs(TokenType.LParen))
-                {
-                    NextToken(); // consume '('
-                    int parenDepth = 1;
-                    while (parenDepth > 0 && !CurTokenIs(TokenType.Eof))
-                    {
-                        NextToken();
-                        if (CurTokenIs(TokenType.LParen)) parenDepth++;
-                        else if (CurTokenIs(TokenType.RParen)) parenDepth--;
-                    }
-                }
-                // Skip catch body block
-                if (PeekTokenIs(TokenType.LBrace))
-                {
-                    NextToken(); // consume '{'
-                    int braceDepth = 1;
-                    while (braceDepth > 0 && !CurTokenIs(TokenType.Eof))
-                    {
-                        NextToken();
-                        if (CurTokenIs(TokenType.LBrace)) braceDepth++;
-                        else if (CurTokenIs(TokenType.RBrace)) braceDepth--;
-                    }
-                }
                 return null;
             }
             
             if (CurTokenIs(TokenType.Finally))
             {
                 _errors.Add($"SyntaxError: Orphaned 'finally' clause at line {_curToken.Line}, col {_curToken.Column} - skipping clause body");
-                if (PeekTokenIs(TokenType.LBrace))
-                {
-                    NextToken(); // consume '{'
-                    int braceDepth = 1;
-                    while (braceDepth > 0 && !CurTokenIs(TokenType.Eof))
-                    {
-                        NextToken();
-                        if (CurTokenIs(TokenType.LBrace)) braceDepth++;
-                        else if (CurTokenIs(TokenType.RBrace)) braceDepth--;
-                    }
-                }
                 return null;
             }
             
@@ -1245,17 +1210,20 @@ namespace FenBrowser.FenEngine.Core
 
             if (!ExpectPeek(TokenType.RParen))
             {
+                // Keep token stream synchronized even in strict mode (allowRecovery: false).
+                // Runtime paths still fail from parser.Errors; this prevents follow-up
+                // cascades caused by stale delimiter position.
+                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) &&
+                       !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
+                {
+                    NextToken();
+                }
+
                 if (!_allowRecovery)
                 {
                     return null;
                 }
 
-                // Recovery: skip to RParen or statement boundary
-                while (!CurTokenIs(TokenType.RParen) && !CurTokenIs(TokenType.Semicolon) && 
-                       !CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
-                {
-                    NextToken();
-                }
                 // Return the expression we parsed so far
                 return exp ?? new UndefinedLiteral { Token = _curToken };
             }
@@ -1657,6 +1625,7 @@ namespace FenBrowser.FenEngine.Core
                 while (!CurTokenIs(TokenType.RBrace) && !CurTokenIs(TokenType.Eof))
                 {
                     var stmt = ParseStatement();
+                    bool stmtMayLeaveTrailingInnerBrace = StatementMayLeaveTrailingInnerBrace(stmt);
                     if (stmt != null)
                     {
                         block.Statements.Add(stmt);
@@ -1677,21 +1646,40 @@ namespace FenBrowser.FenEngine.Core
                         }
                     }
 
-                    // After block-based statements (if/while/for/try via ParseBodyAsBlock),
-                    // _curToken may be '}' from a sub-block. Consume it so we don't
-                    // mistake it for THIS block's closing '}'.
+                    // Nested statement/expression parses may leave us on an inner '}'.
+                    // Keep delimiter ownership conservative here to avoid desyncs in minified bundles
+                    // (notably try/catch and dense class method chains).
                     if (CurTokenIs(TokenType.RBrace))
                     {
+                        // `try { ... } catch/finally ...` ownership belongs to ParseTryStatement.
+                        if (PeekTokenIs(TokenType.Catch) || PeekTokenIs(TokenType.Finally))
+                        {
+                            break;
+                        }
+
+                        // `if (...) { ... } else ...` ownership belongs to ParseIfStatement.
+                        if (PeekTokenIs(TokenType.Else))
+                        {
+                            break;
+                        }
+
+                        if (!_allowRecovery && stmtMayLeaveTrailingInnerBrace)
+                        {
+                            // The parsed statement can leave us on an inner '}'.
+                            // In strict runtime mode, consume it so parsing continues at
+                            // the current block boundary instead of desyncing delimiters.
+                            NextToken();
+                            continue;
+                        }
+
                         if (IsCurrentTokenClosingCurrentBlock(block.Token))
                         {
                             break;
                         }
 
-                        // Nested statement/expression parses can leave us on an
-                        // inner '}'. If brace depth says this is not the current
-                        // block's own terminator, consume it and keep scanning.
-                        NextToken(); // consume inner block's '}'
-
+                        // Unknown ownership for this brace. Consume it and continue
+                        // scanning so outer expressions can claim their own delimiters.
+                        NextToken();
                         continue;
                     }
 
@@ -3050,9 +3038,12 @@ namespace FenBrowser.FenEngine.Core
             stmt.Block = ParseBlockStatement(consumeTerminator: false);
             // _curToken is now on '}' of the try block.
 
-            if (PeekTokenIs(TokenType.Catch))
+            if (CurTokenIs(TokenType.Catch) || PeekTokenIs(TokenType.Catch))
             {
-                NextToken(); // consume '}' of try block, _curToken = 'catch'
+                if (!CurTokenIs(TokenType.Catch))
+                {
+                    NextToken(); // consume '}' of try block, _curToken = 'catch'
+                }
                 // Optional catch parameter: catch(e) or catch({message}) or catch (no param - ES2019)
                 if (PeekTokenIs(TokenType.LParen))
                 {
@@ -3083,9 +3074,12 @@ namespace FenBrowser.FenEngine.Core
                 // _curToken is now on '}' of catch block
             }
 
-            if (PeekTokenIs(TokenType.Finally))
+            if (CurTokenIs(TokenType.Finally) || PeekTokenIs(TokenType.Finally))
             {
-                NextToken(); // consume '}' of catch/try block
+                if (!CurTokenIs(TokenType.Finally))
+                {
+                    NextToken(); // consume '}' of catch/try block
+                }
                 if (!ExpectPeek(TokenType.LBrace)) return null;
                 stmt.FinallyBlock = ParseBlockStatement(consumeTerminator: false);
                 // _curToken is now on '}' of finally block
@@ -4871,14 +4865,14 @@ namespace FenBrowser.FenEngine.Core
             // Must be on the same line to be an arrow function arg
             if (PeekTokenIs(TokenType.Identifier) && !_peekToken.HadLineTerminatorBefore)
             {
-                // This is likely 'async arg => ...'
-                // Consume 'async' (already current) and move to arg
-                NextToken(); 
-                var arg = new Identifier(_curToken, _curToken.Literal);
-                ValidateBindingIdentifier(_curToken);
-                
-                if (PeekTokenIs(TokenType.Arrow))
+                var afterIdentifier = PeekSecondToken();
+                if (afterIdentifier.Type == TokenType.Arrow)
                 {
+                    // This is 'async arg => ...'
+                    NextToken(); // consume identifier parameter
+                    var arg = new Identifier(_curToken, _curToken.Literal);
+                    ValidateBindingIdentifier(_curToken);
+
                     var arrow = new ArrowFunctionExpression 
                     { 
                         Token = token,
@@ -4938,16 +4932,27 @@ namespace FenBrowser.FenEngine.Core
                     }
                     return arrow;
                 }
-                
-                 // If '=>' is NOT next, we might have consumed an identifier we shouldn't have?
-                 // But 'async x' is invalid expression syntax anyway.
-                 _errors.Add($"expected '=>' after async argument, got {_peekToken.Type}");
-                 return null;
             }
 
             // If not followed by function, treat 'async' as an identifier
             // This allows 'async' to be used as a variable name in expressions
             return new Identifier(token, "async");
+        }
+
+        private Token PeekSecondToken()
+        {
+            if (_lexer?.Source == null || _peekToken.Position < 0 || _peekToken.Position >= _lexer.Source.Length)
+            {
+                return new Token(TokenType.Eof, string.Empty, _peekToken.Line, _peekToken.Column);
+            }
+
+            var probe = new Lexer(_lexer.Source.Substring(_peekToken.Position))
+            {
+                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
+            };
+
+            _ = probe.NextToken(); // first token corresponds to _peekToken
+            return probe.NextToken();
         }
 
         /// <summary>

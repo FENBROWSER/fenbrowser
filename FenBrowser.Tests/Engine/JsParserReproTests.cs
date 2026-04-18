@@ -117,10 +117,127 @@ namespace FenBrowser.Tests.Engine
         public void Parse_WebpackArrowBody_WithChainedAssignment_NoErrors()
         {
             var input = "var t=new Promise(((r,t)=>n=e[a]=[r,t]));";
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_GoogleAnonymousClassSchedulerSnippet_DoesNotDesyncIntoOrphanedCatch()
+        {
+            var input = """
+_.Qn(_.nLa,new class{
+By(a){jdb(a);return _.sr.By({callback:a.play,jqa:a})}
+C9a(a){jdb(a);return _.sr.By({callback:a.play,jqa:a,priority:3})}
+flush(){throw Error("ke");}
+Eoa(a){return _.sr.By(a)}
+eDa(a,b){let c=!1;return(...d)=>{c||(c=!0,_.sr.By(()=>void(c=!1)),a.apply(b,d))}}
+setTimeout(a,b,...c){return _.sr.setTimeout(a,b,...c)}
+clearTimeout(a){_.sr.clearTimeout(a)}
+clearInterval(a){_.sr.clearInterval(a)}
+setInterval(a,b,...c){return _.sr.setInterval(a,b,...c)}
+yield(){return _.wbb()}
+requestIdleCallback(a,
+b){return _.ubb(a,b)}
+cancelIdleCallback(a){_.vbb(a)}
+});
+try{
+  _.fB=function(a){return _.t(a,3)};
+}catch(e){_._DumpException(e)}
+""";
+
             var parser = CreateParser(input);
             var program = parser.ParseProgram();
 
             AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_GoogleClassAndTaggedTemplateSegment_RuntimeParser_NoErrors()
+        {
+            var input = """
+HEa=class{constructor(a,b,c,d,e){this.Ba=a;this.wa=b;this.oa=c;this.ka=d;this.Aa=e;this.changes=[]}LH(a){var b=document.implementation.createHTMLDocument("");a=_.GEa(this,a,b);b=b.body;b.appendChild(a);b=(new XMLSerializer).serializeToString(b);b=b.slice(b.indexOf(">")+1,b.lastIndexOf("</"));return _.y(b)}};
+_.aja=new HEa(CEa);
+_.pja=new HEa(DEa);
+_.oja=new HEa(EEa);
+var KEa;
+_.IEa=function(a){const b=new Map(a.ka.Ba);b.set("style",{qK:4});a.ka=new _.xEa(a.ka.wa,a.ka.ka,a.ka.Aa,b,a.ka.oa);return a};
+_.JEa=function(a){const b=new Set(a.ka.Aa);b.add("class");a.ka=new _.xEa(a.ka.wa,a.ka.ka,b,a.ka.Ba,a.ka.oa);return a};
+KEa=class{constructor(){this.oa=!1;this.ka=CEa}};
+_.LEa=class extends KEa{build(){if(this.oa)throw Error("V");this.oa=!0;return new HEa(this.ka,void 0,void 0,this.Aa,this.wa)}};
+var eja=/[^#]*/;
+var jja={0:1,1:1},kja={0:.1,1:.1},qja;
+(0,_.kc)`mica-`;
+hc("lWTJwd","lwKaud");
+Ju=(0,_.nk)`https://www.gstatic.com/images/icons/material/anim/mspin/mspin_googcolor_small.css`,Iu=(0,_.nk)`https://www.gstatic.com/images/icons/material/anim/mspin/mspin_googcolor_medium.css`;
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 1);
+        }
+
+        [Fact]
+        public void Parse_GoogleStyleClassMethodChain_WithTryCatchTail_RuntimeParser_NoErrors()
+        {
+            var input = """
+_.Fs=class extends _.C{
+constructor(a,b){super();this.j=a;this.v=b}
+Wh(a){let b;qs(this,a==null?void 0:(b=a.data)==null?void 0:b.wt)||(this.be=!0)}
+nf(a){this.Y=a.data.cus?2:1}
+Hf(a){var b=a.data;b=b&&b.icb?4:1;var c=this.v===5?(a=(a=a.data)&&((c=a.ctx)==null?void 0:c.eap))?!(a==="cac"||a==="aac"||a==="soac"):!0:!0;c&&ms(this,!1,b);_.ks(this,!1)}
+Ug(a){var b=a.data.pid,c=a.data.ai,d=a.data.ac,e=/^\d+$/.test(b)?parseInt(b,10):-1;b=/^\d+$/.test(c)?parseInt(c,10):-1;c=/^\d+$/.test(d)?parseInt(d,10):-1;return[e,b,c]}
+};
+try{_.fB=function(a){return _.t(a,3)}}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_MinifiedTryCatchBoundary_FollowedByTopLevelTry_RuntimeParser_NoErrors()
+        {
+            var input = """
+var x=function(a,b,c,d,e){let f;for(let l=0;f=c[l];l++){if(!f)break;}};
+try{_.fB=function(a){return _.t(a,3)}}catch(e){_._DumpException(e)}
+try{
+var gj=function(a){return a},hj=function(a,b){return a+b};
+}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 3);
+        }
+
+        [Fact]
+        public void Parse_MinifiedArrowCallbackAndCommaChain_BeforeTry_RuntimeParser_NoErrors()
+        {
+            var input = """
+var Fu=function(a,b){
+  b=b.querySelectorAll("button");
+  return _.D(window,"focusout",()=>{ns(a.i,!1);ws(a.i)}),a.j.appendChild(b),b.focus(),Bs(a.i,"314px")
+};
+try{
+  var gj=function(a){return a};
+}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
         }
 
         [Fact]
