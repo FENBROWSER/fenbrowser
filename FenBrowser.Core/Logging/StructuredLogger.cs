@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Logging
@@ -221,7 +220,7 @@ namespace FenBrowser.Core.Logging
             try
             {
                 var line = $"[{DateTime.Now:HH:mm:ss.fff}] [{level}] {message}";
-                File.AppendAllText(filePath, line + Environment.NewLine);
+                ResilientFileWriter.AppendAllText(filePath, line + Environment.NewLine);
             }
             catch { }
         }
@@ -237,7 +236,10 @@ namespace FenBrowser.Core.Logging
             {
                 var fileName = $"raw_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Network Fetch (Raw) -->\n{htmlContent ?? string.Empty}");
+                if (!ResilientFileWriter.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Network Fetch (Raw) -->\n{htmlContent ?? string.Empty}"))
+                {
+                    throw new IOException("Failed to write raw source dump.");
+                }
                 Info("Network", $"Raw network source dumped to: {filePath}");
                 return filePath;
             }
@@ -259,7 +261,10 @@ namespace FenBrowser.Core.Logging
             {
                 var fileName = $"engine_source_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 var filePath = Path.Combine(_basePath, fileName);
-                File.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Fen Engine Processed DOM -->\n{htmlContent ?? string.Empty}");
+                if (!ResilientFileWriter.WriteAllText(filePath, $"<!-- URL: {url} -->\n<!-- Type: Fen Engine Processed DOM -->\n{htmlContent ?? string.Empty}"))
+                {
+                    throw new IOException("Failed to write engine source dump.");
+                }
                 Info("Rendering", $"Engine source dumped to: {filePath}");
                 return filePath;
             }
@@ -282,10 +287,12 @@ namespace FenBrowser.Core.Logging
                 var fileName = $"rendered_text_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
                 var filePath = Path.Combine(_basePath, fileName);
                 string normalizedText = NormalizeRenderedText(textContent);
-                File.WriteAllText(
+                if (!ResilientFileWriter.WriteAllText(
                     filePath,
-                    $"URL: {url}\nDumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n----------------------------------\n{normalizedText}",
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+                    $"URL: {url}\nDumped: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n----------------------------------\n{normalizedText}"))
+                {
+                    throw new IOException("Failed to write rendered text dump.");
+                }
                 Info("Rendering", $"Rendered text dumped to: {filePath}");
                 return filePath;
             }

@@ -797,6 +797,7 @@ Runtime selector matcher used by cascade matching and selector specificity selec
 - `CSSStyleDeclaration.Keys()` in `ElementWrapper` now enumerates parsed inline style property names, fixing empty-key enumeration in JS style reflection paths.
 - `BrowserApi` now registers rendered text length and active DOM node count from `GetTextContent()` into `ContentVerifier`, aligning verification metrics with exported `rendered_text_*.txt` output.
 - `CssAnimationEngine.StartAnimation` now handles comma-separated `animation-name` lists and index-aligned animation sub-properties, resolving false `Keyframes not found` logs for multi-animation declarations (e.g., `fillunfill, rot`).
+- 2026-04-18 diagnostics path unification: engine-side debug artifacts that previously used the legacy "root artifact" path (`debug_screenshot.png`, `dom_dump.txt`, `layout_engine_debug.txt`, `debug_render_start.txt`, `debug_paint_start.txt`, `svg_debug_bitmap.png`, JS/CSS debug text, and screenshot `.meta`) now resolve into workspace `logs/` only via `DiagnosticPaths`, removing repository-root spillover while preserving existing caller APIs.
 
 ### 6.3.1 Permissions API Query Hardening (2026-03-07)
 - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
@@ -6909,3 +6910,206 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - hidden `div#yvlrue` fallback message,
     - inline script unhide timer targeting `#yvlrue` (`cad=sg_trbl`).
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CustomHtmlEngineFallbackPromotionTests|FullyQualifiedName~CustomHtmlEngineGoogleSafeModeBypassTests|FullyQualifiedName~BrowserHostFormSubmissionTests|FullyQualifiedName~BrowserHostTextareaStateTests|FullyQualifiedName~InputOverlayColorTests" --logger "console;verbosity=minimal"`: pass (`15/15`) on `2026-04-17`.
+
+## 2.227 Google Search Results Rendering Diagnostics: Script Execution/Parser Alignment (2026-04-17)
+
+- Scope:
+  - Investigated the browser-level failure where Google `/search?q=test` renders the access-trouble fallback copy instead of result cards.
+  - Hardened script execution policy toward standards-compatible behavior, then narrowed the remaining blocker to parser token-stream desynchronization in large Google bundles.
+
+- Code:
+  - `FenBrowser.FenEngine/Scripting/JavaScriptRuntimeProfile.cs`
+    - `Balanced.DeferOversizedExternalPageScripts` default set to `false` so initial navigation executes large external page scripts instead of policy-deferring them.
+  - `FenBrowser.FenEngine/Core/Parser.cs`
+    - `ParseBlockStatement(...)` trailing-brace handling now uses parsed-statement shape (`StatementMayLeaveTrailingInnerBrace(...)`) instead of the earlier source-probe closure heuristic.
+    - `ParseAsyncPrefix(...)` no longer consumes `async <identifier>` unless lookahead confirms the arrow form (`async x => ...`), preventing false parser hard-errors on non-arrow usages.
+    - Added `PeekSecondToken()` helper to support deterministic async-arrow lookahead.
+
+- Diagnostics:
+  - Repro flow repeated with clean process/log state and a `35s` run budget each cycle.
+  - Raw network payload still resolves to Google challenge/fallback HTML on search navigation:
+    - `logs/raw_source_20260417_114119.html` contains:
+      - `/httpservice/retry/enablejs?...`
+      - `div#yvlrue` fallback copy
+      - `/search?...&emsg=SG_REL...`
+  - `dom_dump.txt` confirms fallback/challenge DOM nodes are active in parsed output.
+  - `js_debug.log` after this tranche:
+    - removed: `expected '=>' after async argument`
+    - still present: `Orphaned 'catch' clause`, `ParseGroupedExpression ... got Eof`, and cascading class-element parse errors in large Google script bundles.
+
+- Current status:
+  - Policy-level script deferral is no longer the blocking factor.
+  - Remaining browser-level blocker is parser recovery/desynchronization around `try/catch` and grouped-expression boundaries in minified Google payloads, which prevents challenge completion and keeps search pages in fallback mode.
+
+## 2.228 Google `enablejs` Challenge White-Page Recovery (2026-04-17)
+
+- Scope:
+  - Fixed browser-level white-page rendering for Google `/search` challenge payloads (the `enablejs` response with hidden `#yvlrue` banner) where the page previously produced `PaintTree nodes: 0`.
+  - Ensures a deterministic non-blank fallback render path for this challenge class while keeping normal navigation behavior unchanged for non-challenge pages.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - Added `IsGoogleSearchAccessTroubleDocument(...)` detector for Google challenge payload signatures:
+      - `/httpservice/retry/enablejs`
+      - `id="yvlrue"`/`id='yvlrue'`
+      - access-trouble fallback text markers.
+    - Added `BuildGoogleAccessTroubleFallbackHtml(...)`:
+      - extracts `div#yvlrue` inner content when present,
+      - normalizes relative Google links to absolute URLs,
+      - emits a minimal standards-safe HTML fallback shell to guarantee parse/layout/paint.
+    - `RenderAsync(...)` now replaces the raw Google challenge payload with the normalized fallback DOM before parse.
+    - `RemoveGoogleTroubleBannerArtifacts(...)` adjusted to sanitize `#yvlrue` by removing `display:none` instead of deleting the node, while still removing unhide-script artifacts.
+    - `ShouldPreferFallbackDom(...)` keeps Google excluded from generic script-stripping fallback heuristics; Google challenge handling is now explicit via the targeted normalization path above.
+
+- Verification:
+  - Clean repro on exact user URL (`https://www.google.com/search?...q=test...`) after process/log reset and `35s` run:
+    - before fix: `Layout boxes: 1/2`, `PaintTree nodes: 0` (blank/white),
+    - after fix: `Layout boxes: 10`, `PaintTree nodes: 6` (non-blank).
+  - `debug_screenshot.png` now contains rendered fallback text/link content instead of an all-white page.
+
+## 2.229 Google Search Script/Navigation Stabilization + Wrapper Context Rebinding (2026-04-17)
+
+- Scope:
+  - Fixed runtime navigation assignment semantics for `location.href = ...` and `window.location = ...`.
+  - Fixed DOM permission drift caused by cached wrapper reuse across execution contexts.
+  - Restored deterministic non-blank rendering for Google `enablejs` challenge payloads to prevent white-page regressions on `/search`.
+
+- Code:
+  - `FenBrowser.FenEngine/Core/FenRuntime.cs`
+    - Added navigation-capable `location.href` and `window.location` assignment handling through `RequestWindowNavigation(...)`.
+    - `UpdateLocationState(...)` now updates an internal backing slot (`__fen_location_href`) to preserve accessor semantics.
+  - `FenBrowser.FenEngine/DOM/NodeWrapper.cs`
+    - `_context` changed from immutable to rebindable; added `RebindContext(...)`.
+  - `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+    - `_context` changed from immutable to rebindable; added `RebindContext(...)`.
+  - `FenBrowser.FenEngine/DOM/DomWrapperFactory.cs`
+    - Cached wrapper return path now rebinds wrappers to the active execution context before reuse.
+    - Prevents stale `BasicWeb` permissions from persisting on reused wrappers.
+  - `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+    - Google challenge payload normalization (`BuildGoogleAccessTroubleFallbackHtml(...)`) is applied for detected `enablejs` challenge documents to guarantee non-blank paint.
+
+- Tests:
+  - `FenBrowser.Tests/Engine/FenRuntimeLocationTests.cs`
+    - Added location assignment coverage for both `location.href` and `window.location`.
+  - `FenBrowser.Tests/DOM/DomWrapperFactoryContextTests.cs`
+    - Added regression proving cached wrappers rebind to current context permissions and permit DOM writes when `StandardWeb` is active.
+  - `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+    - Added timer and timer-driven DOM mutation regressions, including Google trouble-banner timer script shape.
+  - `FenBrowser.Tests/Engine/CustomHtmlEngineFallbackPromotionTests.cs`
+    - Updated Google trouble-banner artifact expectation: remove unhide script, keep/promote visible `#yvlrue` fallback content.
+
+- Verification:
+  - On the user-provided URL (`https://www.google.com/search?...q=test...`), runtime now reports:
+    - `Layout boxes: 10`
+    - `PaintTree nodes: 6`
+  - `dom_dump.txt` confirms visible fallback DOM instead of blank output:
+    - `body` fallback shell with `div#yvlrue` and visible links.
+
+## 2.230 Transparent Text Preservation For Searchbox Mirror Layers (2026-04-17)
+
+- Scope:
+  - Fixed paint-tree text color fallback that made intentionally transparent text render opaque.
+  - Prevents duplicated/overlapping glyphs in Google-style search controls that maintain a hidden mirror text layer beside the real editable control.
+  - Fixed renderer/compositor duplication where host input overlays could draw a second copy of text that was already present in the paint tree.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+    - `BuildTextNode(...)` now preserves `ForegroundColor` when it resolves to an explicit transparent value instead of walking ancestor colors and forcing a visible fallback.
+    - This keeps authored `color: transparent` text hidden in the paint tree while leaving normal inherited non-transparent text behavior unchanged.
+    - `BuildInputTextNode(...)` now tags generated `TextPaintNode` instances with their source control element so downstream compositing can detect when a control's text has already been painted.
+  - `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+    - `CollectOverlays()` now skips host text overlays for `input`/`textarea` elements when the current paint tree already contains a `TextPaintNode` for that control.
+    - This preserves the compositor boundary: the host draws overlays only when the renderer did not already emit control text.
+  - `FenBrowser.Tests/Rendering/InputOverlayColorTests.cs`
+    - Replaced the old transparent-overlay color fallback expectation with a duplication regression that asserts painted controls do not create a second host overlay.
+
+- Verification:
+  - `FenBrowser.Tests/Rendering/PaintTreeTextColorTests.cs`
+    - `TransparentTextColor_RemainsTransparentInPaintTree`
+      - passed after rebuilding the engine binary used by the test runner.
+  - `FenBrowser.Tests/Rendering/InputOverlayColorTests.cs`
+    - `PaintedInputText_DoesNotCreateHostOverlayDuplicate`
+      - passed after rebuilding the engine binary used by the test runner.
+
+## 2.231 Generic Focus Ring Suppression For Editable Controls (2026-04-17)
+
+- Scope:
+  - Fixed Fen's generic blue focus ring drawing on inner editable controls such as Google's composite search `textarea`.
+  - Prevents squared native-looking focus rectangles from being painted on sub-control bounds when the page already provides its own focus affordance on a larger wrapper.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+    - Added a generic focus-ring gate so renderer-level focus chrome is not drawn for `input`, `textarea`, `select`, or `contenteditable` source elements.
+    - Existing focus feedback remains unchanged for non-editable containers and controls that still rely on Fen's generic ring.
+
+- Tests:
+  - `FenBrowser.Tests/Rendering/SkiaRendererFocusRingTests.cs`
+    - Added regression coverage proving generic focus rings are suppressed for text-entry controls and contenteditable nodes while remaining enabled for ordinary focused containers.
+
+- Verification:
+  - Focused renderer regressions passed:
+    - `GenericFocusRing_Skips_TextEntryControls`
+    - `GenericFocusRing_Skips_ContentEditable`
+
+## 2.232 MediaWiki Deduplicated Inline Style Replay (2026-04-17)
+
+- Scope:
+  - Fixed Wikipedia/MediaWiki list rendering where later language blocks fell back to large vertical bullet lists instead of inline `hlist` rows.
+  - Addresses MediaWiki's deduplicated TemplateStyles pattern, where one inline `<style data-mw-deduplicate="mw-data:...">` is later referenced by `<link rel="mw-deduplicated-inline-style" href="mw-data:...">`.
+
+- Code:
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+    - Inline style collection now caches style text keyed by `data-mw-deduplicate`.
+    - Link processing now recognizes `rel="mw-deduplicated-inline-style"`.
+    - When the `href` matches a cached MediaWiki dedupe key, the loader re-injects that CSS into the source list with inline origin and normal source ordering.
+    - This keeps later `.hlist` sections styled even when MediaWiki avoids repeating the same CSS text.
+
+- Tests:
+  - `FenBrowser.Tests/Engine/MediaWikiDeduplicatedInlineStyleTests.cs`
+    - Added `MwDeduplicatedInlineStyleLink_ReappliesCachedTemplateStyle`.
+    - Verifies a later list regains `display:inline` on `li` and `list-style:none` on the referenced `ul`.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~MediaWikiDeduplicatedInlineStyleTests|FullyQualifiedName~SkiaRendererFocusRingTests|FullyQualifiedName~InputOverlayColorTests|FullyQualifiedName~PaintTreeTextColorTests" --logger "console;verbosity=minimal"`
+    - passed (`5/5`) on `2026-04-17`.
+
+## 2.233 Navigation Frame Reset And Base-Frame Reuse Guard (2026-04-18)
+
+- Scope:
+  - Fixed stale-frame reuse across top-level navigation where the compositor could continue presenting the previous page's committed frame while the new document had already loaded.
+  - Specifically addressed the `en.wikipedia.org` repro where raw source, DOM dump, and rendered text were Wikipedia but the committed screenshot still showed a previous Google frame.
+  - Hardened the Host-side `_currentFrame` presentation path so navigation does not keep drawing an obsolete `SKPicture` through `canvas.DrawPicture(_currentFrame)`.
+
+- Code:
+  - `FenBrowser.Host/BrowserIntegration.cs`
+    - `NavigateInternalAsync(...)` now clears the committed frame, overlays, and last committed viewport/scroll metadata under `_frameLock` before requesting the navigation frame.
+    - This forces a clean placeholder-to-new-document transition instead of retaining the previous page's `SKPicture`.
+    - The `RecordFrame(...)` base-frame seed decision now passes the pending invalidation reason into the reuse policy.
+  - `FenBrowser.FenEngine/Rendering/Compositing/BaseFrameReusePolicy.cs`
+    - `CanReuseBaseFrame(...)` now accepts `RenderFrameInvalidationReason`.
+    - Base-frame reuse is rejected when the invalidation includes `Navigation`, preventing prior-page pixels from seeding a new document frame.
+
+- Tests:
+  - `FenBrowser.Tests/Rendering/BaseFrameReusePolicyTests.cs`
+    - Added `CanReuseBaseFrame_RejectsNavigationInvalidation`.
+
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BaseFrameReusePolicyTests|FullyQualifiedName~MediaWikiDeduplicatedInlineStyleTests|FullyQualifiedName~SkiaRendererFocusRingTests|FullyQualifiedName~InputOverlayColorTests|FullyQualifiedName~PaintTreeTextColorTests" --logger "console;verbosity=minimal"`
+    - passed (`10/10`) on `2026-04-18`.
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`
+    - succeeded on `2026-04-18`.
+  - Clean repro run after clearing root and Host log artifacts:
+    - launched `FenBrowser.Host.exe https://en.wikipedia.org/`
+    - `debug_screenshot.png` now shows Wikipedia content instead of stale Google pixels.
+## 2.177 Compositing Base-Frame Reuse Guardrails (2026-04-18)
+
+- `FenBrowser.FenEngine/Rendering/Compositing/BaseFrameReusePolicy.cs`
+  - `CanReuseBaseFrame(...)` now enforces bounded reuse with two additional guardrails:
+    - maximum consecutive base-frame reuse count,
+    - maximum base-frame age (milliseconds).
+  - Existing navigation/viewport/scroll invalidation guards remain in place.
+- `FenBrowser.Tests/Rendering/BaseFrameReusePolicyTests.cs`
+  - Added regression coverage for exceeded reuse-streak rejection.
+  - Added regression coverage for stale-base-frame-age rejection.
+- Rationale:
+  - Base-frame reuse must stay explicit and bounded so long-running pages do not accumulate stale assumptions across many repaint cycles.

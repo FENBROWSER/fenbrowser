@@ -61,7 +61,7 @@ namespace FenBrowser.Core.Logging
                 Instance._logFilePath = Path.Combine(logPath, $"fenbrowser_{DateTime.Now:yyyyMMdd_HHmmss}.log");
                 
                 // Write header
-                File.WriteAllText(Instance._logFilePath, 
+                ResilientFileWriter.WriteAllText(Instance._logFilePath, 
                     $"╔══════════════════════════════════════════════════════════════════╗\n" +
                     $"║  FenBrowser Log - {DateTime.Now:yyyy-MM-dd HH:mm:ss}                          ║\n" +
                     $"║  System: {Environment.OSVersion}                                  \n" +
@@ -118,7 +118,7 @@ namespace FenBrowser.Core.Logging
                         Directory.CreateDirectory(dir);
                         
                     _logFilePath = path;
-                    File.AppendAllText(_logFilePath, $"\n[LogManager] Log path switched to: {path}\n");
+                    ResilientFileWriter.AppendAllText(_logFilePath, $"\n[LogManager] Log path switched to: {path}\n");
                 }
                 catch (Exception ex)
                 {
@@ -407,8 +407,10 @@ namespace FenBrowser.Core.Logging
                     }
 
                     var jsonPath = _logFilePath.Replace(".log", ".jsonl");
-                    File.AppendAllText(jsonPath, entry.ToJson() + Environment.NewLine);
-                    RotateFileIfNeeded(jsonPath, ".jsonl");
+                    if (ResilientFileWriter.AppendAllText(jsonPath, entry.ToJson() + Environment.NewLine))
+                    {
+                        RotateFileIfNeeded(jsonPath, ".jsonl");
+                    }
                 }
             }
             catch
@@ -428,8 +430,10 @@ namespace FenBrowser.Core.Logging
                         return;
                     }
 
-                    File.AppendAllText(_logFilePath, entry.ToString() + Environment.NewLine);
-                    RotateFileIfNeeded(_logFilePath, ".log");
+                    if (ResilientFileWriter.AppendAllText(_logFilePath, entry.ToString() + Environment.NewLine))
+                    {
+                        RotateFileIfNeeded(_logFilePath, ".log");
+                    }
                 }
             }
             catch
@@ -449,7 +453,10 @@ namespace FenBrowser.Core.Logging
             var archivePath = Path.Combine(
                 fileInfo.DirectoryName ?? string.Empty,
                 $"{Path.GetFileNameWithoutExtension(path)}_{DateTime.UtcNow:yyyyMMdd_HHmmssfff}{extension}");
-            File.Move(path, archivePath, overwrite: false);
+            if (!ResilientFileWriter.TryMoveFile(path, archivePath))
+            {
+                return;
+            }
             TrimArchives(fileInfo.DirectoryName ?? string.Empty, fileInfo.Name, extension);
         }
 

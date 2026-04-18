@@ -60,19 +60,19 @@ namespace FenBrowser.Core.Logging
         }
 
         public static string GetRootArtifactPath(string fileName)
-            => Path.Combine(GetWorkspaceRoot(), fileName);
+            => Path.Combine(GetLogsDirectory(), fileName);
 
         public static string GetLogArtifactPath(string fileName)
             => Path.Combine(GetLogsDirectory(), fileName);
 
         public static void AppendRootText(string fileName, string text)
         {
-            try { File.AppendAllText(GetRootArtifactPath(fileName), text); } catch { }
+            ResilientFileWriter.AppendAllText(GetRootArtifactPath(fileName), text);
         }
 
         public static void AppendLogText(string fileName, string text)
         {
-            try { File.AppendAllText(GetLogArtifactPath(fileName), text); } catch { }
+            ResilientFileWriter.AppendAllText(GetLogArtifactPath(fileName), text);
         }
 
         private static void TryEnsureDirectory(string path)

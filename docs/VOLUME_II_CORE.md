@@ -918,11 +918,13 @@ _End of Volume II_
 
 ### 1.45 Workspace-Root Diagnostics Defaults And Structured Logger Path Unification (2026-03-30)
 - `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/Logging/DiagnosticPaths.cs`
 - `FenBrowser.Core/Logging/LogManager.cs`
 - `FenBrowser.Core/Logging/StructuredLogger.cs`
 - `BrowserSettings.LogSettings` now defaults logging on for real browser runs and normalizes the legacy `AppContext.BaseDirectory/logs` default back to workspace-root `logs`, so clean-state debug cycles stop drifting into host-bin folders.
 - `LogManager.InitializeFromSettings()` now initializes `StructuredLogger` with the resolved active log path, which makes raw-source dumps, engine snapshots, rendered-text snapshots, and module log files share one authoritative diagnostics root.
 - `StructuredLogger` now emits the runtime fetch artifact as `raw_source_*.html`, matching the verification contract and avoiding the older `network_fetch_*.html` naming drift on the live host path.
+- 2026-04-18 follow-up: `DiagnosticPaths` now maps both legacy "root artifact" callers and log-artifact callers into workspace `logs/`, so `.txt`, `.png`, `.png.meta`, `.html`, and captured `.js` diagnostics no longer spill into the repository root.
 - Why this mattered:
   - the old split-path behavior produced thin or misleading runtime evidence because some artifacts landed under repo-root `logs` while others still resolved relative to `AppContext.BaseDirectory`.
   - production logging cannot be first-class if the artifact root itself is unstable.
@@ -1081,3 +1083,17 @@ _End of Volume II_
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-04-04`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrowserSettingsTests|FullyQualifiedName~BrowserCookieJarTests|FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~JavaScriptEngineLifecycleTests.MatchMedia_TracksThemeAndViewportSurfaceChanges" --no-restore`: pass (`9/9`) on `2026-04-04`.
 
+## 6.41 Logging I/O Resilience Hardening (2026-04-18)
+
+- `FenBrowser.Core/Logging/ResilientFileWriter.cs` (new)
+  - Added bounded retry + transient-share-failure handling for append/write/move operations used by diagnostics and structured logs.
+  - Failures remain best-effort and non-throwing to protect runtime hot paths.
+- `FenBrowser.Core/Logging/DiagnosticPaths.cs`
+  - `AppendRootText(...)` and `AppendLogText(...)` now route through resilient append behavior instead of direct `File.AppendAllText(...)`.
+- `FenBrowser.Core/Logging/LogManager.cs`
+  - Initialization/header writes, sink appends, and archive rotations now use resilient file operations.
+  - Logging still preserves the no-throw contract during sink failures.
+- `FenBrowser.Core/Logging/StructuredLogger.cs`
+  - Module log appends and dump artifact writes now use resilient write paths.
+- Rationale:
+  - Long-lived page runs generate high-frequency diagnostics; resilient sink behavior prevents transient file-sharing errors from cascading into exception storms or noisy debugger interruptions.

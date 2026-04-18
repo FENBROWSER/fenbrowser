@@ -59,6 +59,10 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Navigation Scroll Reset Guard (2026-04-14)**:
   - `BrowserIntegration.NavigateInternalAsync(...)` now resets `_scrollY` and `_contentHeight` at top-level navigation start and emits `ScrollChanged`.
   - This prevents stale scroll carry-over between pages (notably Acid2 `#top` -> `reference.html`) that could capture blank/offset first frames on short documents.
+- **Wikipedia Stack-Overflow Guard (2026-04-18)**:
+  - `BrowserIntegration.RecordFrame(...)` no longer seeds a new frame by drawing the previous committed `SKPicture` directly into the recorder.
+  - Host base-frame seeding now uses a flattened raster snapshot (`SKImage`) of the last committed frame, which removes recursive/transitive picture nesting and prevents stack growth across long repaint sequences.
+  - Reuse is explicitly bounded by age and consecutive-use limits before seeding, and navigation resets now dispose both `_currentFrame` and `_currentFrameSeedImage`.
 - **Input Resilience (2026-02-07)**:
   - Click activation/link handling fallback is executed in the authoritative `HandleMouseUp(... emitClick)` path using the same hit-test result (`result.NativeElement`), so web-content pointer routing remains correct even when `HandleClick(...)` is bypassed by widget-level down/up flow.
   - `HandleMouseUp(... emitClick)` now falls back to the last stable hover hit when release-time hit test is transiently null, so links/controls still activate during pointer-target flicker.
@@ -234,11 +238,15 @@ The Omnibox implementation.
 ### 6.8 Root Diagnostic Cleanup Script Hardening (2026-03-21)
 
 - `clean_root.ps1`
-  - Root-level diagnostics are now explicitly cleaned in addition to host log-folder artifacts.
-  - The script removes the generated text/log/screenshot artifacts used by FenBrowser debugging, including `debug_screenshot.png`, `dom_dump.txt`, `debug_log.txt`, `layout_engine_debug.txt`, `js_debug.log`, CSS debug dumps, xcom stdout/stderr captures, and captured root JavaScript payload dumps such as `main.*.js` / `vendor*.js`.
-  - Cleanup is bounded to diagnostic-style root artifacts so repository documentation and source files are not touched.
+  - 2026-04-18 update: canonical diagnostics now live under workspace `logs/` only; the earlier root-level artifact cleanup behavior is legacy context.
+  - The script removes the generated text/log/screenshot artifacts used by FenBrowser debugging from `logs/`, including `debug_screenshot.png`, `dom_dump.txt`, `debug_log.txt`, `layout_engine_debug.txt`, `js_debug.log`, CSS debug dumps, xcom stdout/stderr captures, and captured JavaScript payload dumps such as `main.*.js` / `vendor*.js`.
+  - Cleanup remains bounded to diagnostic-style artifacts so repository documentation and source files are not touched.
   - Default Test262 root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "test262")`.
   - Default WPT root now resolves to `Path.Combine(Directory.GetCurrentDirectory(), "wpt")`.
+
+- 2026-04-18 host/tooling path alignment:
+  - snapshot-style host tests now resolve diagnostic HTML from the canonical workspace `logs/` directory only;
+  - `FenBrowser.Tooling` reads `layout_engine_debug.txt` and emits `css_debug.txt` through `DiagnosticPaths`, removing current-directory/root assumptions during diagnostics workflows.
 
 ### 6.8 Phase-5 Host Integration Completion (2026-02-18)
 

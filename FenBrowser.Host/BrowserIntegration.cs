@@ -45,12 +45,17 @@ public class BrowserIntegration
     private bool _running = true;
     // Rendering Buffers (Double-Buffered Display List)
     private SKPicture _currentFrame;
+    private SKImage _currentFrameSeedImage;
     private readonly object _frameLock = new object();
     private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     private bool _hasLoggedFrameNull = false; // To reduce warning spam
     private List<InputOverlayData> _currentOverlays = new();
     private SKSize _lastCommittedFrameViewport;
     private float _lastCommittedFrameScrollY;
+    private DateTime _currentFrameSeedCreatedUtc = DateTime.MinValue;
+    private int _consecutiveBaseFrameReuseCount;
+    private const int MaxConsecutiveBaseFrameReuseCount = 120;
+    private const double MaxBaseFrameAgeMs = 2000;
     private RenderFrameInvalidationReason _pendingInvalidationReasons =
         RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Viewport;
     private string _pendingInvalidationSource = "startup";
@@ -690,6 +695,18 @@ public class BrowserIntegration
         // on short documents (e.g., Acid2 reference page).
         _scrollY = 0f;
         _contentHeight = 0f;
+        lock (_frameLock)
+        {
+            _currentFrame?.Dispose();
+            _currentFrame = null;
+            _currentFrameSeedImage?.Dispose();
+            _currentFrameSeedImage = null;
+            _currentOverlays = new List<InputOverlayData>();
+            _lastCommittedFrameViewport = SKSize.Empty;
+            _lastCommittedFrameScrollY = 0f;
+            _currentFrameSeedCreatedUtc = DateTime.MinValue;
+            _consecutiveBaseFrameReuseCount = 0;
+        }
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Navigate");
 
@@ -1007,29 +1024,43 @@ public class BrowserIntegration
         try
         {
             var viewport = new SKRect(0, 0, viewportSize.Width, viewportSize.Height);
-            SKPicture reusableBaseFrame = null;
+            SKImage reusableSeedImage = null;
             bool canReuseBaseFrame;
+            var nowUtc = DateTime.UtcNow;
 
             lock (_frameLock)
             {
                 canReuseBaseFrame = BaseFrameReusePolicy.CanReuseBaseFrame(
-                    _currentFrame != null,
+                    _currentFrameSeedImage != null,
                     _lastCommittedFrameViewport,
                     viewportSize,
                     _lastCommittedFrameScrollY,
-                    _scrollY);
+                    _scrollY,
+                    invalidationReasons,
+                    _consecutiveBaseFrameReuseCount,
+                    MaxConsecutiveBaseFrameReuseCount,
+                    _currentFrameSeedImage != null
+                        ? Math.Max(0d, (nowUtc - _currentFrameSeedCreatedUtc).TotalMilliseconds)
+                        : double.PositiveInfinity,
+                    MaxBaseFrameAgeMs);
 
                 if (canReuseBaseFrame)
                 {
-                    reusableBaseFrame = _currentFrame;
+                    reusableSeedImage = _currentFrameSeedImage;
                 }
             }
 
             // Start recording
             var canvas = _recorder.BeginRecording(viewport);
-            if (canReuseBaseFrame && reusableBaseFrame != null)
+            if (canReuseBaseFrame && reusableSeedImage != null)
             {
-                canvas.DrawPicture(reusableBaseFrame);
+                lock (_frameLock)
+                {
+                    if (ReferenceEquals(reusableSeedImage, _currentFrameSeedImage))
+                    {
+                        canvas.DrawImage(reusableSeedImage, 0, 0);
+                    }
+                }
             }
 
             // Adjust for scroll
@@ -1070,7 +1101,7 @@ public class BrowserIntegration
                         : new List<InputOverlayData>();
                 },
                 SeparateLayoutViewport = viewportSize,
-                HasBaseFrame = canReuseBaseFrame && reusableBaseFrame != null,
+                HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
                 InvalidationReason = invalidationReasons,
                 RequestedBy = requestedBy,
                 EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
@@ -1080,14 +1111,21 @@ public class BrowserIntegration
 
             // Finish recording and swap buffers
             var newFrame = _recorder.EndRecording();
+            var newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
 
             lock (_frameLock)
             {
                 _currentFrame?.Dispose();
                 _currentFrame = newFrame;
+                _currentFrameSeedImage?.Dispose();
+                _currentFrameSeedImage = newSeedImage;
+                _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
                 _currentOverlays = frameOverlays;
                 _lastCommittedFrameViewport = viewportSize;
                 _lastCommittedFrameScrollY = _scrollY;
+                _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && newSeedImage != null)
+                    ? _consecutiveBaseFrameReuseCount + 1
+                    : 0;
             }
 
             if (_styles != null && _styles.Count > 0)
@@ -1107,6 +1145,41 @@ public class BrowserIntegration
         catch (Exception ex)
         {
             FenLogger.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
+        }
+    }
+
+    private static SKImage CreateSeedImageFromFrame(SKPicture frame, SKSize viewportSize)
+    {
+        if (frame == null ||
+            !float.IsFinite(viewportSize.Width) ||
+            !float.IsFinite(viewportSize.Height) ||
+            viewportSize.Width <= 0 ||
+            viewportSize.Height <= 0)
+        {
+            return null;
+        }
+
+        var width = Math.Clamp((int)Math.Ceiling(viewportSize.Width), 1, 16384);
+        var height = Math.Clamp((int)Math.Ceiling(viewportSize.Height), 1, 16384);
+
+        try
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(width, height));
+            if (surface == null)
+            {
+                return null;
+            }
+
+            var seedCanvas = surface.Canvas;
+            seedCanvas.Clear(SKColors.Transparent);
+            seedCanvas.DrawPicture(frame);
+            using var snapshot = surface.Snapshot();
+            return snapshot?.ToRasterImage();
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Warn($"[BrowserIntegration] Failed to build seed image for base-frame reuse: {ex.Message}", LogCategory.Rendering);
+            return null;
         }
     }
 
