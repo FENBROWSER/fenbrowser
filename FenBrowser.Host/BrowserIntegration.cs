@@ -164,11 +164,14 @@ public class BrowserIntegration
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true) return;
 
             // Sync DOM root early so EngineLoop has it on next tick.
-            // Do NOT sync _styles here: ComputedStyles may be null mid-cascade (e.g. after
-            // incremental parse checkpoints set LastComputedStyles = null). EngineLoop
-            // re-fetches styles from _browser before every RecordFrame call.
+            // Sync styles only when snapshot reports a stable DOM+style pair. This avoids
+            // adopting transitional style states during refresh/cascade churn.
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
+            if (snapshot.HasStableStyles && snapshot.Styles != null)
+            {
+                _styles = snapshot.Styles;
+            }
             // Seed fragment intent before the first post-navigation frame.
             // BrowserHost raises RepaintReady before Navigated, and Acid2 relies on
             // initial `#top` fragment scrolling to land the face inside the viewport.
@@ -205,6 +208,7 @@ public class BrowserIntegration
                 var snapshot = _browser.GetRenderSnapshot();
                 var actualDom = snapshot.Root;
                 var actualStyles = snapshot.Styles;
+                var snapshotStable = snapshot.HasStableStyles;
                 
                 bool needsSync = false;
                 bool localStylesMissing = _styles == null || _styles.Count == 0;
@@ -216,7 +220,7 @@ public class BrowserIntegration
                 }
 
                 bool rootChanged = actualDom != null && actualDom != _root;
-                bool actualStylesReady = actualStyles != null && actualStyles.Count > 0;
+                bool actualStylesReady = snapshotStable && actualStyles != null && actualStyles.Count > 0;
                 
                 // Sync DOM if changed
                 if (rootChanged)
@@ -632,12 +636,12 @@ public class BrowserIntegration
             // Sync latest state from browser host
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
-            _styles = snapshot.Styles;
+            _styles = snapshot.HasStableStyles ? snapshot.Styles : null;
 
-            // Gate: wait for CSS before first styled render
+            // Gate: wait for a stable DOM+style snapshot before first new frame.
             if (!_hasFirstStyledRender && _root != null)
             {
-                bool hasStyles = _root.ComputedStyle != null || (_styles != null && _styles.Count > 0);
+                bool hasStyles = snapshot.HasStableStyles;
                 if (!hasStyles)
                 {
                     var elapsed = DateTime.Now - _lastNavigationTime;
@@ -650,7 +654,7 @@ public class BrowserIntegration
                     FenLogger.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
                 }
             }
-            if (_root != null && _root.ComputedStyle != null)
+            if (_root != null && snapshot.HasStableStyles)
                 _hasFirstStyledRender = true;
 
             lock (_rendererLock)
@@ -864,6 +868,10 @@ public class BrowserIntegration
     /// </summary>
     public async Task RefreshAsync()
     {
+        _lastNavigationTime = DateTime.Now;
+        _hasFirstStyledRender = false;
+        RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Refresh");
+        StartPostNavigationRepaintPulse();
         await _browser.RefreshAsync();
     }
     

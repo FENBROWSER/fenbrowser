@@ -26,7 +26,9 @@ namespace FenBrowser.FenEngine.Rendering
 {
     public readonly record struct BrowserRenderSnapshot(
         Element Root,
-        Dictionary<Node, CssComputed> Styles);
+        Dictionary<Node, CssComputed> Styles,
+        long Version,
+        bool HasStableStyles);
 
     /// <summary>
     /// High-level facade wrapping existing engine pieces.
@@ -204,6 +206,7 @@ namespace FenBrowser.FenEngine.Rendering
         private Uri _current;
         private long _latestNavigationId;
         private long _activeRenderNavigationId;
+        private long _googleChallengeRecoveryFollowedNavigationId = -1;
         private long _engineDiagnosticsCapturedNavigationId;
         private long _renderedDiagnosticsCapturedNavigationId;
         private int _engineDiagnosticsCapturedNodeCount;
@@ -1158,6 +1161,17 @@ namespace FenBrowser.FenEngine.Rendering
                     await Task.Delay(retryDelayMs);
                 }
 
+                if (_googleChallengeRecoveryFollowedNavigationId != navigationId &&
+                    TryResolveGoogleSearchRecoveryNavigation(result, out var googleRecoveryUri))
+                {
+                    TryLogInfo(
+                        $"[BrowserHost] Google search challenge detected. Following recovery URL: {googleRecoveryUri.AbsoluteUri}",
+                        LogCategory.Navigation);
+                    result = await _navManager.NavigateAsync(googleRecoveryUri.AbsoluteUri, NavigationRequestKind.Programmatic);
+                    url = googleRecoveryUri.AbsoluteUri;
+                    _googleChallengeRecoveryFollowedNavigationId = navigationId;
+                }
+
                 // Populate certificate info captured by the TLS callback into the result
                 // so the error page and UI can display accurate cert details.
                 if (result != null && _lastCertificate != null)
@@ -1792,7 +1806,17 @@ pre {{
                 error = error.Substring(0, 160) + "...";
             }
 
-            return $"status={result.Status};statusCode={statusCode};redirects={redirectCount};final={finalUri};error={error}";
+            string redirectChain = "none";
+            if (result.RedirectChain != null && result.RedirectChain.Count > 0)
+            {
+                redirectChain = string.Join("->", result.RedirectChain.Take(6));
+                if (result.RedirectChain.Count > 6)
+                {
+                    redirectChain += "->...";
+                }
+            }
+
+            return $"status={result.Status};statusCode={statusCode};redirects={redirectCount};final={finalUri};chain={redirectChain};error={error}";
         }
 
         private string BuildInteractiveLifecycleDetail(FetchResult result)
@@ -2130,6 +2154,91 @@ pre {{
             if (!IsRetriableTopLevelScheme(url)) return false;
             if (result == null) return true;
             return result.Status == FetchStatus.ConnectionFailed || result.Status == FetchStatus.Timeout;
+        }
+
+        private static bool TryResolveGoogleSearchRecoveryNavigation(FetchResult result, out Uri recoveryUri)
+        {
+            recoveryUri = null;
+            if (result == null || result.Status != FetchStatus.Success || string.IsNullOrWhiteSpace(result.Content))
+            {
+                return false;
+            }
+
+            var finalUri = result.FinalUri;
+            if (finalUri == null || !IsGoogleSearchUri(finalUri))
+            {
+                return false;
+            }
+
+            // Already on recovery URL; avoid loops.
+            if (finalUri.Query.IndexOf("emsg=SG_REL", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            var html = result.Content;
+            var hasGoogleTroubleBanner =
+                html.IndexOf("id=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                html.IndexOf("id='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                html.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!hasGoogleTroubleBanner)
+            {
+                return false;
+            }
+
+            var linkMatch = System.Text.RegularExpressions.Regex.Match(
+                html,
+                "href\\s*=\\s*['\\\"](?<href>[^'\\\"]*emsg=SG_REL[^'\\\"]*)['\\\"]",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!linkMatch.Success)
+            {
+                return false;
+            }
+
+            var hrefValue = System.Net.WebUtility.HtmlDecode(linkMatch.Groups["href"].Value ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(hrefValue))
+            {
+                return false;
+            }
+
+            if (!Uri.TryCreate(finalUri, hrefValue, out var candidate))
+            {
+                return false;
+            }
+
+            if (!IsGoogleSearchUri(candidate))
+            {
+                return false;
+            }
+
+            recoveryUri = candidate;
+            return true;
+        }
+
+        private static bool IsGoogleSearchUri(Uri uri)
+        {
+            if (uri == null)
+            {
+                return false;
+            }
+
+            if (!uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
+                !uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var host = uri.Host ?? string.Empty;
+            var isGoogleHost =
+                host.Equals("google.com", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("www.google.com", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".google.com", StringComparison.OrdinalIgnoreCase);
+            if (!isGoogleHost)
+            {
+                return false;
+            }
+
+            return uri.AbsolutePath.StartsWith("/search", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsRetriableTopLevelScheme(string url)

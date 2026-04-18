@@ -124,11 +124,17 @@ namespace FenBrowser.FenEngine.Rendering
         public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
         public IExecutionContext Context => _activeJs?.GlobalContext;
 
-        private void SetActiveDom(Node dom)
+        private void SetActiveDom(Node dom, bool markSnapshotUnstable = false)
         {
             lock (_renderStateLock)
             {
                 _activeDom = dom;
+                if (markSnapshotUnstable)
+                {
+                    _hasStableStyles = false;
+                }
+
+                _renderSnapshotVersion++;
             }
         }
 
@@ -137,6 +143,8 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_renderStateLock)
             {
                 LastComputedStyles = styles;
+                _hasStableStyles = styles != null;
+                _renderSnapshotVersion++;
             }
         }
 
@@ -150,6 +158,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 LastComputedStyles = styles;
+                _hasStableStyles = styles != null;
+                _renderSnapshotVersion++;
             }
         }
 
@@ -268,6 +278,8 @@ namespace FenBrowser.FenEngine.Rendering
         public Node ActiveDom => _activeDom;
         public JavaScriptEngine JsEngine => _activeJs;
         private Node _activeDom;
+        private long _renderSnapshotVersion;
+        private bool _hasStableStyles;
         private string _lastRawHtml;
         private object _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -322,6 +334,64 @@ namespace FenBrowser.FenEngine.Rendering
         // Some pages expose a usable fallback DOM but trap limited engines in long-running
         // bootstrap script payloads. Prefer the fallback path when the raw document already
         // advertises a noscript/meta-refresh recovery flow.
+        private static bool IsGoogleSearchAccessTroubleDocument(string html, Uri baseUri)
+        {
+            if (string.IsNullOrWhiteSpace(html) || !IsGoogleHost(baseUri))
+            {
+                return false;
+            }
+
+            var hasEnableJsRecovery =
+                html.IndexOf("/httpservice/retry/enablejs", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                html.IndexOf("if you are not redirected within a few seconds", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!hasEnableJsRecovery)
+            {
+                return false;
+            }
+
+            var hasTroubleBanner =
+                html.IndexOf("id=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                html.IndexOf("id='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                html.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
+            return hasTroubleBanner;
+        }
+
+        private static string BuildGoogleAccessTroubleFallbackHtml(string html, Uri baseUri)
+        {
+            if (!IsGoogleSearchAccessTroubleDocument(html, baseUri))
+            {
+                return html ?? string.Empty;
+            }
+
+            var bannerInner = "If you're having trouble accessing Google Search, please retry your search.";
+            try
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    html,
+                    "<div\\b[^>]*\\bid\\s*=\\s*['\\\"]yvlrue['\\\"][^>]*>(.*?)</div>",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+
+                if (match.Success && match.Groups.Count > 1 && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                {
+                    bannerInner = match.Groups[1].Value;
+                }
+            }
+            catch
+            {
+                // Keep default banner text on regex failure.
+            }
+
+            bannerInner = bannerInner
+                .Replace("href=\"/", "href=\"https://www.google.com/", StringComparison.OrdinalIgnoreCase)
+                .Replace("href='/", "href='https://www.google.com/", StringComparison.OrdinalIgnoreCase);
+
+            return
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Google Search</title></head>" +
+                "<body style=\"font-family:Arial,sans-serif;padding:24px;line-height:1.45;color:#202124;background:#fff;\">" +
+                $"<div id=\"yvlrue\">{bannerInner}</div>" +
+                "</body></html>";
+        }
+
         private static bool ShouldPreferFallbackDom(string html, Uri baseUri)
         {
             if (string.IsNullOrWhiteSpace(html))
@@ -532,12 +602,29 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var toRemove = new List<Element>();
+            var promoted = 0;
             foreach (var element in domRoot.Descendants().OfType<Element>())
             {
                 var tag = element.TagName?.ToLowerInvariant();
                 if (tag == "div" && string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
                 {
-                    toRemove.Add(element);
+                    var inlineStyle = element.GetAttribute("style");
+                    if (!string.IsNullOrWhiteSpace(inlineStyle) &&
+                        inlineStyle.IndexOf("display", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        inlineStyle.IndexOf("none", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var updatedStyle = RemoveInlineDisplayNone(inlineStyle);
+                        if (string.IsNullOrWhiteSpace(updatedStyle))
+                        {
+                            element.RemoveAttribute("style");
+                        }
+                        else
+                        {
+                            element.SetAttribute("style", updatedStyle);
+                        }
+                    }
+
+                    promoted++;
                     continue;
                 }
 
@@ -560,7 +647,107 @@ namespace FenBrowser.FenEngine.Rendering
                 element.Remove();
             }
 
-            return toRemove.Count;
+            return toRemove.Count + promoted;
+        }
+
+        private static bool IsGoogleSearchChallengeDocument(Node domRoot, Uri baseUri)
+        {
+            if (domRoot == null || !IsGoogleHost(baseUri))
+            {
+                return false;
+            }
+
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                if (string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (!string.Equals(element.TagName, "a", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var href = element.GetAttribute("href") ?? string.Empty;
+                if (href.IndexOf("emsg=SG_REL", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int ForceGoogleChallengeBannerVisible(Node domRoot, Uri baseUri, bool removeUnhideScript)
+        {
+            if (!IsGoogleSearchChallengeDocument(domRoot, baseUri))
+            {
+                return 0;
+            }
+
+            var changed = 0;
+            foreach (var element in domRoot.Descendants().OfType<Element>())
+            {
+                if (!string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var inlineStyle = element.GetAttribute("style") ?? string.Empty;
+                var updatedStyle = inlineStyle;
+
+                if (!string.IsNullOrWhiteSpace(inlineStyle))
+                {
+                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
+                        updatedStyle,
+                        @"(?:^|;)\s*display\s*:\s*none(?:\s*!\s*important)?\s*;?",
+                        ";",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
+                        updatedStyle,
+                        @"(?:^|;)\s*visibility\s*:\s*hidden(?:\s*!\s*important)?\s*;?",
+                        ";",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
+                        updatedStyle,
+                        @"(?:^|;)\s*opacity\s*:\s*0(?:\.0+)?(?:\s*!\s*important)?\s*;?",
+                        ";",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                }
+
+                updatedStyle = updatedStyle?.Trim() ?? string.Empty;
+                if (!updatedStyle.EndsWith(";", StringComparison.Ordinal) && updatedStyle.Length > 0)
+                {
+                    updatedStyle += ";";
+                }
+
+                updatedStyle += "display:block;visibility:visible;opacity:1;";
+                updatedStyle = System.Text.RegularExpressions.Regex.Replace(updatedStyle, @";{2,}", ";");
+                updatedStyle = updatedStyle.Trim().Trim(';');
+
+                element.SetAttribute("style", updatedStyle);
+
+                if (string.Equals(element.GetAttribute("hidden"), "hidden", StringComparison.OrdinalIgnoreCase) ||
+                    element.HasAttribute("hidden"))
+                {
+                    element.RemoveAttribute("hidden");
+                }
+
+                if (string.Equals(element.GetAttribute("aria-hidden"), "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    element.SetAttribute("aria-hidden", "false");
+                }
+
+                changed++;
+            }
+
+            if (removeUnhideScript)
+            {
+                changed += RemoveGoogleTroubleBannerArtifacts(domRoot, baseUri);
+            }
+
+            return changed;
         }
 
         private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
@@ -2023,7 +2210,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var parseResult = await RunDomParseAsync(html);
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;
-                SetActiveDom(dom);
+                SetActiveDom(dom, markSnapshotUnstable: true);
                 tokenizingMs = Math.Max(0, parseResult?.TokenizingMs ?? 0);
                 parsingMs = Math.Max(0, parseResult?.ParsingMs ?? 0);
                 parseTokenCount = Math.Max(0, parseResult?.TokenCount ?? 0);
@@ -2054,6 +2241,12 @@ namespace FenBrowser.FenEngine.Rendering
                 FenLogger.Debug(
                     $"[PERF] DOM Parse: total={elapsed}ms tokenizing={tokenizingMs}ms parsing={parsingMs}ms tokens={parseTokenCount} docReadyToken={documentReadyTokenCount} parseRepaints={incrementalParseRepaintCount} streaming(ms={streamingPreparseMs},cp={streamingPreparseCheckpointCount},rp={streamingPreparseRepaintCount}) interleaved(used={(interleavedParseUsed ? 1 : 0)},batch={interleavedTokenBatchSize},chunks={interleavedBatchCount},fallback={(interleavedFallbackUsed ? 1 : 0)}) checkpoints(t={tokenizingCheckpointCount},p={parsingCheckpointCount},dom={parsingDocumentCheckpointCount})",
                     LogCategory.Rendering);
+
+                var googleChallengeSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: true);
+                if (googleChallengeSanitized > 0)
+                {
+                    FenLogger.Info($"[CustomHtmlEngine] GoogleChallengeSanitizeApplied changes={googleChallengeSanitized}", LogCategory.Rendering);
+                }
 
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
@@ -2196,15 +2389,6 @@ namespace FenBrowser.FenEngine.Rendering
                                 LogCategory.Rendering);
                         }
 
-                        var removedGoogleTroubleBanners = RemoveGoogleAccessTroubleBanners(dom, baseUri);
-                        if (removedGoogleTroubleBanners > 0)
-                        {
-                            fallbackDomMutated = true;
-                            FenLogger.Debug(
-                                $"[CustomHtmlEngine] Removed {removedGoogleTroubleBanners} Google access-trouble fallback banner block(s)",
-                                LogCategory.Rendering);
-                        }
-
                         if (fallbackDomMutated)
                         {
                             await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
@@ -2215,21 +2399,6 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         FenLogger.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
                     }
-                }
-
-                try
-                {
-                    var removedGoogleTroubleArtifacts = RemoveGoogleTroubleBannerArtifacts(dom, baseUri);
-                    if (removedGoogleTroubleArtifacts > 0)
-                    {
-                        FenLogger.Debug(
-                            $"[CustomHtmlEngine] Removed {removedGoogleTroubleArtifacts} Google trouble-banner artifact node(s) before script execution",
-                            LogCategory.Rendering);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Warn($"[CustomHtmlEngine] Failed to remove Google trouble-banner artifacts: {ex.Message}", LogCategory.Rendering);
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
@@ -2253,6 +2422,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     javascriptExecuted = true;
                     await RunScriptsAsync(_activeJs, dom as Element, baseUri);
+                    var postScriptGoogleSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: false);
+                    if (postScriptGoogleSanitized > 0)
+                    {
+                        FenLogger.Info($"[CustomHtmlEngine] GoogleChallengeBannerForcedVisible postScriptChanges={postScriptGoogleSanitized}", LogCategory.Rendering);
+                    }
                     if (NeedsPostScriptStyleRefresh(dom, LastComputedStyles))
                     {
                         FenLogger.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
@@ -2385,7 +2559,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             repaintCount++;
-            SetActiveDom(snapshotRoot);
+            SetActiveDom(snapshotRoot, markSnapshotUnstable: true);
             // Do NOT null out LastComputedStyles here. The engine loop polls for styles
             // and nulling them causes hundreds of wasted render frames with Styles=NULL
             // before the CSS cascade completes. Keep previous styles visible so layout
@@ -2426,7 +2600,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             incrementalRepaintCount++;
-            SetActiveDom(snapshotRoot);
+            SetActiveDom(snapshotRoot, markSnapshotUnstable: true);
             // Do NOT null out LastComputedStyles — see TryEmitStreamingParseRepaint comment.
             OnRepaintReady(snapshotRoot);
         }
@@ -2549,7 +2723,11 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_renderStateLock)
             {
                 var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
-                return new BrowserRenderSnapshot(root, LastComputedStyles);
+                return new BrowserRenderSnapshot(
+                    root,
+                    LastComputedStyles,
+                    _renderSnapshotVersion,
+                    _hasStableStyles);
             }
         }
 
