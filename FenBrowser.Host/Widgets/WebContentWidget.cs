@@ -52,6 +52,11 @@ public class WebContentWidget : Widget
             {
                 _subscribedTab.Browser.UpdateViewport(new SKSize(Bounds.Width, Bounds.Height));
             }
+
+            // Critical for tab-switch responsiveness: force the newly active tab's
+            // engine loop to produce/commit a frame immediately instead of waiting
+            // for the next input-driven invalidation (e.g., mouse move).
+            _subscribedTab.Browser.RequestRepaint();
         }
         Invalidate();
     }

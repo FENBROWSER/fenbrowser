@@ -345,6 +345,7 @@ namespace FenBrowser.Host
                 UpdateBookmarkStar(tab.Url);
                 WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
                 _statusBar.SetLoading(tab.IsLoading);
+                tab.Browser.RequestRepaint();
             }
             else
             {
