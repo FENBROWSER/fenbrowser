@@ -1,124 +1,198 @@
-# FenBrowser Agent Alignment Manifest (`AGENTS.md`)
+# AGENTS.md — FenBrowser Root Guide
 
-This document defines the **Coding Philosophy** and **Operational Standards** for any AI Agent working on the FenBrowser codebase. Adherence is mandatory to maintain the project's long-term architectural integrity and documentation accuracy.
+This file defines the default operating rules for agents working in FenBrowser.
 
----
+## Mission
 
-## 1. The "Living Bible" Policy (CRITICAL)
+Work on FenBrowser with:
+- minimal scope
+- root-cause fixes
+- production-grade behavior
+- deterministic verification
+- low-regression changes
+- compact communication
 
-To prevent the **Technical Reference** from becoming stale, every agent interaction MUST follow the **Documentation Synchronization Rule**:
+The browser may be referred to as `fen` or `fenbrowser`.
 
-- **No Task is "Done" until Documentation is Updated**: If you add a feature, refactor a class, or move a file, you MUST update the corresponding `Volume_*` and `Part_*` files in `docs/TechnicalReference/` and `docs/`.
-- **Logic Mapping**:
-  1. Check **[SYSTEM_MANIFEST.md](file:///C:/Users/udayk/Videos/FENBROWSER/docs/SYSTEM_MANIFEST.md)** to identify the impacted layer.
-  2. Locate the **Master Index** (`Volume_*_Tree.md`) for that layer.
-  3. Update the specific **Part** documentation with new logic summaries, line ranges, and function descriptions.
-- **Atomic Integrity**: Documentation updates should be included in the same PR/Commit series as the code changes.
+## Repository shape
 
----
+Primary projects:
+- `FenBrowser.Core` — DOM, parsing, resource/network primitives, shared browser types
+- `FenBrowser.FenEngine` — CSS, layout, rendering, scripting, runtime pipeline
+- `FenBrowser.Host` — windowing, input, host integration, OS boundary
+- `FenBrowser.DevTools` — native devtools UI and remote debugging protocol
 
-## 2. Fenbrowser Development Guidelines
+Other important surfaces:
+- `FenBrowser.WebDriver`
+- `FenBrowser.Tests`
+- `FenBrowser.Test262`
+- tooling and scripts under repo root / `scripts/`
 
-### Core Identity & Philosophy
+Default behavior:
+- inspect the smallest relevant project first
+- do not scan all projects unless the task is cross-cutting
+- do not start in tests/conformance projects unless verification or test work is the task
 
-- **Project Identity**: The browser is referred to as `fen` or `fenbrowser`.
-- **Core Philosophy**: Development emphasizes **modularity, security, privacy, and reliability**.
-- **Industry Standards**: Implement best practices from leading browsers (Chromium, Firefox, Webkit) while proactively avoiding their historical pitfalls and architectural mistakes.
-- **Motto**: **"Architecture is Destiny"**. Every technical decision must serve long-term structural integrity over short-term features.
+## Non-negotiable rules
 
-### Implementation Excellence
+1. Reproduce before fixing.
+2. Prefer root cause over symptom patch.
+3. Keep changes minimal and local.
+4. Do not refactor unrelated code.
+5. Do not widen scope without evidence.
+6. Build or verify the smallest affected surface first.
+7. If behavior or architecture meaningfully changes, update the relevant canonical docs in the same change.
+8. Do not use platform-specific APIs outside host/platform layers unless the task is explicitly platform work.
+9. Treat native resource ownership as critical. Dispose correctly.
+10. Keep replies compact unless a deep dive is requested.
 
-- **Professional Rigor**: Conduct thorough analysis from the perspective of a **Senior System Architect and Senior Software Engineer** before any implementation.
-- **Feature Completeness**: Deliver fully functional, production-ready features. **Never build stubs or "half-baked" implementations**; every component must be feature-complete.
-- **Performance Optimization**: Write highly optimized and **optimizable code where every second is very important**. Every millisecond is critical. Utilize low-level optimizations (Zero-copy, pooling) and efficient algorithms for maximum responsiveness.
-- **Documentation**: Maintain clear, concise documentation for all modules and architectural decisions to support modularity and long-term maintainability.
+## Canonical documentation set
 
----
+Use only these docs as the authoritative documentation map:
 
-## 3. High-Precision AI Alignment
+- `docs/VOLUME_I_SYSTEM_MANIFEST.md`
+- `docs/VOLUME_II_CORE.md`
+- `docs/VOLUME_III_FENENGINE.md`
+- `docs/VOLUME_IV_HOST.md`
+- `docs/VOLUME_V_DEVTOOLS.md`
+- `docs/VOLUME_VI_EXTENSIONS_VERIFICATION.md`
+- `docs/COMPLIANCE.md`
+- `docs/DEFINITION_OF_DONE.md`
+- `docs/GLOSSARY.md`
+- `docs/INDEX.md`
+- `docs/THIRD_PARTY_DEPENDENCIES.md`
 
-### Critical Vocabulary
+Do not assume legacy `docs/TechnicalReference/`, `Part_*`, or `Volume_*_Tree.md` structures are the active documentation contract.
 
-To avoid terminology drift, agents MUST use these project-specific terms:
+## Documentation synchronization rule
 
-- **Box Tree**: The visual layout tree generated from the DOM.
-- **Compositor**: The logic in the Host that blends Web Content with UI Widgets.
-- **The Strut**: The baseline/line-height metric used for text vertical alignment.
-- **Renderer**: Specifically the `SkiaDomRenderer` which translates the Box Tree to Skia commands.
+Documentation is required when a change affects:
+- architecture or subsystem boundaries
+- observable runtime behavior
+- diagnostics or operator workflow
+- verification/test workflow
+- compliance/spec-status understanding
+- terminology
+- third-party dependency inventory or rationale
 
-### Threading Boundaries
+Small localized fixes do not require doc churn unless they change how the subsystem should be understood.
 
-- **UI Thread ONLY**: All `Widget` modifications, Win32 event handling, and Window management.
-- **Render Thread ONLY**: All `Box` calculations, Layout algorithms, and `Paint` operations.
-- **Task Loop**: Use the `EventLoopCoordinator` for microtasks to avoid blocking the hot-paths.
+Mapping:
+- Core changes -> `VOLUME_II_CORE.md`
+- FenEngine changes -> `VOLUME_III_FENENGINE.md`
+- Host changes -> `VOLUME_IV_HOST.md`
+- DevTools changes -> `VOLUME_V_DEVTOOLS.md`
+- WebDriver / tests / verification / tooling -> `VOLUME_VI_EXTENSIONS_VERIFICATION.md`
 
-### Avoid Legacy Pitfalls (Learnings from Chromium/Webkit)
+Additional appendices only when relevant:
+- compliance/spec planning -> `COMPLIANCE.md`
+- merge/review gates -> `DEFINITION_OF_DONE.md`
+- terminology -> `GLOSSARY.md`
+- dependency surface -> `THIRD_PARTY_DEPENDENCIES.md`
+- docs navigation/indexing -> `INDEX.md`
 
-To avoid the architectural mistakes of existing browsers, agents must:
+## Working style
 
-- **Reject Library Dominance**: Never let a library (like Skia) dictate layout metrics. We use libraries for primitive drawing only (Rule 1).
-- **Enforce State Isolation**: Unlike legacy browsers where global state often causes rendering artifacts, FenBrowser enforces strict `PipelineContext` passing.
-- **Abstract the GPU/OS**: Mask the hardware backend (Rule 4) so we don't end up locked into a specific OS-native graphics API.
+Default sequence:
+1. Restate the bug/task in one sentence internally.
+2. Identify the owning subsystem.
+3. Inspect only likely files first.
+4. Reproduce or verify the failure.
+5. Patch the earliest broken stage.
+6. Run the smallest meaningful verification.
+7. Update docs only if required.
+8. Summarize:
+   - root cause
+   - files changed
+   - verification
+   - docs touched
 
----
+Avoid:
+- broad repo tours
+- speculative rewrites
+- architecture changes without evidence
+- repeating the user prompt
+- long educational explanations unless requested
 
-## 4. Senior Engineering Safeguards (MANDATORY)
+## Debug and artifact workflow
 
-### 1. Memory Discipline (Native Resource Ownership)
+For runtime/rendering issues, prefer this diagnostic order:
+1. `FenBrowser.Host/bin/Debug/net8.0/debug_screenshot.png`
+2. `logs/raw_source_*.html`
+3. `dom_dump.txt`
+4. `logs/fenbrowser_*.log`
 
-Since FenBrowser relies heavily on SkiaSharp, we are dealing with native C++ objects. If an AI agent forgets to dispose of an `SKPaint` or `SKPath` inside a render loop, the browser will leak memory until it crashes.
+Default clean-state workflow:
+1. kill existing FenBrowser-related processes
+2. clear relevant logs/artifacts
+3. build/run cleanly
+4. allow startup/navigation enough time to settle
+5. inspect screenshot + DOM/log artifacts before patching
 
-- **Rule**: Mandatory `using` blocks for all Skia native types and a preference for object pooling over allocation in the `FenEngine`.
+Do not assume an old hard-coded fallback logs folder is correct.
+Prefer workspace-root `logs/` and the current build output/artifact paths.
 
-### 2. Regression-Reproduction First
+## Threading boundaries
 
-In browser engineering, a "fix" is often invisible unless you prove the failure first.
+UI thread only:
+- widgets
+- window management
+- UI invalidation
+- host/UI event handling
 
-- **Rule**: Mandate that an agent must reproduce the bug in the logs and `debug_screenshot.png` **before** writing a single line of the fix. This prevents "blind coding."
+Render thread / engine-owned execution only:
+- box/layout computation
+- paint preparation
+- rendering pipeline work
 
-### 3. Hard Security Constraints (Rule 3 Enforcement)
+Queued/microtask/event-loop work:
+- use the established coordinator/event-loop surfaces
+- do not block hot paths with ad hoc synchronous work
 
-The Constitution mentions SVG sandboxing, but we must codify the **Hard Limits** for the AI to enforce during implementation.
+## Resource and safety discipline
 
-- **Limits**:
-  - **Max SVG Depth**: 32 levels.
-  - **Max Filters**: 10 per element.
-  - **Max Render Time**: 100ms per frame (to prevent UI freeze).
+- Use `using` / deterministic disposal for native Skia and similar native-backed objects.
+- Avoid unnecessary allocations in hot paths.
+- Prefer pooling/reuse only when it simplifies hot-path cost without obscuring correctness.
+- Never let a drawing library define layout semantics.
+- Keep state flow explicit; avoid hidden globals.
+- Keep Core/FenEngine/WebDriver logic platform-agnostic unless the task is explicitly platform work.
 
-### 4. Cross-Platform Vision (Linux, macOS, Mobile)
+## Terminology contract
 
-FenBrowser is **"Windows-First, but not Windows-Forever."**
+Use project terms consistently:
+- Box / LayoutBox
+- Box Tree
+- Paint Tree
+- Bridge
+- Host
+- DOM
+- Node / Element / ContainerNode
+- Microtask
 
-- **Platform Abstraction**: Avoid using `Win32` APIs directly outside the `FenBrowser.Host` project.
-- **Agnostic Logic**: All logic in `Engine`, `Core`, and `WebDriver` must remain platform-agnostic to support future ports to Linux, macOS, Android, and iOS.
+Avoid inventing alternate names for established subsystem concepts.
 
----
+## Verification policy
 
-## 5. Operational Workflow (The Fen Loop)
+Choose the smallest verification that can falsify the change.
 
-### Execution & Debugging Lifecycle
+Typical order:
+- focused build of touched project
+- focused test slice for the changed path
+- broader slice only if the change crosses subsystem boundaries
+- full solution build/test only when necessary
 
-Always follow this clean-state execution process after every build:
+Do not run large suites by default when a smaller proof is sufficient.
 
-1.  **Process Management**: Kill any existing `fenbrowser` / `Fenbrowser.host` executable processes.
-2.  **Log Cleanup**: Clear all files in the `fenbrowser/logs` folder.
-3.  **The 25-Second Rule**: Run the solution build (`Fenbrowser.host`) and **wait at least 25 seconds** before analyzing logs. This allows for proper data loading and engine stabilization. **Do NOT kill within 10 seconds.**
-4.  **Log Locations**: Logs are located in:
-    - `C:\Users\udayk\Videos\FENBROWSER\logs`
-    - `C:\Users\udayk\Videos\FENBROWSER\`
-      _(Do not check incorrect folders)_.
+## Output contract for agent responses
 
-### Post-Build Diagnostics Priority
+Default response format:
+1. Root cause
+2. Files inspected/changed
+3. Minimal patch plan or applied fix
+4. Verification command/result
+5. Docs updated or not needed
 
-Analyze resources in this strict order:
-
-1.  **`debug_screenshot.png`**: **Visual Confirmation**. This must be checked every time logs are analyzed.
-2.  **`logs/raw_source_*.html`**: The raw HTML processed by the parser.
-3.  **`dom_dump.txt`**: The parsed DOM tree and computed layout boxes.
-4.  **`logs/fenbrowser_*.log`**: Module logs (`[CSS-DIAG]`, `[BOX]`, `[Layout]`).
-
----
-
-> [!IMPORTANT]
-> **To the Agent:**
-> Your goal is not just to "solve the ticket," but to harden the browser and keep its "Project Bible" current. Stale documentation is as dangerous as bad code. Architecture is Destiny.
+Keep the response brief and technical.
+Do not restate obvious context.
+Do not add background unless it materially helps the next action.
