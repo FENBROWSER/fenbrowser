@@ -192,6 +192,11 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         private FenValue PreventDefault(FenValue[] args, FenValue thisVal)
         {
+            if (IsPassiveContext)
+            {
+                return FenValue.Undefined;
+            }
+
             if (Cancelable)
             {
                 DefaultPrevented = true;
@@ -227,7 +232,23 @@ namespace FenBrowser.FenEngine.DOM
         /// </summary>
         private FenValue ComposedPath(FenValue[] args, FenValue thisVal)
         {
-            // Requires context to wrap nodes
+            // Generic EventTarget (e.g. window) dispatch uses AT_TARGET-only path.
+            // Per DOM, composedPath() should expose [target] during dispatch, then [].
+            var phaseValue = Get("eventPhase");
+            var inDispatchPhase = phaseValue.IsNumber && phaseValue.ToNumber() != NONE;
+            if ((PropagationPath == null || PropagationPath.Count == 0) && inDispatchPhase)
+            {
+                var arrSingle = FenObject.CreateArray();
+                var targetValue = Get("target");
+                if (!targetValue.IsUndefined && !targetValue.IsNull)
+                {
+                    arrSingle.Set("0", targetValue);
+                    arrSingle.Set("length", FenValue.FromNumber(1));
+                    return FenValue.FromObject(arrSingle);
+                }
+            }
+
+            // Requires context to wrap node path entries.
             if (_context == null) return FenValue.FromObject(FenObject.CreateArray());
 
             var nodes = new List<Node>();

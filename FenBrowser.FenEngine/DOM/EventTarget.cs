@@ -17,6 +17,13 @@ namespace FenBrowser.FenEngine.DOM
     public static class EventTarget
     {
         private static EventListenerRegistry _registry = new EventListenerRegistry();
+        private static readonly Dictionary<string, string> s_legacyPrefixedEventTypeMap = new(StringComparer.Ordinal)
+        {
+            ["animationstart"] = "webkitAnimationStart",
+            ["animationiteration"] = "webkitAnimationIteration",
+            ["animationend"] = "webkitAnimationEnd",
+            ["transitionend"] = "webkitTransitionEnd"
+        };
 
         public static EventListenerRegistry Registry => _registry;
         public static Action<object, DomEvent, IExecutionContext, bool, bool> ExternalListenerInvoker { get; set; }
@@ -99,7 +106,7 @@ namespace FenBrowser.FenEngine.DOM
                 // 1. Initialize Event
                 evt.ResetState(); // Reset path/phase if re-dispatching
                 evt.Target = target;
-                evt.IsTrusted = true; // Assumed trusted if dispatched by engine
+                // Preserve trust set by the event source; script dispatchEvent() must remain untrusted.
                 evt.UpdateJsProperties(context); // Sync JS object
 
                 // 2. Build Propagation Path
@@ -309,6 +316,10 @@ namespace FenBrowser.FenEngine.DOM
             foreach (var listener in listeners)
             {
                 if (evt.ImmediatePropagationStopped) return;
+                if (!_registry.IsRegistered(element, evt.Type, listener))
+                {
+                    continue;
+                }
 
                 // Handle 'once'
                 if (listener.Once)
@@ -379,9 +390,82 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
+            var wrappedTarget = DomWrapperFactory.Wrap(element, context);
+            var targetObj = wrappedTarget.IsObject ? wrappedTarget.AsObject() : null;
+            if (evt.IsTrusted &&
+                TryResolveLegacyPrefixedEventType(evt.Type, out var prefixedType) &&
+                ShouldInvokeLegacyPrefixedCallbacksForElement(element, targetObj, evt.Type, context))
+            {
+                var prefixedListeners = _registry.Get(element, prefixedType, isCapturePhase);
+                foreach (var listener in prefixedListeners)
+                {
+                    if (evt.ImmediatePropagationStopped) return;
+                    if (!_registry.IsRegistered(element, prefixedType, listener))
+                    {
+                        continue;
+                    }
+
+                    if (listener.Once)
+                    {
+                        _registry.RemoveOnce(element, prefixedType, listener);
+                    }
+
+                    try
+                    {
+                        FenFunction callbackFn = null;
+                        var callbackThis = wrappedTarget;
+                        var callback = listener.Callback;
+
+                        if (callback.IsFunction)
+                        {
+                            callbackFn = callback.AsFunction() as FenFunction;
+                        }
+                        else if (callback.IsObject)
+                        {
+                            var handleEvent = callback.AsObject().Get("handleEvent", context);
+                            if (handleEvent.IsFunction)
+                            {
+                                callbackFn = handleEvent.AsFunction() as FenFunction;
+                                callbackThis = callback;
+                            }
+                        }
+
+                        if (callbackFn == null) continue;
+
+                        var args = new[] { FenValue.FromObject(evt) };
+                        var originalType = evt.Get("type", context);
+                        evt.Set("type", FenValue.FromString(prefixedType), context);
+                        if (listener.Passive) evt.IsPassiveContext = true;
+                        try
+                        {
+                            if (context.ExecuteFunction != null && callback.IsFunction)
+                            {
+                                context.ThisBinding = callbackThis;
+                                context.ExecuteFunction(callback, args);
+                            }
+                            else
+                            {
+                                context.CheckCallStackLimit();
+                                context.CheckExecutionTimeLimit();
+                                callbackFn.Invoke(args, context, callbackThis);
+                            }
+                        }
+                        finally
+                        {
+                            if (listener.Passive) evt.IsPassiveContext = false;
+                            evt.Set("type", originalType, context);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FenLogger.Error($"[EventTarget] Error in legacy-prefixed listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                        TryReportErrorToWindow(element, context, ex);
+                    }
+                }
+            }
+
             if (!isCapturePhase && !evt.ImmediatePropagationStopped)
             {
-                var wrappedTarget = DomWrapperFactory.Wrap(element, context);
                 if (wrappedTarget.IsObject)
                 {
                     InvokeEventHandlerProperty(wrappedTarget.AsObject(), wrappedTarget, evt, context);
@@ -389,6 +473,71 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
+
+        /// <summary>
+        /// Returns true when a trusted unprefixed animation/transition event can invoke legacy prefixed callbacks.
+        /// </summary>
+        private static bool ShouldInvokeLegacyPrefixedCallbacksForElement(Element element, IObject targetObj, string unprefixedType, IExecutionContext context)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(unprefixedType))
+            {
+                return false;
+            }
+
+            var hasUnprefixedListeners = _registry.GetAll(element, unprefixedType).Count > 0;
+            if (hasUnprefixedListeners)
+            {
+                return false;
+            }
+
+            if (targetObj == null)
+            {
+                return true;
+            }
+
+            var unprefixedHandler = targetObj.Get("on" + unprefixedType, context);
+            return !unprefixedHandler.IsFunction;
+        }
+
+        private static bool HasListenersForTargetType(IObject targetObj, string type, IExecutionContext context)
+        {
+            if (targetObj == null || string.IsNullOrWhiteSpace(type))
+            {
+                return false;
+            }
+
+            var listenersVal = targetObj.Get("__fen_listeners__", context);
+            if (!listenersVal.IsObject)
+            {
+                return false;
+            }
+
+            var listenersObj = listenersVal.AsObject() as FenObject;
+            if (listenersObj == null)
+            {
+                return false;
+            }
+
+            var arrVal = listenersObj.Get(type, context);
+            if (!arrVal.IsObject)
+            {
+                return false;
+            }
+
+            var lengthVal = arrVal.AsObject().Get("length", context);
+            return lengthVal.IsNumber && lengthVal.ToNumber() > 0;
+        }
+
+        private static bool TryResolveLegacyPrefixedEventType(string unprefixedType, out string prefixedType)
+        {
+            prefixedType = null;
+            if (string.IsNullOrWhiteSpace(unprefixedType))
+            {
+                return false;
+            }
+
+            return s_legacyPrefixedEventTypeMap.TryGetValue(unprefixedType, out prefixedType);
+        }
 
         /// <summary>
         /// Report an uncaught listener exception to window.onerror per the DOM spec.
@@ -685,20 +834,49 @@ namespace FenBrowser.FenEngine.DOM
 
             try
             {
-                var onHandler = targetObj.Get("on" + evt.Type, context);
-                if (!onHandler.IsFunction)
+                var unprefixedPropertyName = "on" + evt.Type;
+                var unprefixedHandler = targetObj.Get(unprefixedPropertyName, context);
+                var unprefixedHandlerInvoked = false;
+                if (unprefixedHandler.IsFunction)
                 {
-                    return;
+                    var handlerArgs = BuildEventHandlerArguments(targetObj, evt, context);
+                    var handlerResult = unprefixedHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
+                    if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                    {
+                        evt.PreventDefault();
+                    }
+
+                    ApplyLegacyEventFlags(evt);
+                    unprefixedHandlerInvoked = true;
                 }
 
-                var handlerArgs = BuildEventHandlerArguments(targetObj, evt, context);
-                var handlerResult = onHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
-                if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                if (evt.IsTrusted &&
+                    TryResolveLegacyPrefixedEventType(evt.Type, out var prefixedType))
                 {
-                    evt.PreventDefault();
-                }
+                    var prefixedPropertyName = "on" + prefixedType.ToLowerInvariant();
+                    var prefixedHandler = targetObj.Get(prefixedPropertyName, context);
+                    var hasUnprefixedListeners = HasListenersForTargetType(targetObj, evt.Type, context);
+                    if (!unprefixedHandlerInvoked && !hasUnprefixedListeners && prefixedHandler.IsFunction)
+                    {
+                        var handlerArgs = BuildEventHandlerArguments(targetObj, evt, context);
+                        var originalType = evt.Get("type", context);
+                        evt.Set("type", FenValue.FromString(prefixedType), context);
+                        try
+                        {
+                            var handlerResult = prefixedHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
+                            if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
+                            {
+                                evt.PreventDefault();
+                            }
 
-                ApplyLegacyEventFlags(evt);
+                            ApplyLegacyEventFlags(evt);
+                        }
+                        finally
+                        {
+                            evt.Set("type", originalType, context);
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {

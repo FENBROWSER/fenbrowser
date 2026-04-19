@@ -1094,6 +1094,130 @@ try {
         }
       });
     },
+    action_sequence: function(actions, _context) {
+      return Promise.resolve().then(function() {
+        if (!actions || !actions.length) {
+          return;
+        }
+
+        var pointerState = {
+          target: null,
+          x: 0,
+          y: 0,
+          button: 0
+        };
+
+        function resolvePointerTarget(origin) {
+          if (!origin || origin === 'viewport' || origin === 'pointer') {
+            return pointerState.target;
+          }
+
+          if (origin.nodeType === 1) {
+            return origin;
+          }
+
+          return pointerState.target;
+        }
+
+        function dispatchMouseLike(target, type, button) {
+          if (!target || typeof target.dispatchEvent !== 'function') {
+            return;
+          }
+
+          var evt = null;
+          try {
+            evt = new MouseEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              button: button || 0,
+              buttons: (type === 'mouseup' || type === 'pointerup') ? 0 : 1,
+              clientX: pointerState.x,
+              clientY: pointerState.y
+            });
+          } catch (_) {
+            evt = new Event(type, { bubbles: true, cancelable: true, composed: true });
+          }
+
+          try {
+            target.dispatchEvent(evt);
+          } catch (_) {}
+        }
+
+        var maxTicks = 0;
+        for (var i = 0; i < actions.length; i++) {
+          var seqActions = actions[i] && actions[i].actions ? actions[i].actions.length : 0;
+          if (seqActions > maxTicks) {
+            maxTicks = seqActions;
+          }
+        }
+
+        var tick = 0;
+        function runTick() {
+          if (tick >= maxTicks) {
+            return Promise.resolve();
+          }
+
+          var maxDelay = 0;
+          for (var s = 0; s < actions.length; s++) {
+            var sequence = actions[s];
+            if (!sequence || !sequence.actions || tick >= sequence.actions.length) {
+              continue;
+            }
+
+            var action = sequence.actions[tick];
+            if (!action || !action.type) {
+              continue;
+            }
+
+            if (typeof action.duration === 'number' && action.duration > maxDelay) {
+              maxDelay = action.duration;
+            }
+
+            if (sequence.type === 'pointer') {
+              if (action.type === 'pointerMove') {
+                if (typeof action.x === 'number') {
+                  pointerState.x = action.x;
+                }
+                if (typeof action.y === 'number') {
+                  pointerState.y = action.y;
+                }
+                var moveTarget = resolvePointerTarget(action.origin);
+                if (moveTarget) {
+                  pointerState.target = moveTarget;
+                }
+              } else if (action.type === 'pointerDown') {
+                pointerState.button = (typeof action.button === 'number') ? action.button : 0;
+                dispatchMouseLike(pointerState.target, 'pointerdown', pointerState.button);
+                dispatchMouseLike(pointerState.target, 'mousedown', pointerState.button);
+              } else if (action.type === 'pointerUp') {
+                var upButton = (typeof action.button === 'number') ? action.button : pointerState.button;
+                dispatchMouseLike(pointerState.target, 'pointerup', upButton);
+                dispatchMouseLike(pointerState.target, 'mouseup', upButton);
+                if (pointerState.target && typeof pointerState.target.click === 'function') {
+                  try {
+                    pointerState.target.click();
+                  } catch (_) {
+                    dispatchMouseLike(pointerState.target, 'click', upButton);
+                  }
+                } else {
+                  dispatchMouseLike(pointerState.target, 'click', upButton);
+                }
+              }
+            }
+          }
+
+          tick++;
+          if (maxDelay > 0) {
+            return new Promise(function(resolve) { setTimeout(resolve, maxDelay); }).then(runTick);
+          }
+
+          return runTick();
+        }
+
+        return runTick();
+      });
+    },
     send_keys: function (_target, keys) {
       var text = (keys === undefined || keys === null) ? '' : String(keys);
       if ((text.indexOf('\uE00C') >= 0 || text.indexOf('Escape') >= 0) &&
@@ -1169,6 +1293,73 @@ try {
       }
     }
   };
+
+  if (!test_driver.Actions) {
+    test_driver.Actions = function() {
+      this._target = null;
+      this._x = 0;
+      this._y = 0;
+      this._button = 0;
+    };
+
+    test_driver.Actions.prototype.pointerMove = function(x, y, options) {
+      options = options || {};
+      if (typeof x === 'number') this._x = x;
+      if (typeof y === 'number') this._y = y;
+      if (options.origin && options.origin.nodeType === 1) {
+        this._target = options.origin;
+      }
+      return this;
+    };
+
+    test_driver.Actions.prototype.pointerDown = function(options) {
+      options = options || {};
+      if (typeof options.button === 'number') this._button = options.button;
+      return this;
+    };
+
+    test_driver.Actions.prototype.pointerUp = function(options) {
+      options = options || {};
+      if (typeof options.button === 'number') this._button = options.button;
+      return this;
+    };
+
+    test_driver.Actions.prototype.send = function() {
+      var target = this._target;
+      if (!target || target.nodeType !== 1) {
+        return Promise.resolve();
+      }
+
+      function dispatch(type, button, clientX, clientY) {
+        if (typeof target.dispatchEvent !== 'function') return;
+        var evt = null;
+        try {
+          evt = new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            button: button || 0,
+            buttons: type === 'mouseup' ? 0 : 1,
+            clientX: clientX || 0,
+            clientY: clientY || 0
+          });
+        } catch (_) {
+          evt = new Event(type, { bubbles: true, cancelable: true, composed: true });
+        }
+        try { target.dispatchEvent(evt); } catch (_) {}
+      }
+
+      dispatch('mousedown', this._button, this._x, this._y);
+      dispatch('mouseup', this._button, this._x, this._y);
+      if (typeof target.click === 'function') {
+        try { target.click(); } catch (_) { dispatch('click', this._button, this._x, this._y); }
+      } else {
+        dispatch('click', this._button, this._x, this._y);
+      }
+
+      return Promise.resolve();
+    };
+  }
 
   if (typeof window !== 'undefined') { window.test_driver = test_driver; }
   if (typeof window !== 'undefined' && !window.test_driver_internal) {
@@ -4380,7 +4571,7 @@ promise_test(async t => {
                 }
                 else if (IsTestDriverSupportScript(src))
                 {
-                    // testdriver-vendor.js and testdriver-actions.js: no-op shim.
+                    // testdriver-vendor.js: no-op shim.
                     code = "/* FenBrowser shim: testdriver support script intentionally no-op */";
                     scriptLabel = "fen-testdriver-support-noop.js";
                 }

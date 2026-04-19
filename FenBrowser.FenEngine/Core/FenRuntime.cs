@@ -7856,192 +7856,201 @@ namespace FenBrowser.FenEngine.Core
                     }
 
                     // Generic EventTarget dispatch path (window/custom targets): AT_TARGET only.
-                    eventObj.ResetState();
-                    eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.AT_TARGET));
-                    eventObj.Set("target", effectiveThis);
-                    eventObj.Set("srcElement", effectiveThis);
-
-                    var typeName = eventObj.Type ?? "";
-
-                    if (effectiveThis.IsObject)
+                    eventObj.BeginDispatch();
+                    try
                     {
-                        var targetObj = effectiveThis.AsObject();
-                        var listenersVal = targetObj.Get("__fen_listeners__");
-                        if (listenersVal.IsObject)
+                        eventObj.ResetState();
+                        eventObj.EventPhase = DomEvent.AT_TARGET;
+                        eventObj.UpdateJsProperties(_context);
+                        eventObj.Set("target", effectiveThis);
+                        eventObj.Set("srcElement", effectiveThis);
+
+                        var typeName = eventObj.Type ?? "";
+
+                        if (effectiveThis.IsObject)
                         {
-                            var listenersObj = listenersVal.AsObject() as FenObject;
-                            var arrVal = listenersObj?.Get(typeName) ?? FenValue.Undefined;
-                            var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
-                            if (arr != null)
+                            var targetObj = effectiveThis.AsObject();
+                            var listenersVal = targetObj.Get("__fen_listeners__");
+                            if (listenersVal.IsObject)
                             {
-                                int len = (int)arr.Get("length").ToNumber();
-                                for (int i = 0; i < len; i++)
+                                var listenersObj = listenersVal.AsObject() as FenObject;
+                                var arrVal = listenersObj?.Get(typeName) ?? FenValue.Undefined;
+                                var arr = arrVal.IsObject ? arrVal.AsObject() as FenObject : null;
+                                if (arr != null)
                                 {
-                                    var listenerEntry = arr.Get(i.ToString());
-                                    var callback = listenerEntry;
-                                    var onceListener = false;
-                                    var passiveListener = false;
+                                    int len = (int)arr.Get("length").ToNumber();
+                                    for (int i = 0; i < len; i++)
+                                    {
+                                        var listenerEntry = arr.Get(i.ToString());
+                                        var callback = listenerEntry;
+                                        var onceListener = false;
+                                        var passiveListener = false;
 
-                                    if (listenerEntry.IsObject)
-                                    {
-                                        var entryObj = listenerEntry.AsObject();
-                                        var cbVal = entryObj.Get("callback");
-                                        if (!cbVal.IsUndefined)
-                                        {
-                                            callback = cbVal;
-                                            onceListener = entryObj.Get("once").ToBoolean();
-                                            passiveListener = entryObj.Get("passive").ToBoolean();
-                                        }
-                                    }
-
-                                    FenFunction callbackFn = null;
-                                    var callbackThis = effectiveThis;
-                                    if (callback.IsFunction)
-                                    {
-                                        callbackFn = callback.AsFunction() as FenFunction;
-                                    }
-                                    else if (callback.IsObject)
-                                    {
-                                        var handleEvent = callback.AsObject().Get("handleEvent");
-                                        if (handleEvent.IsFunction)
-                                        {
-                                            callbackFn = handleEvent.AsFunction() as FenFunction;
-                                            callbackThis = callback;
-                                        }
-                                    }
-
-                                    if (callbackFn == null) continue;
-
-                                    _context.ThisBinding = callbackThis;
-                                    if (passiveListener)
-                                    {
-                                        eventObj.IsPassiveContext = true;
-                                    }
-
-                                    try
-                                    {
-                                        callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
-                                    }
-                                    finally
-                                    {
-                                        if (passiveListener)
-                                        {
-                                            eventObj.IsPassiveContext = false;
-                                        }
-                                    }
-
-                                    if (onceListener)
-                                    {
                                         if (listenerEntry.IsObject)
                                         {
-                                            DetachAbortSignalListener(listenerEntry.AsObject() as FenObject);
+                                            var entryObj = listenerEntry.AsObject();
+                                            var cbVal = entryObj.Get("callback");
+                                            if (!cbVal.IsUndefined)
+                                            {
+                                                callback = cbVal;
+                                                onceListener = entryObj.Get("once").ToBoolean();
+                                                passiveListener = entryObj.Get("passive").ToBoolean();
+                                            }
                                         }
 
-                                        var kept = FenObject.CreateArray();
-                                        int k = 0;
-                                        for (int j = 0; j < len; j++)
+                                        FenFunction callbackFn = null;
+                                        var callbackThis = effectiveThis;
+                                        if (callback.IsFunction)
                                         {
-                                            if (j == i) continue;
-                                            kept.Set(k.ToString(), arr.Get(j.ToString()));
-                                            k++;
+                                            callbackFn = callback.AsFunction() as FenFunction;
                                         }
-                                        kept.Set("length", FenValue.FromNumber(k));
-                                        listenersObj.Set(typeName, FenValue.FromObject(kept));
-                                        arr = kept;
-                                        len = k;
-                                        i--;
+                                        else if (callback.IsObject)
+                                        {
+                                            var handleEvent = callback.AsObject().Get("handleEvent");
+                                            if (handleEvent.IsFunction)
+                                            {
+                                                callbackFn = handleEvent.AsFunction() as FenFunction;
+                                                callbackThis = callback;
+                                            }
+                                        }
+
+                                        if (callbackFn == null) continue;
+
+                                        _context.ThisBinding = callbackThis;
+                                        if (passiveListener)
+                                        {
+                                            eventObj.IsPassiveContext = true;
+                                        }
+
+                                        try
+                                        {
+                                            callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                                        }
+                                        finally
+                                        {
+                                            if (passiveListener)
+                                            {
+                                                eventObj.IsPassiveContext = false;
+                                            }
+                                        }
+
+                                        if (onceListener)
+                                        {
+                                            if (listenerEntry.IsObject)
+                                            {
+                                                DetachAbortSignalListener(listenerEntry.AsObject() as FenObject);
+                                            }
+
+                                            var kept = FenObject.CreateArray();
+                                            int k = 0;
+                                            for (int j = 0; j < len; j++)
+                                            {
+                                                if (j == i) continue;
+                                                kept.Set(k.ToString(), arr.Get(j.ToString()));
+                                                k++;
+                                            }
+                                            kept.Set("length", FenValue.FromNumber(k));
+                                            listenersObj.Set(typeName, FenValue.FromObject(kept));
+                                            arr = kept;
+                                            len = k;
+                                            i--;
+                                        }
+
+                                        var cancelBubbleVal = eventObj.Get("cancelBubble");
+                                        if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                                            eventObj.StopPropagation();
+                                        var returnValueVal = eventObj.Get("returnValue");
+                                        if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                                            eventObj.PreventDefault();
+                                        if (eventObj.ImmediatePropagationStopped)
+                                            break;
                                     }
-
-                                    var cancelBubbleVal = eventObj.Get("cancelBubble");
-                                    if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
-                                        eventObj.StopPropagation();
-                                    var returnValueVal = eventObj.Get("returnValue");
-                                    if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
-                                        eventObj.PreventDefault();
-                                    if (eventObj.ImmediatePropagationStopped)
-                                        break;
                                 }
                             }
+
+                            var branchReturnValue = eventObj.Get("returnValue");
+                            var branchNotPrevented = !eventObj.DefaultPrevented && !(branchReturnValue.IsBoolean && !branchReturnValue.ToBoolean());
+                            return FenValue.FromBoolean(branchNotPrevented);
                         }
-                        var branchReturnValue = eventObj.Get("returnValue");
-                        var branchNotPrevented = !eventObj.DefaultPrevented && !(branchReturnValue.IsBoolean && !branchReturnValue.ToBoolean());
-                        return FenValue.FromBoolean(branchNotPrevented);
-                    }
 
-                    if (_windowEventListeners.TryGetValue(typeName, out var listeners))
-                    {
-                        foreach (var listener in listeners.ToList())
+                        if (_windowEventListeners.TryGetValue(typeName, out var listeners))
                         {
-                            FenFunction callbackFn = null;
-                            var callbackThis = FenValue.FromObject(window);
-                            var callback = listener.Callback;
+                            foreach (var listener in listeners.ToList())
+                            {
+                                FenFunction callbackFn = null;
+                                var callbackThis = FenValue.FromObject(window);
+                                var callback = listener.Callback;
 
-                            if (callback.IsFunction)
-                            {
-                                callbackFn = callback.AsFunction() as FenFunction;
-                            }
-                            else if (callback.IsObject)
-                            {
-                                var handleEvent = callback.AsObject().Get("handleEvent");
-                                if (handleEvent.IsFunction)
+                                if (callback.IsFunction)
                                 {
-                                    callbackFn = handleEvent.AsFunction() as FenFunction;
-                                    callbackThis = callback;
+                                    callbackFn = callback.AsFunction() as FenFunction;
                                 }
-                            }
+                                else if (callback.IsObject)
+                                {
+                                    var handleEvent = callback.AsObject().Get("handleEvent");
+                                    if (handleEvent.IsFunction)
+                                    {
+                                        callbackFn = handleEvent.AsFunction() as FenFunction;
+                                        callbackThis = callback;
+                                    }
+                                }
 
-                            if (callbackFn == null) continue;
+                                if (callbackFn == null) continue;
 
-                            _context.ThisBinding = callbackThis;
-                            if (listener.Passive)
-                            {
-                                eventObj.IsPassiveContext = true;
-                            }
-
-                            try
-                            {
-                                callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
-                            }
-                            finally
-                            {
+                                _context.ThisBinding = callbackThis;
                                 if (listener.Passive)
                                 {
-                                    eventObj.IsPassiveContext = false;
+                                    eventObj.IsPassiveContext = true;
                                 }
-                            }
 
-                            if (listener.Once)
-                            {
-                                listeners.Remove(listener);
-                            }
+                                try
+                                {
+                                    callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                                }
+                                finally
+                                {
+                                    if (listener.Passive)
+                                    {
+                                        eventObj.IsPassiveContext = false;
+                                    }
+                                }
 
-                            var cancelBubbleVal = eventObj.Get("cancelBubble");
-                            if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
-                                eventObj.StopPropagation();
-                            var returnValueVal = eventObj.Get("returnValue");
-                            if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
-                                eventObj.PreventDefault();
-                            if (eventObj.ImmediatePropagationStopped)
-                                break;
+                                if (listener.Once)
+                                {
+                                    listeners.Remove(listener);
+                                }
+
+                                var cancelBubbleVal = eventObj.Get("cancelBubble");
+                                if (cancelBubbleVal.IsBoolean && cancelBubbleVal.ToBoolean())
+                                    eventObj.StopPropagation();
+                                var returnValueVal = eventObj.Get("returnValue");
+                                if (returnValueVal.IsBoolean && !returnValueVal.ToBoolean())
+                                    eventObj.PreventDefault();
+                                if (eventObj.ImmediatePropagationStopped)
+                                    break;
+                            }
                         }
-                    }
 
-                    var onHandler = window.Get("on" + typeName);
-                    if (onHandler.IsFunction)
+                        var onHandler = window.Get("on" + typeName);
+                        if (onHandler.IsFunction)
+                        {
+                            _context.ThisBinding = FenValue.FromObject(window);
+                            onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(eventObj) }, _context, FenValue.FromObject(window));
+                        }
+
+                        var finalReturnValue = eventObj.Get("returnValue");
+                        var finalNotPrevented = !eventObj.DefaultPrevented && !(finalReturnValue.IsBoolean && !finalReturnValue.ToBoolean());
+                        return FenValue.FromBoolean(finalNotPrevented);
+                    }
+                    finally
                     {
-                        _context.ThisBinding = FenValue.FromObject(window);
-                        onHandler.AsFunction().Invoke(new[] { FenValue.FromObject(eventObj) }, _context, FenValue.FromObject(window));
+                        eventObj.EndDispatch();
+                        eventObj.FinalizeDispatchState();
+                        eventObj.Set("target", FenValue.Null);
+                        eventObj.Set("srcElement", FenValue.Null);
+                        eventObj.Set("currentTarget", FenValue.Null);
+                        eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.NONE));
                     }
-
-                    eventObj.FinalizeDispatchState();
-                    eventObj.Set("target", FenValue.Null);
-                    eventObj.Set("srcElement", FenValue.Null);
-                    eventObj.Set("currentTarget", FenValue.Null);
-                    eventObj.Set("eventPhase", FenValue.FromNumber(DomEvent.NONE));
-
-                    var finalReturnValue = eventObj.Get("returnValue");
-                    var finalNotPrevented = !eventObj.DefaultPrevented && !(finalReturnValue.IsBoolean && !finalReturnValue.ToBoolean());
-                    return FenValue.FromBoolean(finalNotPrevented);
                 }));
 
             eventTargetPrototype.SetBuiltin("addEventListener", addEventListenerFunc);
@@ -8096,7 +8105,9 @@ namespace FenBrowser.FenEngine.Core
                     return window;
                 }
 
-                return null;
+                // Single-browsing-context fallback: route top-level events to current window
+                // even when wrappers were materialized through alternate code paths.
+                return window;
             };
             FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = sourceElement =>
             {
@@ -8114,7 +8125,14 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 var wrappedDocument = DomWrapperFactory.Wrap(sourceDocument, _context);
-                return wrappedDocument.IsObject ? wrappedDocument.AsObject() : null;
+                if (wrappedDocument.IsObject)
+                {
+                    return wrappedDocument.AsObject();
+                }
+
+                // Fallback to active document so top-level event dispatch remains observable.
+                var globalDocumentFallback = GetGlobal("document");
+                return globalDocumentFallback.IsObject ? globalDocumentFallback.AsObject() : null;
             };
             FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = (targetObj, domEvt, execCtx, capturePhase, atTargetPhase) =>
             {
@@ -8918,6 +8936,7 @@ namespace FenBrowser.FenEngine.Core
                 evt.Set("metaKey", FenValue.FromBoolean(ReadInitBool(ctorArgs, "metaKey")));
                 evt.Set("button", FenValue.FromNumber(ReadInitNumber(ctorArgs, "button")));
                 evt.Set("buttons", FenValue.FromNumber(ReadInitNumber(ctorArgs, "buttons")));
+                evt.Set("relatedTarget", ReadInitAny(ctorArgs, "relatedTarget", FenValue.Null));
                 evt.Set("deltaX", FenValue.FromNumber(ReadInitNumber(ctorArgs, "deltaX")));
                 evt.Set("deltaY", FenValue.FromNumber(ReadInitNumber(ctorArgs, "deltaY")));
                 evt.Set("deltaZ", FenValue.FromNumber(ReadInitNumber(ctorArgs, "deltaZ")));
