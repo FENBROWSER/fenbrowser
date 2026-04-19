@@ -128,6 +128,9 @@ namespace FenBrowser.FenEngine.DOM
                     _whenDefinedPromises.Remove(name);
                 }
             }
+
+            // Upgrade already-connected matching elements when a definition is registered.
+            UpgradeExistingDocumentElements();
         }
 
         /// <summary>
@@ -274,7 +277,10 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     try
                     {
-                        definition.ConnectedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                        definition.ConnectedCallback.Invoke(
+                            System.Array.Empty<FenValue>(),
+                            _context,
+                            DomWrapperFactory.Wrap(element, _context));
                     }
                     catch (Exception ex)
                     {
@@ -311,7 +317,10 @@ namespace FenBrowser.FenEngine.DOM
             {
                 try
                 {
-                    definition.DisconnectedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                    definition.DisconnectedCallback.Invoke(
+                        System.Array.Empty<FenValue>(),
+                        _context,
+                        DomWrapperFactory.Wrap(element, _context));
                 }
                 catch (Exception ex)
                 {
@@ -355,7 +364,9 @@ namespace FenBrowser.FenEngine.DOM
                         oldValue != null ? FenValue.FromString(oldValue) : FenValue.Null,
                         newValue != null ? FenValue.FromString(newValue) : FenValue.Null,
                         FenValue.Null // namespace
-                    }, _context);
+                    },
+                    _context,
+                    DomWrapperFactory.Wrap(element, _context));
             }
             catch (Exception ex)
             {
@@ -389,7 +400,10 @@ namespace FenBrowser.FenEngine.DOM
             {
                 try
                 {
-                    definition.AdoptedCallback.Invoke(System.Array.Empty<FenValue>(), _context);
+                    definition.AdoptedCallback.Invoke(
+                        System.Array.Empty<FenValue>(),
+                        _context,
+                        DomWrapperFactory.Wrap(element, _context));
                 }
                 catch (Exception ex)
                 {
@@ -489,6 +503,37 @@ namespace FenBrowser.FenEngine.DOM
             })));
 
             return obj;
+        }
+
+        private void UpgradeExistingDocumentElements()
+        {
+            if (_context?.Environment == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var documentValue = _context.Environment.Get("document");
+                if (!documentValue.IsObject)
+                {
+                    return;
+                }
+
+                var documentWrapper = documentValue.AsObject() as DocumentWrapper;
+                var documentNode = documentWrapper?.Node as Document ?? documentWrapper?.Node?.OwnerDocument;
+                var root = documentNode?.DocumentElement;
+                if (root == null)
+                {
+                    return;
+                }
+
+                UpgradeSubtree(root);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomElements] Failed to auto-upgrade existing elements after define(): {ex.Message}", LogCategory.JavaScript);
+            }
         }
 
         private FenValue CreatePendingWhenDefinedPromise(string name)
