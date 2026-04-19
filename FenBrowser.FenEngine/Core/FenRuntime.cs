@@ -75,6 +75,34 @@ namespace FenBrowser.FenEngine.Core
         {
             "Arab", "Hebr", "Nkoo", "Syrc", "Thaa"
         };
+        private static readonly string[] s_windowDefaultEventHandlerNames =
+        {
+            "onabort", "onblur", "oncancel", "oncanplay", "oncanplaythrough",
+            "onchange", "onclick", "onclose", "oncontextmenu", "oncopy",
+            "oncuechange", "oncut", "ondblclick", "ondrag", "ondragend",
+            "ondragenter", "ondragleave", "ondragover", "ondragstart", "ondrop",
+            "ondurationchange", "onemptied", "onended", "onerror", "onfocus",
+            "onfocusin", "onfocusout", "onformdata", "ongotpointercapture",
+            "oninput", "oninvalid", "onkeydown", "onkeypress", "onkeyup",
+            "onload", "onloadeddata", "onloadedmetadata", "onloadstart",
+            "onlostpointercapture", "onmousedown", "onmouseenter", "onmouseleave",
+            "onmousemove", "onmouseout", "onmouseover", "onmouseup", "onmousewheel",
+            "onpaste", "onpause", "onplay", "onplaying", "onpointercancel",
+            "onpointerdown", "onpointerenter", "onpointerleave", "onpointermove",
+            "onpointerout", "onpointerover", "onpointerup", "onprogress",
+            "onratechange", "onreset", "onresize", "onscroll", "onsecuritypolicyviolation",
+            "onseeked", "onseeking", "onselect", "onselectionchange", "onselectstart",
+            "onslotchange", "onstalled", "onsubmit", "onsuspend", "ontimeupdate",
+            "ontoggle", "ontouchcancel", "ontouchend", "ontouchmove", "ontouchstart",
+            "ontransitioncancel", "ontransitionend", "ontransitionrun", "ontransitionstart",
+            "onvolumechange", "onwaiting", "onwebkitanimationend", "onwebkitanimationiteration",
+            "onwebkitanimationstart", "onwebkittransitionend", "onwheel",
+            "onanimationcancel", "onanimationend", "onanimationiteration", "onanimationstart",
+            "onafterprint", "onbeforeprint", "onbeforeunload", "onhashchange", "onlanguagechange",
+            "onmessage", "onmessageerror", "onoffline", "ononline", "onpagehide",
+            "onpagereveal", "onpageshow", "onpageswap", "onpopstate",
+            "onrejectionhandled", "onstorage", "onunhandledrejection", "onunload"
+        };
 
         private int _timerIdCounter = 1;
         private readonly object _timerLock = new object();
@@ -5420,8 +5448,27 @@ namespace FenBrowser.FenEngine.Core
             // Timers
             var setTimeout = FenValue.FromFunction(new FenFunction("setTimeout", (FenValue[] args, FenValue thisVal) =>
             {
-                if (args.Length == 0 || !args[0].IsFunction) return FenValue.FromNumber(0);
-                var callback = args[0].AsFunction();
+                if (args.Length == 0) return FenValue.FromNumber(0);
+
+                FenFunction callback = null;
+                if (args[0].IsFunction)
+                {
+                    callback = args[0].AsFunction();
+                }
+                else if (args[0].IsString)
+                {
+                    var callbackCode = args[0].ToString();
+                    callback = new FenFunction("setTimeout<string>", (cbArgs, cbThis) =>
+                    {
+                        ExecuteSimple(callbackCode, allowReturn: false);
+                        return FenValue.Undefined;
+                    });
+                }
+                else
+                {
+                    return FenValue.FromNumber(0);
+                }
+
                 int delay = args.Length > 1 ? (int)args[1].ToNumber() : 0;
                 var callbackArgs = args.Skip(2).ToArray();
 
@@ -5440,8 +5487,27 @@ namespace FenBrowser.FenEngine.Core
             var setInterval = FenValue.FromFunction(new FenFunction("setInterval",
                 (FenValue[] args, FenValue thisVal) =>
                 {
-                    if (args.Length == 0 || !args[0].IsFunction) return FenValue.FromNumber(0);
-                    var callback = args[0].AsFunction();
+                    if (args.Length == 0) return FenValue.FromNumber(0);
+
+                    FenFunction callback = null;
+                    if (args[0].IsFunction)
+                    {
+                        callback = args[0].AsFunction();
+                    }
+                    else if (args[0].IsString)
+                    {
+                        var callbackCode = args[0].ToString();
+                        callback = new FenFunction("setInterval<string>", (cbArgs, cbThis) =>
+                        {
+                            ExecuteSimple(callbackCode, allowReturn: false);
+                            return FenValue.Undefined;
+                        });
+                    }
+                    else
+                    {
+                        return FenValue.FromNumber(0);
+                    }
+
                     int delay = args.Length > 1 ? (int)args[1].ToNumber() : 0;
                     var callbackArgs = args.Skip(2).ToArray();
 
@@ -7098,6 +7164,31 @@ namespace FenBrowser.FenEngine.Core
 
             // location object (navigation capable)
             var location = new FenObject();
+            const string locationHrefBackingKey = "__fen_location_href";
+            location.DefineOwnProperty("href", PropertyDescriptor.Accessor(
+                new FenFunction("get href", (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (location.TryGetDirect(locationHrefBackingKey, out var hrefValue) &&
+                        !hrefValue.IsUndefined &&
+                        !hrefValue.IsNull)
+                    {
+                        return hrefValue;
+                    }
+
+                    return FenValue.FromString(BaseUri?.AbsoluteUri ?? "about:blank");
+                }),
+                new FenFunction("set href", (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (args.Length > 0)
+                    {
+                        RequestWindowNavigation(location, args[0].ToString());
+                    }
+
+                    return FenValue.Undefined;
+                }),
+                enumerable: true,
+                configurable: true));
+
             UpdateLocationState(location, BaseUri);
             location.Set("assign", FenValue.FromFunction(new FenFunction("assign", (FenValue[] args, FenValue thisVal) =>
             {
@@ -7295,7 +7386,23 @@ namespace FenBrowser.FenEngine.Core
             window.Set("console", FenValue.FromObject(console));
             window.Set("navigator", FenValue.FromObject(navigator));
             _locationObject = location;
-            window.Set("location", FenValue.FromObject(location));
+            window.DefineOwnProperty("location", PropertyDescriptor.Accessor(
+                new FenFunction("get location", (FenValue[] args, FenValue thisVal) => FenValue.FromObject(location)),
+                new FenFunction("set location", (FenValue[] args, FenValue thisVal) =>
+                {
+                    if (args.Length > 0)
+                    {
+                        var next = args[0];
+                        if (!next.IsObject || !ReferenceEquals(next.AsObject(), location))
+                        {
+                            RequestWindowNavigation(location, next.ToString());
+                        }
+                    }
+
+                    return FenValue.Undefined;
+                }),
+                enumerable: true,
+                configurable: true));
             window.Set("screen", FenValue.FromObject(screen));
             window.Set("localStorage", FenValue.FromObject(localStorage));
             window.Set("sessionStorage", FenValue.FromObject(sessionStorage));
@@ -7320,6 +7427,10 @@ namespace FenBrowser.FenEngine.Core
             window.Set("closed", FenValue.FromBoolean(false));
             window.Set("opener", FenValue.Null);
             window.Set("event", FenValue.Undefined);
+            foreach (var eventHandlerName in s_windowDefaultEventHandlerNames)
+            {
+                window.Set(eventHandlerName, FenValue.Null);
+            }
 
                         // EventTarget prototype for Window + generic EventTarget APIs.
             var eventTargetPrototype = new FenObject();
@@ -7422,6 +7533,51 @@ namespace FenBrowser.FenEngine.Core
                 }, _context, signal);
             }
 
+            bool IsDefaultPassiveEventType(string eventType)
+            {
+                if (string.IsNullOrWhiteSpace(eventType))
+                {
+                    return false;
+                }
+
+                return string.Equals(eventType, "touchstart", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(eventType, "touchmove", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(eventType, "wheel", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(eventType, "mousewheel", StringComparison.OrdinalIgnoreCase);
+            }
+
+            bool IsDefaultPassiveTarget(FenValue targetValue)
+            {
+                if (!targetValue.IsObject)
+                {
+                    return false;
+                }
+
+                var targetObject = targetValue.AsObject();
+                if (ReferenceEquals(targetObject, window))
+                {
+                    return true;
+                }
+
+                if (targetObject is DocumentWrapper)
+                {
+                    return true;
+                }
+
+                if (targetObject is ElementWrapper elementWrapper)
+                {
+                    if (!string.Equals(elementWrapper.Element?.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    return string.Equals(elementWrapper.Element.TagName, "body", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(elementWrapper.Element.TagName, "html", StringComparison.OrdinalIgnoreCase);
+                }
+
+                return false;
+            }
+
             var addEventListenerFunc = FenValue.FromFunction(new FenFunction("addEventListener",
                 (FenValue[] args, FenValue thisVal) =>
                 {
@@ -7441,6 +7597,7 @@ namespace FenBrowser.FenEngine.Core
                     bool capture = false;
                     bool once = false;
                     bool passive = false;
+                    bool passiveExplicit = false;
                     FenValue signal = FenValue.Undefined;
                     if (args.Length >= 3)
                     {
@@ -7456,7 +7613,11 @@ namespace FenBrowser.FenEngine.Core
                             var one = opts.Get("once");
                             once = one.IsBoolean && one.ToBoolean();
                             var pas = opts.Get("passive");
-                            passive = pas.IsBoolean && pas.ToBoolean();
+                            if (pas.IsBoolean)
+                            {
+                                passive = pas.ToBoolean();
+                                passiveExplicit = true;
+                            }
                             var sig = opts.Get("signal");
                             if (sig.IsObject)
                             {
@@ -7474,6 +7635,11 @@ namespace FenBrowser.FenEngine.Core
                     if (!effectiveThis.IsObject || effectiveThis.IsNull || effectiveThis.IsUndefined)
                     {
                         effectiveThis = FenValue.FromObject(window);
+                    }
+
+                    if (!passiveExplicit && IsDefaultPassiveEventType(eventType) && IsDefaultPassiveTarget(effectiveThis))
+                    {
+                        passive = true;
                     }
 
                     if (effectiveThis.IsObject && effectiveThis.AsObject() is ElementWrapper elementTarget)
@@ -7560,9 +7726,18 @@ namespace FenBrowser.FenEngine.Core
                     var eventType = args[0].ToString();
                     var callback = args[1];
                     bool capture = false;
-                    if (args.Length >= 3 && args[2].IsBoolean)
+                    if (args.Length >= 3)
                     {
-                        capture = args[2].ToBoolean();
+                        if (args[2].IsBoolean)
+                        {
+                            capture = args[2].ToBoolean();
+                        }
+                        else if (args[2].IsObject)
+                        {
+                            var opts = args[2].AsObject();
+                            var cap = opts.Get("capture");
+                            capture = cap.IsBoolean && cap.ToBoolean();
+                        }
                     }
 
                     var effectiveThis = thisVal;
@@ -7705,6 +7880,7 @@ namespace FenBrowser.FenEngine.Core
                                     var listenerEntry = arr.Get(i.ToString());
                                     var callback = listenerEntry;
                                     var onceListener = false;
+                                    var passiveListener = false;
 
                                     if (listenerEntry.IsObject)
                                     {
@@ -7714,6 +7890,7 @@ namespace FenBrowser.FenEngine.Core
                                         {
                                             callback = cbVal;
                                             onceListener = entryObj.Get("once").ToBoolean();
+                                            passiveListener = entryObj.Get("passive").ToBoolean();
                                         }
                                     }
 
@@ -7736,7 +7913,22 @@ namespace FenBrowser.FenEngine.Core
                                     if (callbackFn == null) continue;
 
                                     _context.ThisBinding = callbackThis;
-                                    callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                                    if (passiveListener)
+                                    {
+                                        eventObj.IsPassiveContext = true;
+                                    }
+
+                                    try
+                                    {
+                                        callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                                    }
+                                    finally
+                                    {
+                                        if (passiveListener)
+                                        {
+                                            eventObj.IsPassiveContext = false;
+                                        }
+                                    }
 
                                     if (onceListener)
                                     {
@@ -7801,7 +7993,22 @@ namespace FenBrowser.FenEngine.Core
                             if (callbackFn == null) continue;
 
                             _context.ThisBinding = callbackThis;
-                            callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                            if (listener.Passive)
+                            {
+                                eventObj.IsPassiveContext = true;
+                            }
+
+                            try
+                            {
+                                callbackFn.Invoke(new[] { FenValue.FromObject(eventObj) }, _context, callbackThis);
+                            }
+                            finally
+                            {
+                                if (listener.Passive)
+                                {
+                                    eventObj.IsPassiveContext = false;
+                                }
+                            }
 
                             if (listener.Once)
                             {
@@ -8003,13 +8210,18 @@ namespace FenBrowser.FenEngine.Core
                     }
                 }
             };
-            // IMPORTANT: Also expose window properties at global scope for direct access
-            // In browsers, 'innerWidth' works the same as 'window.innerWidth'
-            SetGlobal("innerWidth", FenValue.FromNumber(1920));
-            SetGlobal("innerHeight", FenValue.FromNumber(1080));
-            SetGlobal("outerWidth", FenValue.FromNumber(1920));
-            SetGlobal("outerHeight", FenValue.FromNumber(1080));
-            SetGlobal("devicePixelRatio", FenValue.FromNumber(1));
+            // IMPORTANT: Also expose window properties at global scope for direct access.
+            // Keep globals in sync with the window object rather than hardcoded defaults.
+            var globalInnerWidth = window.Get("innerWidth");
+            var globalInnerHeight = window.Get("innerHeight");
+            var globalOuterWidth = window.Get("outerWidth");
+            var globalOuterHeight = window.Get("outerHeight");
+            var globalDpr = window.Get("devicePixelRatio");
+            SetGlobal("innerWidth", globalInnerWidth.IsNumber ? globalInnerWidth : FenValue.FromNumber(defaultSurface.Viewport.WindowWidth));
+            SetGlobal("innerHeight", globalInnerHeight.IsNumber ? globalInnerHeight : FenValue.FromNumber(defaultSurface.Viewport.WindowHeight));
+            SetGlobal("outerWidth", globalOuterWidth.IsNumber ? globalOuterWidth : FenValue.FromNumber(defaultSurface.Viewport.OuterWidth));
+            SetGlobal("outerHeight", globalOuterHeight.IsNumber ? globalOuterHeight : FenValue.FromNumber(defaultSurface.Viewport.OuterHeight));
+            SetGlobal("devicePixelRatio", globalDpr.IsNumber ? globalDpr : FenValue.FromNumber(defaultSurface.Viewport.DevicePixelRatio));
             SetGlobal("scrollX", FenValue.FromNumber(0));
             SetGlobal("scrollY", FenValue.FromNumber(0));
             SetGlobal("pageXOffset", FenValue.FromNumber(0));
@@ -9014,6 +9226,27 @@ namespace FenBrowser.FenEngine.Core
             _domHtmlElementPrototype = htmlElementPrototype;
             SetGlobal("HTMLElement", htmlElementCtorVal);
             DefineWindowInterface(window, "HTMLElement", htmlElementCtorVal);
+
+            var htmlHtmlElementPrototype = new FenObject();
+            htmlHtmlElementPrototype.InternalClass = "HTMLHtmlElementPrototype";
+            htmlHtmlElementPrototype.SetPrototype(htmlElementPrototype);
+            var htmlHtmlElementCtorVal = CreateInterfaceConstructor("HTMLHtmlElement", htmlHtmlElementPrototype);
+            SetGlobal("HTMLHtmlElement", htmlHtmlElementCtorVal);
+            DefineWindowInterface(window, "HTMLHtmlElement", htmlHtmlElementCtorVal);
+
+            var htmlBodyElementPrototype = new FenObject();
+            htmlBodyElementPrototype.InternalClass = "HTMLBodyElementPrototype";
+            htmlBodyElementPrototype.SetPrototype(htmlElementPrototype);
+            var htmlBodyElementCtorVal = CreateInterfaceConstructor("HTMLBodyElement", htmlBodyElementPrototype);
+            SetGlobal("HTMLBodyElement", htmlBodyElementCtorVal);
+            DefineWindowInterface(window, "HTMLBodyElement", htmlBodyElementCtorVal);
+
+            var htmlFrameSetElementPrototype = new FenObject();
+            htmlFrameSetElementPrototype.InternalClass = "HTMLFrameSetElementPrototype";
+            htmlFrameSetElementPrototype.SetPrototype(htmlElementPrototype);
+            var htmlFrameSetElementCtorVal = CreateInterfaceConstructor("HTMLFrameSetElement", htmlFrameSetElementPrototype);
+            SetGlobal("HTMLFrameSetElement", htmlFrameSetElementCtorVal);
+            DefineWindowInterface(window, "HTMLFrameSetElement", htmlFrameSetElementCtorVal);
 
             var htmlImageElementPrototype = new FenObject();
             htmlImageElementPrototype.InternalClass = "HTMLImageElementPrototype";
@@ -16990,9 +17223,11 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
+            const string locationHrefBackingKey = "__fen_location_href";
+
             if (uri == null)
             {
-                location.Set("href", FenValue.FromString("about:blank"));
+                location.SetDirect(locationHrefBackingKey, FenValue.FromString("about:blank"));
                 location.Set("origin", FenValue.FromString("null"));
                 location.Set("protocol", FenValue.FromString("about:"));
                 location.Set("host", FenValue.FromString(string.Empty));
@@ -17008,7 +17243,7 @@ namespace FenBrowser.FenEngine.Core
                 ? "null"
                 : uri.GetLeftPart(UriPartial.Authority);
 
-            location.Set("href", FenValue.FromString(uri.AbsoluteUri));
+            location.SetDirect(locationHrefBackingKey, FenValue.FromString(uri.AbsoluteUri));
             location.Set("origin", FenValue.FromString(origin));
             location.Set("protocol", FenValue.FromString(uri.Scheme + ":"));
             location.Set("host", FenValue.FromString(uri.Authority));
@@ -17384,6 +17619,7 @@ namespace FenBrowser.FenEngine.Core
                         var wrapped = DomWrapperFactory.Wrap(element, _context);
                         if (wrapped.IsObject)
                         {
+                            wrapped.AsObject().Set("__fen_window_named_access__", FenValue.FromBoolean(true));
                             _globalEnv.Set(id, wrapped);
                             var window = _globalEnv.Get("window");
                             if (window.IsObject)
@@ -18077,11 +18313,27 @@ namespace FenBrowser.FenEngine.Core
 
             foreach (var lexicalName in lexicalNames)
             {
-                if (varNames.Contains(lexicalName) || _globalEnv.HasLocalBinding(lexicalName))
+                if (varNames.Contains(lexicalName))
+                {
+                    throw new FenSyntaxError($"SyntaxError: Identifier '{lexicalName}' has already been declared");
+                }
+
+                if (_globalEnv.HasLocalBinding(lexicalName) && !IsLegacyNamedGlobalBinding(lexicalName))
                 {
                     throw new FenSyntaxError($"SyntaxError: Identifier '{lexicalName}' has already been declared");
                 }
             }
+        }
+
+        private bool IsLegacyNamedGlobalBinding(string name)
+        {
+            if (!_globalEnv.TryGetLocal(name, out var existing) || !existing.IsObject)
+            {
+                return false;
+            }
+
+            var marker = existing.AsObject().Get("__fen_window_named_access__", _context);
+            return marker.IsBoolean && marker.AsBoolean();
         }
 
         private void CollectTopLevelDeclarationNames(Program program, ISet<string> varNames, ISet<string> lexicalNames)

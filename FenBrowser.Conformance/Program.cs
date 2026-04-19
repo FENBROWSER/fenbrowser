@@ -60,6 +60,8 @@ public static class Program
             {
                 "run" when args.Length >= 2 => await RunSuiteAsync(args[1..]),
                 "gate" => RunGate(args.Skip(1).ToArray()),
+                "matrix" => BuildSpecMatrix(args.Skip(1).ToArray()),
+                "fullsweep-inventory" => BuildFullSweepInventory(args.Skip(1).ToArray()),
                 "ipc-fuzz" => RunIpcFuzz(args.Skip(1).ToArray()),
                 "a11y-validate" => RunAccessibilityValidation(),
                 "corb-validate" => RunCorbValidation(),
@@ -460,6 +462,83 @@ public static class Program
         return results.All(r => r.Passed) ? 0 : 2;
     }
 
+    private static int BuildSpecMatrix(string[] args)
+    {
+        var wptPath = ResolveOption(args, "--wpt")
+            ?? Path.Combine(_repoRoot, "Results", "wpt_results_latest.json");
+        var scope = ResolveOption(args, "--scope") ?? "html-css-core";
+        var format = (ResolveOption(args, "--format") ?? "json").ToLowerInvariant();
+
+        try
+        {
+            var matrix = SpecComplianceMatrixBuilder.BuildFromWpt(wptPath, scope);
+            var outputPath = string.IsNullOrWhiteSpace(_outputPath)
+                ? Path.Combine(_repoRoot, "Results", format == "md" ? "spec_compliance_matrix.md" : "spec_compliance_matrix.json")
+                : _outputPath;
+
+            var dir = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var payload = format == "md" ? matrix.ToMarkdown() : matrix.ToJson();
+            File.WriteAllText(outputPath, payload);
+
+            Console.WriteLine($"[Conformance] Spec compliance matrix written: {outputPath}");
+            Console.WriteLine($"[Conformance] Scope: {scope} | Total: {matrix.Summary.Total} | Failed: {matrix.Summary.Failed} | Clusters: {matrix.Clusters.Count}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Conformance] Failed to build spec matrix: {ex.Message}");
+            if (_verbose)
+            {
+                Console.Error.WriteLine(ex.StackTrace);
+            }
+
+            return 1;
+        }
+    }
+
+    private static int BuildFullSweepInventory(string[] args)
+    {
+        var format = (ResolveOption(args, "--format") ?? "json").ToLowerInvariant();
+        var wptPath = ResolveOption(args, "--wpt");
+        var test262Path = ResolveOption(args, "--test262");
+
+        try
+        {
+            var inventory = FullSweepInventoryBuilder.Build(_repoRoot, wptPath, test262Path);
+            var outputPath = string.IsNullOrWhiteSpace(_outputPath)
+                ? Path.Combine(_repoRoot, "Results", format == "md" ? "full_sweep_inventory.md" : "full_sweep_inventory.json")
+                : _outputPath;
+
+            var dir = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var payload = format == "md" ? inventory.ToMarkdown() : inventory.ToJson();
+            File.WriteAllText(outputPath, payload);
+
+            Console.WriteLine($"[Conformance] Full sweep inventory written: {outputPath}");
+            Console.WriteLine($"[Conformance] Items: {inventory.Summary.TotalItems} (critical={inventory.Summary.Critical}, high={inventory.Summary.High}, medium={inventory.Summary.Medium}, low={inventory.Summary.Low})");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Conformance] Failed to build full sweep inventory: {ex.Message}");
+            if (_verbose)
+            {
+                Console.Error.WriteLine(ex.StackTrace);
+            }
+
+            return 1;
+        }
+    }
+
     private static List<string> ResolveBuiltInPolicies(string selector)
     {
         var gatesRoot = Path.Combine(_repoRoot, "FenBrowser.Conformance", "Gates");
@@ -544,6 +623,19 @@ public static class Program
         return defaultMax;
     }
 
+    private static string? ResolveOption(string[] args, string optionName)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], optionName, StringComparison.OrdinalIgnoreCase))
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
+    }
+
     private static void ProgressCallback(string name, int count)
     {
         if (_verbose || count % 50 == 0)
@@ -569,12 +661,18 @@ COMMANDS:
   ipc-fuzz                       Run IPC fuzz-baseline suite for renderer/network/target channels
   a11y-validate                  Export platform accessibility mapping snapshot artifact
   corb-validate                  Run bounded CORB validation cases and write artifact
+  matrix                         Build HTML/CSS spec compliance matrix from WPT results
+  fullsweep-inventory            Build Core/Engine/Host hardening inventory (stubs/basic/legacy bridges)
   report                         Generate conformance report template
   help                           Show this help message
 
 OPTIONS:
   --output|-o <path>             Write report to file
   --max <N>                      Max tests per suite
+  --wpt <path>                   WPT result JSON path for matrix command
+  --test262 <path>               Test262 result JSON path for fullsweep-inventory
+  --scope <name>                 Scope label for matrix command (default: html-css-core)
+  --format <json|md>             Output format for matrix/fullsweep-inventory (default: json)
   --verbose|-v                   Verbose output
 
 EXAMPLES:
@@ -582,6 +680,8 @@ EXAMPLES:
   FenBrowser.Conformance run test262 language/expressions --max 50
   FenBrowser.Conformance gate default all
   FenBrowser.Conformance gate FenBrowser.Conformance/Gates/test262_gate_policy.json
+  FenBrowser.Conformance matrix --wpt Results/wpt_results_latest.json --scope html-css-core --format json
+  FenBrowser.Conformance fullsweep-inventory --format md
   FenBrowser.Conformance run acid 2
   FenBrowser.Conformance run html5lib --verbose
 ");

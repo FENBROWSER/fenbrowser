@@ -20,10 +20,97 @@ namespace FenBrowser.WPT;
 
 public sealed class HeadlessNavigator
 {
-    private const string FatalErrorBridgeScript = @"
-(function () {
+    private const string EventConstructorShimScript = @"
+try {
   var g = (typeof globalThis !== 'undefined') ? globalThis : this;
-  if (!g || g.__fenFatalHarnessBridgeInstalled) { return; }
+  if (!g || g.__fenEventCtorShimInstalled) { }
+  else {
+    g.__fenEventCtorShimInstalled = true;
+    var canCreateEvent = (typeof document !== 'undefined' && document && typeof document.createEvent === 'function');
+
+    if (canCreateEvent && typeof g.Event !== 'function') {
+      var EventShim = function(type, init) {
+        var ev = document.createEvent('Event');
+        var bubbles = !!(init && init.bubbles);
+        var cancelable = !!(init && init.cancelable);
+        ev.initEvent(String(type || ''), bubbles, cancelable);
+        return ev;
+      };
+      g.Event = EventShim;
+      if (typeof window !== 'undefined' && window) { window.Event = EventShim; }
+    }
+
+    if (canCreateEvent && typeof g.CustomEvent !== 'function') {
+      var CustomEventShim = function(type, init) {
+        var ev = document.createEvent('CustomEvent');
+        var bubbles = !!(init && init.bubbles);
+        var cancelable = !!(init && init.cancelable);
+        var detail = init && Object.prototype.hasOwnProperty.call(init, 'detail') ? init.detail : null;
+        if (typeof ev.initCustomEvent === 'function') {
+          ev.initCustomEvent(String(type || ''), bubbles, cancelable, detail);
+        } else {
+          ev.initEvent(String(type || ''), bubbles, cancelable);
+          try { ev.detail = detail; } catch (_) {}
+        }
+        return ev;
+      };
+      g.CustomEvent = CustomEventShim;
+      if (typeof window !== 'undefined' && window) { window.CustomEvent = CustomEventShim; }
+    }
+
+    if (typeof g.DOMException !== 'function') {
+      var DOMExceptionShim = function(message, name) {
+        this.message = String(message || '');
+        this.name = String(name || 'Error');
+      };
+      g.DOMException = DOMExceptionShim;
+      if (typeof window !== 'undefined' && window) { window.DOMException = DOMExceptionShim; }
+    }
+
+    if (typeof g.AbortSignal !== 'function') {
+      var AbortSignalCtor = function AbortSignal() {};
+      AbortSignalCtor.prototype.aborted = false;
+      AbortSignalCtor.prototype.reason = undefined;
+      g.AbortSignal = AbortSignalCtor;
+      if (typeof window !== 'undefined' && window) { window.AbortSignal = AbortSignalCtor; }
+    }
+
+    if (typeof g.AbortSignal.abort !== 'function') {
+      g.AbortSignal.abort = function(reason) {
+        var signal = new g.AbortSignal();
+        signal.aborted = true;
+        if (typeof reason !== 'undefined') {
+          signal.reason = reason;
+        } else {
+          signal.reason = new g.DOMException('The operation was aborted.', 'AbortError');
+        }
+        if (typeof signal.addEventListener !== 'function') { signal.addEventListener = function() {}; }
+        if (typeof signal.removeEventListener !== 'function') { signal.removeEventListener = function() {}; }
+        if (typeof signal.dispatchEvent !== 'function') { signal.dispatchEvent = function() { return true; }; }
+        return signal;
+      };
+    }
+
+    if (typeof g.AbortSignal.timeout !== 'function') {
+      g.AbortSignal.timeout = function(_milliseconds) {
+        var signal = new g.AbortSignal();
+        signal.aborted = false;
+        signal.reason = undefined;
+        if (typeof signal.addEventListener !== 'function') { signal.addEventListener = function() {}; }
+        if (typeof signal.removeEventListener !== 'function') { signal.removeEventListener = function() {}; }
+        if (typeof signal.dispatchEvent !== 'function') { signal.dispatchEvent = function() { return true; }; }
+        return signal;
+      };
+    }
+
+  }
+} catch (_) {}
+";
+
+    private const string FatalErrorBridgeScript = @"
+try {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : this;
+  if (g && !g.__fenFatalHarnessBridgeInstalled) {
   g.__fenFatalHarnessBridgeInstalled = true;
 
   function finish(message) {
@@ -40,7 +127,7 @@ public sealed class HeadlessNavigator
     } catch (_) {}
   }
 
-  if (g.addEventListener) {
+  if (typeof g.addEventListener === 'function') {
     g.addEventListener('error', function (ev) {
       if (g.__fenAllowUncaughtException) { return; }
       var msg = ev && (ev.message || (ev.error && ev.error.message)) ? (ev.message || ev.error.message) : 'Unhandled script error';
@@ -54,7 +141,8 @@ public sealed class HeadlessNavigator
       finish(msg);
     });
   }
-})();
+  }
+} catch (_) {}
 ";
     private const string MinimalHarnessScript = @"
 var self = (typeof globalThis !== 'undefined') ? globalThis : this;
@@ -64,6 +152,9 @@ var __fenMiniHarnessRunScheduled = false;
 var __fenMiniHarnessRunning = false;
 var __fenMiniHarnessSetupPromise = Promise.resolve();
 var __fenMiniHarnessQueue = [];
+var __fenMiniHarnessSingleTest = false;
+var __fenMiniHarnessSingleTestName = 'single_test';
+var __fenMiniHarnessAssertionIndex = 0;
 
 function __fenMiniHarnessToMessage(e) {
   try {
@@ -80,6 +171,16 @@ function __fenMiniHarnessReport(name, pass, message) {
       testRunner.reportResult(String(name || 'unnamed'), !!pass, String(message || ''));
     }
   } catch (_) {}
+}
+
+function __fenMiniHarnessRecordAssertion(pass, message) {
+  if (!__fenMiniHarnessSingleTest) { return; }
+  __fenMiniHarnessAssertionIndex++;
+  __fenMiniHarnessReport(
+    __fenMiniHarnessSingleTestName + ' #' + __fenMiniHarnessAssertionIndex,
+    !!pass,
+    String(message || '')
+  );
 }
 
 function __fenMiniHarnessNotifyDone() {
@@ -243,8 +344,19 @@ function setup(fnOrOptions, maybeOptions) {
   if (options && typeof options === 'object' && options.allow_uncaught_exception) {
     self.__fenAllowUncaughtException = true;
   }
+  if (options && typeof options === 'object' && options.single_test) {
+    __fenMiniHarnessSingleTest = true;
+    __fenMiniHarnessSingleTestName = (options && options.single_test_name) ? String(options.single_test_name) : 'single_test';
+    __fenMiniHarnessAssertionIndex = 0;
+  }
   if (typeof fn === 'function') {
-    __fenMiniHarnessSetupPromise = __fenMiniHarnessSetupPromise.then(function () { return fn(); });
+    try {
+      var setupResult = fn();
+      __fenMiniHarnessSetupPromise = __fenMiniHarnessSetupPromise.then(function () { return setupResult; });
+    } catch (e) {
+      __fenMiniHarnessSetupPromise = Promise.reject(e);
+      throw e;
+    }
   }
 }
 
@@ -284,10 +396,29 @@ function async_test(fnOrName, maybeName) {
 }
 
 function done() { __fenMiniHarnessNotifyDone(); }
-function assert_true(value, message) { if (!value) { throw new Error(message || 'assert_true failed'); } }
-function assert_false(value, message) { if (value) { throw new Error(message || 'assert_false failed'); } }
+function assert_true(value, message) {
+  if (!value) {
+    var failure = message || 'assert_true failed';
+    __fenMiniHarnessRecordAssertion(false, failure);
+    throw new Error(failure);
+  }
+  __fenMiniHarnessRecordAssertion(true, message || '');
+}
+function assert_false(value, message) {
+  if (value) {
+    var failure = message || 'assert_false failed';
+    __fenMiniHarnessRecordAssertion(false, failure);
+    throw new Error(failure);
+  }
+  __fenMiniHarnessRecordAssertion(true, message || '');
+}
 function assert_equals(actual, expected, message) {
-  if (actual !== expected) { throw new Error(message || ('assert_equals failed: ' + actual + ' !== ' + expected)); }
+  if (actual !== expected) {
+    var failure = message || ('assert_equals failed: ' + actual + ' !== ' + expected);
+    __fenMiniHarnessRecordAssertion(false, failure);
+    throw new Error(failure);
+  }
+  __fenMiniHarnessRecordAssertion(true, message || '');
 }
 function assert_class_string(value, className, message) {
   var actual = '';
@@ -316,7 +447,19 @@ function assert_in_array(actual, expected, message) {
   throw new Error(message || ('assert_in_array failed: ' + actual + ' not found'));
 }
 function assert_not_equals(actual, expected, message) {
-  if (actual === expected) { throw new Error(message || ('assert_not_equals failed: both are ' + actual)); }
+  if (actual === expected) {
+    var failure = message || ('assert_not_equals failed: both are ' + actual);
+    __fenMiniHarnessRecordAssertion(false, failure);
+    throw new Error(failure);
+  }
+  __fenMiniHarnessRecordAssertion(true, message || '');
+}
+function assert_regexp_match(actual, expected, message) {
+  var regexp = expected instanceof RegExp ? expected : new RegExp(String(expected));
+  var text = actual === null || actual === undefined ? '' : String(actual);
+  if (!regexp.test(text)) {
+    throw new Error(message || ('assert_regexp_match failed: ' + text + ' does not match ' + regexp));
+  }
 }
 function assert_less_than(actual, expected, message) {
   if (!(actual < expected)) { throw new Error(message || ('assert_less_than failed: ' + actual + ' >= ' + expected)); }
@@ -456,10 +599,11 @@ EventWatcher.prototype.wait_for = function (eventName) {
 };
 ";
     private const string HarnessBridgeScript = @"
-(function () {
-  if (typeof globalThis === 'undefined') { return; }
-  if (globalThis.__fenWptBridgeInstalled) { return; }
-  if (typeof add_result_callback !== 'function' || typeof add_completion_callback !== 'function') { return; }
+try {
+  if (typeof globalThis !== 'undefined' &&
+      !globalThis.__fenWptBridgeInstalled &&
+      typeof add_result_callback === 'function' &&
+      typeof add_completion_callback === 'function') {
 
   globalThis.__fenWptBridgeInstalled = true;
 
@@ -491,7 +635,8 @@ EventWatcher.prototype.wait_for = function (eventName) {
       window.dispatchEvent(new Event('load'));
     }
   } catch (e) {}
-})();
+  }
+} catch (_) {}
 ";
     private const string CssParsingTestCommonShimScript = @"
 'use strict';
@@ -711,7 +856,7 @@ var AriaUtils = (typeof globalThis !== 'undefined' && globalThis.AriaUtils)
 ";
     private const string TestDriverShimScript = @"
 /* FenBrowser WPT test_driver shim: accessibility helpers + virtual generic sensors. */
-(function () {
+try {
   var g = (typeof globalThis !== 'undefined') ? globalThis : this;
   var nextSensorId = 1;
   var permissions = {};
@@ -913,7 +1058,42 @@ var AriaUtils = (typeof globalThis !== 'undefined' && globalThis.AriaUtils)
   }
 
   var test_driver = {
-    click: function () { return Promise.resolve(); },
+    click: function (target) {
+      return Promise.resolve().then(function () {
+        if (!target) {
+          return;
+        }
+
+        var isDisabled = false;
+        try {
+          isDisabled = !!target.disabled;
+        } catch (_) {}
+        if (isDisabled) {
+          return;
+        }
+
+        var observedClick = false;
+        var probe = null;
+        if (typeof target.addEventListener === 'function') {
+          probe = function () { observedClick = true; };
+          try { target.addEventListener('click', probe, { once: true }); } catch (_) { probe = null; }
+        }
+
+        if (typeof target.click === 'function') {
+          target.click();
+          if (!observedClick && typeof target.onclick === 'function') {
+            try { target.onclick.call(target, new Event('click')); } catch (_) {}
+          }
+          return;
+        }
+
+        if (typeof target.dispatchEvent === 'function') {
+          try {
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+          } catch (_) {}
+        }
+      });
+    },
     send_keys: function (_target, keys) {
       var text = (keys === undefined || keys === null) ? '' : String(keys);
       if ((text.indexOf('\uE00C') >= 0 || text.indexOf('Escape') >= 0) &&
@@ -995,7 +1175,7 @@ var AriaUtils = (typeof globalThis !== 'undefined' && globalThis.AriaUtils)
     window.test_driver_internal = test_driver;
   }
   g.test_driver = test_driver;
-})();
+} catch (_) {}
 ";
     private const string BatteryShimScript = @"
 (function () {
@@ -3679,9 +3859,13 @@ function setupAndRegisterTests() {
 }
 ";
     private const string SameOriginIframeShimScript = @"
-(function () {
+try {
   var g = (typeof globalThis !== 'undefined') ? globalThis : this;
-  if (!g || g.__fenSameOriginIframeShimInstalled) { return; }
+  if (g &&
+      !g.__fenSameOriginIframeShimInstalled &&
+      typeof document !== 'undefined' &&
+      document &&
+      typeof document.createElement === 'function') {
   g.__fenSameOriginIframeShimInstalled = true;
 
   function findById(root, id) {
@@ -3701,6 +3885,151 @@ function setupAndRegisterTests() {
     return null;
   }
 
+  function dispatchMessage(targetWindow, payload, sourceWindow) {
+    if (!targetWindow) { return; }
+    var sourceLocation = sourceWindow && sourceWindow.location ? sourceWindow.location : null;
+    var origin = sourceLocation && typeof sourceLocation.origin === 'string'
+      ? sourceLocation.origin
+      : ((g.location && typeof g.location.origin === 'string') ? g.location.origin : 'null');
+    var event = {
+      data: payload,
+      origin: origin,
+      source: sourceWindow || null
+    };
+
+    setTimeout(function () {
+      try {
+        if (typeof targetWindow.onmessage === 'function') {
+          targetWindow.onmessage.call(targetWindow, event);
+        }
+      } catch (_) {}
+    }, 0);
+  }
+
+  function resolveOrigin(url) {
+    var text = String(url || '');
+    var match = /^([a-zA-Z][a-zA-Z0-9+\-.]*):\/\/([^\/]+)/.exec(text);
+    if (!match) {
+      return (g.location && typeof g.location.origin === 'string') ? g.location.origin : 'null';
+    }
+    return match[1].toLowerCase() + '://' + match[2];
+  }
+
+  function ensureFrameList(win) {
+    if (!win.frames || typeof win.frames.length !== 'number') {
+      win.frames = [];
+    }
+
+    if (typeof win.length !== 'number') {
+      win.length = win.frames.length;
+    }
+
+    return win.frames;
+  }
+
+  function registerFrame(parentWindow, childWindow) {
+    if (!parentWindow || !childWindow) { return; }
+    var frames = ensureFrameList(parentWindow);
+    var existingIndex = -1;
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i] === childWindow) {
+        existingIndex = i;
+        break;
+      }
+    }
+    if (existingIndex < 0) {
+      frames.push(childWindow);
+    }
+    parentWindow.length = frames.length;
+  }
+
+  function executeInWindow(win, source) {
+    if (!win || !source) { return; }
+    try {
+      var runner = Function('window', 'with(window){\n' + String(source) + '\n}');
+      runner.call(win, win);
+    } catch (_) {}
+  }
+
+  function executeIframeScripts(childWindow, childDocument) {
+    if (!childWindow || !childDocument || !childDocument.documentElement) { return; }
+    var scripts = childDocument.documentElement.getElementsByTagName
+      ? childDocument.documentElement.getElementsByTagName('script')
+      : null;
+    if (!scripts || typeof scripts.length !== 'number') { return; }
+
+    for (var i = 0; i < scripts.length; i++) {
+      var script = scripts[i];
+      if (!script) { continue; }
+
+      var inlineCode = '';
+      try { inlineCode = String(script.textContent || script.innerText || ''); } catch (_) { inlineCode = ''; }
+
+      var src = '';
+      try { src = String(script.src || script.getAttribute('src') || ''); } catch (_) { src = ''; }
+      if (src) {
+        try {
+          var externalCode = __fenLoadIframeMarkup(src);
+          if (typeof externalCode === 'string' && externalCode.length > 0) {
+            executeInWindow(childWindow, externalCode);
+          }
+        } catch (_) {}
+      }
+
+      if (inlineCode) {
+        executeInWindow(childWindow, inlineCode);
+      }
+    }
+  }
+
+  function wireLocation(iframe, childWindow) {
+    if (!childWindow) { return; }
+    var location = childWindow.location && typeof childWindow.location === 'object'
+      ? childWindow.location
+      : {};
+
+    var href = String((iframe && iframe.src) ? iframe.src : 'about:blank');
+    location.origin = resolveOrigin(href);
+    location.protocol = location.origin === 'null' ? 'about:' : (location.origin.split('://')[0] + ':');
+    location.host = location.origin.indexOf('://') >= 0 ? location.origin.split('://')[1] : '';
+    location.href = href;
+
+    try {
+      Object.defineProperty(location, 'href', {
+        configurable: true,
+        enumerable: true,
+        get: function () { return href; },
+        set: function (value) {
+          href = String(value || '');
+          location.origin = resolveOrigin(href);
+          location.protocol = location.origin === 'null' ? 'about:' : (location.origin.split('://')[0] + ':');
+          location.host = location.origin.indexOf('://') >= 0 ? location.origin.split('://')[1] : '';
+
+          try {
+            if (typeof childWindow.onbeforeunload === 'function') {
+              childWindow.event = { type: 'beforeunload', target: childWindow };
+              var result = childWindow.onbeforeunload.call(childWindow, childWindow.event);
+              if (result && typeof result.toString === 'function') {
+                result.toString();
+              }
+            }
+          } catch (_) {}
+          finally {
+            childWindow.event = undefined;
+          }
+
+          if (iframe && typeof iframe.onload === 'function') {
+            setTimeout(function () {
+              try { iframe.onload.call(iframe, { type: 'load', target: iframe }); } catch (_) {}
+            }, 0);
+          }
+        }
+      });
+    } catch (_) {}
+
+    childWindow.location = location;
+  }
+
   function createIframeDocument(markup) {
     var host = document.createElement('div');
     host.style.display = 'none';
@@ -3716,16 +4045,73 @@ function setupAndRegisterTests() {
     };
   }
 
-  function ensureIframeLoaded(iframe) {
-    if (!iframe || iframe.contentDocument || !iframe.src) { return; }
+  function ensureIframeLoaded(iframe, ownerWindow) {
+    if (!iframe) { return; }
+    var parentWindow = ownerWindow || g;
+    iframe.contentWindow = iframe.contentWindow || {};
+    iframe.contentWindow.parent = parentWindow;
+    iframe.contentWindow.self = iframe.contentWindow;
+    iframe.contentWindow.window = iframe.contentWindow;
+    iframe.contentWindow.globalThis = iframe.contentWindow;
+    iframe.contentWindow.top = g;
+    iframe.contentWindow.frameElement = iframe;
+    ensureFrameList(iframe.contentWindow);
+    iframe.contentWindow.AbortSignal = g.AbortSignal;
+    iframe.contentWindow.DOMException = g.DOMException;
+    iframe.contentWindow.Event = g.Event;
+    iframe.contentWindow.CustomEvent = g.CustomEvent;
+    if (typeof iframe.contentWindow.DOMException !== 'function') {
+      iframe.contentWindow.DOMException = function DOMException(message, name) {
+        this.message = String(message || '');
+        this.name = String(name || 'Error');
+      };
+    }
+    if (typeof iframe.contentWindow.AbortSignal !== 'function') {
+      iframe.contentWindow.AbortSignal = function AbortSignal() {};
+    }
+    if (typeof iframe.contentWindow.AbortSignal.abort !== 'function') {
+      iframe.contentWindow.AbortSignal.abort = function (reason) {
+        var signal = new iframe.contentWindow.AbortSignal();
+        signal.aborted = true;
+        signal.reason = (typeof reason !== 'undefined')
+          ? reason
+          : new iframe.contentWindow.DOMException('The operation was aborted.', 'AbortError');
+        return signal;
+      };
+    }
+    if (typeof iframe.contentWindow.AbortSignal.timeout !== 'function') {
+      iframe.contentWindow.AbortSignal.timeout = function (_milliseconds) {
+        var signal = new iframe.contentWindow.AbortSignal();
+        signal.aborted = false;
+        signal.reason = undefined;
+        return signal;
+      };
+    }
+    if (typeof iframe.contentWindow.postMessage !== 'function') {
+      iframe.contentWindow.postMessage = function (payload, _targetOrigin) {
+        dispatchMessage(iframe.contentWindow, payload, parentWindow);
+      };
+    }
+
+    registerFrame(parentWindow, iframe.contentWindow);
+    wireLocation(iframe, iframe.contentWindow);
+
+    if (iframe.contentDocument || !iframe.src) { return; }
     var markup = __fenLoadIframeMarkup(String(iframe.src || ''));
     if (typeof markup !== 'string' || !markup.length) { return; }
     var childDocument = createIframeDocument(markup);
     iframe.contentDocument = childDocument;
-    iframe.contentWindow = iframe.contentWindow || {};
     iframe.contentWindow.document = childDocument;
-    iframe.contentWindow.parent = g;
-    iframe.contentWindow.frameElement = iframe;
+    executeIframeScripts(iframe.contentWindow, childDocument);
+
+    if (childDocument.documentElement && typeof childDocument.documentElement.getElementsByTagName === 'function') {
+      var nestedFrames = childDocument.documentElement.getElementsByTagName('iframe');
+      if (nestedFrames && typeof nestedFrames.length === 'number') {
+        for (var i = 0; i < nestedFrames.length; i++) {
+          ensureIframeLoaded(nestedFrames[i], iframe.contentWindow);
+        }
+      }
+    }
   }
 
   var originalCreateElement = document.createElement;
@@ -3735,6 +4121,10 @@ function setupAndRegisterTests() {
     if (tagName === 'IFRAME') {
       el.contentDocument = null;
       el.contentWindow = { parent: g, frameElement: el };
+      el.contentWindow.AbortSignal = g.AbortSignal;
+      el.contentWindow.DOMException = g.DOMException;
+      el.contentWindow.Event = g.Event;
+      el.contentWindow.CustomEvent = g.CustomEvent;
       var srcValue = '';
       try {
         Object.defineProperty(el, 'src', {
@@ -3743,7 +4133,7 @@ function setupAndRegisterTests() {
           get: function () { return srcValue; },
           set: function (value) {
             srcValue = String(value || '');
-            ensureIframeLoaded(el);
+            ensureIframeLoaded(el, g);
           }
         });
       } catch (_) {}
@@ -3757,7 +4147,7 @@ function setupAndRegisterTests() {
       var result = originalAppendChild.apply(this, arguments);
       try {
         if (child && String(child.tagName || '').toUpperCase() === 'IFRAME') {
-          ensureIframeLoaded(child);
+          ensureIframeLoaded(child, g);
         }
       } catch (_) {}
       return result;
@@ -3768,11 +4158,12 @@ function setupAndRegisterTests() {
     var existing = document.getElementsByTagName('iframe');
     if (existing && typeof existing.length === 'number') {
       for (var i = 0; i < existing.length; i++) {
-        ensureIframeLoaded(existing[i]);
+        ensureIframeLoaded(existing[i], g);
       }
     }
   }
-})();
+  }
+} catch (_) {}
 ";
     private const string WorkletEffectsFromDifferentFramesCompatScript = @"
 'use strict';
@@ -3825,8 +4216,6 @@ promise_test(async t => {
     {
         var filePath = ResolveTestFilePath(url);
         var html = await File.ReadAllTextAsync(filePath);
-        var builder = new HtmlTreeBuilder(html);
-        var document = builder.Build();
         var isSecureContext = DetermineSecureContext(filePath);
 
         var runtime = new FenRuntime(new FenBrowser.FenEngine.Core.ExecutionContext(new FenBrowser.FenEngine.Security.PermissionManager(FenBrowser.FenEngine.Security.JsPermissions.StandardWeb)));
@@ -3834,13 +4223,25 @@ promise_test(async t => {
 
         // Inject parsed DOM through the runtime DOM bridge so global/window/document stay coherent.
         Uri? baseUri = null;
-        try { baseUri = new Uri(filePath); } catch { }
+        Uri? executionUri = null;
+        try
+        {
+            baseUri = new Uri(filePath);
+            executionUri = CreateSyntheticExecutionUri(filePath, baseUri);
+        }
+        catch
+        {
+        }
+
+        html = ApplyWptTemplateSubstitutions(filePath, html, executionUri ?? baseUri);
+        var builder = new HtmlTreeBuilder(html);
+        var document = builder.Build();
         runtime.SetDom(document, baseUri);
         if (baseUri != null)
         {
             runtime.NetworkFetchHandler = request => HandleHeadlessFetchAsync(request, filePath);
             FetchApi.Register(runtime.Context, request => HandleHeadlessFetchAsync(request, filePath));
-            SetRuntimeLocation(runtime, baseUri);
+            SetRuntimeLocation(runtime, executionUri ?? baseUri);
         }
         SetRuntimeSecurityContext(runtime, isSecureContext);
         InstallFeaturePolicyPrimitives(runtime, filePath);
@@ -3883,7 +4284,8 @@ promise_test(async t => {
             TestConsoleCapture.AddEntry(level, msg);
         };
 
-        var pageExecutionUrl = baseUri?.AbsoluteUri ?? "script";
+        var pageExecutionUrl = (executionUri ?? baseUri)?.AbsoluteUri ?? "script";
+        TryExecuteScript(runtime, EventConstructorShimScript, Math.Min(_timeoutMs, 2_000), "fen-event-ctor-shim.js", pageExecutionUrl);
         TryExecuteScript(runtime, FatalErrorBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-fatal-error-bridge.js", pageExecutionUrl);
         TryExecuteScript(runtime, TestDriverShimScript, Math.Min(_timeoutMs, 2_000), "fen-testdriver-shim.js", pageExecutionUrl);
         TryExecuteScript(runtime, SameOriginIframeShimScript, Math.Min(_timeoutMs, 2_000), "fen-same-origin-iframe-shim.js", pageExecutionUrl);
@@ -4041,6 +4443,13 @@ promise_test(async t => {
                     }
 
                     code = await File.ReadAllTextAsync(scriptPath);
+                    Uri? scriptExecutionUri = null;
+                    if (Uri.TryCreate(CreateExecutionUrl(src, filePath, executionUri ?? baseUri), UriKind.Absolute, out var parsedScriptExecutionUri))
+                    {
+                        scriptExecutionUri = parsedScriptExecutionUri;
+                    }
+
+                    code = ApplyWptTemplateSubstitutions(scriptPath, code, scriptExecutionUri);
                 }
             }
             else
@@ -4083,7 +4492,7 @@ promise_test(async t => {
             }
 
             var executionUrl = isExternal && !string.IsNullOrWhiteSpace(src)
-                ? CreateExecutionUrl(src, filePath, baseUri)
+                ? CreateExecutionUrl(src, filePath, executionUri ?? baseUri)
                 : pageExecutionUrl;
             if (!TryExecuteScript(runtime, code, _timeoutMs, scriptLabel, executionUrl))
             {
@@ -4113,20 +4522,22 @@ promise_test(async t => {
         // Dispatch DOMContentLoaded + load lifecycle events using a JS snippet so that
         // listeners registered during script execution are properly notified.
         const string lifecycleScript = @"
-(function() {
-  try {
-    if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
-      var domCl = new Event('DOMContentLoaded', {bubbles:true, cancelable:false});
-      document.dispatchEvent(domCl);
-    }
-  } catch(e) {}
-  try {
-    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-      var loadEvt = new Event('load', {bubbles:false, cancelable:false});
-      window.dispatchEvent(loadEvt);
-    }
-  } catch(e) {}
-})();
+try {
+  if (typeof Event === 'function') {
+    try {
+      if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
+        var domCl = new Event('DOMContentLoaded', {bubbles:true, cancelable:false});
+        document.dispatchEvent(domCl);
+      }
+    } catch(e) {}
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        var loadEvt = new Event('load', {bubbles:false, cancelable:false});
+        window.dispatchEvent(loadEvt);
+      }
+    } catch(e) {}
+  }
+} catch(_) {}
 ";
         TryExecuteScript(runtime, lifecycleScript, 2_000, "fen-lifecycle-events.js", executionUrl);
     }
@@ -4778,7 +5189,11 @@ promise_test(async t => {
         var scriptPath = ResolveExternalScriptPath(scriptUrl, testFilePath);
         if (!string.IsNullOrWhiteSpace(scriptPath) && File.Exists(scriptPath))
         {
-            return (File.ReadAllText(scriptPath), new Uri(scriptPath).AbsoluteUri);
+            var source = File.ReadAllText(scriptPath);
+            var fileUri = new Uri(scriptPath);
+            var executionUri = CreateSyntheticExecutionUri(scriptPath, fileUri);
+            source = ApplyWptTemplateSubstitutions(scriptPath, source, executionUri);
+            return (source, executionUri.AbsoluteUri);
         }
 
         if (Uri.TryCreate(scriptUrl, UriKind.Absolute, out var absoluteUri))
@@ -4954,6 +5369,8 @@ promise_test(async t => {
 
     private static void SetRuntimeLocation(FenRuntime runtime, Uri pageUri)
     {
+        runtime.Context.CurrentUrl = pageUri.AbsoluteUri;
+
         if (runtime.GlobalEnv.Get("location") is not { IsObject: true } locationValue)
         {
             return;
@@ -4967,8 +5384,6 @@ promise_test(async t => {
         location.Set("pathname", FenValue.FromString(pageUri.AbsolutePath));
         location.Set("search", FenValue.FromString(pageUri.Query));
         location.Set("hash", FenValue.FromString(pageUri.Fragment));
-
-        runtime.Context.CurrentUrl = pageUri.AbsoluteUri;
     }
 
     private static async Task<HttpResponseMessage> HandleHeadlessFetchAsync(HttpRequestMessage request, string testFilePath)
@@ -5023,6 +5438,90 @@ promise_test(async t => {
             ".svg" => "image/svg+xml",
             _ => "application/octet-stream"
         };
+    }
+
+    private static string ApplyWptTemplateSubstitutions(string filePath, string source, Uri? executionUri = null)
+    {
+        if (string.IsNullOrEmpty(source))
+        {
+            return source;
+        }
+
+        if (!filePath.EndsWith(".sub.html", StringComparison.OrdinalIgnoreCase) &&
+            !filePath.EndsWith(".sub.js", StringComparison.OrdinalIgnoreCase))
+        {
+            return source;
+        }
+
+        var activeExecutionUri = executionUri;
+        if (activeExecutionUri == null && Uri.TryCreate(filePath, UriKind.Absolute, out var parsedFileUri))
+        {
+            activeExecutionUri = parsedFileUri;
+        }
+
+        var scheme = activeExecutionUri?.Scheme ?? "http";
+        var host = activeExecutionUri?.Host ?? "example.test";
+        var port = activeExecutionUri?.Port ?? (string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase) ? 443 : 80);
+        var path = activeExecutionUri?.AbsolutePath ?? "/";
+        if (string.IsNullOrEmpty(path))
+        {
+            path = "/";
+        }
+
+        var replacements = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["{{host}}"] = "example.test",
+            ["{{domains[www]}}"] = "www.example.test",
+            ["{{domains[www1]}}"] = "www1.example.test",
+            ["{{domains[www2]}}"] = "www2.example.test",
+            ["{{ports[http][0]}}"] = "80",
+            ["{{ports[https][0]}}"] = "443",
+            ["{{ports[ws][0]}}"] = "80",
+            ["{{ports[wss][0]}}"] = "443",
+            ["{{location[scheme]}}"] = scheme,
+            ["{{location[host]}}"] = host,
+            ["{{location[hostname]}}"] = host,
+            ["{{location[port]}}"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["{{location[path]}}"] = path,
+            ["{{location[pathname]}}"] = path,
+            ["{{location[query]}}"] = activeExecutionUri?.Query ?? string.Empty,
+            ["{{location[server]}}"] = $"{scheme}://{host}:{port}"
+        };
+
+        foreach (var replacement in replacements)
+        {
+            source = source.Replace(replacement.Key, replacement.Value, StringComparison.Ordinal);
+        }
+
+        return source;
+    }
+
+    private Uri CreateSyntheticExecutionUri(string filePath, Uri fallbackFileUri)
+    {
+        if (string.IsNullOrWhiteSpace(_wptRootPath))
+        {
+            return fallbackFileUri;
+        }
+
+        string relativePath;
+        try
+        {
+            relativePath = Path.GetRelativePath(_wptRootPath, filePath);
+        }
+        catch
+        {
+            return fallbackFileUri;
+        }
+
+        if (relativePath.StartsWith("..", StringComparison.Ordinal))
+        {
+            return fallbackFileUri;
+        }
+
+        var normalized = relativePath.Replace('\\', '/');
+        var scheme = filePath.IndexOf(".https.", StringComparison.OrdinalIgnoreCase) >= 0 ? "https" : "http";
+        var port = string.Equals(scheme, "https", StringComparison.OrdinalIgnoreCase) ? 443 : 80;
+        return new Uri($"{scheme}://example.test:{port}/{normalized}");
     }
 
     private static bool IsCssParsingTestCommonScript(string src)

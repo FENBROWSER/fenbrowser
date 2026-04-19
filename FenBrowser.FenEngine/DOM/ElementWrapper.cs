@@ -13,6 +13,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.DOM
@@ -67,8 +68,19 @@ namespace FenBrowser.FenEngine.DOM
         public override FenValue Get(string key, IExecutionContext context = null)
         {
             _context?.CheckExecutionTimeLimit();
+            var keyLower = key.ToLowerInvariant();
 
-            switch (key.ToLowerInvariant())
+            if (IsBodyOrFrameSetWindowHandlerProperty(keyLower))
+            {
+                return GetForwardedWindowEventHandler(keyLower);
+            }
+
+            if (IsGlobalEventHandlerProperty(keyLower))
+            {
+                return GetGlobalEventHandlerProperty(keyLower, context);
+            }
+
+            switch (keyLower)
             {
                 case "innerhtml":
                     return GetInnerHTML();
@@ -323,10 +335,51 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.FromString(_element.GetAttribute("class") ?? "");
 
                 case "htmlfor":
-                    return FenValue.FromString(_element.GetAttribute("for") ?? string.Empty);
+                    if (SupportsHtmlForTokenListReflection())
+                    {
+                        return FenValue.FromObject(new DOMTokenList(_element, "for", _context));
+                    }
+                    if (SupportsHtmlForStringReflection())
+                    {
+                        return FenValue.FromString(_element.GetAttribute("for") ?? string.Empty);
+                    }
+                    return base.Get(key, context);
 
                 case "httpequiv":
-                    return FenValue.FromString(_element.GetAttribute("http-equiv") ?? string.Empty);
+                    if (SupportsHttpEquivReflection())
+                    {
+                        return FenValue.FromString(_element.GetAttribute("http-equiv") ?? string.Empty);
+                    }
+                    return base.Get(key, context);
+
+                case "rellist":
+                    if (SupportsRelListReflection())
+                    {
+                        return FenValue.FromObject(new DOMTokenList(_element, "rel", _context));
+                    }
+                    return base.Get(key, context);
+
+                case "sandbox":
+                    if (SupportsSandboxTokenListReflection())
+                    {
+                        return FenValue.FromObject(new DOMTokenList(_element, "sandbox", _context));
+                    }
+                    return base.Get(key, context);
+
+                case "sizes":
+                    if (SupportsSizesTokenListReflection())
+                    {
+                        return FenValue.FromObject(new DOMTokenList(_element, "sizes", _context));
+                    }
+                    return base.Get(key, context);
+
+                case "sheet":
+                case "stylesheet":
+                    if (SupportsInlineStylesheetObject())
+                    {
+                        return FenValue.FromObject(CreateInlineStylesheetObject());
+                    }
+                    return FenValue.Null;
 
                 case "parentelement":
                 case "parentnode":
@@ -855,7 +908,20 @@ namespace FenBrowser.FenEngine.DOM
                     throw new FenSecurityError("DOM write permission required");
             }
 
-            switch (key.ToLowerInvariant())
+            var keyLower = key.ToLowerInvariant();
+            if (IsBodyOrFrameSetWindowHandlerProperty(keyLower))
+            {
+                SetForwardedWindowEventHandler(keyLower, value, context);
+                return;
+            }
+
+            if (IsGlobalEventHandlerProperty(keyLower))
+            {
+                SetGlobalEventHandlerProperty(keyLower, value, context);
+                return;
+            }
+
+            switch (keyLower)
             {
                 case "innerhtml":
                     SetInnerHTML(value);
@@ -929,11 +995,38 @@ namespace FenBrowser.FenEngine.DOM
                     break;
 
                 case "htmlfor":
-                    _element.SetAttribute("for", value.ToString() ?? string.Empty);
+                    if (SupportsHtmlForStringReflection())
+                    {
+                        _element.SetAttribute("for", value.ToString() ?? string.Empty);
+                    }
+                    else if (SupportsHtmlForTokenListReflection())
+                    {
+                        // output.htmlFor is a readonly DOMTokenList.
+                    }
+                    else
+                    {
+                        base.Set(key, value, context);
+                    }
                     break;
 
                 case "httpequiv":
-                    _element.SetAttribute("http-equiv", value.ToString() ?? string.Empty);
+                    if (SupportsHttpEquivReflection())
+                    {
+                        _element.SetAttribute("http-equiv", value.ToString() ?? string.Empty);
+                    }
+                    else
+                    {
+                        base.Set(key, value, context);
+                    }
+                    break;
+
+                case "rellist":
+                    // relList is read-only; ignore direct assignment.
+                    break;
+
+                case "sandbox":
+                case "sizes":
+                    // Token-list reflection properties are readonly object references.
                     break;
 
                 case "src":
@@ -1021,7 +1114,376 @@ namespace FenBrowser.FenEngine.DOM
         public override bool Delete(string key, IExecutionContext context = null) => false;
 
         public override System.Collections.Generic.IEnumerable<string> Keys(IExecutionContext context = null) 
-            => new[] { "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "name", "className", "contentEditable", "isContentEditable", "form", "elements", "length", "type", "value", "checked", "selected", "defaultSelected", "disabled", "src", "currentSrc", "naturalWidth", "naturalHeight", "data", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute", "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName", "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll", "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext", "getBBox", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy", "caption", "tHead", "tFoot", "tBodies", "rows", "cells", "rowIndex", "sectionRowIndex", "createCaption", "deleteCaption", "createTHead", "deleteTHead", "createTFoot", "deleteTFoot", "insertRow", "options", "selectedIndex", "add", "htmlFor", "httpEquiv" };
+        {
+            var keys = new HashSet<string>(base.Keys(context), StringComparer.Ordinal)
+            {
+                "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "name", "className",
+                "contentEditable", "isContentEditable", "form", "elements", "length", "type", "value", "checked",
+                "selected", "defaultSelected", "disabled", "src", "currentSrc", "naturalWidth", "naturalHeight",
+                "data", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
+                "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName",
+                "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll",
+                "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext",
+                "getBBox", "width", "height", "clientWidth", "clientHeight", "offsetWidth", "offsetHeight",
+                "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "scrollTo", "scrollBy", "caption",
+                "tHead", "tFoot", "tBodies", "rows", "cells", "rowIndex", "sectionRowIndex", "createCaption",
+                "deleteCaption", "createTHead", "deleteTHead", "createTFoot", "deleteTFoot", "insertRow", "options",
+                "selectedIndex", "add"
+            };
+
+            if (SupportsHtmlForStringReflection() || SupportsHtmlForTokenListReflection())
+            {
+                keys.Add("htmlFor");
+            }
+
+            if (SupportsHttpEquivReflection())
+            {
+                keys.Add("httpEquiv");
+            }
+
+            if (SupportsRelListReflection())
+            {
+                keys.Add("relList");
+            }
+
+            if (SupportsSandboxTokenListReflection())
+            {
+                keys.Add("sandbox");
+            }
+
+            if (SupportsSizesTokenListReflection())
+            {
+                keys.Add("sizes");
+            }
+
+            if (SupportsInlineStylesheetObject())
+            {
+                keys.Add("sheet");
+                keys.Add("styleSheet");
+            }
+
+            if (IsBodyOrFrameset())
+            {
+                foreach (var handler in LegacyBodyFrameSetForwardedHandlers)
+                {
+                    keys.Add(handler);
+                }
+            }
+
+            return keys;
+        }
+
+        private static readonly string[] LegacyBodyFrameSetForwardedHandlers =
+        {
+            "onafterprint", "onbeforeprint", "onbeforeunload", "onblur", "onerror",
+            "onfocus", "onhashchange", "onlanguagechange", "onload", "onmessage",
+            "onmessageerror", "onoffline", "ononline", "onpagehide", "onpageshow",
+            "onpopstate", "onrejectionhandled", "onresize", "onscroll", "onstorage",
+            "onunhandledrejection", "onunload"
+        };
+
+        private static readonly HashSet<string> GlobalEventHandlerProperties = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "onabort", "onblur", "oncancel", "oncanplay", "oncanplaythrough",
+            "onchange", "onclick", "onclose", "oncontextmenu", "oncopy",
+            "oncuechange", "oncut", "ondblclick", "ondrag", "ondragend",
+            "ondragenter", "ondragleave", "ondragover", "ondragstart", "ondrop",
+            "ondurationchange", "onemptied", "onended", "onerror", "onfocus",
+            "onfocusin", "onfocusout", "onformdata", "ongotpointercapture",
+            "oninput", "oninvalid", "onkeydown", "onkeypress", "onkeyup",
+            "onload", "onloadeddata", "onloadedmetadata", "onloadstart",
+            "onlostpointercapture", "onmousedown", "onmouseenter", "onmouseleave",
+            "onmousemove", "onmouseout", "onmouseover", "onmouseup", "onmousewheel",
+            "onpaste", "onpause", "onplay", "onplaying", "onpointercancel",
+            "onpointerdown", "onpointerenter", "onpointerleave", "onpointermove",
+            "onpointerout", "onpointerover", "onpointerup", "onprogress",
+            "onratechange", "onreset", "onresize", "onscroll", "onsecuritypolicyviolation",
+            "onseeked", "onseeking", "onselect", "onselectionchange", "onselectstart",
+            "onslotchange", "onstalled", "onsubmit", "onsuspend", "ontimeupdate",
+            "ontoggle", "ontouchcancel", "ontouchend", "ontouchmove", "ontouchstart",
+            "ontransitioncancel", "ontransitionend", "ontransitionrun", "ontransitionstart",
+            "onvolumechange", "onwaiting", "onwebkitanimationend", "onwebkitanimationiteration",
+            "onwebkitanimationstart", "onwebkittransitionend", "onwheel",
+            "onanimationcancel", "onanimationend", "onanimationiteration", "onanimationstart",
+            "onbeforeunload", "onhashchange", "onlanguagechange", "onmessage",
+            "onmessageerror", "onoffline", "ononline", "onpagehide", "onpageshow",
+            "onpopstate", "onrejectionhandled", "onstorage", "onunhandledrejection",
+            "onunload"
+        };
+
+        private bool SupportsHtmlForStringReflection()
+        {
+            return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(_element.TagName, "label", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsHtmlForTokenListReflection()
+        {
+            return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(_element.TagName, "output", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsHttpEquivReflection()
+        {
+            return string.Equals(_element.TagName, "meta", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsRelListReflection()
+        {
+            if (string.Equals(_element.TagName, "a", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) ||
+                       string.Equals(_element.NamespaceUri, "http://www.w3.org/2000/svg", StringComparison.Ordinal);
+            }
+
+            if (!string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return string.Equals(_element.TagName, "area", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(_element.TagName, "link", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsSandboxTokenListReflection()
+        {
+            return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsSizesTokenListReflection()
+        {
+            return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(_element.TagName, "link", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool SupportsInlineStylesheetObject()
+        {
+            return string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(_element.TagName, "style", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private FenObject CreateInlineStylesheetObject()
+        {
+            var styleSheet = new FenObject();
+            void RefreshCssRules() => styleSheet.Set("cssRules", FenValue.FromObject(BuildCssRulesArray()));
+
+            styleSheet.Set("insertRule", FenValue.FromFunction(new FenFunction("insertRule", (args, thisVal) =>
+            {
+                var ruleText = args.Length > 0 ? args[0].ToString() ?? string.Empty : string.Empty;
+                var index = args.Length > 1 ? (int)Math.Max(0, args[1].ToNumber()) : int.MaxValue;
+                var rules = GetInlineStylesheetRules();
+                if (index > rules.Count)
+                {
+                    index = rules.Count;
+                }
+
+                rules.Insert(index, NormalizeCssRuleText(ruleText));
+                SetInlineStylesheetRules(rules);
+                RefreshCssRules();
+                return FenValue.FromNumber(index);
+            })));
+
+            styleSheet.Set("deleteRule", FenValue.FromFunction(new FenFunction("deleteRule", (args, thisVal) =>
+            {
+                var index = args.Length > 0 ? (int)args[0].ToNumber() : -1;
+                var rules = GetInlineStylesheetRules();
+                if (index >= 0 && index < rules.Count)
+                {
+                    rules.RemoveAt(index);
+                    SetInlineStylesheetRules(rules);
+                    RefreshCssRules();
+                }
+
+                return FenValue.Undefined;
+            })));
+
+            RefreshCssRules();
+
+            styleSheet.Set("ownerNode", DomWrapperFactory.Wrap(_element, _context));
+            return styleSheet;
+        }
+
+        private List<string> GetInlineStylesheetRules()
+        {
+            var cssText = _element.TextContent ?? string.Empty;
+            var normalized = cssText.Replace("\r", string.Empty);
+            var rawRules = normalized.Split('}', StringSplitOptions.RemoveEmptyEntries);
+            var result = new List<string>(rawRules.Length);
+            foreach (var raw in rawRules)
+            {
+                var rule = raw.Trim();
+                if (string.IsNullOrWhiteSpace(rule))
+                {
+                    continue;
+                }
+
+                if (!rule.EndsWith("}", StringComparison.Ordinal))
+                {
+                    rule += "}";
+                }
+
+                result.Add(rule);
+            }
+
+            return result;
+        }
+
+        private FenObject BuildCssRulesArray()
+        {
+            var rules = GetInlineStylesheetRules();
+            var arr = FenObject.CreateArray();
+            for (int i = 0; i < rules.Count; i++)
+            {
+                var entry = new FenObject();
+                entry.Set("cssText", FenValue.FromString(rules[i]));
+                arr.Set(i.ToString(), FenValue.FromObject(entry));
+            }
+            arr.Set("length", FenValue.FromNumber(rules.Count));
+            return arr;
+        }
+
+        private void SetInlineStylesheetRules(List<string> rules)
+        {
+            var builder = new StringBuilder();
+            for (int i = 0; i < rules.Count; i++)
+            {
+                if (i > 0)
+                {
+                    builder.AppendLine();
+                }
+
+                builder.Append(rules[i]);
+            }
+
+            _element.TextContent = builder.ToString();
+            _element.MarkDirty(InvalidationKind.Style | InvalidationKind.Layout | InvalidationKind.Paint);
+            _context?.RequestRender?.Invoke();
+        }
+
+        private static string NormalizeCssRuleText(string ruleText)
+        {
+            var rule = (ruleText ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(rule))
+            {
+                return string.Empty;
+            }
+
+            if (!rule.EndsWith("}", StringComparison.Ordinal))
+            {
+                rule += "}";
+            }
+
+            return rule;
+        }
+
+        private static bool ShouldUseDefaultPassive(string eventType)
+        {
+            if (string.IsNullOrWhiteSpace(eventType))
+            {
+                return false;
+            }
+
+            return string.Equals(eventType, "touchstart", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(eventType, "touchmove", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(eventType, "wheel", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(eventType, "mousewheel", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsDefaultPassiveTargetElement()
+        {
+            if (!string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return string.Equals(_element.TagName, "body", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(_element.TagName, "html", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsBodyOrFrameset()
+        {
+            return string.Equals(_element.TagName, "body", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(_element.TagName, "frameset", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsBodyOrFrameSetWindowHandlerProperty(string keyLower)
+        {
+            if (!IsBodyOrFrameset() || string.IsNullOrWhiteSpace(keyLower))
+            {
+                return false;
+            }
+
+            return LegacyBodyFrameSetForwardedHandlers.Contains(keyLower, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private FenValue GetForwardedWindowEventHandler(string keyLower)
+        {
+            var windowValue = _context?.Environment?.Get("window") ?? FenValue.Undefined;
+            if (!windowValue.IsObject)
+            {
+                return FenValue.Null;
+            }
+
+            var value = windowValue.AsObject().Get(keyLower, _context);
+            if (value.IsUndefined || value.IsNull)
+            {
+                return FenValue.Null;
+            }
+
+            return value;
+        }
+
+        private bool IsGlobalEventHandlerProperty(string keyLower)
+        {
+            if (string.IsNullOrWhiteSpace(keyLower) || !keyLower.StartsWith("on", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!string.Equals(_element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return GlobalEventHandlerProperties.Contains(keyLower);
+        }
+
+        private FenValue GetGlobalEventHandlerProperty(string keyLower, IExecutionContext context)
+        {
+            var value = base.Get(keyLower, context);
+            return value.IsUndefined || value.IsNull ? FenValue.Null : value;
+        }
+
+        private void SetGlobalEventHandlerProperty(string keyLower, FenValue value, IExecutionContext context)
+        {
+            var normalized = NormalizeEventHandlerValue(value);
+            base.Set(keyLower, normalized, context);
+        }
+
+        private void SetForwardedWindowEventHandler(string keyLower, FenValue value, IExecutionContext context)
+        {
+            var windowValue = _context?.Environment?.Get("window") ?? FenValue.Undefined;
+            if (!windowValue.IsObject)
+            {
+                base.Set(keyLower, value, context);
+                return;
+            }
+
+            var normalized = NormalizeEventHandlerValue(value);
+
+            windowValue.AsObject().Set(keyLower, normalized, context ?? _context);
+        }
+
+        private static FenValue NormalizeEventHandlerValue(FenValue value)
+        {
+            if (value.IsFunction || value.IsNull || value.IsUndefined)
+            {
+                return value.IsUndefined ? FenValue.Null : value;
+            }
+
+            return FenValue.Null;
+        }
 
         private string GetContentEditableState()
         {
@@ -1605,7 +2067,24 @@ namespace FenBrowser.FenEngine.DOM
             // For <html> element (documentElement), return viewport width
             if (string.Equals(_element.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
-                // Return viewport width (typical desktop width)
+                if (_context?.Environment != null)
+                {
+                    var innerWidth = _context.Environment.Get("innerWidth");
+                    if (innerWidth.IsNumber)
+                    {
+                        var width = innerWidth.ToNumber();
+                        if (double.IsFinite(width) && width > 0)
+                        {
+                            return width;
+                        }
+                    }
+                }
+
+                if (CssParser.MediaViewportWidth.HasValue && CssParser.MediaViewportWidth.Value > 0)
+                {
+                    return CssParser.MediaViewportWidth.Value;
+                }
+
                 return 1920;
             }
             // For other elements, use width attribute or return 0
@@ -1617,7 +2096,24 @@ namespace FenBrowser.FenEngine.DOM
             // For <html> element (documentElement), return viewport height
             if (string.Equals(_element.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
-                // Return viewport height (typical desktop height)
+                if (_context?.Environment != null)
+                {
+                    var innerHeight = _context.Environment.Get("innerHeight");
+                    if (innerHeight.IsNumber)
+                    {
+                        var height = innerHeight.ToNumber();
+                        if (double.IsFinite(height) && height > 0)
+                        {
+                            return height;
+                        }
+                    }
+                }
+
+                if (CssParser.MediaViewportHeight.HasValue && CssParser.MediaViewportHeight.Value > 0)
+                {
+                    return CssParser.MediaViewportHeight.Value;
+                }
+
                 return 1080;
             }
             // For other elements, use height attribute or return 0
@@ -2973,6 +3469,7 @@ namespace FenBrowser.FenEngine.DOM
             var currentCheckedState = preserveCheckedState && ElementStateManager.Instance.IsChecked(_element);
 
             _element.SetAttribute(name, value);
+            SyncLegacyBodyOrFramesetWindowHandlerFromAttribute(name, value);
             if (string.Equals(name, "src", StringComparison.OrdinalIgnoreCase))
             {
                 TryScheduleImageLoad(value);
@@ -3013,6 +3510,7 @@ namespace FenBrowser.FenEngine.DOM
                                        TryGetCheckableInputType(_element, out _);
             var currentCheckedState = preserveCheckedState && ElementStateManager.Instance.IsChecked(_element);
             _element.RemoveAttribute(name);
+            SyncLegacyBodyOrFramesetWindowHandlerFromAttribute(name, null);
 
             if (preserveCheckedState)
             {
@@ -3030,6 +3528,29 @@ namespace FenBrowser.FenEngine.DOM
 
             NotifyAttributeMutation(name, oldValue);
             _context.RequestRender?.Invoke();
+        }
+
+        private void SyncLegacyBodyOrFramesetWindowHandlerFromAttribute(string attributeName, string attributeValue)
+        {
+            if (string.IsNullOrWhiteSpace(attributeName))
+            {
+                return;
+            }
+
+            var keyLower = attributeName.ToLowerInvariant();
+            if (!IsBodyOrFrameSetWindowHandlerProperty(keyLower))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(attributeValue))
+            {
+                SetForwardedWindowEventHandler(keyLower, FenValue.Null, _context);
+                return;
+            }
+
+            var handler = FenValue.FromFunction(new FenFunction(keyLower, (args, thisVal) => FenValue.Undefined));
+            SetForwardedWindowEventHandler(keyLower, handler, _context);
         }
 
         private void UpdateIframeSource(string value)
@@ -3417,6 +3938,7 @@ namespace FenBrowser.FenEngine.DOM
             bool capture = false;
             bool once = false;
             bool passive = false;
+            bool passiveExplicit = false;
             FenValue signal = FenValue.Undefined;
             if (args.Length >= 3)
             {
@@ -3460,12 +3982,21 @@ namespace FenBrowser.FenEngine.DOM
                                 passiveVal = passiveGetter.AsFunction().Invoke(Array.Empty<FenValue>(), _context, FenValue.FromObject(opts));
                             }
                         }
-                        passive = passiveVal.ToBoolean();
+                        if (passiveVal.IsBoolean)
+                        {
+                            passive = passiveVal.ToBoolean();
+                            passiveExplicit = true;
+                        }
 
                         var sVal = opts.Get("signal", _context);
                         if (sVal.IsObject) signal = sVal;
                     }
                 }
+            }
+
+            if (!passiveExplicit && ShouldUseDefaultPassive(type) && IsDefaultPassiveTargetElement())
+            {
+                passive = true;
             }
 
             var callbackIsValid = callback.IsFunction || callback.IsObject;
