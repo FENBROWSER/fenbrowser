@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using System;
@@ -73,7 +73,9 @@ namespace FenBrowser.Core.Parsing
         public Action<HtmlParseCheckpoint> ParseCheckpointCallback { get; set; }
         public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
         public int MaxTokenizerEmissions { get; set; } = 2_000_000;
+        public int MaxInputLengthChars { get; set; } = 8_000_000;
         public int MaxOpenElementsDepth { get; set; } = 4096;
+        public HtmlParsingOutcome LastParsingOutcome { get; private set; } = new HtmlParsingOutcome();
         private bool _openElementsDepthLimitLogged;
         private bool _openElementUnderflowLogged;
 
@@ -121,7 +123,15 @@ namespace FenBrowser.Core.Parsing
 
             try
             {
+                ApplyResilienceSettingsFromBrowserDefaults();
+                LastParsingOutcome = new HtmlParsingOutcome
+                {
+                    OutcomeClass = HtmlParsingOutcomeClass.Success,
+                    ReasonCode = HtmlParsingReasonCode.None
+                };
+
                 _tokenizer.MaxTokenEmissions = MaxTokenizerEmissions;
+                _tokenizer.MaxInputLengthChars = MaxInputLengthChars;
 
                 if (pipelineContext != null)
                 {
@@ -250,7 +260,40 @@ namespace FenBrowser.Core.Parsing
                     InterleavedTokenBatchSize = tokenBatchSize,
                     InterleavedBatchCount = interleavedBatchCount
                 };
+
+                if (_tokenizer.LastReasonCode != HtmlParsingReasonCode.None)
+                {
+                    LastParsingOutcome = new HtmlParsingOutcome
+                    {
+                        OutcomeClass = HtmlParsingOutcomeClass.Degraded,
+                        ReasonCode = _tokenizer.LastReasonCode,
+                        Detail = _tokenizer.LastReasonDetail,
+                        IsRetryable = _tokenizer.LastReasonCode == HtmlParsingReasonCode.TokenEmissionLimitExceeded
+                    };
+                }
+                else if (_openElementsDepthLimitLogged)
+                {
+                    LastParsingOutcome = new HtmlParsingOutcome
+                    {
+                        OutcomeClass = HtmlParsingOutcomeClass.Degraded,
+                        ReasonCode = HtmlParsingReasonCode.OpenElementsDepthLimitExceeded,
+                        Detail = $"Open elements depth exceeded configured limit {MaxOpenElementsDepth}.",
+                        IsRetryable = true
+                    };
+                }
+
                 return _document;
+            }
+            catch (Exception ex)
+            {
+                LastParsingOutcome = new HtmlParsingOutcome
+                {
+                    OutcomeClass = HtmlParsingOutcomeClass.Failed,
+                    ReasonCode = HtmlParsingReasonCode.Exception,
+                    Detail = ex.Message,
+                    IsRetryable = false
+                };
+                throw;
             }
             finally
             {
@@ -260,6 +303,29 @@ namespace FenBrowser.Core.Parsing
             }
         }
 
+        private void ApplyResilienceSettingsFromBrowserDefaults()
+        {
+            var resilience = BrowserSettings.Instance?.Resilience;
+            if (resilience == null)
+            {
+                return;
+            }
+
+            if (MaxTokenizerEmissions <= 0 || MaxTokenizerEmissions == 2_000_000)
+            {
+                MaxTokenizerEmissions = resilience.MaxHtmlTokenEmissions;
+            }
+
+            if (MaxInputLengthChars <= 0 || MaxInputLengthChars == 8_000_000)
+            {
+                MaxInputLengthChars = resilience.MaxHtmlInputChars;
+            }
+
+            if (MaxOpenElementsDepth <= 0 || MaxOpenElementsDepth == 4096)
+            {
+                MaxOpenElementsDepth = resilience.MaxOpenElementsDepth;
+            }
+        }
         private void ProcessTokenBatch(
             List<HtmlToken> tokenBuffer,
             ref long parsingTicks,
@@ -339,7 +405,7 @@ namespace FenBrowser.Core.Parsing
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[HTML] Parse checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
+                EngineLogCompat.Warn($"[HTML] Parse checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
             }
         }
 
@@ -357,7 +423,7 @@ namespace FenBrowser.Core.Parsing
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[HTML] Parse document checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
+                EngineLogCompat.Warn($"[HTML] Parse document checkpoint callback error: {ex.Message}", LogCategory.HtmlParsing);
             }
         }
 
@@ -427,7 +493,7 @@ namespace FenBrowser.Core.Parsing
                         CommentToken => "Comment",
                         _ => token.GetType().Name
                     };
-                    FenLogger.Info($"[PARSE-TRACE] Mode={_insertionMode} CurrentNode={((CurrentNode as Element)?.TagName ?? "?")}[{curCls}] Token={tokenDesc} StackDepth={_openElements.Count}", Logging.LogCategory.HtmlParsing);
+                    EngineLogCompat.Info($"[PARSE-TRACE] Mode={_insertionMode} CurrentNode={((CurrentNode as Element)?.TagName ?? "?")}[{curCls}] Token={tokenDesc} StackDepth={_openElements.Count}", Logging.LogCategory.HtmlParsing);
                 }
             }
 
@@ -492,7 +558,7 @@ namespace FenBrowser.Core.Parsing
                         break;
                     default:
                         if (DebugConfig.LogHtmlParse)
-                            FenBrowser.Core.FenLogger.Warn($"[HTML] Unhandled Mode: {_insertionMode} for token {token.Type}", LogCategory.HtmlParsing);
+                            FenBrowser.Core.EngineLogCompat.Warn($"[HTML] Unhandled Mode: {_insertionMode} for token {token.Type}", LogCategory.HtmlParsing);
                         processed = HandleInBody(token); // Fallback
                         break;
                 }
@@ -872,7 +938,7 @@ namespace FenBrowser.Core.Parsing
              if (token is CharacterToken ct)
              {
                  if (ct.Data == "\0") return true; // Ignore null
-                 // Reconstruct active formatting elements per WHATWG §13.2.6.4.7
+                 // Reconstruct active formatting elements per WHATWG �13.2.6.4.7
                  ReconstructActiveFormattingElements();
                  InsertCharacter(ct);
                  return true;
@@ -924,7 +990,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "li")
                 {
-                    // HTML5 spec Â§12.2.6.4.7: walk backwards through open elements
+                    // HTML5 spec §12.2.6.4.7: walk backwards through open elements
                     // looking for an open <li>. Pass through <div>, <address>, <p>
                     // (which are "special" but excluded from the stop condition).
                     // Stop at any other "special" element.
@@ -950,7 +1016,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "dd" || st.TagName == "dt")
                 {
-                     // HTML5 spec Â§12.2.6.4.7: walk backwards like <li>
+                     // HTML5 spec §12.2.6.4.7: walk backwards like <li>
                      for (int idx = 0; idx < _openElements.Count; idx++)
                      {
                          var node = _openElements.ElementAt(idx);
@@ -982,7 +1048,7 @@ namespace FenBrowser.Core.Parsing
                     // Strict non-nesting: if stack has 'a', pop until it's closed
                     if (StackHas("a"))
                     {
-                        FenLogger.Debug("[Parser] Closing nested <a>", LogCategory.HtmlParsing);
+                        EngineLogCompat.Debug("[Parser] Closing nested <a>", LogCategory.HtmlParsing);
                         PopUntil("a");
                     }
                     InsertHtmlElement(st);
@@ -1069,7 +1135,7 @@ namespace FenBrowser.Core.Parsing
                     {
                         // Parse error: </p> without <p>. Create <p> and close it. (Implies <p></p>)
                         if (DebugConfig.LogHtmlParse)
-                             FenLogger.Log("[HTML] Recovered </p> without open <p> (Inserted empty paragraph)", LogCategory.HtmlParsing);
+                             EngineLogCompat.Log("[HTML] Recovered </p> without open <p> (Inserted empty paragraph)", LogCategory.HtmlParsing);
                         InsertHtmlElement(new StartTagToken() { TagName = "p" });
                     }
                     // Close p
@@ -1101,7 +1167,7 @@ namespace FenBrowser.Core.Parsing
                 }
                 
                 // Formatting elements (Adoption Agency Algorithm)
-                // WHATWG HTML spec §13.2.6.4.7
+                // WHATWG HTML spec �13.2.6.4.7
                 if (IsFormattingElement(et.TagName))
                 {
                     RunAdoptionAgencyAlgorithm(et.TagName);
@@ -1565,7 +1631,7 @@ namespace FenBrowser.Core.Parsing
                 // Only handle text and basic void elements. 
                 // Complex elements inside improper table context are hard.
                 if (DebugConfig.LogHtmlParse)
-                     FenBrowser.Core.FenLogger.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
+                     FenBrowser.Core.EngineLogCompat.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
                      
                 var el = new Element(st.TagName);
                 foreach(var a in st.Attributes) el.SetAttributeUnsafe(a.Name, a.Value);
@@ -1762,7 +1828,7 @@ namespace FenBrowser.Core.Parsing
                 return true;
             }
             
-            // Per HTML spec: any other token in "text" mode â†’ pop the current node,
+            // Per HTML spec: any other token in "text" mode → pop the current node,
             // switch back to the original insertion mode, and reprocess.
             SafePopOpenElement();
             SwitchTo(_originalInsertionMode);
@@ -1820,7 +1886,7 @@ namespace FenBrowser.Core.Parsing
                 if (!_openElementUnderflowLogged)
                 {
                     _openElementUnderflowLogged = true;
-                    FenLogger.Warn("[HtmlTreeBuilder] Open-elements stack underflow avoided during malformed token recovery.", LogCategory.HtmlParsing);
+                    EngineLogCompat.Warn("[HtmlTreeBuilder] Open-elements stack underflow avoided during malformed token recovery.", LogCategory.HtmlParsing);
                 }
                 return null;
             }
@@ -1843,7 +1909,7 @@ namespace FenBrowser.Core.Parsing
             if (!_openElementsDepthLimitLogged)
             {
                 _openElementsDepthLimitLogged = true;
-                FenLogger.Warn($"[HtmlTreeBuilder] Open-elements depth exceeded limit ({MaxOpenElementsDepth}). Auto-closing overflow elements.", LogCategory.HtmlParsing);
+                EngineLogCompat.Warn($"[HtmlTreeBuilder] Open-elements depth exceeded limit ({MaxOpenElementsDepth}). Auto-closing overflow elements.", LogCategory.HtmlParsing);
             }
 
             while (_openElements.Count > MaxOpenElementsDepth)
@@ -1952,7 +2018,7 @@ namespace FenBrowser.Core.Parsing
         {
             var el = CreateElement(token);
             CurrentNode.AppendChild(el);
-            // FenLogger.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
+            // EngineLogCompat.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
 
             return el;
@@ -1984,7 +2050,7 @@ namespace FenBrowser.Core.Parsing
             if (StackHas("p"))
             {
                 if (DebugConfig.LogHtmlParse)
-                    FenLogger.Log("[HTML] Auto-closed <p> (implied end tag)", LogCategory.HtmlParsing);
+                    EngineLogCompat.Log("[HTML] Auto-closed <p> (implied end tag)", LogCategory.HtmlParsing);
                 PopUntil("p");
             }
         }
@@ -1999,7 +2065,7 @@ namespace FenBrowser.Core.Parsing
                  if (IsImpliedEndTag(currentTag))
                  {
                     if (DebugConfig.LogHtmlParse)
-                        FenLogger.Log($"[HTML] Implied end tag for <{currentTag}>", LogCategory.HtmlParsing);
+                        EngineLogCompat.Log($"[HTML] Implied end tag for <{currentTag}>", LogCategory.HtmlParsing);
                     SafePopOpenElement();
                  }
                  else
@@ -2037,7 +2103,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Reconstruct active formatting elements per WHATWG §13.2.4.3.
+        /// Reconstruct active formatting elements per WHATWG �13.2.4.3.
         /// Called before inserting character data and certain start tags.
         /// </summary>
         private void ReconstructActiveFormattingElements()
@@ -2081,7 +2147,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Full Adoption Agency Algorithm per WHATWG HTML spec §13.2.6.4.7.
+        /// Full Adoption Agency Algorithm per WHATWG HTML spec �13.2.6.4.7.
         /// Handles misnested formatting tags like &lt;b&gt;&lt;i&gt;&lt;/b&gt;&lt;/i&gt;.
         /// </summary>
         private void RunAdoptionAgencyAlgorithm(string subject)
@@ -2100,7 +2166,7 @@ namespace FenBrowser.Core.Parsing
             // Step 2: Outer loop (max 8 iterations)
             for (int outerLoop = 0; outerLoop < 8; outerLoop++)
             {
-                // Step 3: Find formatting element — last in active formatting with subject tag
+                // Step 3: Find formatting element � last in active formatting with subject tag
                 Element formattingElement = null;
                 int formattingIndex = -1;
                 for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
@@ -2228,7 +2294,7 @@ namespace FenBrowser.Core.Parsing
                     // If node is not in active formatting list, remove from stack and continue
                     if (nodeActiveIndex < 0)
                     {
-                        // Remove from stack — rebuild stack without this node
+                        // Remove from stack � rebuild stack without this node
                         var newStack = new Stack<Element>();
                         foreach (var el in _openElements.Reverse())
                         {
@@ -2353,7 +2419,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Check if an element is "in scope" per WHATWG §13.2.4.2.
+        /// Check if an element is "in scope" per WHATWG �13.2.4.2.
         /// </summary>
         private bool ElementIsInScope(Element target)
         {
@@ -2412,7 +2478,7 @@ namespace FenBrowser.Core.Parsing
         private void PopUntil(string tagName)
         {
             var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
-            // FenLogger.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
+            // EngineLogCompat.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
 
             if (targetFound)
             {
@@ -2562,5 +2628,7 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+
+
 
 

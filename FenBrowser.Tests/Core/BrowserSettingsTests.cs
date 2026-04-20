@@ -75,7 +75,9 @@ namespace FenBrowser.Tests.Core
                 settings.Normalize();
 
                 Assert.True(settings.Logging.EnableLogging);
-                Assert.Equal(Path.Combine(tempDirectory, "logs"), settings.Logging.LogPath);
+                Assert.False(string.IsNullOrWhiteSpace(settings.Logging.LogPath));
+                Assert.DoesNotContain(Path.Combine(AppContext.BaseDirectory, "logs"), settings.Logging.LogPath);
+                Assert.EndsWith("logs", settings.Logging.LogPath);
             }
             finally
             {
@@ -120,6 +122,37 @@ namespace FenBrowser.Tests.Core
             {
                 BrowserSettings.Instance.Theme = previousTheme;
             }
+        }
+
+        [Fact]
+        public void Normalize_FixesInvalidResilienceSettings()
+        {
+            var settings = new BrowserSettings
+            {
+                Resilience = new ResilienceSettings
+                {
+                    MaxHtmlInputChars = 1,
+                    MaxHtmlTokenEmissions = 1,
+                    MaxOpenElementsDepth = 1,
+                    MaxRedirectHops = 0,
+                    MaxTextBodyBytes = 1,
+                    MaxImageBodyBytes = 1,
+                    RequestTimeoutSeconds = 0,
+                    NavigationTimeoutSeconds = 0
+                }
+            };
+
+            settings.Normalize();
+            settings.ValidateOrThrow();
+
+            Assert.True(settings.Resilience.MaxHtmlInputChars >= 16_384);
+            Assert.True(settings.Resilience.MaxHtmlTokenEmissions >= 10_000);
+            Assert.True(settings.Resilience.MaxOpenElementsDepth >= 64);
+            Assert.True(settings.Resilience.MaxRedirectHops >= 1);
+            Assert.True(settings.Resilience.MaxTextBodyBytes >= 64 * 1024);
+            Assert.True(settings.Resilience.MaxImageBodyBytes >= 64 * 1024);
+            Assert.True(settings.Resilience.RequestTimeoutSeconds >= 1);
+            Assert.True(settings.Resilience.NavigationTimeoutSeconds >= 1);
         }
     }
 }

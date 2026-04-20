@@ -2121,3 +2121,105 @@ _End of Volume VI_
   - the host stayed alive for the full observation window with no fatal exception
   - fresh runtime text output now includes the WIMB navigation labels, browser verdict, unique URL block, and settings rows in one settled artifact instead of stalling at the early bootstrap snapshot
   - the only logged runtime errors in this cycle were external WIMB third-party-cookie/CORS probes, not host or layout-engine crashes
+
+## 6.66 Engine Logging Runtime Verification Baseline (2026-04-20)
+
+- Change summary:
+  - New engine logging runtime introduced in Core (`EngineLog*` contracts/runtime/sinks), with legacy-facing facades preserved for current call sites and DevTools subscribers.
+
+- Focused verification performed:
+  - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug -v minimal`: pass.
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug -v minimal`: pass.
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -v minimal`: pass.
+
+- Expected diagnostics behavior after this change:
+  - engine logs continue to surface via `LogManager.LogEntryAdded` for DevTools console consumption.
+  - structured runtime logs are emitted as NDJSON under workspace-root `logs/`.
+
+## 6.67 Engine Logging Runtime Completion Verification (2026-04-20)
+
+- Additional focused verification performed:
+  - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -v minimal`: pass.
+  - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -v minimal`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~P2ClosureContractTests|FullyQualifiedName~JavaScriptRuntimeProfileTests" -v minimal`: pass (`15/15`).
+
+- Added verification coverage:
+  - `FenBrowser.Tests/Core/P2ClosureContractTests.cs`
+    - dedup/rate-limit logging behavior (`EngineLog.WriteOncePerDocument`, `EngineLog.WriteRateLimited`)
+    - failure bundle export contract (`EngineLog.ExportFailureBundle`) with required artifact presence checks.
+
+## 6.68 DevTools Log Domain + Structured Stream Verification (2026-04-20)
+
+- Added verification coverage:
+  - `FenBrowser.Tests/DevTools/LogDomainTests.cs` (new)
+    - validates `Log.enable` and `Log.entryAdded` emission path from `EngineLog` writes.
+  - `FenBrowser.Tests/DevTools/DevToolsServerTests.cs`
+    - reset/reinitialize coverage now includes `InitializeLog()` in the domain lifecycle.
+
+- Focused verification performed:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~LogDomainTests|FullyQualifiedName~DevToolsServerTests|FullyQualifiedName~P2ClosureContractTests" -v minimal`
+  - Result: pass (`18/18`).
+
+- Runtime contract update:
+  - DevTools console no longer depends on direct `LogManager.LogEntryAdded` wiring for browser-internal logs.
+  - Browser-internal logs now flow through protocol `Log.entryAdded`, which preserves structured subsystem/severity/marker/context data.
+
+## 6.69 Host Logging Migration Guard Coverage (2026-04-20)
+
+- `FenBrowser.Tests/Architecture/LoggingMigrationGuardTests.cs` (new)
+  - Added architecture guard asserting migration-scoped runtime projects (`FenBrowser.Host`, `FenBrowser.FenEngine`, `FenBrowser.DevTools`, `FenBrowser.WebDriver`) no longer use direct `FenLogger.*` calls.
+  - Added host bootstrap guard asserting `LogManager.InitializeFromSettings(...)` is removed from host startup/settings refresh paths.
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~LoggingMigrationGuardTests" -v minimal`
+  - Result: pass (`3/3`).
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~LogDomainTests|FullyQualifiedName~DevToolsServerTests" -v minimal`
+  - Result: pass (`3/3`).
+
+## 6.70 Engine Logging Phase-4 Verification Addendum (2026-04-20)
+
+- Added coverage:
+  - `FenBrowser.Tests/DevTools/LogDomainTests.cs`
+    - `Log.enable` runtime filtering by subsystem/tab.
+    - `Log.getCounters` response contract for per-document counter export.
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~LogDomainTests|FullyQualifiedName~P2ClosureContractTests|FullyQualifiedName~LoggingMigrationGuardTests" -v minimal`
+  - Expected result for this tranche: pass with both existing structured-log stream assertions and new filter/counter assertions.
+
+## 6.71 WPT/Test262 Failure-Bundle Automation + Test-Run Preset Wiring (2026-04-20)
+
+- `FenBrowser.WPT/WPTConfig.cs`
+- `FenBrowser.WPT/Program.cs`
+- `FenBrowser.Test262/Test262Config.cs`
+- `FenBrowser.Test262/Program.cs`
+- `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+- `FenBrowser.FenEngine/Testing/Test262Runner.cs`
+  - Added runner-level logging preset wiring (`--log-preset`, default `testrun`) via `EngineLog.ApplyPreset(...)`.
+  - Added bounded per-test failure bundle export on failed runs:
+    - `run_single`
+    - `run_chunk`
+    - `run_category`
+    - WPT `run_pack`
+  - Added controls:
+    - `--no-failure-bundles`
+    - `--max-failure-bundles <N>`
+  - Test runner execution scopes now push structured `testId` + `url` context so emitted logs and exported bundles correlate to exact failing test artifacts.
+- Focused verification:
+  - `dotnet build FenBrowser.WPT/FenBrowser.WPT.csproj -v minimal --no-restore /nodeReuse:false`: pass.
+  - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -v minimal --no-restore /nodeReuse:false`: pass.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WptTestRunnerTests|FullyQualifiedName~Test262RunnerTests" -v minimal /nodeReuse:false`: pass (`24/24`).
+
+## 6.72 Parser/Network Resilience Guard Tests (2026-04-20)
+
+- Added coverage:
+  - `FenBrowser.Tests/Core/Parsing/ParserHardeningGuardTests.cs`
+    - tokenizer input-size limit outcome classification
+    - tokenizer token-emission limit reason-code assertion
+    - tree-builder degraded outcome propagation when tokenizer limits trip
+  - `FenBrowser.Tests/Core/ResourceManagerFetchBytesTests.cs`
+    - detailed text fetch body-size limit classification (`FetchStatus.LimitExceeded`)
+    - redirect-hop ceiling classification (`FetchFailureReasonCode.RedirectLimitExceeded`)
+  - `FenBrowser.Tests/Core/BrowserSettingsTests.cs`
+    - resilience policy normalization/validation guardrails
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ParserHardeningGuardTests|FullyQualifiedName~ResourceManagerFetchBytesTests|FullyQualifiedName~BrowserSettingsTests" -v minimal`
+  - Expected result for this tranche: pass with deterministic reason-code/status assertions for limit-triggered outcomes.

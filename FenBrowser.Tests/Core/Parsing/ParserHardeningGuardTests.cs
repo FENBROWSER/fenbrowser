@@ -21,6 +21,7 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.NotEmpty(tokens);
             Assert.Equal(HtmlTokenType.EndOfFile, tokens[^1].Type);
             Assert.True(tokens.Count <= 65, $"Expected at most 65 tokens (64 + EOF), got {tokens.Count}.");
+            Assert.Equal(HtmlParsingReasonCode.TokenEmissionLimitExceeded, tokenizer.LastReasonCode);
         }
 
         [Fact]
@@ -43,6 +44,36 @@ namespace FenBrowser.Tests.Core.Parsing
 
             int maxDepth = GetMaxDepth(doc.DocumentElement);
             Assert.True(maxDepth <= 64, $"Expected max element depth <= 64 after clamping, got {maxDepth}.");
+        }
+
+        [Fact]
+        public void HtmlTokenizer_StopsWhenInputSizeExceedsLimit()
+        {
+            var tokenizer = new HtmlTokenizer(new string('x', 2048))
+            {
+                MaxInputLengthChars = 1024
+            };
+
+            var tokens = tokenizer.Tokenize().ToList();
+
+            Assert.Single(tokens);
+            Assert.Equal(HtmlTokenType.EndOfFile, tokens[0].Type);
+            Assert.Equal(HtmlParsingReasonCode.InputSizeLimitExceeded, tokenizer.LastReasonCode);
+        }
+
+        [Fact]
+        public void HtmlTreeBuilder_ReportsDegradedOutcome_WhenTokenizerLimitTriggers()
+        {
+            var builder = new HtmlTreeBuilder(new string('z', 2048))
+            {
+                MaxInputLengthChars = 1024
+            };
+
+            var doc = builder.Build();
+
+            Assert.NotNull(doc);
+            Assert.Equal(HtmlParsingOutcomeClass.Degraded, builder.LastParsingOutcome.OutcomeClass);
+            Assert.Equal(HtmlParsingReasonCode.InputSizeLimitExceeded, builder.LastParsingOutcome.ReasonCode);
         }
 
         private static int GetMaxDepth(Element root)

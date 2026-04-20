@@ -16,6 +16,7 @@ namespace FenBrowser.Core.Parsing
         private readonly int _length;
         private int _emittedTokenCount;
         private bool _emissionLimitReached;
+        private bool _inputSizeLimitReached;
         
         // Current state
         private TokenizerState _state = TokenizerState.Data;
@@ -178,6 +179,9 @@ namespace FenBrowser.Core.Parsing
         /// from producing unbounded token streams.
         /// </summary>
         public int MaxTokenEmissions { get; set; } = 2_000_000;
+        public int MaxInputLengthChars { get; set; } = 8_000_000;
+        public HtmlParsingReasonCode LastReasonCode { get; private set; } = HtmlParsingReasonCode.None;
+        public string LastReasonDetail { get; private set; }
 
         public HtmlTokenizer(string input)
         {
@@ -269,6 +273,21 @@ namespace FenBrowser.Core.Parsing
 
         public IEnumerable<HtmlToken> Tokenize()
         {
+            LastReasonCode = HtmlParsingReasonCode.None;
+            LastReasonDetail = null;
+
+            if (!_inputSizeLimitReached &&
+                MaxInputLengthChars > 0 &&
+                _length > MaxInputLengthChars)
+            {
+                _inputSizeLimitReached = true;
+                LastReasonCode = HtmlParsingReasonCode.InputSizeLimitExceeded;
+                LastReasonDetail = $"Tokenizer input length {_length} exceeded configured limit {MaxInputLengthChars}.";
+                EmitError(LastReasonDetail);
+                yield return new EofToken();
+                yield break;
+            }
+
             while (true)
             {
                 var token = NextToken();
@@ -279,7 +298,9 @@ namespace FenBrowser.Core.Parsing
                     _emittedTokenCount >= MaxTokenEmissions)
                 {
                     _emissionLimitReached = true;
-                    EmitError($"Tokenizer emission limit reached ({MaxTokenEmissions}). Aborting stream.");
+                    LastReasonCode = HtmlParsingReasonCode.TokenEmissionLimitExceeded;
+                    LastReasonDetail = $"Tokenizer emission limit reached ({MaxTokenEmissions}). Aborting stream.";
+                    EmitError(LastReasonDetail);
                     yield return new EofToken();
                     break;
                 }
@@ -1812,7 +1833,7 @@ namespace FenBrowser.Core.Parsing
 
         private void EmitError(string message)
         {
-            // FenLogger.Debug($"[HtmlTokenizer] Error: {message}");
+            // EngineLogCompat.Debug($"[HtmlTokenizer] Error: {message}");
         }
 
         private HtmlToken EmitCharacter(char c)

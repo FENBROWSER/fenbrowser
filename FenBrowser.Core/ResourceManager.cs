@@ -24,7 +24,23 @@ namespace FenBrowser.Core
         SslError,
         Timeout,
         NotFound,
+        LimitExceeded,
         UnknownError
+    }
+
+    public enum FetchFailureReasonCode
+    {
+        None,
+        LimitExceeded,
+        RedirectLimitExceeded,
+        Timeout,
+        MalformedInput,
+        TransportFailure,
+        HttpError,
+        CorbBlocked,
+        XFrameBlocked,
+        BodyReadFailed,
+        Unknown
     }
 
     /// <summary>
@@ -69,6 +85,11 @@ namespace FenBrowser.Core
         public bool Redirected;
         public int RedirectCount;
         public IReadOnlyList<string> RedirectChain;
+        public FetchFailureReasonCode FailureReason { get; set; } = FetchFailureReasonCode.None;
+        public string LimitType { get; set; }
+        public long? DurationMs { get; set; }
+        public int? InputSizeBytes { get; set; }
+        public bool IsRetryable { get; set; }
 
         /// <summary>Parsed X-Frame-Options policy from the response headers.</summary>
         public XFrameOptionsPolicy XFrameOptions { get; set; } = XFrameOptionsPolicy.None;
@@ -176,8 +197,8 @@ namespace FenBrowser.Core
                 "none"
             });
 
-            FenLogger.Info($"[PolicyBindings] Runtime-enforced toggles: {enforced}", LogCategory.Network);
-            FenLogger.Warn($"[PolicyBindings] UI toggles pending full runtime wiring: {pending}", LogCategory.Network);
+            EngineLogCompat.Info($"[PolicyBindings] Runtime-enforced toggles: {enforced}", LogCategory.Network);
+            EngineLogCompat.Warn($"[PolicyBindings] UI toggles pending full runtime wiring: {pending}", LogCategory.Network);
         }
 
         public void ClearCache()
@@ -212,6 +233,30 @@ namespace FenBrowser.Core
 
         private static void AddHeaderSafe(HttpRequestMessage req, string name, string value)
         { try { if (!string.IsNullOrWhiteSpace(value)) req.Headers.TryAddWithoutValidation(name, value); } catch { } }
+
+        private static ResilienceSettings GetResilienceSettings()
+        {
+            var resilience = BrowserSettings.Instance?.Resilience;
+            if (resilience == null)
+            {
+                resilience = new ResilienceSettings();
+                resilience.Normalize();
+            }
+
+            return resilience;
+        }
+
+        private static int ResolveTimeoutSeconds(string secFetchDest)
+        {
+            var resilience = GetResilienceSettings();
+            var normalizedDest = (secFetchDest ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedDest == "document" || normalizedDest == "iframe")
+            {
+                return Math.Max(1, resilience.NavigationTimeoutSeconds);
+            }
+
+            return Math.Max(1, resilience.RequestTimeoutSeconds);
+        }
 
         private static string SafePartition(string origin)
         {
@@ -573,7 +618,7 @@ namespace FenBrowser.Core
             BlockedRequestCount++;
             BlockedCountChanged?.Invoke(this, BlockedRequestCount);
             blockReason = corbResult.Reason;
-            FenLogger.Warn(
+            EngineLogCompat.Warn(
                 $"[CORB] Blocked cross-origin {secFetchDest} response '{responseUri}' for origin '{requestOrigin}'. {corbResult.Reason}",
                 LogCategory.Network);
             return true;
@@ -749,7 +794,8 @@ namespace FenBrowser.Core
             {
                 var _startFetch = DateTimeOffset.UtcNow;
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
-                while (hops < 5)
+                var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
+                while (hops < maxRedirectHops)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
@@ -770,16 +816,14 @@ namespace FenBrowser.Core
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
-                        int sec = 8;
-                        var d = (secFetchDest ?? "").ToLowerInvariant();
-                        if (d == "document" || d == "iframe") sec = 12;
+                        int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
                     try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); }
                     catch (Exception sendEx)
                     {
-                        FenLogger.Error($"[Network] Request failed: {current} - {sendEx.Message}", LogCategory.Network);
+                        EngineLogCompat.Error($"[Network] Request failed: {current} - {sendEx.Message}", LogCategory.Network);
                         resp = null;
                     }
                     StoreResponseCookies(resp, refererOriginal ?? current);
@@ -807,7 +851,7 @@ namespace FenBrowser.Core
                 }
                 if (resp == null || !resp.IsSuccessStatusCode)
                 {
-                    FenLogger.Warn($"[Network] Request failed: {url} Status={(resp != null ? (int)resp.StatusCode : 0)} Hops={hops}", LogCategory.Network);
+                    EngineLogCompat.Warn($"[Network] Request failed: {url} Status={(resp != null ? (int)resp.StatusCode : 0)} Hops={hops}", LogCategory.Network);
                     return null;
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
@@ -846,7 +890,7 @@ namespace FenBrowser.Core
                 try { 
                     var _elapsed = DateTimeOffset.UtcNow - _startFetch; 
                     var _msg = $"[Network] GET {url} → {(int)resp.StatusCode} in {(int)_elapsed.TotalMilliseconds}ms"; 
-                    FenLogger.Info(_msg, LogCategory.Network);
+                    EngineLogCompat.Info(_msg, LogCategory.Network);
                     if (LogSink != null) LogSink(_msg); 
                 } catch { }
 
@@ -990,7 +1034,8 @@ namespace FenBrowser.Core
             {
                 var _startFetch = DateTimeOffset.UtcNow;
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
-                while (hops < 5)
+                var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
+                while (hops < maxRedirectHops)
                 {
                     /* [PERF-REMOVED] */
                     req = new HttpRequestMessage(HttpMethod.Get, current);
@@ -1012,9 +1057,7 @@ namespace FenBrowser.Core
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
-                        int sec = 30;
-                        var d = (secFetchDest ?? "").ToLowerInvariant();
-                        if (d == "document" || d == "iframe") sec = 60;
+                        int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
@@ -1033,7 +1076,9 @@ namespace FenBrowser.Core
                             FinalUri = current,
                             Redirected = redirectChain.Count > 1,
                             RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                            FailureReason = FetchFailureReasonCode.Timeout,
+                            IsRetryable = true
                         };
                     }
                     catch (HttpRequestException httpEx)
@@ -1057,7 +1102,9 @@ namespace FenBrowser.Core
                             FinalUri    = current,
                             Redirected  = redirectChain.Count > 1,
                             RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                            FailureReason = FetchFailureReasonCode.TransportFailure,
+                            IsRetryable = !isSsl
                         };
                     }
                     catch (Exception sendEx)
@@ -1069,7 +1116,8 @@ namespace FenBrowser.Core
                              FinalUri = current,
                              Redirected = redirectChain.Count > 1,
                              RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                             RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                             RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                             FailureReason = FetchFailureReasonCode.Unknown
                          };
                     }
                     StoreResponseCookies(resp, refererOriginal ?? current);
@@ -1092,6 +1140,29 @@ namespace FenBrowser.Core
                     break;
                 }
 
+                if (hops >= maxRedirectHops &&
+                    resp != null &&
+                    (int)resp.StatusCode >= 300 &&
+                    (int)resp.StatusCode < 400 &&
+                    resp.Headers.Location != null)
+                {
+                    EngineLogCompat.Warn(
+                        $"[Network.Resilience] Redirect hop limit exceeded ({maxRedirectHops}) for '{url}'.",
+                        LogCategory.Network);
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.LimitExceeded,
+                        ErrorDetail = $"Redirect hop limit exceeded ({maxRedirectHops})",
+                        FinalUri = current,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.RedirectLimitExceeded,
+                        LimitType = "redirect_hops",
+                        IsRetryable = true
+                    };
+                }
+
                 if (resp == null)
                 {
                      return new FetchResult
@@ -1101,7 +1172,9 @@ namespace FenBrowser.Core
                          FinalUri = current,
                          Redirected = redirectChain.Count > 1,
                          RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                         FailureReason = FetchFailureReasonCode.TransportFailure,
+                         IsRetryable = true
                      };
                 }
 
@@ -1130,7 +1203,9 @@ namespace FenBrowser.Core
                         ContentType = ct,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.HttpError,
+                        IsRetryable = (int)resp.StatusCode >= 500
                     };
                 }
 
@@ -1149,7 +1224,32 @@ namespace FenBrowser.Core
                         FinalUri = finalUri,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.BodyReadFailed,
+                        IsRetryable = true
+                    };
+                }
+
+                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
+                if (bodyBytes.Length > maxTextBodyBytes)
+                {
+                    EngineLogCompat.Warn(
+                        $"[Network.Resilience] Text body limit exceeded for '{finalUri}' ({bodyBytes.Length} > {maxTextBodyBytes}).",
+                        LogCategory.Network);
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.LimitExceeded,
+                        ErrorDetail = $"Response body exceeded max text body bytes ({maxTextBodyBytes}).",
+                        FinalUri = finalUri,
+                        StatusCode = (int)resp.StatusCode,
+                        ContentType = ct,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.LimitExceeded,
+                        LimitType = "text_body_bytes",
+                        InputSizeBytes = bodyBytes.Length,
+                        IsRetryable = false
                     };
                 }
 
@@ -1172,7 +1272,9 @@ namespace FenBrowser.Core
                         Headers = resp.Headers,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.CorbBlocked,
+                        IsRetryable = false
                     };
                 }
 
@@ -1219,7 +1321,7 @@ namespace FenBrowser.Core
                 {
                     BlockedRequestCount++;
                     BlockedCountChanged?.Invoke(this, BlockedRequestCount);
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[XFO] Blocked frame embedding for '{finalUri}' due to policy '{xFramePolicy}'" +
                         $"{(string.IsNullOrWhiteSpace(xFrameAllowFrom) ? string.Empty : $" ({xFrameAllowFrom})")}",
                         LogCategory.Network);
@@ -1238,6 +1340,8 @@ namespace FenBrowser.Core
                         XFrameOptions = xFramePolicy,
                         XFrameAllowFromUri = xFrameAllowFrom,
                         ReferrerPolicy = referrerPolicy,
+                        FailureReason = FetchFailureReasonCode.XFrameBlocked,
+                        IsRetryable = false,
                     };
                 }
 
@@ -1254,6 +1358,7 @@ namespace FenBrowser.Core
                     XFrameOptions = xFramePolicy,
                     XFrameAllowFromUri = xFrameAllowFrom,
                     ReferrerPolicy = referrerPolicy,
+                    DurationMs = (long)(DateTimeOffset.UtcNow - _startFetch).TotalMilliseconds
                 };
             }
             catch (Exception ex) {
@@ -1264,7 +1369,9 @@ namespace FenBrowser.Core
                     FinalUri = url,
                     Redirected = redirectChain.Count > 1,
                     RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray()
+                    RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                    FailureReason = FetchFailureReasonCode.Unknown,
+                    IsRetryable = false
                 };
             }
         }
@@ -1320,7 +1427,7 @@ namespace FenBrowser.Core
             {
                 BlockedRequestCount++;
                 BlockedCountChanged?.Invoke(this, BlockedRequestCount);
-                FenLogger.Warn($"[MixedContent] Blocked insecure image '{url}' from secure document '{referer}'", LogCategory.Network);
+                EngineLogCompat.Warn($"[MixedContent] Blocked insecure image '{url}' from secure document '{referer}'", LogCategory.Network);
                 return null;
             }
 
@@ -1411,7 +1518,8 @@ namespace FenBrowser.Core
                 {
                     var _startImg = DateTimeOffset.UtcNow;
                     Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
-                while (hops < 5)
+                var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
+                while (hops < maxRedirectHops)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", "image/apng,image/png,image/jpeg,image/*,*/*;q=0.8");
@@ -1451,6 +1559,14 @@ namespace FenBrowser.Core
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                var maxImageBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
+                if (buf.Length > maxImageBodyBytes)
+                {
+                    EngineLogCompat.Warn(
+                        $"[Network.Resilience] Dropping image '{url}' because body size {buf.Length} exceeded limit {maxImageBodyBytes}.",
+                        LogCategory.Network);
+                    return null;
+                }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
                     "no-cors",
@@ -1495,7 +1611,7 @@ namespace FenBrowser.Core
             {
                 BlockedRequestCount++;
                 BlockedCountChanged?.Invoke(this, BlockedRequestCount);
-                FenLogger.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
+                EngineLogCompat.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
                 return null;
             }
             
@@ -1514,7 +1630,8 @@ namespace FenBrowser.Core
             try
             {
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
-                while (hops < 10)
+                var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
+                while (hops < maxRedirectHops)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "*/*" : accept);
@@ -1525,9 +1642,7 @@ namespace FenBrowser.Core
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
-                        int sec = 30;
-                        var d = (secFetchDest ?? "").ToLowerInvariant();
-                        if (d == "font") sec = 60; // fonts can be larger
+                        int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
                     catch { }
@@ -1558,6 +1673,14 @@ namespace FenBrowser.Core
                 var buf = resp.IsSuccessStatusCode
                     ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
                     : await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                var maxBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
+                if (buf.Length > maxBodyBytes)
+                {
+                    EngineLogCompat.Warn(
+                        $"[Network.Resilience] Dropping binary response '{url}' because body size {buf.Length} exceeded limit {maxBodyBytes}.",
+                        LogCategory.Network);
+                    return null;
+                }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
                     "no-cors",
@@ -1607,7 +1730,7 @@ namespace FenBrowser.Core
                 // Default to connect-src for generic fetch/XHR
                 if (!policy.IsAllowed("connect-src", request.RequestUri, ExtractOrigin(request.Headers.Referrer)))
                 {
-                    FenLogger.Warn($"[CSP] Blocked generic request to {request.RequestUri} (connect-src)", LogCategory.Network);
+                    EngineLogCompat.Warn($"[CSP] Blocked generic request to {request.RequestUri} (connect-src)", LogCategory.Network);
                     throw new Exception($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
                 }
             }
@@ -1637,7 +1760,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[ResourceManager] SendAsync failed: {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Error($"[ResourceManager] SendAsync failed: {ex.Message}", LogCategory.Network);
                 throw;
             }
         }
@@ -1707,7 +1830,7 @@ namespace FenBrowser.Core
                 return;
             }
 
-            FenLogger.Warn($"[CORS] Preflight blocked {request.Method.Method} {request.RequestUri}", LogCategory.Network);
+            EngineLogCompat.Warn($"[CORS] Preflight blocked {request.Method.Method} {request.RequestUri}", LogCategory.Network);
             throw new HttpRequestException($"Blocked by CORS preflight: {request.RequestUri}");
         }
 
@@ -1751,7 +1874,7 @@ namespace FenBrowser.Core
 
             if (result.Status != FetchStatus.Success)
             {
-                FenLogger.Warn($"[CssLoader] CSS Fetch Failed: {url} Status: {result.Status} Detail: {result.ErrorDetail}", LogCategory.Network);
+                EngineLogCompat.Warn($"[CssLoader] CSS Fetch Failed: {url} Status: {result.Status} Detail: {result.ErrorDetail}", LogCategory.Network);
                 return null; 
             }
 
@@ -1769,7 +1892,7 @@ namespace FenBrowser.Core
                 if (ct.Contains("javascript") || ct.Contains("ecmascript"))
                 {
                     System.Diagnostics.Debug.WriteLine($"[CssLoader] BLOCKED JS masquerading as CSS: {url} ({ct})");
-                    FenLogger.Warn($"[CssLoader] Blocked non-CSS resource: {url} Content-Type: {ct}", LogCategory.Network);
+                    EngineLogCompat.Warn($"[CssLoader] Blocked non-CSS resource: {url} Content-Type: {ct}", LogCategory.Network);
                     return null;
                 }
 
@@ -1784,7 +1907,7 @@ namespace FenBrowser.Core
 
                 if (isDocumentMime && !isCssMime)
                 {
-                    FenLogger.Warn($"[CssLoader] Blocked document resource masquerading as CSS: {url} Content-Type: {ct}", LogCategory.Network);
+                    EngineLogCompat.Warn($"[CssLoader] Blocked document resource masquerading as CSS: {url} Content-Type: {ct}", LogCategory.Network);
                     return null;
                 }
             }
@@ -1798,13 +1921,13 @@ namespace FenBrowser.Core
                     var ctCheck = result.ContentType?.ToLowerInvariant() ?? "";
                     if (!ctCheck.Contains("text/css"))
                     {
-                        FenLogger.Warn($"[nosniff] Blocked stylesheet — Content-Type '{result.ContentType}' not text/css: {url}", LogCategory.Network);
+                        EngineLogCompat.Warn($"[nosniff] Blocked stylesheet — Content-Type '{result.ContentType}' not text/css: {url}", LogCategory.Network);
                         return null;
                     }
                 }
             }
 
-            FenLogger.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
+            EngineLogCompat.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
         }
     }

@@ -1097,3 +1097,76 @@ _End of Volume II_
   - Module log appends and dump artifact writes now use resilient write paths.
 - Rationale:
   - Long-lived page runs generate high-frequency diagnostics; resilient sink behavior prevents transient file-sharing errors from cascading into exception storms or noisy debugger interruptions.
+
+### 1.53 Engine Logging Runtime Cutover (2026-04-20)
+- `FenBrowser.Core/Logging/EngineLogContracts.cs` (new)
+- `FenBrowser.Core/Logging/EngineLogDispatcher.cs` (new)
+- `FenBrowser.Core/Logging/EngineLogSinks.cs` (new)
+- `FenBrowser.Core/Logging/EngineLogger.cs` (new)
+- `FenBrowser.Core/Logging/EngineLog.cs` (new)
+- `FenBrowser.Core/Logging/LogManager.cs`
+- `FenBrowser.Core/FenLogger.cs`
+- `FenBrowser.Core/Logging/EngineCapabilities.cs`
+  - Added the new structured engine logging runtime with explicit `LogSubsystem`, `LogSeverity`, and `LogMarker` contracts.
+  - Added non-blocking dispatch, console + NDJSON sinks, and in-memory ring retention under workspace-root `logs`.
+  - `LogManager` and `FenLogger` now route through `EngineLog` as compatibility facades so existing call sites stay operational while using the new runtime.
+  - Feature-gap reporting now maps to marker semantics (`Unimplemented`, `Partial`) instead of free-form-only warning strings.
+- Verification:
+  - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Debug -v minimal`: pass on `2026-04-20`.
+
+### 1.54 Engine Logging Runtime Completion Surfaces (2026-04-20)
+- `FenBrowser.Core/Logging/EngineLogContracts.cs`
+- `FenBrowser.Core/Logging/EngineLogSinks.cs`
+- `FenBrowser.Core/Logging/EngineLog.cs`
+- `FenBrowser.Core/Logging/EngineFailureBundleExporter.cs` (new)
+- `FenBrowser.Core/FenLogger.cs`
+- `FenBrowser.Core/Logging/LogManager.cs`
+  - Added runtime deduplication primitives (`once per document`, `once per session`, `rate-limited`) with suppression summaries emitted through `EngineLog`.
+  - Added trace-event sink output (`fenbrowser_trace_*.jsonl`) alongside existing NDJSON logs for timeline-style diagnostics.
+  - Added failure-bundle export surface writing under workspace-root `Results/<timestamp>/` with `summary.json` + `logs.ndjson` (+ best-effort screenshot/trace copy).
+  - Runtime initialization now enables trace sink by default for `FenLogger`/`LogManager` compatibility bootstraps.
+
+### 1.55 EngineLog External Event Publishing (2026-04-20)
+- `FenBrowser.Core/Logging/EngineLogger.cs`
+- `FenBrowser.Core/Logging/EngineLog.cs`
+  - Added raw structured-event dispatch path (`WriteRaw(...)`) for pre-serialized events.
+  - Added `EngineLog.EngineEventWritten` and `EngineLog.PublishExternalEvent(...)` for cross-process log aggregation and live DevTools streaming.
+  - External events now share the same sink + compatibility-buffer pipeline as in-process events.
+
+### 1.56 EngineLog Per-Document Counters (2026-04-20)
+- `FenBrowser.Core/Logging/EngineLogContracts.cs`
+- `FenBrowser.Core/Logging/EngineLog.cs`
+  - Added per-document log counters keyed by `documentId`/`navigationId`/`url` with severity buckets and last-seen context metadata (`tabId`, `frameId`, `url`, sequence, timestamp).
+  - Added `EngineLog.GetPerDocumentCounters(...)` for runtime and DevTools diagnostics queries.
+  - `EngineLog.ClearCompatibilityBuffer()` now also clears per-document counters to preserve deterministic test/reset semantics.
+
+### 1.57 Engine Logging Preset Profiles (2026-04-20)
+- `FenBrowser.Core/Logging/EngineLoggingPresets.cs` (new)
+- `FenBrowser.Core/Logging/EngineLog.cs`
+- `FenBrowser.Core/EngineLogCompat.cs`
+- `FenBrowser.Core/BrowserSettings.cs`
+  - Added named logging presets:
+    - `developer`
+    - `testrun`
+    - `perf`
+    - `ci`
+  - Presets now configure severity floors, subsystem overrides, and sink defaults in a consistent profile surface.
+  - Preset source order:
+    - `FEN_LOG_PRESET` environment override
+    - persisted `BrowserSettings.Logging.LoggingPreset`
+  - Added runtime `EngineLog.ApplyPreset(...)` for CLI/runner-level profile selection.
+
+### 1.58 Parser + Network Resilience Policy Surface (2026-04-20)
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/Parsing/HtmlResilienceContracts.cs` (new)
+- `FenBrowser.Core/Parsing/HtmlTokenizer.cs`
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
+- `FenBrowser.Core/ResourceManager.cs`
+  - Added `BrowserSettings.Resilience` as the canonical limit/timing policy for parser and network safeguards.
+  - Added parser outcome contracts (`HtmlParsingOutcomeClass`, `HtmlParsingReasonCode`, `HtmlParsingOutcome`) and wired tokenizer/tree-builder outcome reporting (`InputSizeLimitExceeded`, `TokenEmissionLimitExceeded`, depth-limit degradation, exception failure).
+  - Resource fetch detailed results now include structured failure metadata (`FailureReason`, `LimitType`, `InputSizeBytes`, `IsRetryable`, `DurationMs`) and explicit limit statuses (`FetchStatus.LimitExceeded`).
+  - Added deterministic network guardrails:
+    - redirect-hop ceiling from policy
+    - request/navigation timeout from policy
+    - text-body and binary/image body-size ceilings with explicit fail-closed outcomes/logging
+  - This keeps malformed or high-cost payloads bounded while preserving deterministic failure classification for runtime diagnostics.

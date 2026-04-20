@@ -47,6 +47,7 @@ namespace FenBrowser.Core
         public int MaxArchivedFiles { get; set; } = 10;
         public int MemoryBufferSize { get; set; } = 1000;
         public bool MirrorStructuredLogs { get; set; } = true;
+        public string LoggingPreset { get; set; } = "developer";
 
         /// <summary>
         /// Path for log files. Defaults to "logs" folder in the current execution directory.
@@ -63,6 +64,9 @@ namespace FenBrowser.Core
 
             if (MemoryBufferSize < 1)
                 MemoryBufferSize = 1000;
+
+            if (string.IsNullOrWhiteSpace(LoggingPreset))
+                LoggingPreset = "developer";
 
             var legacyBaseDirectoryPath = Path.Combine(AppContext.BaseDirectory, "logs");
             if (string.IsNullOrWhiteSpace(LogPath) ||
@@ -144,6 +148,45 @@ namespace FenBrowser.Core
         }
     }
 
+    public class ResilienceSettings
+    {
+        public int MaxHtmlInputChars { get; set; } = 8_000_000;
+        public int MaxHtmlTokenEmissions { get; set; } = 2_000_000;
+        public int MaxOpenElementsDepth { get; set; } = 4096;
+        public int MaxRedirectHops { get; set; } = 5;
+        public int MaxTextBodyBytes { get; set; } = 8 * 1024 * 1024;
+        public int MaxImageBodyBytes { get; set; } = 16 * 1024 * 1024;
+        public int RequestTimeoutSeconds { get; set; } = 30;
+        public int NavigationTimeoutSeconds { get; set; } = 60;
+
+        internal void Normalize()
+        {
+            if (MaxHtmlInputChars < 16_384)
+                MaxHtmlInputChars = 8_000_000;
+
+            if (MaxHtmlTokenEmissions < 10_000)
+                MaxHtmlTokenEmissions = 2_000_000;
+
+            if (MaxOpenElementsDepth < 64)
+                MaxOpenElementsDepth = 4096;
+
+            if (MaxRedirectHops < 1)
+                MaxRedirectHops = 5;
+
+            if (MaxTextBodyBytes < 64 * 1024)
+                MaxTextBodyBytes = 8 * 1024 * 1024;
+
+            if (MaxImageBodyBytes < 64 * 1024)
+                MaxImageBodyBytes = 16 * 1024 * 1024;
+
+            if (RequestTimeoutSeconds < 1)
+                RequestTimeoutSeconds = 30;
+
+            if (NavigationTimeoutSeconds < 1)
+                NavigationTimeoutSeconds = 60;
+        }
+    }
+
     public class BrowserSettings
     {
         private static BrowserSettings _instance;
@@ -192,6 +235,7 @@ namespace FenBrowser.Core
         public List<Bookmark> Bookmarks { get; set; } = new();
 
         public LogSettings Logging { get; set; } = new();
+        public ResilienceSettings Resilience { get; set; } = new();
         public bool EnableJavaScript { get; set; } = true;
         public bool EnableTrackingPrevention { get; set; } = true;
 
@@ -411,6 +455,8 @@ namespace FenBrowser.Core
         {
             Logging ??= new LogSettings();
             Logging.Normalize();
+            Resilience ??= new ResilienceSettings();
+            Resilience.Normalize();
 
             if (!Enum.IsDefined(typeof(UserAgentType), SelectedUserAgent))
                 SelectedUserAgent = UserAgentType.Edge;
@@ -458,6 +504,33 @@ namespace FenBrowser.Core
             if (Logging == null)
                 throw new InvalidOperationException("Logging settings must be configured.");
 
+            if (Resilience == null)
+                throw new InvalidOperationException("Resilience settings must be configured.");
+
+            if (Resilience.MaxHtmlInputChars < 16_384)
+                throw new InvalidOperationException($"MaxHtmlInputChars must be >= 16384. Actual: {Resilience.MaxHtmlInputChars}");
+
+            if (Resilience.MaxHtmlTokenEmissions < 10_000)
+                throw new InvalidOperationException($"MaxHtmlTokenEmissions must be >= 10000. Actual: {Resilience.MaxHtmlTokenEmissions}");
+
+            if (Resilience.MaxOpenElementsDepth < 64)
+                throw new InvalidOperationException($"MaxOpenElementsDepth must be >= 64. Actual: {Resilience.MaxOpenElementsDepth}");
+
+            if (Resilience.MaxRedirectHops < 1)
+                throw new InvalidOperationException($"MaxRedirectHops must be >= 1. Actual: {Resilience.MaxRedirectHops}");
+
+            if (Resilience.MaxTextBodyBytes < 64 * 1024)
+                throw new InvalidOperationException($"MaxTextBodyBytes must be >= 65536. Actual: {Resilience.MaxTextBodyBytes}");
+
+            if (Resilience.MaxImageBodyBytes < 64 * 1024)
+                throw new InvalidOperationException($"MaxImageBodyBytes must be >= 65536. Actual: {Resilience.MaxImageBodyBytes}");
+
+            if (Resilience.RequestTimeoutSeconds < 1)
+                throw new InvalidOperationException($"RequestTimeoutSeconds must be >= 1. Actual: {Resilience.RequestTimeoutSeconds}");
+
+            if (Resilience.NavigationTimeoutSeconds < 1)
+                throw new InvalidOperationException($"NavigationTimeoutSeconds must be >= 1. Actual: {Resilience.NavigationTimeoutSeconds}");
+
             if (!TryNormalizeAbsoluteUrl(HomePage, out _, allowBlank: false))
                 throw new InvalidOperationException($"HomePage must be an absolute http/https URL. Actual: {HomePage}");
 
@@ -482,7 +555,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[Settings] Failed to save: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+                EngineLogCompat.Error($"[Settings] Failed to save: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
         }
 
@@ -501,7 +574,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[Settings] Failed to load: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+                EngineLogCompat.Error($"[Settings] Failed to load: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
 
             var fallback = new BrowserSettings();
