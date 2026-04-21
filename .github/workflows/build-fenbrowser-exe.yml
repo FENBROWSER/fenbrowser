@@ -28,6 +28,10 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/verify-verification-guards.ps1
 
+      - name: Spec Governance Validation
+        shell: pwsh
+        run: ./scripts/validate_spec_headers.ps1
+
       - name: Build WebIdlGen prerequisite
         run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
 
@@ -68,6 +72,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Spec Governance Validation
+        shell: pwsh
+        run: ./scripts/validate_spec_headers.ps1
+
       - name: Build WebIdlGen prerequisite
         run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
 
@@ -99,6 +107,10 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+
+      - name: Spec Governance Validation
+        shell: pwsh
+        run: ./scripts/validate_spec_headers.ps1
 
       - name: Build WebIdlGen prerequisite
         run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release
