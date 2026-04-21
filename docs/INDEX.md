@@ -88,6 +88,10 @@ Capability-level compliance ledger with status, severity, owners, and verificati
 
 Process-boundary ownership map and required fail-closed startup and message envelope rules.
 
+### [Appendix O: Spec Governance Map](spec_governance_map.json)
+
+Machine-readable mapping of governed source files and required capability IDs used by tests and CI validation.
+
 ---
 
 _State as of 2026-04-21_

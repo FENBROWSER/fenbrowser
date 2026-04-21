@@ -46,6 +46,9 @@ Standard xUnit tests covering internal components:
   - Added companion CLI validator:
     - `scripts/validate_spec_headers.ps1`
     - use in local verification/CI for fast pre-test guardrails.
+  - Governance source-of-truth:
+    - `docs/spec_governance_map.json` defines governed file list + required capability IDs.
+    - both test guard (`SpecGovernanceTests`) and CLI validator consume this map to avoid dual-list drift.
   - CI wiring:
     - `.github/workflows/build-fenbrowser-exe.yml` now runs `scripts/validate_spec_headers.ps1` in all active jobs (`build-windows`, `unit-tests`, `test262-regression`) before build/test execution.
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
