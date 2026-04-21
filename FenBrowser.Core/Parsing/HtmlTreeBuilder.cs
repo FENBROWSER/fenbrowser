@@ -1920,43 +1920,124 @@ namespace FenBrowser.Core.Parsing
         
         private Element CreateElement(StartTagToken token)
         {
-            var el = new Element(token.TagName);
-            
-            // Foreign Content Adjustments
-            // Apply if:
-            // 1. We are creating an svg or math element itself, OR
-            // 2. We are already inside an svg or math element
-            bool isForeignContent = token.TagName == "svg" || token.TagName == "math" ||
-                                    (CurrentNode as Element)?.TagName == "svg" || (CurrentNode as Element)?.TagName == "math" || 
-                                    IsSvgOrMathDescendant(CurrentNode);
+            var namespaceUri = DetermineElementNamespace(token);
+            var el = new Element(token.TagName, _document, namespaceUri);
+
+            bool isForeignContent = !string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal);
             if (isForeignContent)
             {
                  AdjustForeignAttributes(token);
-                 // We don't change tag name for now as Skia backend might expect lowercase or handle it.
-                 // But attributes like viewBox are case sensitive in Svg.Skia.
             }
 
             foreach (var attr in token.Attributes)
             {
                 el.SetAttributeUnsafe(attr.Name, attr.Value);
-                if (token.TagName.Equals("svg", StringComparison.OrdinalIgnoreCase))
-                {
-                    /* [PERF-REMOVED] */
-                }
             }
             return el;
         }
-        
+
+        private string DetermineElementNamespace(StartTagToken token)
+        {
+            var tagName = token.TagName;
+            if (string.Equals(tagName, "svg", StringComparison.OrdinalIgnoreCase))
+            {
+                return Namespaces.Svg;
+            }
+
+            if (string.Equals(tagName, "math", StringComparison.OrdinalIgnoreCase))
+            {
+                return Namespaces.MathML;
+            }
+
+            var currentElement = CurrentNode as Element;
+            if (currentElement == null)
+            {
+                return Namespaces.Html;
+            }
+
+            var currentNamespace = currentElement.NamespaceUri ?? Namespaces.Html;
+            if (string.Equals(currentNamespace, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return Namespaces.Html;
+            }
+
+            if (IsForeignContentBreakoutTag(tagName))
+            {
+                return Namespaces.Html;
+            }
+            if (IsHtmlIntegrationPoint(currentElement))
+            {
+                return Namespaces.Html;
+            }
+
+            if (IsMathMlTextIntegrationPoint(currentElement) &&
+                !string.Equals(tagName, "mglyph", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(tagName, "malignmark", StringComparison.OrdinalIgnoreCase))
+            {
+                return Namespaces.Html;
+            }
+
+            return currentNamespace;
+        }
+
+        private static bool IsForeignContentBreakoutTag(string tagName)
+        {
+            switch (tagName)
+            {
+                case "b": case "big": case "blockquote": case "body": case "br":
+                case "center": case "code": case "dd": case "div": case "dl":
+                case "dt": case "em": case "embed": case "h1": case "h2":
+                case "h3": case "h4": case "h5": case "h6": case "head":
+                case "hr": case "i": case "img": case "li": case "listing":
+                case "menu": case "meta": case "nobr": case "ol": case "p":
+                case "pre": case "ruby": case "s": case "small": case "span":
+                case "strong": case "strike": case "sub": case "sup": case "table":
+                case "tt": case "u": case "ul": case "var":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        private static bool IsMathMlTextIntegrationPoint(Element element)
+        {
+            if (!string.Equals(element.NamespaceUri, Namespaces.MathML, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var tag = element.LocalName;
+            return tag == "mi" || tag == "mo" || tag == "mn" || tag == "ms" || tag == "mtext";
+        }
+
+        private static bool IsHtmlIntegrationPoint(Element element)
+        {
+            if (string.Equals(element.NamespaceUri, Namespaces.MathML, StringComparison.Ordinal) &&
+                element.LocalName == "annotation-xml")
+            {
+                var encoding = element.GetAttribute("encoding");
+                if (string.Equals(encoding, "text/html", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(encoding, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            if (string.Equals(element.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
+            {
+                var tag = element.LocalName;
+                return tag == "foreignobject" || tag == "desc" || tag == "title";
+            }
+
+            return false;
+        }
         private bool IsSvgOrMathDescendant(Node node)
         {
-             // Simplified check up the stack
              foreach (var el in _openElements)
              {
-                 if (el.TagName == "svg" || el.TagName == "math") return true;
+                 if (string.Equals(el.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal) || string.Equals(el.NamespaceUri, Namespaces.MathML, StringComparison.Ordinal)) return true;
              }
              return false;
         }
-
         private void AdjustForeignAttributes(StartTagToken token)
         {
              for (int i = 0; i < token.Attributes.Count; i++)
