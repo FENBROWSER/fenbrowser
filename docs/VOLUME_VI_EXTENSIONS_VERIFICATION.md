@@ -628,6 +628,18 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - centralized parser limits are applied at canonical parser entrypoints,
   - limit breaches surface explicit `HtmlParsingOutcome` reason codes.
 
+### 4.15.3 Conformance CLI Bootstrap + Differential + Fuzz Wiring (2026-04-21)
+
+- `FenBrowser.Conformance/Program.cs`
+  - `run html5lib` now supports:
+    - `--bootstrap-html5lib` (auto-clone `html5lib-tests` when absent)
+    - `--differential` + `--oracle-python <exe>` (optional oracle comparison mode)
+  - Added first-class `parser-fuzz` command to invoke the parser hostile-corpus gate script from the Conformance CLI.
+- `FenBrowser.Conformance/PythonHtml5LibOracle.cs`
+  - Added optional external oracle adapter backed by Python `html5lib` for differential validation output (verification-only dependency path).
+- `FenBrowser.Conformance/Html5LibTestRunner.cs`
+  - Differential result accounting now reports compared/matched/mismatched/error totals alongside pass/fail clustering.
+
 ### 4.16 WPT Harness Execution Reliability (2026-02-27)
 
 - `FenBrowser.WPT/HeadlessNavigator.cs`

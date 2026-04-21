@@ -63,6 +63,7 @@ public static class Program
                 "matrix" => BuildSpecMatrix(args.Skip(1).ToArray()),
                 "fullsweep-inventory" => BuildFullSweepInventory(args.Skip(1).ToArray()),
                 "ipc-fuzz" => RunIpcFuzz(args.Skip(1).ToArray()),
+                "parser-fuzz" => RunParserFuzz(args.Skip(1).ToArray()),
                 "a11y-validate" => RunAccessibilityValidation(),
                 "corb-validate" => RunCorbValidation(),
                 "report" => GenerateReport(),
@@ -205,6 +206,10 @@ public static class Program
 
     private static async Task RunHtml5LibAsync(ConformanceReport report, string[] args)
     {
+        var bootstrap = HasFlag(args, "--bootstrap-html5lib");
+        var differential = HasFlag(args, "--differential");
+        var oraclePython = ResolveOption(args, "--oracle-python") ?? "python";
+
         // Look for html5lib-tests in common locations
         string? html5LibRoot = null;
         var candidates = new[]
@@ -223,6 +228,25 @@ public static class Program
             }
         }
 
+        if (html5LibRoot == null && bootstrap)
+        {
+            html5LibRoot = Path.Combine(_repoRoot, "html5lib-tests");
+            Console.WriteLine("[html5lib] Bootstrapping html5lib-tests...");
+            var cloneExit = RunProcess(
+                "git",
+                $"clone --depth 1 https://github.com/html5lib/html5lib-tests \"{html5LibRoot}\"",
+                _repoRoot,
+                out var cloneStdOut,
+                out var cloneStdErr);
+            if (cloneExit != 0)
+            {
+                Console.WriteLine("[html5lib] bootstrap failed.");
+                if (!string.IsNullOrWhiteSpace(cloneStdOut)) Console.WriteLine(cloneStdOut.Trim());
+                if (!string.IsNullOrWhiteSpace(cloneStdErr)) Console.WriteLine(cloneStdErr.Trim());
+                html5LibRoot = null;
+            }
+        }
+
         if (html5LibRoot == null)
         {
             Console.WriteLine("[html5lib] html5lib-tests directory not found. Skipping.");
@@ -233,8 +257,18 @@ public static class Program
         }
 
         int maxTests = GetMaxTests(args, 500);
-        Console.WriteLine($"[html5lib] Running tree construction tests (max: {maxTests})...");
-        var runner = new Html5LibTestRunner(html5LibRoot);
+        IHtmlTreeOracle? oracle = null;
+        if (differential)
+        {
+            oracle = new PythonHtml5LibOracle(oraclePython);
+            if (!oracle.IsAvailable)
+            {
+                Console.WriteLine($"[html5lib] Differential oracle unavailable: {oracle.AvailabilityError}");
+            }
+        }
+
+        Console.WriteLine($"[html5lib] Running tree construction tests (max: {maxTests}){(differential ? " with differential mode" : "")}...");
+        var runner = new Html5LibTestRunner(html5LibRoot, differentialMode: differential, oracle: oracle);
         var sw = Stopwatch.StartNew();
 
         var results = await runner.RunAllAsync(ProgressCallback, maxTests);
@@ -387,6 +421,27 @@ public static class Program
         }
 
         return passed ? 0 : 2;
+    }
+
+    private static int RunParserFuzz(string[] args)
+    {
+        var scriptPath = Path.Combine(_repoRoot, "scripts", "ci", "run-parser-fuzz-regressions.ps1");
+        if (!File.Exists(scriptPath))
+        {
+            Console.Error.WriteLine($"[parser-fuzz] Script not found: {scriptPath}");
+            return 1;
+        }
+
+        var exitCode = RunProcess(
+            "powershell",
+            $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            _repoRoot,
+            out var stdOut,
+            out var stdErr);
+
+        if (!string.IsNullOrWhiteSpace(stdOut)) Console.WriteLine(stdOut.Trim());
+        if (!string.IsNullOrWhiteSpace(stdErr)) Console.WriteLine(stdErr.Trim());
+        return exitCode;
     }
 
     private static int RunAccessibilityValidation()
@@ -636,6 +691,50 @@ public static class Program
         return null;
     }
 
+    private static bool HasFlag(string[] args, string flag)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], flag, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int RunProcess(
+        string fileName,
+        string arguments,
+        string workingDirectory,
+        out string stdOut,
+        out string stdErr)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(psi);
+        if (process == null)
+        {
+            stdOut = string.Empty;
+            stdErr = $"Failed to start process: {fileName}";
+            return 1;
+        }
+
+        stdOut = process.StandardOutput.ReadToEnd();
+        stdErr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return process.ExitCode;
+    }
+
     private static void ProgressCallback(string name, int count)
     {
         if (_verbose || count % 50 == 0)
@@ -659,6 +758,7 @@ COMMANDS:
   run html5lib                   Run html5lib parser tests
   gate <policy>|default <name>   Evaluate WPT/Test262 milestone gate policies
   ipc-fuzz                       Run IPC fuzz-baseline suite for renderer/network/target channels
+  parser-fuzz                    Run parser/renderer hostile corpus fuzz regression script
   a11y-validate                  Export platform accessibility mapping snapshot artifact
   corb-validate                  Run bounded CORB validation cases and write artifact
   matrix                         Build HTML/CSS spec compliance matrix from WPT results
@@ -669,6 +769,9 @@ COMMANDS:
 OPTIONS:
   --output|-o <path>             Write report to file
   --max <N>                      Max tests per suite
+  --bootstrap-html5lib           Auto-clone html5lib-tests when missing (run html5lib)
+  --differential                 Compare html5lib run with external oracle (python html5lib)
+  --oracle-python <exe>          Python executable for differential oracle (default: python)
   --wpt <path>                   WPT result JSON path for matrix command
   --test262 <path>               Test262 result JSON path for fullsweep-inventory
   --scope <name>                 Scope label for matrix command (default: html-css-core)

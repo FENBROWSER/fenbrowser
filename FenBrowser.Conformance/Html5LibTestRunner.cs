@@ -15,6 +15,12 @@ public sealed class Html5LibTestRunner
 {
     private readonly string _testDataPath;
     private readonly List<TestResult> _results = new();
+    private readonly IHtmlTreeOracle? _oracle;
+    private readonly bool _differentialMode;
+
+    public bool DifferentialModeEnabled => _differentialMode;
+    public bool OracleAvailable => _oracle?.IsAvailable == true;
+    public string OracleAvailabilityError => _oracle?.AvailabilityError ?? string.Empty;
 
     public sealed class TestResult
     {
@@ -28,11 +34,16 @@ public sealed class Html5LibTestRunner
         public string FailureCategory { get; set; } = "";
         public string? FragmentContext { get; set; }
         public bool ScriptingEnabled { get; set; }
+        public bool OracleCompared { get; set; }
+        public bool OracleMatched { get; set; }
+        public string? OracleError { get; set; }
     }
 
-    public Html5LibTestRunner(string testDataPath)
+    public Html5LibTestRunner(string testDataPath, bool differentialMode = false, IHtmlTreeOracle? oracle = null)
     {
         _testDataPath = testDataPath;
+        _differentialMode = differentialMode;
+        _oracle = oracle;
     }
 
     public List<string> DiscoverTests()
@@ -132,6 +143,20 @@ public sealed class Html5LibTestRunner
             if (!result.Passed)
             {
                 result.FailureCategory = ClassifyFailureCategory(outcome, fragmentContext);
+            }
+
+            if (_differentialMode && _oracle != null && _oracle.IsAvailable)
+            {
+                result.OracleCompared = true;
+                var oracle = _oracle.Parse(input, fragmentContext);
+                if (oracle.Success)
+                {
+                    result.OracleMatched = NormalizeTree(result.ActualTree) == NormalizeTree(oracle.Tree);
+                }
+                else
+                {
+                    result.OracleError = oracle.Error;
+                }
             }
         }
         catch (Exception ex)
@@ -378,6 +403,26 @@ public sealed class Html5LibTestRunner
             foreach (var group in byCategory)
             {
                 sb.AppendLine($"  - {group.Key}: {group.Count()}");
+            }
+        }
+
+        if (_differentialMode)
+        {
+            if (_oracle == null)
+            {
+                sb.AppendLine("[html5lib] Differential: disabled (no oracle configured)");
+            }
+            else if (!_oracle.IsAvailable)
+            {
+                sb.AppendLine($"[html5lib] Differential: unavailable ({_oracle.AvailabilityError})");
+            }
+            else
+            {
+                var compared = _results.Count(r => r.OracleCompared);
+                var matched = _results.Count(r => r.OracleCompared && r.OracleMatched);
+                var mismatched = _results.Count(r => r.OracleCompared && !r.OracleMatched);
+                var errored = _results.Count(r => r.OracleCompared && !string.IsNullOrWhiteSpace(r.OracleError));
+                sb.AppendLine($"[html5lib] Differential: compared={compared} matched={matched} mismatched={mismatched} oracle-errors={errored}");
             }
         }
 
