@@ -73,6 +73,13 @@ public class IpcEnvelopeValidationTests
     }
 
     [Fact]
+    public void RendererIpc_BrokerAllowlist_RejectsHello()
+    {
+        var allowed = RendererIpc.IsAllowedBrokerInboundMessageType(RendererIpcMessageType.Hello);
+        Assert.False(allowed);
+    }
+
+    [Fact]
     public void NetworkIpc_InvalidRequestId_IsRejected()
     {
         var envelope = new NetworkIpcEnvelope
@@ -107,6 +114,13 @@ public class IpcEnvelopeValidationTests
     }
 
     [Fact]
+    public void NetworkIpc_BrokerAllowlist_RejectsFetchRequest()
+    {
+        var allowed = NetworkIpc.IsAllowedBrokerInboundMessageType(NetworkIpcMessageType.FetchRequest);
+        Assert.False(allowed);
+    }
+
+    [Fact]
     public void TargetIpc_TooLargePayload_IsRejected()
     {
         var envelope = new TargetIpcEnvelope
@@ -121,5 +135,12 @@ public class IpcEnvelopeValidationTests
 
         Assert.False(ok);
         Assert.Equal("payload-too-large", rejectionReason);
+    }
+
+    [Fact]
+    public void TargetIpc_BrokerAllowlist_RejectsHello()
+    {
+        var allowed = TargetIpc.IsAllowedBrokerInboundMessageType(TargetIpcMessageType.Hello);
+        Assert.False(allowed);
     }
 }

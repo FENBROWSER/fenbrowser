@@ -1020,3 +1020,4 @@ _End of Volume IV_
   - Invalid envelopes are rejected with explicit reason logging and do not enter command dispatch.
 - Runtime effect:
   - IPC channels now fail closed at envelope boundary and preserve deterministic startup/runtime behavior when malformed input is received.
+  - Broker-side renderer/network/target sessions now also enforce per-channel inbound message allowlists, rejecting structurally valid but role-invalid message types.

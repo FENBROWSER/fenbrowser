@@ -2245,6 +2245,7 @@ _End of Volume VI_
     - renderer envelope acceptance/rejection for tab binding and correlation-id shape
     - network envelope request-id validation
     - target envelope payload-size rejection
+    - broker-side inbound message-type allowlist checks for renderer/network/target channels
 - Focused verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~IpcEnvelopeValidationTests" -v minimal`
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -v minimal --no-restore`

@@ -198,6 +198,15 @@ namespace FenBrowser.Host.ProcessIsolation
             return true;
         }
 
+        public static bool IsAllowedBrokerInboundMessageType(RendererIpcMessageType messageType)
+        {
+            return messageType == RendererIpcMessageType.Ready ||
+                   messageType == RendererIpcMessageType.FrameReady ||
+                   messageType == RendererIpcMessageType.Error ||
+                   messageType == RendererIpcMessageType.LogBatch ||
+                   messageType == RendererIpcMessageType.Pong;
+        }
+
         public static string SerializePayload<T>(T payload)
         {
             return payload == null ? string.Empty : JsonSerializer.Serialize(payload, JsonOptions);
@@ -429,9 +438,9 @@ namespace FenBrowser.Host.ProcessIsolation
                         continue;
                     }
 
-                    if (messageType == RendererIpcMessageType.Hello)
+                    if (!RendererIpc.IsAllowedBrokerInboundMessageType(messageType))
                     {
-                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Rejected unexpected renderer Hello envelope for tab {TabId}.");
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Rejected unexpected renderer message type for tab {TabId}: {messageType}.");
                         continue;
                     }
 

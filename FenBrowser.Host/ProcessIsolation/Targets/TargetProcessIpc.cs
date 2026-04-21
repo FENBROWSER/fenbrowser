@@ -167,6 +167,14 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
             return true;
         }
+
+        public static bool IsAllowedBrokerInboundMessageType(TargetIpcMessageType messageType)
+        {
+            return messageType == TargetIpcMessageType.Ready ||
+                   messageType == TargetIpcMessageType.LogBatch ||
+                   messageType == TargetIpcMessageType.Pong ||
+                   messageType == TargetIpcMessageType.Error;
+        }
     }
 
     public sealed class TargetProcessSession : IDisposable
@@ -309,9 +317,14 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                         continue;
                     }
 
-                    if (!TargetIpc.TryValidateInboundEnvelope(envelope, out _, out var rejectionReason))
+                    if (!TargetIpc.TryValidateInboundEnvelope(envelope, out var messageType, out var rejectionReason))
                     {
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Rejected IPC envelope: {rejectionReason}.");
+                        continue;
+                    }
+                    if (!TargetIpc.IsAllowedBrokerInboundMessageType(messageType))
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Rejected unexpected IPC message type: {messageType}.");
                         continue;
                     }
 

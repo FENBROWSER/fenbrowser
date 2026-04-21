@@ -227,6 +227,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
             return true;
         }
+
+        public static bool IsAllowedBrokerInboundMessageType(NetworkIpcMessageType messageType)
+        {
+            return messageType == NetworkIpcMessageType.Ready ||
+                   messageType == NetworkIpcMessageType.FetchResponseHead ||
+                   messageType == NetworkIpcMessageType.FetchResponseBody ||
+                   messageType == NetworkIpcMessageType.FetchFailed ||
+                   messageType == NetworkIpcMessageType.LogBatch ||
+                   messageType == NetworkIpcMessageType.Pong ||
+                   messageType == NetworkIpcMessageType.Error;
+        }
     }
 
     /// <summary>
@@ -348,9 +359,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     var line = await _reader.ReadLineAsync().ConfigureAwait(false);
                     if (line == null) break;
                     if (!NetworkIpc.TryDeserialize(line, out var env)) continue;
-                    if (!NetworkIpc.TryValidateInboundEnvelope(env, out _, out var rejectionReason))
+                    if (!NetworkIpc.TryValidateInboundEnvelope(env, out var messageType, out var rejectionReason))
                     {
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Rejected IPC envelope: {rejectionReason}.");
+                        continue;
+                    }
+                    if (!NetworkIpc.IsAllowedBrokerInboundMessageType(messageType))
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Rejected unexpected IPC message type: {messageType}.");
                         continue;
                     }
                     DispatchInbound(env);
