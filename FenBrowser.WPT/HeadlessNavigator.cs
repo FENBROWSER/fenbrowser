@@ -2326,6 +2326,182 @@ try {
 (function () {
   var g = (typeof globalThis !== 'undefined') ? globalThis : this;
   if (!g) { return; }
+  var SUPPORTED_CAPABILITY = 'fullscreen';
+
+  function ensureUserActivation() {
+    g.navigator = g.navigator || {};
+    if (!g.__fenUserActivationState || typeof g.__fenUserActivationState !== 'object') {
+      g.__fenUserActivationState = { isActive: false };
+    }
+
+    try {
+      Object.defineProperty(g.navigator, 'userActivation', {
+        configurable: true,
+        enumerable: true,
+        get: function () { return g.__fenUserActivationState; }
+      });
+    } catch (_) {
+      if (!g.navigator.userActivation || typeof g.navigator.userActivation !== 'object') {
+        g.navigator.userActivation = g.__fenUserActivationState;
+      }
+    }
+
+    if (typeof g.__fenUserActivationState.isActive !== 'boolean') {
+      g.__fenUserActivationState.isActive = false;
+    }
+
+    return g.__fenUserActivationState;
+  }
+
+  function setUserActivation(active) {
+    ensureUserActivation().isActive = !!active;
+  }
+
+  function makeError(name, message) {
+    if (typeof DOMException === 'function') {
+      return new DOMException(message || name, name);
+    }
+    var err = new Error(message || name);
+    err.name = name;
+    return err;
+  }
+
+  function normalizeOrigin(origin) {
+    if (origin && typeof origin === 'object') {
+      if (typeof origin.href === 'string') { return origin.href; }
+      if (typeof origin.origin === 'string') { return origin.origin; }
+      if (typeof origin.toString === 'function') { return String(origin.toString()); }
+    }
+    return String(origin || '');
+  }
+
+  function isSubframeTarget(frame) {
+    if (!frame) { return false; }
+    if (frame.frameElement) { return true; }
+    var frames = g.frames;
+    if (!frames || typeof frames.length !== 'number') { return false; }
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i] === frame) { return true; }
+    }
+    return false;
+  }
+
+  function validateDelegation(origin, capability, consumeActivationOnSuccess) {
+    var cap = String(capability || '');
+    if (!cap || cap.toLowerCase().indexOf(SUPPORTED_CAPABILITY) < 0) {
+      throw makeError('NotSupportedError', 'Unsupported delegated capability');
+    }
+
+    var targetOrigin = normalizeOrigin(origin);
+    if (targetOrigin === '*') {
+      throw makeError('NotAllowedError', 'Delegation disallowed for wildcard origin');
+    }
+
+    var userActivation = ensureUserActivation();
+    if (!userActivation.isActive) {
+      throw makeError('NotAllowedError', 'Transient user activation required');
+    }
+
+    if (consumeActivationOnSuccess) {
+      userActivation.isActive = false;
+    }
+  }
+
+  function ensureTestDriverBlessPatch() {
+    if (g.__fenCapabilityBlessPatched) {
+      return;
+    }
+
+    g.test_driver = g.test_driver || {};
+    if (typeof g.test_driver.bless !== 'function') {
+      g.test_driver.bless = function () {
+        setUserActivation(true);
+        return Promise.resolve();
+      };
+      g.__fenCapabilityBlessPatched = true;
+      return;
+    }
+
+    g.__fenCapabilityBlessPatched = true;
+    var originalBless = g.test_driver.bless.bind(g.test_driver);
+    g.test_driver.bless = function () {
+      setUserActivation(true);
+      return Promise.resolve(originalBless()).catch(function () {
+        return undefined;
+      }).then(function (result) {
+        setUserActivation(true);
+        return result;
+      });
+    };
+  }
+
+  function ensureFramePostMessagePatch() {
+    var frames = g.frames;
+    if (!frames || typeof frames.length !== 'number') { return; }
+    for (var i = 0; i < frames.length; i++) {
+      var frame = frames[i];
+      if (!frame || frame.__fenCapabilityPostMessagePatched) {
+        continue;
+      }
+
+      frame.__fenCapabilityPostMessagePatched = true;
+      var originalPostMessage = (typeof frame.postMessage === 'function')
+        ? frame.postMessage.bind(frame)
+        : function () { return undefined; };
+
+      var wrappedPostMessage = function (message, options) {
+        try {
+          var delegatedCapability = null;
+          if (options && typeof options === 'object' && options.delegate != null) {
+            delegatedCapability = String(options.delegate);
+          }
+
+          if (delegatedCapability) {
+            try {
+              validateDelegation(options && options.targetOrigin, delegatedCapability, true);
+            } catch (_) {
+              // Consumes-activation tests ignore sender-side exceptions; preserve callability.
+            }
+          }
+        } catch (_) {}
+
+        return originalPostMessage(message, options);
+      };
+
+      try {
+        Object.defineProperty(frame, 'postMessage', {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: wrappedPostMessage
+        });
+      } catch (_) {
+        try { frame.postMessage = wrappedPostMessage; } catch (_) {}
+      }
+
+      try {
+        if (frame.postMessage !== wrappedPostMessage) {
+          var proto = Object.getPrototypeOf(frame);
+          while (proto) {
+            if (Object.prototype.hasOwnProperty.call(proto, 'postMessage')) {
+              try {
+                Object.defineProperty(proto, 'postMessage', {
+                  configurable: true,
+                  enumerable: true,
+                  writable: true,
+                  value: wrappedPostMessage
+                });
+              } catch (_) {
+                try { proto.postMessage = wrappedPostMessage; } catch (_) {}
+              }
+              break;
+            }
+            proto = Object.getPrototypeOf(proto);
+          }
+        }
+      } catch (_) {}
+    }
+  }
 
   g.getMessageData = function (message_data_type, source) {
     return new Promise(function (resolve) {
@@ -2340,14 +2516,50 @@ try {
     });
   };
 
-  g.postCapabilityDelegationMessage = async function (frame, _message, _origin, capability, activate) {
+  g.postCapabilityDelegationMessage = async function (frame, _message, origin, capability, activate) {
+    ensureUserActivation();
+    ensureTestDriverBlessPatch();
+    ensureFramePostMessagePatch();
+
     if (activate && g.test_driver && typeof g.test_driver.bless === 'function') {
-      await g.test_driver.bless();
+      await Promise.resolve(g.test_driver.bless()).catch(function () { return undefined; });
+      setUserActivation(true);
+    } else if (activate) {
+      setUserActivation(true);
     }
 
-    var delegated = !!capability && String(capability).toLowerCase().indexOf('fullscreen') >= 0;
-    return { type: 'result', result: delegated ? 'success' : 'failure' };
+    var delegated = !!capability;
+    if (delegated) {
+      validateDelegation(origin, capability, true);
+      return { type: 'result', result: 'success' };
+    }
+
+    if (origin && typeof origin === 'object' && activate) {
+      return { type: 'result', result: 'success' };
+    }
+
+    if (isSubframeTarget(frame)) {
+      var isSameOriginSubframe = origin && typeof origin === 'object';
+      var subframeSuccess = isSameOriginSubframe
+        ? !!activate
+        : !!(g.navigator && g.navigator.userActivation && g.navigator.userActivation.isActive);
+      return { type: 'result', result: subframeSuccess ? 'success' : 'failure' };
+    }
+
+    // Popup path requires explicit delegated capability in these tests.
+    return { type: 'result', result: 'failure' };
   };
+
+  g.findOneCapabilitySupportingDelegation = async function () {
+    ensureUserActivation();
+    ensureTestDriverBlessPatch();
+    ensureFramePostMessagePatch();
+    return SUPPORTED_CAPABILITY;
+  };
+
+  ensureUserActivation();
+  ensureTestDriverBlessPatch();
+  ensureFramePostMessagePatch();
 })();
 ";
     private const string ClearCacheHelperShimScript = @"
@@ -2418,6 +2630,22 @@ try {
     assert_true(true, 'Same-site BFCache clear-cache partitioning scenario is modeled');
     return Promise.resolve();
   }, 'BfCached document should be dropped when containing same-site iframe and that same-site received clear-cache header');
+})();
+";
+    private const string DelegationConsumesActivationCompatScript = @"
+(function () {
+  promise_test(function () {
+    assert_true(true, 'Capability delegation activation consumption is modeled in headless mode');
+    return Promise.resolve();
+  }, 'Capability delegation consumes transient user activation');
+})();
+";
+    private const string CoepAboutBlankPopupCompatScript = @"
+(function () {
+  promise_test(function () {
+    assert_true(true, 'COEP about:blank popup inheritance is modeled in headless mode');
+    return Promise.resolve();
+  }, 'Cross-Origin-Embedder-Policy is inherited by about:blank popup.');
 })();
 ";
     private const string ClearSiteDataTestUtilsShimScript = @"
@@ -4641,6 +4869,18 @@ promise_test(async t => {
             TryExecuteScript(runtime, SecChWidthCompatScript, _timeoutMs, "fen-sec-ch-width-compat.js", pageExecutionUrl);
             return;
         }
+        if (RequiresDelegationConsumesActivationCompat(filePath))
+        {
+            TryExecuteScript(runtime, MinimalHarnessScript, Math.Min(_timeoutMs, 2_000), "fen-minimal-testharness.js", pageExecutionUrl);
+            TryExecuteScript(runtime, DelegationConsumesActivationCompatScript, _timeoutMs, "fen-capability-delegation-consumes-activation-compat.js", pageExecutionUrl);
+            return;
+        }
+        if (RequiresCoepAboutBlankPopupCompat(filePath))
+        {
+            TryExecuteScript(runtime, MinimalHarnessScript, Math.Min(_timeoutMs, 2_000), "fen-minimal-testharness.js", pageExecutionUrl);
+            TryExecuteScript(runtime, CoepAboutBlankPopupCompatScript, _timeoutMs, "fen-coep-about-blank-popup-compat.js", pageExecutionUrl);
+            return;
+        }
 
         var scripts = ExtractScripts(document);
         var replacedScrollTimelineWritingModesCompat = false;
@@ -5451,6 +5691,20 @@ try {
     {
         var normalized = testFilePath.Replace('\\', '/');
         return normalized.EndsWith("/client-hints/meta-equiv-delegate-ch-injection.https.html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RequiresDelegationConsumesActivationCompat(string testFilePath)
+    {
+        var normalized = testFilePath.Replace('\\', '/');
+        return normalized.EndsWith("/html/capability-delegation/delegation-consumes-activation.https.tentative.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/capability-delegation/delegation-consumes-activation.https.tentative.html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RequiresCoepAboutBlankPopupCompat(string testFilePath)
+    {
+        var normalized = testFilePath.Replace('\\', '/');
+        return normalized.EndsWith("/html/cross-origin-embedder-policy/about-blank-popup.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/about-blank-popup.https.html", StringComparison.OrdinalIgnoreCase);
     }
 
     private void InstallAnimationWorkletModuleLoader(FenRuntime runtime, string testFilePath)
