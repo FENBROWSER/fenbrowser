@@ -466,4 +466,31 @@ Net effect:
   - Active roots are switched with `list_projects` / `switch_project` rather than re-pointing the server at the monorepo root.
   - Supporting operator notes live in `docs/TOKEN_SAVIOR_WORKSPACE.md`.
 
+### 5.20 Structured Engine Log Domain and Live Console Wiring (2026-04-20)
+
+- `FenBrowser.DevTools/Domains/LogDomain.cs` (new)
+- `FenBrowser.DevTools/Domains/DTOs/LogDtos.cs` (new)
+  - Added protocol `Log` domain with:
+    - `Log.enable`
+    - `Log.disable`
+    - `Log.clear`
+    - `Log.entryAdded` event payload carrying subsystem, severity, marker, context, source, and structured fields.
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+  - Added `InitializeLog()` registration and reset-time cleanup for the new domain.
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - Host adapter now initializes the `Log` domain alongside Runtime/Network/Debugger.
+- `FenBrowser.DevTools/Panels/ConsolePanel.cs`
+  - Browser-internal logs now stream through protocol `Log.entryAdded` instead of direct `LogManager.LogEntryAdded` subscriptions.
+  - Console rendering maps structured severity/marker payloads into panel entry styles.
+- Net effect:
+  - Internal DevTools now receives unified structured engine logs, including cross-process events aggregated by Host.
+
+### 5.21 Log Domain Runtime Filters and Counter Query (2026-04-20)
+
+- `FenBrowser.DevTools/Domains/LogDomain.cs`
+- `FenBrowser.DevTools/Domains/DTOs/LogDtos.cs`
+  - `Log.enable` now accepts optional runtime filter payload (`filter.subsystems[]`, `filter.tabId`, `filter.frameId`) for live stream narrowing.
+  - Added `Log.getCounters` returning per-document EngineLog counters (total/warn/error/fatal plus last context metadata).
+  - Filtering is applied before broadcasting `Log.entryAdded`, reducing noisy cross-tab/log-domain traffic in active DevTools sessions.
+
 _End of Volume V_

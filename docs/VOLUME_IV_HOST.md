@@ -923,6 +923,36 @@ _End of Volume IV_
   - The host no longer crashes when the new-tab button or `Ctrl+T` switches inspection to a freshly created tab.
 
 - `FenBrowser.Host/DevToolsHostAdapter.cs`
+
+### 6.44 Process-Isolation Log Batch Aggregation (2026-04-20)
+
+- `FenBrowser.Host/Program.cs`
+  - Renderer, network, and target child modes now forward structured engine logs to the parent over IPC using `LogBatch` envelopes.
+  - Child forwarding is queued and flushed in bounded batches to avoid blocking frame/fetch hot paths.
+- `FenBrowser.Host/ProcessIsolation/EngineLogIpc.cs` (new)
+- `FenBrowser.Host/ProcessIsolation/ProcessIsolationLogCollector.cs` (new)
+  - Added host-side collector that normalizes child context (`source`, `tabId`) and republishes events into `EngineLog`.
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Network/NetworkProcessIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetProcessIpc.cs`
+  - Added `LogBatch` message handling so broker-side sessions ingest child process logs as first-class structured events.
+- Net effect:
+  - Brokered process logs are no longer fragmented by process boundary.
+  - Parent NDJSON/trace output and downstream diagnostics now include child renderer/network/target events with correlation metadata.
+
+### 6.45 Host Process-Isolation Logging Migration to EngineLog (2026-04-20)
+
+- `FenBrowser.Host/Program.cs`
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Network/NetworkProcessIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetProcessIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+- `FenBrowser.Host/Widgets/SettingsPageWidget.cs`
+  - Replaced legacy `FenLogger` writes in host process-isolation execution paths with direct `EngineLog` subsystem/severity writes.
+  - Replaced child-mode `LogManager.InitializeFromSettings()` bootstrap with `EngineLog.InitializeFromSettings()`.
+  - Replaced host settings-page runtime logging bootstrap refresh with `EngineLog.InitializeFromSettings()` so settings toggles now refresh the new runtime directly.
+- Net effect:
+  - Critical broker/child lifecycle diagnostics now originate directly from the new engine logging runtime instead of legacy wrappers.
   - Existing host-adapter disposal remains the handoff boundary for repaint, console, network, and JSON relay detachment before a new tab is attached.
   - The fix depended on honoring that disposal boundary and pairing it with a real server reset, rather than stacking a second protocol-domain registration on the previous tab session.
 
@@ -963,3 +993,14 @@ _End of Volume IV_
 - Runtime intent:
   - Prevents second-tab URL-edit freeze/stall reports where input focus remained in stale widget state after tab transitions.
   - Makes new-tab address editing deterministic without requiring extra click retries.
+
+### 6.46 Host Crash Snapshot Automation for EngineLog (2026-04-20)
+
+- `FenBrowser.Host/Program.cs`
+  - Added crash-path failure bundle export on:
+    - `AppDomain.CurrentDomain.UnhandledException`
+    - `TaskScheduler.UnobservedTaskException`
+    - top-level fatal host exception catch path.
+  - Crash handlers now emit marker-tagged structured events (`Invariant`/`EngineBug`) and best-effort bundle-export diagnostics.
+- Runtime effect:
+  - Crash incidents now automatically persist a `Results/<timestamp>/` bundle via `EngineLog.ExportFailureBundle(...)` without manual operator capture.

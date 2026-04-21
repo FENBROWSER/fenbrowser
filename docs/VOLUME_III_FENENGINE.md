@@ -7198,3 +7198,36 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Traversals now fail with managed `InvalidOperationException` when depth exceeds compiler limits, preventing CLR-level `System.StackOverflowException` crashes on pathological/minified script graphs.
 - Impact:
   - GitHub-/Wikipedia-/Google-class large script payloads no longer rely only on `Visit(...)` recursion guarding; pre-compile hoist/annex passes are now equally hardened.
+
+## 2.241 Engine Logging Runtime Adoption In Host/Engine Paths (2026-04-20)
+
+- `FenBrowser.Core/Logging/LogManager.cs`
+- `FenBrowser.Core/FenLogger.cs`
+- `FenBrowser.Host/Program.cs` (existing initialization path retained)
+- `FenBrowser.Host/BrowserIntegration.cs` (existing `LogEntry` telemetry flow retained)
+
+- Runtime effect:
+  - existing host and engine log emitters continue to compile through `FenLogger`/`LogManager`, but writes now flow through the new `EngineLog` runtime.
+  - diagnostic output remains under workspace-root `logs`, with structured NDJSON output enabled by default.
+  - compatibility event flow (`LogManager.LogEntryAdded`) remains available for DevTools console integration while using the new engine logger internals.
+
+## 2.242 Engine Logging Adoption Completion In Engine Call Paths (2026-04-20)
+
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+- `FenBrowser.FenEngine/Rendering/Css/CssFlexLayout.cs`
+  - Browser diagnostics dump calls now route through `EngineLogCompat` (`DumpRawSource`, `DumpEngineSource`, `DumpRenderedText`) instead of direct legacy structured-logger backend calls.
+  - Benchmark logging suppression now toggles `EngineLogCompat.IsEnabled` directly, avoiding legacy logger backend re-initialization during perf runs.
+  - Flex arrange invariant logging now emits marker-based `EngineLog` warnings for negative content-box dimensions.
+
+### 3.184 Render/Layout Logging Milestone Expansion (2026-04-20)
+- `FenBrowser.FenEngine/Core/EngineLoop.cs`
+- `FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+- `FenBrowser.FenEngine/Rendering/RenderPipeline.cs`
+  - Added explicit reflow-request logs with reason + dirty-node count (`[LAYOUT][INFO] Reflow requested | reason=... dirtyNodes=...`).
+  - Added computed-style-to-layout-box decision logs in box-tree construction:
+    - `display:none` suppression (`Box skipped`)
+    - concrete box creation (`Box created type=...`).
+  - Navigation-settle path now emits dedup suppression summary and a rate-limited unsupported-feature aggregate (`unsupportedHtml/unsupportedCss/unsupportedJs`).
+  - First-layout/first-paint milestones and per-frame summary logs remain part of the render-pipeline diagnostics contract.
