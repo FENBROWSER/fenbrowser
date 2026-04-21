@@ -193,18 +193,9 @@ namespace FenBrowser.Core.Dom.V2
 
                 try
                 {
-                    // Parse as fragment by wrapping inside <body>, then move children into this shadow root.
-                    var html = "<!doctype html><html><body>" + value + "</body></html>";
-                    var parsed = new Parsing.HtmlParser(html).Parse();
-                    var source = parsed?.Body;
-                    if (source == null)
-                    {
-                        AppendChild(new Text(value, _ownerDocument));
-                        return;
-                    }
-
-                    while (source.FirstChild != null)
-                        AppendChild(source.FirstChild);
+                    var parsedFragment = Parsing.HtmlParser.ParseFragment(Host, value, options: null, out _);
+                    while (parsedFragment.FirstChild != null)
+                        AppendChild(parsedFragment.FirstChild);
 
                     MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
@@ -230,3 +221,4 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 }
+

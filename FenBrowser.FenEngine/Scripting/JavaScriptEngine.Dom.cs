@@ -526,20 +526,21 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         if (!_e.SandboxAllows(SandboxFeature.DomMutation, "innerHTML")) return;
                         var html = value ?? string.Empty;
-                        var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
-                        ContainerNode container = null;
-                        try
+                        if (_node is Element elementNode)
                         {
-                            container = doc.GetElementsByTagName("body").FirstOrDefault();
-                            if (container == null) container = doc.FirstElementChild ?? (ContainerNode)doc;
+                            elementNode.InnerHTML = html;
                         }
-                        catch { container = doc; }
-
-                        while (_node.FirstChild != null) (_node as ContainerNode)?.RemoveChild(_node.FirstChild);
-                        foreach (var ch in container.ChildNodes)
+                        else if (_node is ContainerNode containerNode)
                         {
-                            var clone = CloneTree(ch);
-                            if (clone != null) ((ContainerNode)_node).AppendChild(clone);
+                            var fragment = FenBrowser.Core.Parsing.HtmlParser.ParseFragment(null, html, options: null, out _);
+                            while (containerNode.FirstChild != null)
+                            {
+                                containerNode.RemoveChild(containerNode.FirstChild);
+                            }
+                            while (fragment.FirstChild != null)
+                            {
+                                containerNode.AppendChild(fragment.FirstChild);
+                            }
                         }
                         _node.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                         if (_e.ExecuteInlineScriptsOnInnerHTML)
@@ -581,14 +582,7 @@ namespace FenBrowser.FenEngine.Scripting
                 try
                 {
                     var pos = (position ?? "").Trim().ToLowerInvariant();
-                    var frag = new FenBrowser.Core.Parsing.HtmlParser(html ?? string.Empty).Parse();
-                    ContainerNode container = null;
-                    try
-                    {
-                        container = frag.GetElementsByTagName("body").FirstOrDefault();
-                        if (container  == null) container = frag.FirstElementChild ?? (ContainerNode)frag;
-                    }
-                    catch { container = frag; }
+                    var container = FenBrowser.Core.Parsing.HtmlParser.ParseFragment(_node as Element, html ?? string.Empty, options: null, out _);
 
                     if (pos == "afterbegin")
                     {
@@ -1135,22 +1129,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                      var html = value.ToString();
                      try {
-                         var doc = new FenBrowser.Core.Parsing.HtmlParser(html).Parse();
-                         ContainerNode source = null;
-                         if (doc != null)
-                         {
-                             source = doc.GetElementsByTagName("body").FirstOrDefault();
-                             source ??= doc.FirstElementChild ?? (ContainerNode)doc;
-                         }
-
-                         _node.RemoveAllChildren();
-                         if (source?.ChildNodes != null)
-                         {
-                             foreach (var ch in source.ChildNodes.ToArray())
-                             {
-                                 _node.AppendChild(ch.CloneNode(true));
-                             }
-                         }
+                         _node.InnerHTML = html ?? string.Empty;
                          _node.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                          _e.RequestRepaint();
                      } catch (Exception ex) { TryLogDomWarn($"[JsDomShadowRoot] Set innerHTML failed: {ex.Message}"); }
@@ -1765,6 +1744,7 @@ namespace FenBrowser.FenEngine.Scripting
         }
     }
 }
+
 
 
 

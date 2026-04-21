@@ -474,28 +474,24 @@ public class DomDomain : IProtocolHandler
     private static DocumentFragment BuildReplacementFragment(Node target, string outerHtml)
     {
         var ownerDocument = target.OwnerDocument ?? target.ParentNode?.OwnerDocument ?? new Document();
-        var fragment = ownerDocument.CreateDocumentFragment();
-
         if (string.IsNullOrWhiteSpace(outerHtml))
         {
-            return fragment;
+            return ownerDocument.CreateDocumentFragment();
         }
 
-        // Parse the replacement as body content so multi-node edits are supported.
-        var parsed = new HtmlParser($"<!doctype html><html><body>{outerHtml}</body></html>").Parse();
-        var sourceBody = parsed.Body;
-        if (sourceBody == null)
+        try
         {
+            var contextElement = target.ParentNode as Element
+                ?? ownerDocument.Body
+                ?? ownerDocument.DocumentElement;
+            return HtmlParser.ParseFragment(contextElement, outerHtml, options: null, out _);
+        }
+        catch
+        {
+            var fragment = ownerDocument.CreateDocumentFragment();
             fragment.AppendChild(ownerDocument.CreateTextNode(outerHtml));
             return fragment;
         }
-
-        while (sourceBody.FirstChild != null)
-        {
-            fragment.AppendChild(sourceBody.FirstChild);
-        }
-
-        return fragment;
     }
 
     private static string SerializeNodeMarkup(Node node)
@@ -609,3 +605,4 @@ public class DomDomain : IProtocolHandler
         };
     }
 }
+

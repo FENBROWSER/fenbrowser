@@ -624,24 +624,12 @@ namespace FenBrowser.FenEngine.DOM
 
         private DocumentFragment ParseWriteFragment(Document ownerDocument, string html)
         {
-            var parsed = new FenBrowser.Core.Parsing.HtmlParser(html, _baseUri).Parse();
-            var fragment = ownerDocument.CreateDocumentFragment();
-            if (parsed == null)
-            {
-                return fragment;
-            }
-
-            ContainerNode source = parsed.GetElementsByTagName("body").FirstOrDefault();
-            source ??= parsed.GetElementsByTagName("head").FirstOrDefault();
-            source ??= parsed.FirstElementChild as ContainerNode;
-            source ??= parsed;
-
-            foreach (var child in source.ChildNodes.ToArray())
-            {
-                fragment.AppendChild(child);
-            }
-
-            return fragment;
+            var contextElement = ownerDocument.Body ?? ownerDocument.DocumentElement;
+            return FenBrowser.Core.Parsing.HtmlParser.ParseFragment(
+                contextElement,
+                html,
+                new FenBrowser.Core.Parsing.HtmlParserOptions { BaseUri = _baseUri },
+                out _);
         }
 
         internal void AttachFonts(FenObject fonts)

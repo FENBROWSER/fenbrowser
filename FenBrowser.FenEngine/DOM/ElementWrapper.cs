@@ -1805,44 +1805,9 @@ namespace FenBrowser.FenEngine.DOM
         private void SetInnerHTML(FenValue value)
         {
             var removed = _element.ChildNodes != null ? new System.Collections.Generic.List<Node>(_element.ChildNodes) : new System.Collections.Generic.List<Node>();
-
-            // NodeList is read-only, clear via TextContent
-            _element.TextContent = "";
             var htmlString = value.ToString();
-            
-            var added = new System.Collections.Generic.List<Node>();
-
-            if (!string.IsNullOrEmpty(htmlString))
-            {
-                try
-                {
-                    var parsed = new FenBrowser.Core.Parsing.HtmlParser(htmlString).Parse();
-                    ContainerNode source = null;
-                    if (parsed != null)
-                    {
-                        source = parsed.GetElementsByTagName("body").FirstOrDefault();
-                        source ??= parsed.FirstElementChild ?? (ContainerNode)parsed;
-                    }
-
-                    if (source?.ChildNodes != null)
-                    {
-                        foreach (var child in source.ChildNodes.ToArray()) // Copy to avoid modification of source collection during iteration if active
-                        {
-                            if (child is Node n)
-                            {
-                                _element.AppendChild(n);
-                                added.Add(n);
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                    var textNode = new Text(htmlString);
-                    _element.AppendChild(textNode);
-                    added.Add(textNode);
-                }
-            }
+            _element.InnerHTML = htmlString;
+            var added = _element.ChildNodes != null ? new System.Collections.Generic.List<Node>(_element.ChildNodes) : new System.Collections.Generic.List<Node>();
 
             _element.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
             _context.RequestRender?.Invoke();

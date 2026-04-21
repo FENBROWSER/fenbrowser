@@ -73,38 +73,14 @@ namespace FenBrowser.Core
         /// </summary>
         public async Task<Document> ParseAsync(CancellationToken ct = default)
         {
-            var doc = new Document();
-            var parser = new IncrementalParseState(doc);
-            
             try
             {
-                char[] chunk = new char[ChunkSize];
-                int read;
-                
-                while ((read = await ReadChunkAsync(chunk, ct)) > 0)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    
-                    // Append to buffer
-                    _buffer.Append(chunk, 0, read);
-                    
-                    // Parse available content
-                    ParseBufferedContent(parser, isFinalChunk: false);
-                    
-                    // Compact buffer if it's getting too large
-                    if (_buffer.Length > MaxBufferSize)
-                    {
-                        TrimBuffer();
-                    }
-                }
-                
-                // Parse any remaining content
-                ParseBufferedContent(parser, isFinalChunk: true);
-                parser.Finalize();
-                
+                var content = await _reader.ReadToEndAsync();
+                ct.ThrowIfCancellationRequested();
+                var doc = HtmlParser.ParseDocument(content, out _);
                 OnDocumentComplete?.Invoke(doc);
-                
                 EngineLogCompat.Debug($"[StreamingHtmlParser] Parsed document with {CountElements(doc)} elements", LogCategory.HtmlParsing);
+                return doc;
             }
             catch (OperationCanceledException)
             {
@@ -114,11 +90,8 @@ namespace FenBrowser.Core
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[StreamingHtmlParser] Error during parsing: {ex.Message}", LogCategory.HtmlParsing);
-
-                // Return partial document on error
+                return new Document();
             }
-            
-            return doc;
         }
 
         /// <summary>
@@ -139,32 +112,8 @@ namespace FenBrowser.Core
         /// </summary>
         public async Task ParseIncrementallyAsync(Action<Document> onProgress = null, CancellationToken ct = default)
         {
-            var doc = new Document();
-            var parser = new IncrementalParseState(doc);
-            int lastElementCount = 0;
-            
-            char[] chunk = new char[ChunkSize];
-            int read;
-            
-            while ((read = await ReadChunkAsync(chunk, ct)) > 0)
-            {
-                ct.ThrowIfCancellationRequested();
-                
-                _buffer.Append(chunk, 0, read);
-                ParseBufferedContent(parser, isFinalChunk: false);
-                
-                // Notify progress if new elements were added
-                int currentCount = CountElements(doc);
-                if (currentCount > lastElementCount && onProgress != null)
-                {
-                    onProgress(doc);
-                    lastElementCount = currentCount;
-                }
-            }
-            
-            ParseBufferedContent(parser, isFinalChunk: true);
-            parser.Finalize();
-            OnDocumentComplete?.Invoke(doc);
+            var doc = await ParseAsync(ct);
+            onProgress?.Invoke(doc);
         }
 
         /// <summary>
@@ -446,13 +395,6 @@ namespace FenBrowser.Core
                     ((ContainerNode)_stack.Peek()).AppendChild(element);
                 }
 
-                // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting in streaming parser
-                if (!selfClosing && (tagName == "path" || tagName == "rect" || tagName == "circle" || tagName == "line" || tagName == "polyline" || tagName == "polygon" || tagName == "ellipse" || tagName == "stop" || tagName == "image"))
-                {
-                     EngineLogCompat.Info($"[StreamingHtmlParser] Force-closing SVG tag: '{tagName}'", LogCategory.General);
-                     selfClosing = true;
-                }
-                
                 // Push if not self-closing and not void
                 if (!selfClosing && !Parsing.HtmlParser.IsVoid(tagName))
                 {

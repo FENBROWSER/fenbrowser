@@ -613,6 +613,21 @@ To implement a new command (e.g., `GET /session/{id}/print`):
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~GoogleSnapshotDiagnosticsTests.LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage"`: pass (`1/1`).
   - Required host runtime cycle produced a visibly painted `debug_screenshot.png` instead of the earlier blank-white frame, confirming that the watchdog change fixed the presentation regression in the Debug host path.
 
+### 4.15.2 HTML Parser Conformance Harness Expansion (2026-04-21)
+
+- `FenBrowser.Conformance/Html5LibTestRunner.cs`
+  - Enabled `#document-fragment` parsing coverage (previously skipped).
+  - Added script-mode capture per test case (`#script-on`/`#script-off`) for deterministic reporting.
+  - Added failure clustering metadata (`tokenization`, `tree-construction`, `fragment`, `exception`) driven by canonical `HtmlParsingOutcome`.
+- Entrypoint unification coverage now includes:
+  - `Element.InnerHTML`
+  - `ShadowRoot.InnerHTML`
+  - DevTools `DOM.setOuterHTML` replacement path
+  - document-write fragment ingestion path in runtime DOM bridge
+- Security/limit posture remains bounded and deterministic:
+  - centralized parser limits are applied at canonical parser entrypoints,
+  - limit breaches surface explicit `HtmlParsingOutcome` reason codes.
+
 ### 4.16 WPT Harness Execution Reliability (2026-02-27)
 
 - `FenBrowser.WPT/HeadlessNavigator.cs`

@@ -104,6 +104,23 @@ Based strictly on the **HTML5 Parsing Specification**.
 - `HtmlTreeBuilder.ProcessToken(...)` no longer emits temporary token-level parse traces on the default path.
 - The trace path is now gated by `DebugConfig.LogHtmlParse`, preserving targeted diagnostics without forcing high-volume `HtmlParsing` log I/O during normal navigation.
 
+### 4.0.1 Canonical HTML Parsing Entrypoints (2026-04-21)
+
+- `FenBrowser.Core/Parsing/HtmlParser.cs`
+  - Added canonical parser entrypoints:
+    - `ParseDocument(...)`
+    - `ParseFragment(contextElement, markup, ...)`
+    - `ParseStream(...)`
+  - Unified entrypoints on a single tokenizer/tree-builder contract with shared `HtmlParsingOutcome` propagation.
+  - Added `HtmlParserOptions` for shared base-URI/security policy wiring across document/fragment/stream callers.
+  - Removed non-spec SVG void/self-closing shortcuts from `HtmlParser.IsVoid(...)`.
+- `FenBrowser.Core/StreamingHtmlParser.cs`
+  - Primary async/incremental APIs now route through canonical `HtmlParser.ParseDocument(...)` instead of the legacy simplified token/tag path.
+- `FenBrowser.Core/Dom/V2/Element.cs`
+  - `Element.InnerHTML` now uses canonical `HtmlParser.ParseFragment(...)` (no `<html><body>` wrapper parse path).
+- `FenBrowser.Core/Dom/V2/ShadowRoot.cs`
+  - `ShadowRoot.InnerHTML` now uses canonical `HtmlParser.ParseFragment(...)` with host-context fragment parsing.
+
 ### 4.1 HtmlTokenizer
 
 - Converts a stream of characters into `HtmlToken` objects (StartTag, EndTag, Character, Comment).
