@@ -35,7 +35,29 @@ namespace FenBrowser.FenEngine.Core
         /// </summary>
         public bool StrictMode
         {
-            get => _strictMode || (Outer?.StrictMode ?? false);
+            get
+            {
+                if (_strictMode)
+                {
+                    return true;
+                }
+
+                var visited = new HashSet<FenEnvironment>();
+                for (var env = Outer; env != null; env = env.Outer)
+                {
+                    if (!visited.Add(env))
+                    {
+                        break;
+                    }
+
+                    if (env._strictMode)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
             set => _strictMode = value;
         }
         private bool _strictMode;

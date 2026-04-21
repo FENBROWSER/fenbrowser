@@ -414,9 +414,18 @@ public static class Program
         }
 
         string testPath = args[1];
-        if (!Path.IsPathRooted(testPath) && !string.IsNullOrEmpty(config.WptRootPath))
+        if (!Path.IsPathRooted(testPath))
         {
-            testPath = Path.Combine(config.WptRootPath, testPath);
+            // In isolated worker mode we may receive a repo-relative path that already includes the WPT root.
+            // Prefer the path as-provided when it resolves, and only fall back to root-joining when needed.
+            if (File.Exists(testPath))
+            {
+                testPath = Path.GetFullPath(testPath);
+            }
+            else if (!string.IsNullOrEmpty(config.WptRootPath))
+            {
+                testPath = Path.Combine(config.WptRootPath, testPath);
+            }
         }
 
         if (!File.Exists(testPath))
