@@ -19,18 +19,7 @@ namespace FenBrowser.Tests.Core
         [Fact]
         public async Task LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage()
         {
-            string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-            string[] candidateLogDirs =
-            {
-                Path.Combine(repoRoot, "logs"),
-                Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net8.0", "logs")
-            };
-
-            string snapshotPath = candidateLogDirs
-                .Where(Directory.Exists)
-                .SelectMany(dir => Directory.GetFiles(dir, "engine_source_*.html"))
-                .OrderByDescending(File.GetLastWriteTimeUtc)
-                .FirstOrDefault();
+            string snapshotPath = GetLatestSnapshotPaths(1).FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(snapshotPath))
             {
@@ -166,9 +155,167 @@ namespace FenBrowser.Tests.Core
             Assert.True(shellVisiblePixels > 250, $"Expected the rendered search shell region to contain visible non-white pixels.{paintContext}");
         }
 
+        [Fact]
+        public async Task LatestGoogleSnapshots_FirstLoadAndRefresh_KeyChromeRegionsRemainStable()
+        {
+            var snapshots = GetLatestSnapshotPaths(2);
+            if (snapshots.Count < 2)
+            {
+                return;
+            }
+
+            GoogleSnapshotMetrics latest = await AnalyzeSnapshotAsync(snapshots[0]);
+            GoogleSnapshotMetrics previous = await AnalyzeSnapshotAsync(snapshots[1]);
+
+            Assert.True(previous.HasSignInText && latest.HasSignInText, $"Expected both snapshots to include Sign in text. previous={previous.SnapshotPath} latest={latest.SnapshotPath}");
+            Assert.True(previous.HasLanguagesPrompt && latest.HasLanguagesPrompt, $"Expected both snapshots to include Google offered in prompt. previous={previous.SnapshotPath} latest={latest.SnapshotPath}");
+            Assert.True(previous.TopNavInteractiveCount >= 5 && latest.TopNavInteractiveCount >= 5, $"Expected >=5 interactive top-nav boxes on both snapshots. previous={previous.TopNavInteractiveCount} latest={latest.TopNavInteractiveCount}");
+            Assert.True(previous.TopNavMaxRight > 1400f && latest.TopNavMaxRight > 1400f, $"Expected top-nav right alignment near viewport edge. previous={previous.TopNavMaxRight:0.##} latest={latest.TopNavMaxRight:0.##}");
+            Assert.True(previous.ShellVisiblePixels > 200 && latest.ShellVisiblePixels > 200, $"Expected visible search shell paint in both snapshots. previous={previous.ShellVisiblePixels} latest={latest.ShellVisiblePixels}");
+
+            AssertRectClose(previous.SearchShellRect, latest.SearchShellRect, maxDeltaX: 24f, maxDeltaY: 30f, maxDeltaW: 40f, maxDeltaH: 18f, "search shell");
+            AssertRectClose(previous.AiModeRect, latest.AiModeRect, maxDeltaX: 24f, maxDeltaY: 20f, maxDeltaW: 40f, maxDeltaH: 16f, "AI mode button");
+            AssertRectClose(previous.SearchButtonsBandRect, latest.SearchButtonsBandRect, maxDeltaX: 24f, maxDeltaY: 28f, maxDeltaW: 48f, maxDeltaH: 16f, "search buttons band");
+            AssertRectClose(previous.TopNavRect, latest.TopNavRect, maxDeltaX: 24f, maxDeltaY: 20f, maxDeltaW: 36f, maxDeltaH: 16f, "top nav band");
+
+            double shellRatio = previous.ShellVisiblePixels == 0
+                ? 0d
+                : (double)latest.ShellVisiblePixels / previous.ShellVisiblePixels;
+            Assert.InRange(shellRatio, 0.55d, 1.80d);
+        }
+
         private static Element FindFirst(Element root, Func<Element, bool> predicate)
         {
             return root.Descendants().OfType<Element>().FirstOrDefault(predicate);
+        }
+
+        private static IReadOnlyList<string> GetLatestSnapshotPaths(int count)
+        {
+            string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+            string[] candidateLogDirs =
+            {
+                Path.Combine(repoRoot, "logs"),
+                Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net8.0", "logs")
+            };
+
+            return candidateLogDirs
+                .Where(Directory.Exists)
+                .SelectMany(dir => Directory.GetFiles(dir, "engine_source_*.html"))
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .Take(Math.Max(1, count))
+                .ToArray();
+        }
+
+        private static async Task<GoogleSnapshotMetrics> AnalyzeSnapshotAsync(string snapshotPath)
+        {
+            string html = await File.ReadAllTextAsync(snapshotPath);
+            var baseUri = new Uri("https://www.google.com/");
+
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var computed = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth: 1600, viewportHeight: 900);
+
+            var renderer = new SkiaDomRenderer();
+            using var bitmap = new SKBitmap(1600, 900);
+            using var canvas = new SKCanvas(bitmap);
+            renderer.Render(
+                root,
+                canvas,
+                computed,
+                new SKRect(0, 0, 1600, 900),
+                baseUri.AbsoluteUri,
+                (size, overlays) => { });
+            canvas.Flush();
+
+            Element searchShell = FindFirst(root, e => HasClass(e, "RNNXgb"));
+            Element aiModeButton = FindFirst(root, e => HasClass(e, "plR5qb"));
+            Element searchButtonsBand = FindFirst(root, e => HasClass(e, "lJ9FBc") && HasClass(e, "FPdoLc"));
+            Element topNav = FindFirst(root, e => HasClass(e, "Ne6nSd"));
+
+            Assert.NotNull(searchShell);
+            Assert.NotNull(aiModeButton);
+            Assert.NotNull(searchButtonsBand);
+            Assert.NotNull(topNav);
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(searchShell, out var searchShellRect), $"Missing layout rect for .RNNXgb ({snapshotPath})");
+            Assert.True(renderer.LastLayout.TryGetElementRect(aiModeButton, out var aiModeRect), $"Missing layout rect for .plR5qb ({snapshotPath})");
+            Assert.True(renderer.LastLayout.TryGetElementRect(searchButtonsBand, out var searchButtonsBandRect), $"Missing layout rect for .lJ9FBc.FPdoLc ({snapshotPath})");
+            Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), $"Missing layout rect for .Ne6nSd ({snapshotPath})");
+
+            var topNavInteractiveRects = root
+                .Descendants()
+                .OfType<Element>()
+                .Where(e => topNav.Contains(e))
+                .Select(e =>
+                {
+                    bool hasRect = renderer.LastLayout.TryGetElementRect(e, out var rect);
+                    return (hasRect, rect);
+                })
+                .Where(x => x.hasRect &&
+                            x.rect.Width >= 20f &&
+                            x.rect.Height >= 20f &&
+                            x.rect.Top < 120f &&
+                            x.rect.Left >= 0f)
+                .Where(x =>
+                {
+                    float overlap = Math.Min(x.rect.Bottom, topNavRect.Bottom) - Math.Max(x.rect.Top, topNavRect.Top);
+                    return overlap >= (x.rect.Height * 0.5f);
+                })
+                .Select(x => x.rect)
+                .ToList();
+
+            var shellSampleRect = ToSampleRect(searchShellRect, bitmap.Width, bitmap.Height, inset: 2, expand: 4);
+            int shellVisiblePixels = CountNonWhitePixels(bitmap, shellSampleRect);
+            bool hasSignInText = root.Descendants().OfType<Text>()
+                .Any(t => string.Equals(t.Data?.Trim(), "Sign in", StringComparison.OrdinalIgnoreCase));
+            bool hasLanguagesPrompt = root.Descendants().OfType<Text>()
+                .Any(t => (t.Data?.IndexOf("Google offered in", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0);
+
+            return new GoogleSnapshotMetrics
+            {
+                SnapshotPath = snapshotPath,
+                SearchShellRect = searchShellRect,
+                AiModeRect = aiModeRect,
+                SearchButtonsBandRect = searchButtonsBandRect,
+                TopNavRect = topNavRect,
+                TopNavInteractiveCount = topNavInteractiveRects.Count,
+                TopNavMaxRight = topNavInteractiveRects.Count > 0 ? topNavInteractiveRects.Max(r => r.Right) : 0f,
+                ShellVisiblePixels = shellVisiblePixels,
+                HasSignInText = hasSignInText,
+                HasLanguagesPrompt = hasLanguagesPrompt
+            };
+        }
+
+        private static void AssertRectClose(
+            ElementGeometry previous,
+            ElementGeometry latest,
+            float maxDeltaX,
+            float maxDeltaY,
+            float maxDeltaW,
+            float maxDeltaH,
+            string region)
+        {
+            Assert.InRange(Math.Abs(latest.Left - previous.Left), 0f, maxDeltaX);
+            Assert.InRange(Math.Abs(latest.Top - previous.Top), 0f, maxDeltaY);
+            Assert.InRange(Math.Abs(latest.Width - previous.Width), 0f, maxDeltaW);
+            Assert.InRange(Math.Abs(latest.Height - previous.Height), 0f, maxDeltaH);
+            Assert.True(latest.Width > 0f && latest.Height > 0f, $"Expected non-empty {region} rect in latest snapshot: {DescribeRect(latest)}");
+            Assert.True(previous.Width > 0f && previous.Height > 0f, $"Expected non-empty {region} rect in previous snapshot: {DescribeRect(previous)}");
+        }
+
+        private sealed class GoogleSnapshotMetrics
+        {
+            public string SnapshotPath { get; init; }
+            public ElementGeometry SearchShellRect { get; init; }
+            public ElementGeometry AiModeRect { get; init; }
+            public ElementGeometry SearchButtonsBandRect { get; init; }
+            public ElementGeometry TopNavRect { get; init; }
+            public int TopNavInteractiveCount { get; init; }
+            public float TopNavMaxRight { get; init; }
+            public int ShellVisiblePixels { get; init; }
+            public bool HasSignInText { get; init; }
+            public bool HasLanguagesPrompt { get; init; }
         }
 
         private static bool HasClass(Element element, string className)
