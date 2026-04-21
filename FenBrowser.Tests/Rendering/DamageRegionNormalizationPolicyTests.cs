@@ -71,5 +71,26 @@ namespace FenBrowser.Tests.Rendering
 
             Assert.Empty(normalized);
         }
+
+        [Fact]
+        public void Normalize_ReturnsRegionsInStableTopLeftOrder()
+        {
+            var policy = new DamageRegionNormalizationPolicy(inflatePx: 0f, mergeGapPx: 0f, maxNormalizedRegions: 16);
+            var viewport = new SKRect(0, 0, 100, 100);
+
+            var normalized = policy.Normalize(
+                new List<SKRect>
+                {
+                    new SKRect(50, 10, 60, 20),
+                    new SKRect(10, 10, 20, 20),
+                    new SKRect(10, 5, 20, 8),
+                },
+                viewport);
+
+            Assert.Equal(3, normalized.Count);
+            Assert.Equal(new SKRect(10, 5, 20, 8), normalized[0]);
+            Assert.Equal(new SKRect(10, 10, 20, 20), normalized[1]);
+            Assert.Equal(new SKRect(50, 10, 60, 20), normalized[2]);
+        }
     }
 }

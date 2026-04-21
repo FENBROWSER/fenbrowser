@@ -25,6 +25,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     /// </summary>
     public class EventLoopCoordinator
     {
+        private const int MaxMicrotaskCheckpointPasses = 1024;
         private static EventLoopCoordinator _instance;
         public static EventLoopCoordinator Instance => _instance ??= new EventLoopCoordinator();
 
@@ -87,12 +88,15 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
         }
 
-        private void DeliverMutationObserverRecords()
+        private bool DeliverMutationObserverRecords()
         {
             List<Action> toDeliver;
             lock (_moLock)
             {
-                if (_mutationObserverCallbacks.Count == 0) return;
+                if (_mutationObserverCallbacks.Count == 0)
+                {
+                    return false;
+                }
                 toDeliver = new List<Action>(_mutationObserverCallbacks);
                 _mutationObserverCallbacks.Clear();
             }
@@ -109,7 +113,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
             }
 
-            _microtaskQueue.DrainAll();
+            return true;
+        }
+
+        private bool HasQueuedMutationObserverCallbacks
+        {
+            get
+            {
+                lock (_moLock)
+                {
+                    return _mutationObserverCallbacks.Count > 0;
+                }
+            }
         }
 
         #endregion
@@ -200,14 +215,32 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
-                _microtaskQueue.DrainAll();
+                var passes = 0;
+                while (true)
+                {
+                    _microtaskQueue.DrainAll();
+                    var deliveredMutationObservers = DeliverMutationObserverRecords();
+                    if (!deliveredMutationObservers &&
+                        !_microtaskQueue.HasPendingMicrotasks &&
+                        !HasQueuedMutationObserverCallbacks)
+                    {
+                        break;
+                    }
+
+                    passes++;
+                    if (passes >= MaxMicrotaskCheckpointPasses)
+                    {
+                        EngineLogCompat.Warn(
+                            $"[EventLoop] Microtask checkpoint pass limit ({MaxMicrotaskCheckpointPasses}) exceeded; forcing checkpoint exit",
+                            LogCategory.Errors);
+                        break;
+                    }
+                }
             }
             finally
             {
                 EngineContext.Current.EndPhase();
             }
-
-            DeliverMutationObserverRecords();
         }
 
         public void ProcessRenderingUpdate()

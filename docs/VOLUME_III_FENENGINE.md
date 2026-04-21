@@ -408,6 +408,19 @@ flowchart TD
 - Parser-discovered and dynamically inserted external scripts now raise real DOM `load` / `error` events through `DOM.EventTarget.DispatchEvent(...)` instead of the lightweight string-event bridge, so assigned handler properties such as `script.onload` and `script.onerror` observe the same semantics as listener registrations. This unblocks webpack-style chunk loaders that gate startup on those handler properties.
 - Regression coverage was extended in `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`, and the March 14 verification slice (`JavaScriptEngineLifecycleTests` plus `ControlFlowInvariantTests`) passed 22/22 after this tranche.
 
+### 2.15b Event-Loop Checkpoint And Damage-Order Determinism Hardening (2026-04-21)
+
+- `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+- `FenBrowser.FenEngine/Rendering/Compositing/DamageRegionNormalizationPolicy.cs`
+- `FenBrowser.Tests/Engine/EventLoopTests.cs`
+- `FenBrowser.Tests/Rendering/DamageRegionNormalizationPolicyTests.cs`
+- `PerformMicrotaskCheckpoint()` now keeps MutationObserver callback delivery inside the same active `EnginePhase.Microtasks` checkpoint loop and drains microtasks queued by observer callbacks before the checkpoint exits.
+- Added bounded checkpoint pass protection (`MaxMicrotaskCheckpointPasses`) so pathological observer/microtask ping-pong cannot spin indefinitely.
+- Damage-region normalization now returns a stable deterministic ordering (`top`, `left`, `width`, `height`) after merge/clamp processing, preventing merge-order-dependent partial-raster sequencing drift.
+- Added regressions proving:
+  - MutationObserver callbacks and nested microtasks execute under `EnginePhase.Microtasks`.
+  - normalized damage-region output order is stable and geometry-sorted.
+
 ### 2.16 ES Module Export-Star Hardening (2026-03-20)
 
 - `FenBrowser.FenEngine/Core/ModuleLoader.cs`

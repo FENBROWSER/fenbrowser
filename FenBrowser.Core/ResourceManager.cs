@@ -1750,11 +1750,26 @@ namespace FenBrowser.Core
             {
                 // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
                 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var fetchMode = GetHeaderValue(request.Headers, "Sec-Fetch-Mode");
+                var isCorsMode = string.Equals(fetchMode, "cors", StringComparison.OrdinalIgnoreCase);
                 var originUri = GetCorsOrigin(request);
+                if (isCorsMode && originUri == null)
+                {
+                    EngineLogCompat.Warn($"[CORS] Blocked request to {request.RequestUri} due to missing origin context", LogCategory.Network);
+                    throw new HttpRequestException($"Blocked by CORS policy (missing origin context): {request.RequestUri}");
+                }
+
                 AttachCookies(request, request.Headers.Referrer ?? request.RequestUri, GetHeaderValue(request.Headers, "Sec-Fetch-Dest"));
                 ApplyCorsOriginHeader(request, originUri);
                 await EnsureCorsPreflightAsync(request, originUri, cts.Token).ConfigureAwait(false);
                 var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
+                if (isCorsMode && !CorsHandler.IsCorsAllowed(response, request.RequestUri, originUri))
+                {
+                    EngineLogCompat.Warn($"[CORS] Blocked response from {request.RequestUri} due to missing/invalid ACAO", LogCategory.Network);
+                    response.Dispose();
+                    throw new HttpRequestException($"Blocked by CORS policy (response validation failed): {request.RequestUri}");
+                }
+
                 StoreResponseCookies(response, request.Headers.Referrer ?? request.RequestUri);
                 return response;
             }

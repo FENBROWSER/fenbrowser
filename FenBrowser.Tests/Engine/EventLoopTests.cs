@@ -105,5 +105,35 @@ namespace FenBrowser.Tests.Engine
             // Should return to Idle
             Assert.Equal(EnginePhase.Idle, EnginePhaseManager.CurrentPhase);
         }
+
+        [Fact]
+        public void MutationObserverCallbacks_StayInMicrotaskPhase_AndDrainNestedMicrotasks()
+        {
+            var loop = EventLoopCoordinator.Instance;
+            var phases = new List<EnginePhase>();
+            var order = new List<string>();
+
+            loop.EnqueueTask(() =>
+            {
+                order.Add("task");
+                loop.QueueMutationObserverMicrotask(() =>
+                {
+                    order.Add("mutation-observer");
+                    phases.Add(EnginePhaseManager.CurrentPhase);
+                    loop.EnqueueMicrotask(() =>
+                    {
+                        order.Add("microtask-from-observer");
+                        phases.Add(EnginePhaseManager.CurrentPhase);
+                    });
+                });
+            });
+
+            loop.ProcessNextTask();
+
+            Assert.Equal(new[] { "task", "mutation-observer", "microtask-from-observer" }, order);
+            Assert.Equal(2, phases.Count);
+            Assert.All(phases, phase => Assert.Equal(EnginePhase.Microtasks, phase));
+            Assert.Equal(EnginePhase.Idle, EnginePhaseManager.CurrentPhase);
+        }
     }
 }

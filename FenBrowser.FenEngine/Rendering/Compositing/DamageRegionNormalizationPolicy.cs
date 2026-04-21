@@ -57,6 +57,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             MergeOverlappingRegions(normalized, _mergeGapPx);
+            SortRegions(normalized);
 
             if (normalized.Count > _maxNormalizedRegions)
             {
@@ -70,6 +71,32 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return normalized;
+        }
+
+        private static void SortRegions(List<SKRect> regions)
+        {
+            regions.Sort(static (left, right) =>
+            {
+                var top = left.Top.CompareTo(right.Top);
+                if (top != 0)
+                {
+                    return top;
+                }
+
+                var leftEdge = left.Left.CompareTo(right.Left);
+                if (leftEdge != 0)
+                {
+                    return leftEdge;
+                }
+
+                var width = left.Width.CompareTo(right.Width);
+                if (width != 0)
+                {
+                    return width;
+                }
+
+                return left.Height.CompareTo(right.Height);
+            });
         }
 
         private static SKRect Inflate(SKRect rect, float px)

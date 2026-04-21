@@ -701,6 +701,12 @@ _End of Volume II_
   - `Access-Control-Allow-Headers`
 - Failed preflights now block the primary request with a network-layer error instead of allowing the request onto the wire and only rejecting after the response.
 
+### 1.33b CORS Fail-Closed Response Validation (2026-04-21)
+- `ResourceManager.cs`
+- `ResourceManager.SendAsync(...)` now fail-closes `Sec-Fetch-Mode: cors` requests when origin context cannot be derived from `Origin` or `Referrer`.
+- Cross-origin CORS responses are now validated post-response via `CorsHandler.IsCorsAllowed(...)` before cookies are persisted or response content is exposed.
+- Responses missing valid `Access-Control-Allow-Origin` for the request origin are blocked with an explicit network-layer exception and warning log.
+
 ### 1.34 CORB Enforcement Wiring Hardening (2026-03-07)
 - `Security/Corb/CorbFilter.cs`
 - `ResourceManager.cs`

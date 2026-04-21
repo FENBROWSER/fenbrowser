@@ -82,6 +82,29 @@ jobs:
       - name: Build Tests project
         run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
 
+      - name: P0 Hardening Gates (blocking)
+        shell: pwsh
+        run: |
+          $project = "FenBrowser.Tests/FenBrowser.Tests.csproj"
+          $config = "Release"
+          $filters = @(
+            "FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopTests",
+            "FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopPriorityTests",
+            "FullyQualifiedName~FenBrowser.Tests.Rendering.RenderPipelineInvariantTests",
+            "FullyQualifiedName~FenBrowser.Tests.Rendering.DamageRegionNormalizationPolicyTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.Network.CspPolicyTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.SecurityChecksTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.ResourceManagerCorsSendAsyncTests",
+            "FullyQualifiedName~FenBrowser.Tests.Architecture.IpcEnvelopeValidationTests"
+          )
+
+          foreach ($filter in $filters) {
+            dotnet test $project -c $config --no-build --filter $filter
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+
       - name: Run unit tests
         run: dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --logger trx --results-directory TestResults
 

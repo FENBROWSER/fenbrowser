@@ -51,6 +51,17 @@ Standard xUnit tests covering internal components:
     - both test guard (`SpecGovernanceTests`) and CLI validator consume this map to avoid dual-list drift.
   - CI wiring:
     - `.github/workflows/build-fenbrowser-exe.yml` now runs `scripts/validate_spec_headers.ps1` in all active jobs (`build-windows`, `unit-tests`, `test262-regression`) before build/test execution.
+  - P0 hardening CI gate (2026-04-21):
+    - `unit-tests` now includes a dedicated blocking "P0 Hardening Gates" step before the full suite.
+    - The gate runs focused filters covering event loop ordering, paint/damage invariants, CSP/CORS enforcement, and IPC envelope validation:
+      - `EventLoopTests`
+      - `EventLoopPriorityTests`
+      - `RenderPipelineInvariantTests`
+      - `DamageRegionNormalizationPolicyTests`
+      - `CspPolicyTests`
+      - `SecurityChecksTests`
+      - `ResourceManagerCorsSendAsyncTests`
+      - `IpcEnvelopeValidationTests`
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 - Acid2 intro-page hardening on `2026-04-11` added:
   - `FenBrowser.Tests/Engine/CascadeModernTests.cs`
