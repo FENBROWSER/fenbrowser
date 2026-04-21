@@ -1,3 +1,7 @@
+// SpecRef: ECMA-262 (runtime semantics and abrupt completions), WHATWG HTML scripting integration
+// CapabilityId: JS-RUNTIME-EXCEPTION-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;

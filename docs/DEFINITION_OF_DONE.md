@@ -14,6 +14,7 @@ No exceptions. No "we'll fix it in follow-up". No partial credit.
 | 0-3 | **No secrets / credentials** | Automated scan + manual review confirms no keys, tokens, passwords |
 | 0-4 | **No debug leftovers** | No `Console.WriteLine`, `TODO REMOVE`, or commented-out dead code on hot paths |
 | 0-5 | **CI passes** | All required status checks green before merge |
+| 0-6 | **Spec governance wired** | `docs/SPECS.md` + `docs/COMPLIANCE_MATRIX.md` are current for changed capabilities, source headers include `SpecRef`/`CapabilityId`, and `scripts/validate_spec_headers.ps1` passes |
 
 ---
 
@@ -93,6 +94,7 @@ Copy into every PR description:
 - [ ] `dotnet test` — all tests pass, no new failures
 - [ ] No secrets/credentials in diff
 - [ ] No debug leftovers
+- [ ] `powershell -ExecutionPolicy Bypass -File scripts/validate_spec_headers.ps1` passes (for Core/FenEngine/Host process-isolation runtime changes)
 
 ### Tier 1 (feature/fix)
 - [ ] Spec reference cited: <!-- WHATWG/ECMA-262/RFC link + section -->

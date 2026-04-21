@@ -1,3 +1,7 @@
+// SpecRef: ECMA-262 built-ins and runtime semantics
+// CapabilityId: JS-BUILTINS-ES2024-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Dom.V2;
 using System;
 using FenBrowser.Core;

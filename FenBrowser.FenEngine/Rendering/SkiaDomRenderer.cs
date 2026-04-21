@@ -1,3 +1,7 @@
+// SpecRef: CSS2.1 painting order and compositor frame-presentation contract
+// CapabilityId: PAINT-STACKING-ORDER-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;

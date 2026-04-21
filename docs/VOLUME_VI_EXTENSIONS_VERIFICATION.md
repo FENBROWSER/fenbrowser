@@ -37,6 +37,15 @@ Standard xUnit tests covering internal components:
 - **Core**: DOM node logic, Attribute parsing.
 - **Engine**: CSS Parser correctness, Layout arithmetic.
 - **Html5lib**: Tests the Tokenizer against the tricky edge cases of the HTML5 spec.
+- **Architecture Governance (2026-04-21)**:
+  - Added `FenBrowser.Tests/Architecture/SpecGovernanceTests.cs` to enforce spec-contract wiring:
+    - `docs/COMPLIANCE_MATRIX.md` capability IDs must be parseable and unique.
+    - governed runtime/process files must contain valid `SpecRef`, `CapabilityId`, `Determinism`, and `FallbackPolicy` headers.
+    - governed `CapabilityId` values must exist in the matrix.
+    - docs index must include `SPECS.md`, `COMPLIANCE_MATRIX.md`, and `PROCESS_OWNERSHIP.md`.
+  - Added companion CLI validator:
+    - `scripts/validate_spec_headers.ps1`
+    - use in local verification/CI for fast pre-test guardrails.
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 - Acid2 intro-page hardening on `2026-04-11` added:
   - `FenBrowser.Tests/Engine/CascadeModernTests.cs`

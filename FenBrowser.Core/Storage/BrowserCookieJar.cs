@@ -1,3 +1,7 @@
+// SpecRef: RFC6265 cookie model and SameSite/Secure policy behavior
+// CapabilityId: SECURITY-COOKIE-MODEL-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Globalization;

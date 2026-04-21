@@ -76,6 +76,18 @@ Saved comparison snapshot (Fen vs Chrome/Firefox/Ladybird baseline) captured fro
 
 Project-local MCP setup for structural source navigation without indexing non-source fixture trees.
 
+### [Appendix L: Specification Ownership Map](SPECS.md)
+
+Subsystem-to-spec ownership and required source header contract for capability tracking.
+
+### [Appendix M: Compliance Matrix](COMPLIANCE_MATRIX.md)
+
+Capability-level compliance ledger with status, severity, owners, and verification targets.
+
+### [Appendix N: Process Ownership and IPC Contracts](PROCESS_OWNERSHIP.md)
+
+Process-boundary ownership map and required fail-closed startup and message envelope rules.
+
 ---
 
-_State as of 2026-02-20_
+_State as of 2026-04-21_

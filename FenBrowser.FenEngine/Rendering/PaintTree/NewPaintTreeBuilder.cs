@@ -1,3 +1,7 @@
+// SpecRef: CSS2.1 Appendix E (stacking contexts and painting order)
+// CapabilityId: PAINT-STACKING-ORDER-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;

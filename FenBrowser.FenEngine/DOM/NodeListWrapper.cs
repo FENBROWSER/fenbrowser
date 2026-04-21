@@ -1,3 +1,7 @@
+// SpecRef: DOM Living Standard, NodeList and list iteration behavior
+// CapabilityId: DOM-NODELIST-LIVE-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;

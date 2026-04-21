@@ -1,3 +1,7 @@
+// SpecRef: Test262 harness execution truthfulness contract
+// CapabilityId: VERIFY-TEST262-TRUTH-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 // =============================================================================
 // Program.cs
 // FenBrowser Test262 Conformance Benchmark CLI

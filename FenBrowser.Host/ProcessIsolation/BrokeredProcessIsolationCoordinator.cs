@@ -1,3 +1,7 @@
+// SpecRef: FenBrowser sandbox policy and brokered startup fail-closed contract
+// CapabilityId: PROCESS-SANDBOX-FAILCLOSED-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;

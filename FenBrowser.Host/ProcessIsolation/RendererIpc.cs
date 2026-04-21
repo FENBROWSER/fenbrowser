@@ -1,3 +1,7 @@
+// SpecRef: FenBrowser process startup and authenticated IPC contract
+// CapabilityId: PROCESS-IPC-HANDSHAKE-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Generic;
 using System.IO;

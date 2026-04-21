@@ -1,5 +1,9 @@
 // FenBrowser.Core.Accessibility — DOM → A11y tree builder
 
+// SpecRef: WAI-ARIA role mapping and accessibility tree exposure contract
+// CapabilityId: A11Y-TREE-ROLE-MAP-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;

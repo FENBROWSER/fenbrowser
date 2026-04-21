@@ -1,3 +1,7 @@
+// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
+// CapabilityId: CSS-CASCADE-ORDER-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;

@@ -1,3 +1,7 @@
+// SpecRef: Selectors Level 4
+// CapabilityId: CSS-SELECTOR-MATCH-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;

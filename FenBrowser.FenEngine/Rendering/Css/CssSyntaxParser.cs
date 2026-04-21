@@ -1,3 +1,7 @@
+// SpecRef: CSS Syntax Module Level 3, parser error handling and recovery
+// CapabilityId: CSS-PARSER-RECOVERY-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Generic;
 using System.Linq;

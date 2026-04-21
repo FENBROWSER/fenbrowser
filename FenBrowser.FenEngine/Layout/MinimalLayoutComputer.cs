@@ -1,3 +1,7 @@
+// SpecRef: CSS2.1 Visual formatting model, CSS Flexible Box Layout, CSS Grid Layout
+// CapabilityId: LAYOUT-FORMATTING-CONTEXT-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;

@@ -1,3 +1,7 @@
+// SpecRef: DOM Living Standard, mutation observer and mutation delivery model
+// CapabilityId: DOM-MUTATION-OBSERVER-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Core;

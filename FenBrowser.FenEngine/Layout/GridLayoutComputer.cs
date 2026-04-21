@@ -1,3 +1,7 @@
+// SpecRef: CSS Grid Layout Module Level 1, track sizing and placement
+// CapabilityId: LAYOUT-GRID-TRACKS-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;

@@ -1,3 +1,7 @@
+// SpecRef: WHATWG Fetch, CORS request/response handling
+// CapabilityId: FETCH-CORS-POLICY-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;

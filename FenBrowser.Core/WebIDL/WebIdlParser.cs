@@ -1,3 +1,7 @@
+// SpecRef: Web IDL Living Standard, deterministic parsing and generation input model
+// CapabilityId: WEBIDL-GENERATION-ORDER-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Generic;
 using System.Text;

@@ -1,3 +1,7 @@
+// SpecRef: DevTools Runtime protocol contract (FenBrowser CDP-compatible surface)
+// CapabilityId: DEVTOOLS-RUNTIME-SIGNAL-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System.Collections;
 using System.Reflection;
 using System.Text.Json;

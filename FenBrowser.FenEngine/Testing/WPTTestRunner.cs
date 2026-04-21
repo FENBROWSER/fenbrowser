@@ -1,3 +1,7 @@
+// SpecRef: Web Platform Tests harness execution truthfulness contract
+// CapabilityId: VERIFY-WPT-TRUTH-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 // =============================================================================
 // WPTTestRunner.cs
 // Web Platform Tests Runner

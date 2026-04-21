@@ -1,3 +1,7 @@
+// SpecRef: WHATWG HTML, microtask checkpoint processing
+// CapabilityId: EVENTLOOP-MICROTASK-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;

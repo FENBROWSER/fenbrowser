@@ -1,3 +1,7 @@
+// SpecRef: CSS Flexible Box Layout Module Level 1
+// CapabilityId: LAYOUT-FLEX-ALGO-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;

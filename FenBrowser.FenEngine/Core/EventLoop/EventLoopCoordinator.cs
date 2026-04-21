@@ -1,3 +1,7 @@
+// SpecRef: WHATWG HTML, Web application APIs, Event loops
+// CapabilityId: EVENTLOOP-MACROTASK-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core;

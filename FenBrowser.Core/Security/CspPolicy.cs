@@ -1,3 +1,7 @@
+// SpecRef: Content Security Policy Level 3, source-list enforcement
+// CapabilityId: SECURITY-CSP-ENFORCEMENT-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;
