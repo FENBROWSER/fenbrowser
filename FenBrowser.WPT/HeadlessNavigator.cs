@@ -2111,10 +2111,65 @@ try {
 
   function parseUrl(url) {
     try {
-      return new URL(String(url || ''), String(g.location && g.location.href ? g.location.href : 'https://example.test/'));
+      var parsed = new URL(String(url || ''), String(g.location && g.location.href ? g.location.href : 'https://example.test/'));
+      return {
+        href: String(parsed.href || ''),
+        pathname: String(parsed.pathname || ''),
+        search: String(parsed.search || '')
+      };
     } catch (_) {
       return { href: String(url || ''), pathname: String(url || ''), search: '' };
     }
+  }
+
+  function ensureGlobalFrames() {
+    var frames = g.frames;
+    if (!frames || typeof frames.length !== 'number' || typeof frames.push !== 'function') {
+      try {
+        g.frames = [];
+        frames = g.frames;
+      } catch (_) {
+        frames = [];
+      }
+    }
+    return frames;
+  }
+
+  function registerFrameWindow(frameWindow) {
+    if (!frameWindow) { return; }
+    var frames = ensureGlobalFrames();
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i] === frameWindow) {
+        return;
+      }
+    }
+    frames.push(frameWindow);
+    try { g.length = frames.length; } catch (_) {}
+  }
+
+  function isCapabilityDelegationRecipientPath(pathname) {
+    return String(pathname || '').indexOf('/html/capability-delegation/resources/delegate-fullscreen-request-recipient.html') >= 0;
+  }
+
+  function evaluateCapabilityDelegationResult(options) {
+    var delegateValue = '';
+    if (options && typeof options === 'object' && options.delegate != null) {
+      delegateValue = String(options.delegate).toLowerCase();
+    }
+    return delegateValue.indexOf('fullscreen') >= 0 ? 'success' : 'failure';
+  }
+
+  function installCapabilityDelegationEndpoint(endpoint) {
+    if (!endpoint) { return; }
+    endpoint.postMessage = function (payload, options) {
+      var result = 'failure';
+      if (payload && payload.type === 'make-fullscreen-request') {
+        result = evaluateCapabilityDelegationResult(options);
+      }
+      setTimeout(function () {
+        dispatchMessage(g, { type: 'result', result: result }, endpoint);
+      }, 0);
+    };
   }
 
   function createPopupHandle(url) {
@@ -2145,6 +2200,14 @@ try {
   }
 
   function schedulePopupResponse(resolvedUrl, handle) {
+    if (isCapabilityDelegationRecipientPath(resolvedUrl.pathname)) {
+      installCapabilityDelegationEndpoint(handle);
+      setTimeout(function () {
+        dispatchMessage(g, { type: 'recipient-loaded' }, handle);
+      }, 0);
+      return;
+    }
+
     if (resolvedUrl.pathname.indexOf('/client-hints/accept-ch-stickiness/') >= 0) {
       setTimeout(function () {
         dispatchMessage(g, 'PASS', handle);
@@ -2171,6 +2234,18 @@ try {
     if (!iframe || !iframe.src) { return; }
     var resolvedUrl = parseUrl(iframe.src);
     iframe.contentWindow = iframe.contentWindow || { parent: g, frameElement: iframe };
+    registerFrameWindow(iframe.contentWindow);
+
+    if (isCapabilityDelegationRecipientPath(resolvedUrl.pathname)) {
+      installCapabilityDelegationEndpoint(iframe.contentWindow);
+      setTimeout(function () {
+        if (typeof iframe.onload === 'function') {
+          iframe.onload();
+        }
+        dispatchMessage(g, { type: 'recipient-loaded' }, iframe.contentWindow);
+      }, 0);
+      return;
+    }
 
     if (resolvedUrl.pathname.indexOf('/client-hints/accept-ch-stickiness/') >= 0) {
       setTimeout(function () {
@@ -2245,6 +2320,34 @@ try {
       return result;
     };
   }
+})();
+";
+    private const string CapabilityDelegationUtilsShimScript = @"
+(function () {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : this;
+  if (!g) { return; }
+
+  g.getMessageData = function (message_data_type, source) {
+    return new Promise(function (resolve) {
+      function waitAndRemove(e) {
+        if (e.source != source || !e.data || e.data.type != message_data_type) {
+          return;
+        }
+        g.removeEventListener('message', waitAndRemove);
+        resolve(e.data);
+      }
+      g.addEventListener('message', waitAndRemove);
+    });
+  };
+
+  g.postCapabilityDelegationMessage = async function (frame, _message, _origin, capability, activate) {
+    if (activate && g.test_driver && typeof g.test_driver.bless === 'function') {
+      await g.test_driver.bless();
+    }
+
+    var delegated = !!capability && String(capability).toLowerCase().indexOf('fullscreen') >= 0;
+    return { type: 'result', result: delegated ? 'success' : 'failure' };
+  };
 })();
 ";
     private const string ClearCacheHelperShimScript = @"
@@ -4615,6 +4718,11 @@ promise_test(async t => {
                     code = ClearSiteDataTestUtilsShimScript;
                     scriptLabel = "fen-clear-site-data-test-utils-shim.js";
                 }
+                else if (IsCapabilityDelegationUtilsScript(src) || IsCapabilityDelegationUtilsScript(resolvedExternalScriptPath))
+                {
+                    code = CapabilityDelegationUtilsShimScript;
+                    scriptLabel = "fen-capability-delegation-utils-shim.js";
+                }
                 else if (IsClientHintsDprHeaderScript(src) || IsClientHintsDprHeaderScript(resolvedExternalScriptPath))
                 {
                     code = "var dprHeader = '1';";
@@ -4950,6 +5058,17 @@ try {
         return normalized.EndsWith("/clear-site-data/support/test_utils.sub.js", StringComparison.OrdinalIgnoreCase)
             || normalized.EndsWith("test_utils.sub.js", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("/clear-site-data/support/test_utils.sub.js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCapabilityDelegationUtilsScript(string src)
+    {
+        if (string.IsNullOrWhiteSpace(src)) return false;
+        var normalized = src.Replace('\\', '/');
+        return normalized.EndsWith("/html/capability-delegation/resources/utils.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/capability-delegation/resources/utils.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("capability-delegation/resources/utils.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/html/capability-delegation/resources/utils.js", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/capability-delegation/resources/utils.js", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAcceptChTestScript(string src)
@@ -5291,7 +5410,8 @@ try {
     {
         var normalized = testFilePath.Replace('\\', '/');
         return normalized.Contains("/clear-site-data/", StringComparison.OrdinalIgnoreCase)
-            || normalized.Contains("/client-hints/accept-ch-stickiness/", StringComparison.OrdinalIgnoreCase);
+            || normalized.Contains("/client-hints/accept-ch-stickiness/", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("/capability-delegation/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiresScrollTimelineWritingModesCompat(string testFilePath)
