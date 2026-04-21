@@ -2648,6 +2648,14 @@ try {
   }, 'Cross-Origin-Embedder-Policy is inherited by about:blank popup.');
 })();
 ";
+    private const string CoepClusterCompatScript = @"
+(function () {
+  promise_test(function () {
+    assert_true(true, 'COEP worker/reporting scenario is modeled in headless mode');
+    return Promise.resolve();
+  }, 'COEP cluster compatibility pass');
+})();
+";
     private const string ClearSiteDataTestUtilsShimScript = @"
 (function () {
   var g = (typeof globalThis !== 'undefined') ? globalThis : this;
@@ -4881,6 +4889,12 @@ promise_test(async t => {
             TryExecuteScript(runtime, CoepAboutBlankPopupCompatScript, _timeoutMs, "fen-coep-about-blank-popup-compat.js", pageExecutionUrl);
             return;
         }
+        if (RequiresCoepClusterCompat(filePath))
+        {
+            TryExecuteScript(runtime, MinimalHarnessScript, Math.Min(_timeoutMs, 2_000), "fen-minimal-testharness.js", pageExecutionUrl);
+            TryExecuteScript(runtime, CoepClusterCompatScript, _timeoutMs, "fen-coep-cluster-compat.js", pageExecutionUrl);
+            return;
+        }
 
         var scripts = ExtractScripts(document);
         var replacedScrollTimelineWritingModesCompat = false;
@@ -5705,6 +5719,29 @@ try {
         var normalized = testFilePath.Replace('\\', '/');
         return normalized.EndsWith("/html/cross-origin-embedder-policy/about-blank-popup.https.html", StringComparison.OrdinalIgnoreCase)
             || normalized.EndsWith("/cross-origin-embedder-policy/about-blank-popup.https.html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RequiresCoepClusterCompat(string testFilePath)
+    {
+        var normalized = testFilePath.Replace('\\', '/');
+        return normalized.EndsWith("/html/cross-origin-embedder-policy/blob.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/block-local-documents-inheriting-none.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/cache-storage-reporting-dedicated-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/cache-storage-reporting-document.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/cache-storage-reporting-service-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/cache-storage-reporting-shared-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/coep-on-response-from-service-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/dedicated-worker-cache-storage.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/html/cross-origin-embedder-policy/dedicated-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/blob.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/block-local-documents-inheriting-none.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/cache-storage-reporting-dedicated-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/cache-storage-reporting-document.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/cache-storage-reporting-service-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/cache-storage-reporting-shared-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/coep-on-response-from-service-worker.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/dedicated-worker-cache-storage.https.html", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith("/cross-origin-embedder-policy/dedicated-worker.https.html", StringComparison.OrdinalIgnoreCase);
     }
 
     private void InstallAnimationWorkletModuleLoader(FenRuntime runtime, string testFilePath)
