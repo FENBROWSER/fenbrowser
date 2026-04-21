@@ -81,6 +81,7 @@ namespace FenBrowser.Tests.Core
             Assert.True(renderer.LastLayout.TryGetElementRect(searchTextArea, out var searchTextAreaRect), "Missing layout rect for #APjFqb");
             Assert.True(renderer.LastLayout.TryGetElementRect(aiModeButton, out var aiModeButtonRect), "Missing layout rect for .plR5qb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchButtonsBand, out var searchButtonsBandRect), "Missing layout rect for .lJ9FBc");
+            Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), "Missing layout rect for .Ne6nSd");
 
             string layoutContext =
                 $"main={DescribeRect(renderer.LastLayout, mainColumn)} nav={DescribeRect(renderer.LastLayout, topNav)} " +
@@ -107,6 +108,32 @@ namespace FenBrowser.Tests.Core
             Assert.True(aiModeButtonRect.Width >= 60f, $"Expected .plR5qb width >= 60, got {aiModeButtonRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Height >= 30f, $"Expected .lJ9FBc height >= 30, got {searchButtonsBandRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Top < 520f, $"Expected visible .FPdoLc.lJ9FBc within viewport, got top={searchButtonsBandRect.Top}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+
+            var topNavInteractiveRects = root
+                .Descendants()
+                .OfType<Element>()
+                .Where(e => topNav.Contains(e))
+                .Select(e =>
+                {
+                    bool hasRect = renderer.LastLayout.TryGetElementRect(e, out var rect);
+                    return (hasRect, rect, element: e);
+                })
+                .Where(x => x.hasRect &&
+                            x.rect.Width >= 20f &&
+                            x.rect.Height >= 20f &&
+                            x.rect.Top < 120f &&
+                            x.rect.Left >= 0f)
+                .Where(x =>
+                {
+                    float overlap = Math.Min(x.rect.Bottom, topNavRect.Bottom) - Math.Max(x.rect.Top, topNavRect.Top);
+                    return overlap >= (x.rect.Height * 0.5f);
+                })
+                .Select(x => x.rect)
+                .ToList();
+
+            Assert.True(topNavInteractiveRects.Count >= 5, $"Expected at least 5 top-nav interactive boxes, got {topNavInteractiveRects.Count}. {layoutContext}");
+            Assert.All(topNavInteractiveRects, rect => Assert.True(rect.Top >= 0f, $"Expected top-nav boxes to stay within viewport top band, got {DescribeRect(rect)}. {layoutContext}"));
+            Assert.True(topNavInteractiveRects.Max(r => r.Right) > 1400f, $"Expected right-aligned header controls to remain near viewport edge. MaxRight={topNavInteractiveRects.Max(r => r.Right)}. {layoutContext}");
 
             var paintNodes = new List<PaintNodeBase>();
             CollectNodes(renderContext.PaintTreeRoots, paintNodes);

@@ -90,6 +90,21 @@ public sealed class Test262Config
     public int AutoParallelThreshold { get; set; } = 20;
 
     /// <summary>
+    /// Emit per-test failure bundles under Results/ for failed tests.
+    /// </summary>
+    public bool ExportFailureBundlesOnFailure { get; set; } = true;
+
+    /// <summary>
+    /// Max per-run failure bundles to prevent artifact explosion.
+    /// </summary>
+    public int MaxFailureBundlesPerRun { get; set; } = 20;
+
+    /// <summary>
+    /// Engine log preset name for runner sessions.
+    /// </summary>
+    public string LoggingPreset { get; set; } = "testrun";
+
+    /// <summary>
     /// Auto-discover the test262 root path relative to the current executable.
     /// Walks up directory tree looking for the test262/ folder.
     /// </summary>

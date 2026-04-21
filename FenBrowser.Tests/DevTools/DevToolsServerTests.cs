@@ -35,6 +35,7 @@ public class DevToolsServerTests
         server.InitializeRuntime(host);
         server.InitializeNetwork(host);
         server.InitializeDebugger(host);
+        server.InitializeLog();
 
         server.Reset();
 
@@ -45,6 +46,7 @@ public class DevToolsServerTests
             server.InitializeRuntime(host);
             server.InitializeNetwork(host);
             server.InitializeDebugger(host);
+            server.InitializeLog();
         });
 
         Assert.Null(ex);

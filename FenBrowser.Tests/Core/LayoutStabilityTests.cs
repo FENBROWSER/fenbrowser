@@ -43,7 +43,7 @@ namespace FenBrowser.Tests.Core
             /*
                 if (LastLayout != null && currentResult.ContentHash == LastLayout.ContentHash ...)
                 {
-                    FenLogger.Debug($"[StabilityGuard] Skipping repaint...");
+                    EngineLogCompat.Debug($"[StabilityGuard] Skipping repaint...");
                     onLayoutUpdated?.Invoke(new SKSize(initialWidth, totalHeight), overlaysCache);
                     return;
                 }

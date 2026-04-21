@@ -70,6 +70,21 @@ public sealed class WPTConfig
     public bool IsolateProcess { get; set; } = false;
 
     /// <summary>
+    /// Emit per-test failure bundles under Results/ for failed tests.
+    /// </summary>
+    public bool ExportFailureBundlesOnFailure { get; set; } = true;
+
+    /// <summary>
+    /// Max per-run failure bundles to prevent artifact explosion.
+    /// </summary>
+    public int MaxFailureBundlesPerRun { get; set; } = 20;
+
+    /// <summary>
+    /// Engine log preset name for runner sessions.
+    /// </summary>
+    public string LoggingPreset { get; set; } = "testrun";
+
+    /// <summary>
     /// Auto-discover the WPT root path relative to the current executable.
     /// Walks up directory tree looking for the wpt/ folder.
     /// </summary>

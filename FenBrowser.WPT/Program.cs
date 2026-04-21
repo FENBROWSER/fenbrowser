@@ -13,6 +13,7 @@
 
 using System.Diagnostics;
 using System.Globalization;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Testing;
 
 namespace FenBrowser.WPT;
@@ -67,11 +68,24 @@ public static class Program
                 case "--isolate-process":
                     config.IsolateProcess = true;
                     break;
+                case "--no-failure-bundles":
+                    config.ExportFailureBundlesOnFailure = false;
+                    break;
+                case "--max-failure-bundles" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int maxBundles) && maxBundles > 0)
+                        config.MaxFailureBundlesPerRun = maxBundles;
+                    break;
+                case "--log-preset" when i + 1 < args.Length:
+                    config.LoggingPreset = args[++i];
+                    break;
                 case "--verbose" or "-v":
                     config.Verbose = true;
                     break;
             }
         }
+
+        EngineLog.InitializeFromSettings();
+        EngineLog.ApplyPreset(config.LoggingPreset);
 
         var command = args[0].ToLowerInvariant();
 
@@ -210,6 +224,7 @@ public static class Program
         // Export JSON
         var output = ResultsExporter.Export(results, config.Format, null, sw.Elapsed, chunkNumber);
         WriteOutput(output, config);
+        ExportFailureBundles(config, results, "wpt-run_chunk");
 
         return failed > 0 ? 1 : 0;
     }
@@ -308,6 +323,7 @@ public static class Program
         // Export
         var output = ResultsExporter.Export(results, config.Format, category, sw.Elapsed);
         WriteOutput(output, config);
+        ExportFailureBundles(config, results, $"wpt-run_category:{category}");
 
         return results.Any(r => !r.Success) ? 1 : 0;
     }
@@ -352,6 +368,7 @@ public static class Program
 
         var output = ResultsExporter.Export(results, OutputFormat.Json, pack.Category, sw.Elapsed, 0, pack.Name, pack.Description);
         WriteRegressionPackOutput(output, repoRoot, pack, HasExplicitOutput(args) ? config.OutputPath : null);
+        ExportFailureBundles(config, results, $"wpt-run_pack:{pack.Name}");
 
         return results.Any(r => !r.Success) ? 1 : 0;
     }
@@ -433,6 +450,14 @@ public static class Program
             Console.WriteLine();
             Console.WriteLine("=== Console Output ===");
             Console.WriteLine(result.Output);
+        }
+
+        if (!result.Success)
+        {
+            ExportFailureBundle(
+                testId: GetRelativeWptTestId(config, result.TestFile),
+                url: ToFileUrl(result.TestFile),
+                summary: $"wpt-run_single failure: {result.Error}");
         }
 
         return result.Success ? 0 : 1;
@@ -923,6 +948,9 @@ OPTIONS:
   --chunk-size <N>             Tests per chunk (default: 100)
   --workers <N>                Number of isolated child workers for batch runs
   --isolate-process            Force isolated child-process execution
+  --no-failure-bundles         Disable per-test failure bundle export
+  --max-failure-bundles <N>    Max failure bundles per run (default: 20)
+  --log-preset <name>          Engine log preset (developer|testrun|perf|ci)
   --max <N>                    Max tests per category
   --verbose|-v                 Verbose output
 
@@ -944,5 +972,70 @@ EXAMPLES:
   FenBrowser.WPT run_single dom/nodes/Document-createElement.html
 ");
         return 0;
+    }
+
+    private static void ExportFailureBundles(
+        WPTConfig config,
+        IReadOnlyList<WPTTestRunner.TestExecutionResult> results,
+        string summaryPrefix)
+    {
+        if (!config.ExportFailureBundlesOnFailure || results == null || results.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var failure in results.Where(r => !r.Success).Take(config.MaxFailureBundlesPerRun))
+        {
+            ExportFailureBundle(
+                GetRelativeWptTestId(config, failure.TestFile),
+                ToFileUrl(failure.TestFile),
+                $"{summaryPrefix} | {failure.Error}");
+        }
+    }
+
+    private static void ExportFailureBundle(string testId, string url, string summary)
+    {
+        try
+        {
+            var bundlePath = EngineLog.ExportFailureBundle(testId: testId, url: url, summary: summary, maxEntries: 4000);
+            Console.WriteLine($"[WPT] Failure bundle exported: {bundlePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WPT] Failure bundle export failed for {testId}: {ex.Message}");
+        }
+    }
+
+    private static string GetRelativeWptTestId(WPTConfig config, string testFile)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(config.WptRootPath) && !string.IsNullOrWhiteSpace(testFile))
+            {
+                return Path.GetRelativePath(config.WptRootPath, testFile).Replace('\\', '/');
+            }
+        }
+        catch
+        {
+        }
+
+        return testFile ?? "wpt/unknown";
+    }
+
+    private static string ToFileUrl(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return new Uri(Path.GetFullPath(path)).AbsoluteUri;
+        }
+        catch
+        {
+            return path;
+        }
     }
 }

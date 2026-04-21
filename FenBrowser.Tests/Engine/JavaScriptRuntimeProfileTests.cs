@@ -1,8 +1,10 @@
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
@@ -67,6 +69,51 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("success", entry.Data["outcome"]?.ToString());
             Assert.Equal("Number", entry.Data["resultType"]?.ToString());
             Assert.True(entry.DurationMs.HasValue);
+        }
+
+        [Fact]
+        public async Task BalancedProfile_DoesNotDeferOversizedExternalPageScripts()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script src=\"/assets/large.js\"></script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost())
+            {
+                ExternalScriptFetcher = (_, _) => Task.FromResult(BuildLargeExternalScript("globalThis.__largeScriptRan = true;"))
+            };
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal(true, engine.Evaluate("globalThis.__largeScriptRan"));
+        }
+
+        [Fact]
+        public async Task LockedDownProfile_DefersOversizedExternalPageScripts()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script src=\"/assets/large.js\"></script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost(), JavaScriptRuntimeProfile.CreateLockedDown())
+            {
+                ExternalScriptFetcher = (_, _) => Task.FromResult(BuildLargeExternalScript("globalThis.__largeScriptRan = true;"))
+            };
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("undefined", engine.Evaluate("typeof globalThis.__largeScriptRan")?.ToString());
+        }
+
+        private static string BuildLargeExternalScript(string prefixStatement)
+        {
+            const int targetBytes = 300_000;
+            var fillerLength = Math.Max(0, targetBytes - (prefixStatement?.Length ?? 0) - 6);
+            return (prefixStatement ?? string.Empty) + "/*" + new string('x', fillerLength) + "*/";
         }
 
         private static JsHostAdapter CreateHost()

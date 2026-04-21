@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Deadlines;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
@@ -192,7 +194,7 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
-        public void StructuredLogger_UsesDiagnosticsRootLogs_WhenEnvOverrideIsSet()
+        public void EngineLogCompat_UsesDiagnosticsRootLogs_WhenEnvOverrideIsSet()
         {
             const string envName = "FEN_DIAGNOSTICS_DIR";
             string original = Environment.GetEnvironmentVariable(envName);
@@ -201,9 +203,9 @@ namespace FenBrowser.Tests.Core
             try
             {
                 Environment.SetEnvironmentVariable(envName, tempDirectory);
-                StructuredLogger.Initialize();
+                EngineLogCompat.Initialize(DiagnosticPaths.GetLogsDirectory());
 
-                string dumpPath = StructuredLogger.DumpRawSource("https://fenbrowser.dev", "<html></html>");
+                string dumpPath = EngineLogCompat.DumpRawSource("https://fenbrowser.dev", "<html></html>");
 
                 Assert.False(string.IsNullOrWhiteSpace(dumpPath));
                 Assert.StartsWith(System.IO.Path.Combine(tempDirectory, "logs"), dumpPath, StringComparison.OrdinalIgnoreCase);
@@ -239,6 +241,117 @@ namespace FenBrowser.Tests.Core
                     domNodeCount: 8,
                     screenshotSaved: false,
                     cssRuleCount: 0));
+        }
+
+        [Fact]
+        public void EngineLog_Deduplicator_OncePerDocument_AndRateLimit_Work()
+        {
+            LogManager.Initialize(true, LogCategory.All, LogLevel.Debug);
+            LogManager.ClearLogs();
+
+            string docId = Guid.NewGuid().ToString("N");
+            var context = new EngineLogContext(DocumentId: docId, Url: "https://fenbrowser.dev/dedup");
+
+            EngineLog.WriteOncePerDocument(
+                documentId: docId,
+                key: "unsupported:subgrid",
+                subsystem: LogSubsystem.Style,
+                severity: LogSeverity.Warn,
+                message: "Unsupported subgrid",
+                marker: LogMarker.Unimplemented,
+                context: context);
+
+            EngineLog.WriteOncePerDocument(
+                documentId: docId,
+                key: "unsupported:subgrid",
+                subsystem: LogSubsystem.Style,
+                severity: LogSeverity.Warn,
+                message: "Unsupported subgrid",
+                marker: LogMarker.Unimplemented,
+                context: context);
+
+            EngineLog.WriteRateLimited(
+                key: "rate:layout",
+                window: TimeSpan.FromHours(1),
+                subsystem: LogSubsystem.Layout,
+                severity: LogSeverity.Info,
+                message: "Layout summary",
+                context: context);
+
+            EngineLog.WriteRateLimited(
+                key: "rate:layout",
+                window: TimeSpan.FromHours(1),
+                subsystem: LogSubsystem.Layout,
+                severity: LogSeverity.Info,
+                message: "Layout summary",
+                context: context);
+
+            var logs = LogManager.GetRecentLogs();
+            Assert.Equal(2, logs.Count(entry =>
+                entry.Message.Contains("Unsupported subgrid", StringComparison.Ordinal) ||
+                entry.Message.Contains("Layout summary", StringComparison.Ordinal)));
+        }
+
+        [Fact]
+        public void EngineLog_ExportFailureBundle_WritesSummaryAndLogs()
+        {
+            LogManager.Initialize(true, LogCategory.All, LogLevel.Debug);
+            LogManager.ClearLogs();
+
+            EngineLog.Write(
+                LogSubsystem.Js,
+                LogSeverity.Error,
+                "Script failure",
+                LogMarker.EngineBug,
+                new EngineLogContext(TestId: "wpt/example.html", Url: "https://fenbrowser.dev"));
+
+            string bundlePath = EngineLog.ExportFailureBundle(
+                testId: "wpt/example.html",
+                url: "https://fenbrowser.dev",
+                summary: "synthetic failure bundle for test");
+
+            Assert.True(System.IO.Directory.Exists(bundlePath));
+            Assert.True(System.IO.File.Exists(System.IO.Path.Combine(bundlePath, "summary.json")));
+            Assert.True(System.IO.File.Exists(System.IO.Path.Combine(bundlePath, "logs.ndjson")));
+        }
+
+        [Fact]
+        public void EngineLog_PerDocumentCounters_AggregateByDocumentId()
+        {
+            LogManager.Initialize(true, LogCategory.All, LogLevel.Debug);
+            LogManager.ClearLogs();
+
+            var context = new EngineLogContext(DocumentId: "doc-counter-1", Url: "https://fenbrowser.dev/counter", TabId: "2", FrameId: "f-1");
+            EngineLog.Write(LogSubsystem.Layout, LogSeverity.Info, "layout-ok", LogMarker.None, context);
+            EngineLog.Write(LogSubsystem.Layout, LogSeverity.Warn, "layout-warn", LogMarker.Partial, context);
+            EngineLog.Write(LogSubsystem.Layout, LogSeverity.Error, "layout-error", LogMarker.EngineBug, context);
+
+            var counters = EngineLog.GetPerDocumentCounters();
+            var match = counters.FirstOrDefault(c => c.DocumentKey == "doc-counter-1");
+
+            Assert.Equal(3, match.TotalCount);
+            Assert.Equal(2, match.WarnCount);
+            Assert.Equal(1, match.ErrorCount);
+            Assert.Equal("2", match.LastTabId);
+            Assert.Equal("f-1", match.LastFrameId);
+        }
+
+        [Fact]
+        public void EngineLoggingPresets_Apply_TestRunPreset_ConfiguresExpectedLevels()
+        {
+            var options = new EngineLoggingOptions
+            {
+                GlobalMinimumSeverity = LogSeverity.Debug,
+                EnableTraceSink = true
+            };
+
+            var applied = EngineLoggingPresets.Apply(EngineLoggingPresets.TestRun, options);
+
+            Assert.True(applied);
+            Assert.Equal(LogSeverity.Warn, options.GlobalMinimumSeverity);
+            Assert.Equal(LogSeverity.Info, options.SubsystemOverrides[LogSubsystem.Style]);
+            Assert.Equal(LogSeverity.Info, options.SubsystemOverrides[LogSubsystem.Layout]);
+            Assert.False(options.EnableTraceSink);
         }
     }
 }

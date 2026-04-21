@@ -17,6 +17,7 @@
 
 using System.Diagnostics;
 using System.Text.Json;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Testing;
 
 namespace FenBrowser.Test262;
@@ -80,8 +81,21 @@ public static class Program
                 case "--isolate-process":
                     config.IsolateProcess = true;
                     break;
+                case "--no-failure-bundles":
+                    config.ExportFailureBundlesOnFailure = false;
+                    break;
+                case "--max-failure-bundles" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out int maxBundles) && maxBundles > 0)
+                        config.MaxFailureBundlesPerRun = maxBundles;
+                    break;
+                case "--log-preset" when i + 1 < args.Length:
+                    config.LoggingPreset = args[++i];
+                    break;
             }
         }
+
+        EngineLog.InitializeFromSettings();
+        EngineLog.ApplyPreset(config.LoggingPreset);
 
         if (string.IsNullOrEmpty(config.Test262RootPath))
         {
@@ -228,6 +242,7 @@ public static class Program
         // Export
         var output = ResultsExporter.Export(results, config.Format, chunkNumber, sw.Elapsed);
         WriteOutput(output, config);
+        ExportFailureBundles(config, results, "test262-run_chunk");
 
         return failed > 0 ? 1 : 0;
     }
@@ -639,6 +654,7 @@ public static class Program
 
         var output = ResultsExporter.Export(results, config.Format, totalDuration: sw.Elapsed);
         WriteOutput(output, config);
+        ExportFailureBundles(config, results, $"test262-run_category:{category}");
 
         return results.Any(r => !r.Passed) ? 1 : 0;
     }
@@ -684,6 +700,14 @@ public static class Program
             Console.WriteLine($"Error:    {result.Error}");
         if (result.Metadata?.Features.Count > 0)
             Console.WriteLine($"Features: {string.Join(", ", result.Metadata.Features)}");
+
+        if (!result.Passed)
+        {
+            ExportFailureBundle(
+                testId: GetRelativeTest262Id(config, result.TestFile),
+                url: ToFileUrl(result.TestFile),
+                summary: $"test262-run_single failure: {result.Error}");
+        }
 
         return result.Passed ? 0 : 1;
     }
@@ -875,6 +899,9 @@ OPTIONS:
   --workers <N>                Max isolated worker processes (default: 20)
   --verbose|-v                 Verbose output
   --isolate-process            Run isolated microchunk workers (crash-safe)
+  --no-failure-bundles         Disable per-test failure bundle export
+  --max-failure-bundles <N>    Max failure bundles per run (default: 20)
+  --log-preset <name>          Engine log preset (developer|testrun|perf|ci)
 
 ENVIRONMENT:
   TEST262_ROOT                 Alternative to --root flag
@@ -921,6 +948,71 @@ EXAMPLES:
         public string? Error { get; set; }
         public long DurationMs { get; set; }
         public List<string>? Features { get; set; }
+    }
+
+    private static void ExportFailureBundles(
+        Test262Config config,
+        IReadOnlyList<Test262Runner.TestResult> results,
+        string summaryPrefix)
+    {
+        if (!config.ExportFailureBundlesOnFailure || results == null || results.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var failure in results.Where(r => !r.Passed).Take(config.MaxFailureBundlesPerRun))
+        {
+            ExportFailureBundle(
+                GetRelativeTest262Id(config, failure.TestFile),
+                ToFileUrl(failure.TestFile),
+                $"{summaryPrefix} | {failure.Error}");
+        }
+    }
+
+    private static void ExportFailureBundle(string testId, string url, string summary)
+    {
+        try
+        {
+            var bundlePath = EngineLog.ExportFailureBundle(testId: testId, url: url, summary: summary, maxEntries: 4000);
+            Console.WriteLine($"[Test262] Failure bundle exported: {bundlePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Test262] Failure bundle export failed for {testId}: {ex.Message}");
+        }
+    }
+
+    private static string GetRelativeTest262Id(Test262Config config, string testFile)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(config.Test262RootPath) && !string.IsNullOrWhiteSpace(testFile))
+            {
+                return Path.GetRelativePath(config.Test262RootPath, testFile).Replace('\\', '/');
+            }
+        }
+        catch
+        {
+        }
+
+        return testFile ?? "test262/unknown";
+    }
+
+    private static string ToFileUrl(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return new Uri(Path.GetFullPath(path)).AbsoluteUri;
+        }
+        catch
+        {
+            return path;
+        }
     }
 }
 

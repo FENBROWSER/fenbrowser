@@ -118,7 +118,7 @@ namespace FenBrowser.WebDriver
         {
             var request = context.Request;
             var response = context.Response;
-            using var logScope = FenLogger.BeginScope(
+            using var logScope = EngineLogCompat.BeginScope(
                 component: "WebDriver",
                 data: new System.Collections.Generic.Dictionary<string, object>
                 {
@@ -132,7 +132,7 @@ namespace FenBrowser.WebDriver
                 var origin = request.Headers["Origin"];
                 if (!_originValidator.ValidateOrigin(request.RemoteEndPoint) || !_originValidator.ValidateOriginHeader(origin))
                 {
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[WebDriver] Unauthorized request blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
                         LogCategory.Security);
                     Log($"Security Alert: Blocked request from unauthorized origin or endpoint. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
@@ -153,7 +153,7 @@ namespace FenBrowser.WebDriver
                 {
                     if (!ValidatePreflightRequest(request, response))
                     {
-                        FenLogger.Warn(
+                        EngineLogCompat.Warn(
                             $"[WebDriver] Invalid preflight blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
                             LogCategory.Security);
                         Log($"Security Alert: Blocked invalid WebDriver preflight. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
@@ -239,7 +239,7 @@ namespace FenBrowser.WebDriver
         
         private void Log(string message)
         {
-            FenLogger.Info(message, LogCategory.WebDriver);
+            EngineLogCompat.Info(message, LogCategory.WebDriver);
             OnLog?.Invoke($"[WebDriver] {message}");
         }
 
