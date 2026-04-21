@@ -61,31 +61,35 @@ namespace FenBrowser.FenEngine.Core
 
         public FenValue Get(string name)
         {
-            if (_isWithEnvironment && HasWithBinding(name))
+            var visited = new HashSet<FenEnvironment>();
+            for (var env = this; env != null; env = env.Outer)
             {
-                return _withObject?.Get(name) ?? FenValue.Undefined;
-            }
+                if (!visited.Add(env))
+                {
+                    break;
+                }
 
-            if (_tdz.Contains(name))
-            {
-                // ECMA-262 §9.1.1.1: Accessing a TDZ binding must throw ReferenceError
-                throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
-            }
+                if (env._isWithEnvironment && env.HasWithBinding(name))
+                {
+                    return env._withObject?.Get(name) ?? FenValue.Undefined;
+                }
 
-            // ECMA-262 §9.1.1.5: Module import bindings are indirect — read through namespace
-            if (_importBindings != null && _importBindings.TryGetValue(name, out var binding))
-            {
-                return binding.Namespace.Get(binding.ExportName);
-            }
+                if (env._tdz.Contains(name))
+                {
+                    // ECMA-262 §9.1.1.1: Accessing a TDZ binding must throw ReferenceError
+                    throw new FenReferenceError($"ReferenceError: Cannot access '{name}' before initialization");
+                }
 
-            if (_store.TryGetValue(name, out var value))
-            {
-                return value;
-            }
+                // ECMA-262 §9.1.1.5: Module import bindings are indirect — read through namespace
+                if (env._importBindings != null && env._importBindings.TryGetValue(name, out var binding))
+                {
+                    return binding.Namespace.Get(binding.ExportName);
+                }
 
-            if (Outer != null)
-            {
-                return Outer.Get(name);
+                if (env._store.TryGetValue(name, out var value))
+                {
+                    return value;
+                }
             }
 
             return FenValue.Undefined;
@@ -143,8 +147,14 @@ namespace FenBrowser.FenEngine.Core
 
         public FenEnvironment ResolveBindingEnvironment(string name)
         {
+            var visited = new HashSet<FenEnvironment>();
             for (var env = this; env != null; env = env.Outer)
             {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
                 if ((env._isWithEnvironment && env.HasWithBinding(name)) ||
                     env._store.ContainsKey(name) || env._tdz.Contains(name))
                 {
@@ -224,43 +234,52 @@ namespace FenBrowser.FenEngine.Core
 
         public bool IsConstant(string name)
         {
-            if (_constants.Contains(name))
-                return true;
-            if (Outer != null)
-                return Outer.IsConstant(name);
-            return false;
+            var visited = new HashSet<FenEnvironment>();
+            for (var env = this; env != null; env = env.Outer)
+            {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
+                if (env._constants.Contains(name))
+                {
+                    return true;
+                }
             }
+
+            return false;
+        }
 
         public FenValue Update(string name, FenValue value, bool isStrict = false)
         {
-            if (_isWithEnvironment && HasWithBinding(name))
+            var visited = new HashSet<FenEnvironment>();
+            for (var env = this; env != null; env = env.Outer)
             {
-                _withObject?.Set(name, value);
-                return value;
-            }
+                if (!visited.Add(env))
+                {
+                    break;
+                }
 
-            if (_constants.Contains(name))
-            {
-                // ECMA-262 §14.3.1: Assignment to a const binding must throw TypeError
-                throw new FenTypeError($"TypeError: Assignment to constant variable '{name}'");
-            }
+                if (env._isWithEnvironment && env.HasWithBinding(name))
+                {
+                    env._withObject?.Set(name, value);
+                    return value;
+                }
 
-            if (_store.ContainsKey(name))
-            {
-                _store[name] = value;
-                SyncFastSlot(name, value);
-                SyncLiveModuleExport(name, value);
-                return value;
-            }
-
-            if (Outer != null)
-            {
-                if (Outer.IsConstant(name))
+                if (env._constants.Contains(name))
                 {
                     // ECMA-262 §14.3.1: Assignment to a const binding must throw TypeError
                     throw new FenTypeError($"TypeError: Assignment to constant variable '{name}'");
                 }
-                return Outer.Update(name, value, isStrict);
+
+                if (env._store.ContainsKey(name))
+                {
+                    env._store[name] = value;
+                    env.SyncFastSlot(name, value);
+                    env.SyncLiveModuleExport(name, value);
+                    return value;
+                }
             }
 
             if (isStrict || StrictMode)
@@ -331,8 +350,14 @@ namespace FenBrowser.FenEngine.Core
         public FenEnvironment GetDeclarationEnvironment()
         {
             var env = this;
+            var visited = new HashSet<FenEnvironment>();
             while (env != null && env._isWithEnvironment)
             {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
                 env = env.Outer;
             }
 
@@ -342,8 +367,14 @@ namespace FenBrowser.FenEngine.Core
         public FenEnvironment GetVarDeclarationEnvironment()
         {
             var env = this;
+            var visited = new HashSet<FenEnvironment>();
             while (env != null && (env._isWithEnvironment || env._isLexicalScope))
             {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
                 env = env.Outer;
             }
 
@@ -352,8 +383,14 @@ namespace FenBrowser.FenEngine.Core
 
         private bool TryGetBindingFromChain(string name, out FenValue value)
         {
+            var visited = new HashSet<FenEnvironment>();
             for (var env = this; env != null; env = env.Outer)
             {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
                 if (env._isWithEnvironment && env.HasWithBinding(name))
                 {
                     value = env._withObject?.Get(name) ?? FenValue.Undefined;

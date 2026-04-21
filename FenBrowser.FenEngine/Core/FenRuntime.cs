@@ -1129,16 +1129,24 @@ namespace FenBrowser.FenEngine.Core
                 return CreateStandaloneIntrinsicScope();
             }
 
+            FenEnvironment outermost = environment;
+            var visited = new HashSet<FenEnvironment>();
+            while (outermost.Outer != null && visited.Add(outermost))
+            {
+                outermost = outermost.Outer;
+            }
+
             if (HasStandaloneIntrinsic(environment, "Object") &&
                 HasStandaloneIntrinsic(environment, "TypeError"))
             {
                 return environment;
             }
 
-            var outermost = environment;
-            while (outermost.Outer != null)
+            // If the chain tail already has intrinsics, do not keep extending the chain.
+            if (HasStandaloneIntrinsic(outermost, "Object") &&
+                HasStandaloneIntrinsic(outermost, "TypeError"))
             {
-                outermost = outermost.Outer;
+                return environment;
             }
 
             var runtime = new FenRuntime();
