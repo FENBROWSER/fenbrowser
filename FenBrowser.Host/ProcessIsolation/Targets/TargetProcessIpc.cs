@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host.ProcessIsolation.Targets
 {
@@ -22,6 +23,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
     {
         Hello,
         Ready,
+        LogBatch,
         Ping,
         Pong,
         Shutdown,
@@ -136,7 +138,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     _connected = false;
                     _readyTcs.TrySetResult(false);
                     TargetProcessCrashed?.Invoke();
-                    FenLogger.Warn($"[{_targetKind}Process] Child process exited.", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Child process exited.");
                 };
             }
 
@@ -205,7 +207,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 });
 
                 _ = Task.Run(ReadLoopAsync);
-                FenLogger.Info($"[{_targetKind}Process] IPC connected on pipe '{PipeName}'.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[{_targetKind}Process] IPC connected on pipe '{PipeName}'.");
             }
             catch (OperationCanceledException)
             {
@@ -214,7 +216,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             catch (Exception ex)
             {
                 _readyTcs.TrySetResult(false);
-                FenLogger.Warn($"[{_targetKind}Process] IPC connect failed: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] IPC connect failed: {ex.Message}");
             }
         }
 
@@ -243,7 +245,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 _readyTcs.TrySetResult(false);
                 if (!_cts.IsCancellationRequested)
                 {
-                    FenLogger.Warn($"[{_targetKind}Process] Read loop error: {ex.Message}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Read loop error: {ex.Message}");
                 }
             }
         }
@@ -259,10 +261,14 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             {
                 case TargetIpcMessageType.Ready:
                     _readyTcs.TrySetResult(true);
-                    FenLogger.Info($"[{_targetKind}Process] Target process reported ready.", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[{_targetKind}Process] Target process reported ready.");
                     break;
                 case TargetIpcMessageType.Error:
-                    FenLogger.Warn($"[{_targetKind}Process] Error from child: {envelope.Payload}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Error from child: {envelope.Payload}");
+                    break;
+                case TargetIpcMessageType.LogBatch:
+                    var batch = TargetIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
+                    ProcessIsolationLogCollector.PublishBatch(batch);
                     break;
                 case TargetIpcMessageType.Pong:
                     break;
@@ -291,8 +297,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[{_targetKind}Process] Send failed: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Send failed: {ex.Message}");
             }
         }
     }
 }
+

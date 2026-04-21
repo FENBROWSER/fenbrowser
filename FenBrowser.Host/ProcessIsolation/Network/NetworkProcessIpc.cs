@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host.ProcessIsolation.Network
 {
@@ -38,6 +39,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         FetchResponseHead,
         FetchResponseBody,
         FetchFailed,
+        LogBatch,
         CookieResult,
         Pong,
         Error,
@@ -211,7 +213,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     _connected = false;
                     _readyTcs.TrySetResult(false);
                     NetworkProcessCrashed?.Invoke();
-                    FenLogger.Warn("[NetworkProcess] Child process exited.", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, "[NetworkProcess] Child process exited.");
                 };
             }
 
@@ -255,7 +257,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 });
 
                 _readLoop = Task.Run(ReadLoopAsync);
-                FenLogger.Info($"[NetworkProcess] IPC connected on pipe '{PipeName}'.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[NetworkProcess] IPC connected on pipe '{PipeName}'.");
 
             }
             catch (OperationCanceledException)
@@ -265,7 +267,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             catch (Exception ex)
             {
                 _readyTcs.TrySetResult(false);
-                FenLogger.Warn($"[NetworkProcess] IPC connect failed: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] IPC connect failed: {ex.Message}");
             }
         }
 
@@ -285,7 +287,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             {
                 _readyTcs.TrySetResult(false);
                 if (!_cts.IsCancellationRequested)
-                    FenLogger.Warn($"[NetworkProcess] Read loop error: {ex.Message}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Read loop error: {ex.Message}");
             }
         }
 
@@ -310,16 +312,21 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     if (fail != null) RequestFailed?.Invoke(fail);
                     break;
 
+                case NetworkIpcMessageType.LogBatch:
+                    var batch = NetworkIpc.DeserializePayload<EngineLogBatchPayload>(env);
+                    ProcessIsolationLogCollector.PublishBatch(batch);
+                    break;
+
                 case NetworkIpcMessageType.Ready:
                     _readyTcs.TrySetResult(true);
-                    FenLogger.Info("[NetworkProcess] Network process reported ready.", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, "[NetworkProcess] Network process reported ready.");
                     break;
 
                 case NetworkIpcMessageType.Pong:
                     break;
 
                 case NetworkIpcMessageType.Error:
-                    FenLogger.Warn($"[NetworkProcess] Error from child: {env.Payload}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Error from child: {env.Payload}");
                     break;
             }
         }
@@ -388,7 +395,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NetworkProcess] Send failed: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Send failed: {ex.Message}");
             }
         }
 
@@ -404,3 +411,4 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
+

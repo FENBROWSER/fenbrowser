@@ -38,7 +38,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 Environment.GetEnvironmentVariable("FEN_NETWORK_ALLOW_UNSANDBOXED"),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
-            using var launchScope = FenLogger.BeginScope(
+            using var launchScope = EngineLogBridge.BeginScope(
                 component: "NetworkProcessLauncher",
                 data: new System.Collections.Generic.Dictionary<string, object>
                 {
@@ -53,7 +53,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
             if (string.IsNullOrWhiteSpace(exePath))
             {
-                FenLogger.Error("[NetworkProcess] Could not resolve host executable path for network child launch.", LogCategory.General);
+                EngineLogBridge.Error("[NetworkProcess] Could not resolve host executable path for network child launch.", LogCategory.General);
                 return false;
             }
 
@@ -112,7 +112,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 {
                     sandbox?.Dispose();
                     session.Dispose();
-                    FenLogger.Error("[NetworkProcess] Failed to spawn network child process.", LogCategory.ProcessIsolation);
+                    EngineLogBridge.Error("[NetworkProcess] Failed to spawn network child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
@@ -120,7 +120,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 var ready = session.WaitForReadyAsync(_readyTimeout).GetAwaiter().GetResult();
                 if (!ready)
                 {
-                    FenLogger.Error(
+                    EngineLogBridge.Error(
                         $"[NetworkProcess] Network child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
                         LogCategory.ProcessIsolation);
                     try { child.Kill(entireProcessTree: true); } catch { }
@@ -133,7 +133,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 _sandbox = sandbox;
                 _session = session;
 
-                FenLogger.Info(
+                EngineLogBridge.Info(
                     $"[NetworkProcess] Network child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
                     LogCategory.ProcessIsolation);
                 return true;
@@ -141,7 +141,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             catch (Exception ex)
             {
                 session.Dispose();
-                FenLogger.Error($"[NetworkProcess] Failed to start network child: {ex.Message}", LogCategory.ProcessIsolation);
+                EngineLogBridge.Error($"[NetworkProcess] Failed to start network child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
             }
         }
@@ -183,3 +183,4 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
+

@@ -154,7 +154,7 @@ public class BrowserIntegration
             if (loading)
             {
                 CssLoader.ClearCaches();
-                FenLogger.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
+                EngineLogBridge.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
             }
             LoadingChanged?.Invoke(loading);
         };
@@ -177,7 +177,7 @@ public class BrowserIntegration
             // initial `#top` fragment scrolling to land the face inside the viewport.
             UpdatePendingFragmentNavigation(_browser.CurrentUri);
 
-            FenLogger.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
+            EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
             // after a valid frame is committed — never before _currentFrame is ready.
@@ -243,7 +243,7 @@ public class BrowserIntegration
                 }
                 else if (!rootChanged && committedStyledFrameReady && actualStylesReady && !ReferenceEquals(actualStyles, _styles))
                 {
-                    FenLogger.Debug(
+                    EngineLogBridge.Debug(
                         "[BrowserIntegration] DomPoller ignored late style snapshot churn after first styled render.",
                         LogCategory.Rendering);
                 }
@@ -377,11 +377,11 @@ public class BrowserIntegration
                         _remoteFrameBitmap = newBitmap;
                     }
 
-                    FenLogger.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} for tab={tabId}", LogCategory.Rendering);
+                    EngineLogBridge.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} for tab={tabId}", LogCategory.Rendering);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[BrowserIntegration] Failed to decode remote frame pixels for tab={tabId}: {ex.Message}", LogCategory.Rendering);
+                    EngineLogBridge.Warn($"[BrowserIntegration] Failed to decode remote frame pixels for tab={tabId}: {ex.Message}", LogCategory.Rendering);
                 }
             }
         }
@@ -529,7 +529,7 @@ public class BrowserIntegration
         while (_eventQueue.TryDequeue(out var action))
         {
             try { action(); }
-            catch (Exception ex) { FenLogger.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
+            catch (Exception ex) { EngineLogBridge.Error($"[EngineLoop] Action error: {ex.Message}", LogCategory.General); }
         }
     }
 
@@ -601,7 +601,7 @@ public class BrowserIntegration
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[EngineLoop] Coordinator error: {ex}", LogCategory.JavaScript);
+                EngineLogBridge.Error($"[EngineLoop] Coordinator error: {ex}", LogCategory.JavaScript);
                 break;
             }
         }
@@ -651,7 +651,7 @@ public class BrowserIntegration
                         _wakeEvent.WaitOne(250);
                         return false;
                     }
-                    FenLogger.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
+                    EngineLogBridge.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
                 }
             }
             if (_root != null && snapshot.HasStableStyles)
@@ -665,7 +665,7 @@ public class BrowserIntegration
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
+            EngineLogBridge.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
             return false;
         }
     }
@@ -751,7 +751,7 @@ public class BrowserIntegration
                 }
                 else
                 {
-                    FenLogger.Warn("[BrowserIntegration] Programmatic local-path normalization blocked; delegating to navigation policy.", LogCategory.Navigation);
+                    EngineLogBridge.Warn("[BrowserIntegration] Programmatic local-path normalization blocked; delegating to navigation policy.", LogCategory.Navigation);
                 }
             }
             // Default to http for localhost/127.0.0.1 to facilitate debugging
@@ -767,7 +767,7 @@ public class BrowserIntegration
             }
         }
 
-        FenLogger.Info($"[BrowserIntegration] Navigating to: {url}", LogCategory.General);
+        EngineLogBridge.Info($"[BrowserIntegration] Navigating to: {url}", LogCategory.General);
 
         if (url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase))
         {
@@ -809,7 +809,7 @@ public class BrowserIntegration
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[BrowserIntegration] Navigation failed: {ex.Message}", LogCategory.General);
+            EngineLogBridge.Error($"[BrowserIntegration] Navigation failed: {ex.Message}", LogCategory.General);
         }
     }
 
@@ -919,7 +919,7 @@ public class BrowserIntegration
                  if (!_hasLoggedFrameNull)
                  {
                      _hasLoggedFrameNull = true;
-                     FenLogger.Debug("[BrowserIntegration] Render: _currentFrame is null, drawing placeholder.", LogCategory.Rendering);
+                     EngineLogBridge.Debug("[BrowserIntegration] Render: _currentFrame is null, drawing placeholder.", LogCategory.Rendering);
                  }
             }
         }
@@ -974,7 +974,7 @@ public class BrowserIntegration
         // Guard: Prevent recording invalid/minimized frames
         if (viewportSize.Width <= 1 || viewportSize.Height <= 1)
         {
-            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: invalid size {viewportSize}", LogCategory.Rendering);
+            EngineLogBridge.Warn($"[BrowserIntegration] RecordFrame skipped: invalid size {viewportSize}", LogCategory.Rendering);
             return;
         }
         
@@ -985,7 +985,7 @@ public class BrowserIntegration
             // STOP THE HOT LOOP: If we can't record, stop asking to repaint immediately.
             // We will repaint again when state changes (RepaintReady/Loading/etc) trigger a wake.
             ClearPendingFrameRequest();
-            FenLogger.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
+            EngineLogBridge.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
             return; 
         }
 
@@ -998,19 +998,19 @@ public class BrowserIntegration
             if (cssElapsed < 60000)
             {
                 DeferPendingFrame();
-                FenLogger.Debug($"[BrowserIntegration] RecordFrame deferred: waiting for CSS styles ({cssElapsed:F0}ms).", LogCategory.Rendering);
+                EngineLogBridge.Debug($"[BrowserIntegration] RecordFrame deferred: waiting for CSS styles ({cssElapsed:F0}ms).", LogCategory.Rendering);
                 return;
             }
             // Timeout exceeded — render structurally unstyled so the page isn't blank forever.
             _styles = new Dictionary<Node, CssComputed>();
-            FenLogger.Warn("[BrowserIntegration] RecordFrame: CSS timeout — rendering unstyled.", LogCategory.Rendering);
+            EngineLogBridge.Warn("[BrowserIntegration] RecordFrame: CSS timeout — rendering unstyled.", LogCategory.Rendering);
         }
         
         // Guard: Ensure we have a valid HTML element
         string rootTag = _root?.TagName?.ToUpperInvariant() ?? "";
         if (_root != null && rootTag != "HTML")
         {
-            FenLogger.Warn($"[BrowserIntegration] RecordFrame skipped: root is '{rootTag}' not HTML", LogCategory.General);
+            EngineLogBridge.Warn($"[BrowserIntegration] RecordFrame skipped: root is '{rootTag}' not HTML", LogCategory.General);
             return;
         }
         
@@ -1018,7 +1018,7 @@ public class BrowserIntegration
         if (_styles == null)
         {
             _styles = new Dictionary<Node, CssComputed>();
-            FenLogger.Info("[BrowserIntegration] Recording structural frame (no styles yet)", LogCategory.Rendering);
+            EngineLogBridge.Info("[BrowserIntegration] Recording structural frame (no styles yet)", LogCategory.Rendering);
         }
         
         // === DOM → Layout → Paint → Present pipeline ===
@@ -1026,7 +1026,7 @@ public class BrowserIntegration
         // so we don't wrap with scoped stages here to avoid nested frame conflicts.
         if (FenBrowser.Core.Logging.DebugConfig.EnableDeepDebug && FenBrowser.Core.Logging.DebugConfig.LogFrameTiming)
         {
-            FenLogger.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
+            EngineLogBridge.Info($"[TRANSITION] DOM built (HTML). Running layout on real DOM. Viewport={viewportSize}", LogCategory.Layout);
         }
 
         try
@@ -1156,7 +1156,7 @@ public class BrowserIntegration
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
+            EngineLogBridge.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
         }
     }
 
@@ -1190,7 +1190,7 @@ public class BrowserIntegration
         }
         catch (Exception ex)
         {
-            FenLogger.Warn($"[BrowserIntegration] Failed to build seed image for base-frame reuse: {ex.Message}", LogCategory.Rendering);
+            EngineLogBridge.Warn($"[BrowserIntegration] Failed to build seed image for base-frame reuse: {ex.Message}", LogCategory.Rendering);
             return null;
         }
     }
@@ -1198,7 +1198,7 @@ public class BrowserIntegration
     private void LogCommittedFrame(RenderFrameResult frameResult, SKSize viewportSize)
     {
         var telemetry = frameResult?.Telemetry;
-        FenLogger.Info(
+        EngineLogBridge.Info(
             $"[BrowserIntegration] Frame recorded. Viewport={viewportSize.Width}x{viewportSize.Height} Reasons={frameResult?.InvalidationReason} Raster={frameResult?.RasterMode}",
             LogCategory.Rendering);
 
@@ -1292,7 +1292,7 @@ public class BrowserIntegration
             string.IsNullOrWhiteSpace(_pendingFragmentSourceUrl) ||
             _root == null)
         {
-            FenLogger.Info(
+            EngineLogBridge.Info(
                 $"[FragmentNav] Skipped: target='{_pendingFragmentTargetId ?? "<null>"}' source='{_pendingFragmentSourceUrl ?? "<null>"}' root={_root?.TagName ?? "<null>"}",
                 LogCategory.Navigation);
             return false;
@@ -1300,7 +1300,7 @@ public class BrowserIntegration
 
         if (!string.Equals(CurrentUrl, _pendingFragmentSourceUrl, StringComparison.OrdinalIgnoreCase))
         {
-            FenLogger.Info(
+            EngineLogBridge.Info(
                 $"[FragmentNav] Skipped: currentUrl='{CurrentUrl}' pendingUrl='{_pendingFragmentSourceUrl}'",
                 LogCategory.Navigation);
             return false;
@@ -1309,14 +1309,14 @@ public class BrowserIntegration
         var target = FindElementById(_root, _pendingFragmentTargetId);
         if (target == null)
         {
-            FenLogger.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' not found", LogCategory.Navigation);
+            EngineLogBridge.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' not found", LogCategory.Navigation);
             return false;
         }
 
         var rect = GetElementRect(target);
         if (!rect.HasValue)
         {
-            FenLogger.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' has no layout box yet", LogCategory.Navigation);
+            EngineLogBridge.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' has no layout box yet", LogCategory.Navigation);
             return false;
         }
 
@@ -1329,14 +1329,14 @@ public class BrowserIntegration
 
         if (Math.Abs(targetScroll - _scrollY) <= 0.5f)
         {
-            FenLogger.Info($"[FragmentNav] No-op: '#{_pendingFragmentTargetId}' targetScroll={targetScroll:F1} current={_scrollY:F1}", LogCategory.Navigation);
+            EngineLogBridge.Info($"[FragmentNav] No-op: '#{_pendingFragmentTargetId}' targetScroll={targetScroll:F1} current={_scrollY:F1}", LogCategory.Navigation);
             return false;
         }
 
         _scrollY = targetScroll;
         _scrollPhysics.SetPosition(_scrollY);
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
-        FenLogger.Info($"[FragmentNav] Applied '#{target.Id}' -> scrollY={_scrollY:F1}", LogCategory.Navigation);
+        EngineLogBridge.Info($"[FragmentNav] Applied '#{target.Id}' -> scrollY={_scrollY:F1}", LogCategory.Navigation);
         RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Navigation, "BrowserIntegration.FragmentNavigation");
         return true;
     }
@@ -1561,7 +1561,7 @@ public class BrowserIntegration
     {
         PostToEngine(() => 
         {
-            FenLogger.Debug($"[Scroll] DeltaY={deltaY}, OldY={_scrollY}, ContentHeight={_contentHeight}, Viewport={_lastViewportSize.Height}", LogCategory.Rendering);
+            EngineLogBridge.Debug($"[Scroll] DeltaY={deltaY}, OldY={_scrollY}, ContentHeight={_contentHeight}, Viewport={_lastViewportSize.Height}", LogCategory.Rendering);
             
             float scrollSpeed = 40f;
             _scrollY -= deltaY * scrollSpeed;
@@ -1572,7 +1572,7 @@ public class BrowserIntegration
             
             if (_scrollY > maxScroll) _scrollY = maxScroll;
 
-            FenLogger.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
+            EngineLogBridge.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
             
             RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
         });
@@ -1602,7 +1602,7 @@ public class BrowserIntegration
             var href = GetLinkHref(element);
             if (!string.IsNullOrEmpty(href))
             {
-                FenLogger.Info($"[BrowserIntegration] Link clicked: {href}", LogCategory.General);
+                EngineLogBridge.Info($"[BrowserIntegration] Link clicked: {href}", LogCategory.General);
                 LinkClicked?.Invoke(href);
                 _ = NavigateProgrammaticAsync(href);
                 return true;
@@ -1697,11 +1697,11 @@ public class BrowserIntegration
         // Guard against invalid/minimized sizes to prevent layout collapse/white flash
         if (size.Width <= 1 || size.Height <= 1) 
         {
-            FenLogger.Info($"[BrowserIntegration] Ignoring small viewport update: {size}", LogCategory.General);
+            EngineLogBridge.Info($"[BrowserIntegration] Ignoring small viewport update: {size}", LogCategory.General);
             return;
         }
 
-        FenLogger.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
+        EngineLogBridge.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
         _hasReceivedViewportSize = true;
         if (_lastViewportSize != size)
         {
@@ -1954,7 +1954,7 @@ public class BrowserIntegration
         HandleMouseDown(windowX, windowY, 0, viewportOffsetX, viewportOffsetY);
         var result = HandleMouseUp(windowX, windowY, 0, true, viewportOffsetX, viewportOffsetY);
 
-        FenLogger.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
+        EngineLogBridge.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
         return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
     }
 
@@ -2203,3 +2203,4 @@ public class ScrollPhysics
         IsAnimating = false;
     }
 }
+

@@ -156,7 +156,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             _session.RequestFailed += OnRequestFailed;
             _session.NetworkProcessCrashed += OnNetworkProcessCrashed;
 
-            FenLogger.Info("[NetworkCoordinator] Session attached.", LogCategory.Network);
+            EngineLogBridge.Info("[NetworkCoordinator] Session attached.", LogCategory.Network);
         }
 
         private void DetachSession()
@@ -183,7 +183,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             var session = _session;
             if (session == null || !session.IsConnected)
             {
-                FenLogger.Debug(
+                EngineLogBridge.Debug(
                     $"[NetworkCoordinator] Network process unavailable; using in-process fallback for {request.RequestUri}.",
                     LogCategory.Network);
                 return await _fallbackClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -235,7 +235,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 {
                     if (!session.ValidateCapabilityToken(expectedToken, head.Url ?? ""))
                     {
-                        FenLogger.Warn(
+                        EngineLogBridge.Warn(
                             $"[NetworkCoordinator] Capability token validation failed for request {requestId}.",
                             LogCategory.Network);
                         throw new HttpRequestException("Network process response failed capability token validation.");
@@ -252,7 +252,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
             catch (TimeoutException)
             {
-                FenLogger.Warn($"[NetworkCoordinator] Request {requestId} timed out.", LogCategory.Network);
+                EngineLogBridge.Warn($"[NetworkCoordinator] Request {requestId} timed out.", LogCategory.Network);
                 session.SendCancel(requestId);
                 throw new HttpRequestException($"Network process request timed out: {request.RequestUri}");
             }
@@ -288,7 +288,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         var bytes = Convert.FromBase64String(body.BodyChunkBase64);
                         if (bytes.Length > MaxBodyBytes)
                         {
-                            FenLogger.Warn(
+                            EngineLogBridge.Warn(
                                 $"[NetworkCoordinator] Body chunk exceeds max size for request {body.RequestId}; dropping.",
                                 LogCategory.Network);
                             pending.SetBodyFailed("Response body exceeded maximum allowed size.");
@@ -298,7 +298,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     }
                     catch (FormatException ex)
                     {
-                        FenLogger.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
+                        EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
                     }
                 }
 
@@ -318,13 +318,13 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 var error = $"[{fail.ErrorCode}] {fail.ErrorMessage}";
                 pending.SetHeadFailed(error);
                 pending.SetBodyFailed(error);
-                FenLogger.Warn($"[NetworkCoordinator] Request {fail.RequestId} failed: {error}", LogCategory.Network);
+                EngineLogBridge.Warn($"[NetworkCoordinator] Request {fail.RequestId} failed: {error}", LogCategory.Network);
             }
         }
 
         private void OnNetworkProcessCrashed()
         {
-            FenLogger.Warn("[NetworkCoordinator] Network process crashed; failing all pending requests.", LogCategory.Network);
+            EngineLogBridge.Warn("[NetworkCoordinator] Network process crashed; failing all pending requests.", LogCategory.Network);
 
             foreach (var kv in _pending)
             {
@@ -364,7 +364,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[NetworkCoordinator] Failed to read request body: {ex.Message}", LogCategory.Network);
+                    EngineLogBridge.Warn($"[NetworkCoordinator] Failed to read request body: {ex.Message}", LogCategory.Network);
                 }
             }
 
@@ -415,3 +415,4 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
+

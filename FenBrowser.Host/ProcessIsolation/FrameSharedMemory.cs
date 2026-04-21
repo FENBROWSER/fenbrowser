@@ -98,17 +98,17 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] CreateNew denied for '{candidate}'; falling back.", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew denied for '{candidate}'; falling back.", LogCategory.General);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] CreateNew failed for '{candidate}': {ex.Message}", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew failed for '{candidate}': {ex.Message}", LogCategory.General);
                 }
             }
 
             if (mmf == null)
             {
-                FenLogger.Warn("[FrameSharedMemory] Could not create shared memory region.", LogCategory.General);
+                EngineLogBridge.Warn("[FrameSharedMemory] Could not create shared memory region.", LogCategory.General);
                 return null;
             }
 
@@ -123,11 +123,11 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] EventWaitHandle denied for '{candidate}'; falling back.", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle denied for '{candidate}'; falling back.", LogCategory.General);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] EventWaitHandle failed for '{candidate}': {ex.Message}", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle failed for '{candidate}': {ex.Message}", LogCategory.General);
                 }
             }
 
@@ -136,7 +136,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var accessor = mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
             accessor.Write(OffsetCapacity, regionCapacity);
 
-            FenLogger.Info($"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', " +
+            EngineLogBridge.Info($"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', " +
                 $"window={windowWidth}×{windowHeight}, regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
             return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: true, mmf, accessor, readyEvent, regionCapacity);
         }
@@ -167,17 +167,17 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] OpenExisting denied for '{candidate}'; falling back.", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] OpenExisting denied for '{candidate}'; falling back.", LogCategory.General);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] OpenExisting failed for '{candidate}': {ex.Message}", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] OpenExisting failed for '{candidate}': {ex.Message}", LogCategory.General);
                 }
             }
 
             if (mmf == null)
             {
-                FenLogger.Warn("[FrameSharedMemory] Could not open shared memory region.", LogCategory.General);
+                EngineLogBridge.Warn("[FrameSharedMemory] Could not open shared memory region.", LogCategory.General);
                 return null;
             }
 
@@ -194,11 +194,11 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] EventWaitHandle open denied for '{candidate}'; falling back.", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle open denied for '{candidate}'; falling back.", LogCategory.General);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FrameSharedMemory] EventWaitHandle open failed for '{candidate}': {ex.Message}", LogCategory.General);
+                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle open failed for '{candidate}': {ex.Message}", LogCategory.General);
                 }
             }
 
@@ -209,11 +209,11 @@ namespace FenBrowser.Host.ProcessIsolation
             int regionCapacity = accessor.ReadInt32(OffsetCapacity);
             if (regionCapacity <= 0 || regionCapacity > MaxWidth * MaxHeight * BytesPerPixel)
             {
-                FenLogger.Warn($"[FrameSharedMemory] Invalid region capacity {regionCapacity} in header; clamping to max.", LogCategory.General);
+                EngineLogBridge.Warn($"[FrameSharedMemory] Invalid region capacity {regionCapacity} in header; clamping to max.", LogCategory.General);
                 regionCapacity = MaxWidth * MaxHeight * BytesPerPixel;
             }
 
-            FenLogger.Info($"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
+            EngineLogBridge.Info($"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
             return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: false, mmf, accessor, readyEvent, regionCapacity);
         }
 
@@ -228,7 +228,7 @@ namespace FenBrowser.Host.ProcessIsolation
             int pixelBytes = width * height * BytesPerPixel;
             if (pixelBytes > _regionCapacity)
             {
-                FenLogger.Warn($"[FrameSharedMemory] Frame too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
+                EngineLogBridge.Warn($"[FrameSharedMemory] Frame too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
                 return;
             }
 
@@ -275,7 +275,7 @@ namespace FenBrowser.Host.ProcessIsolation
             int pixelBytes = width * height * BytesPerPixel;
             if (pixelBytes > _regionCapacity)
             {
-                FenLogger.Warn($"[FrameSharedMemory] Read: reported frame dimensions too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
+                EngineLogBridge.Warn($"[FrameSharedMemory] Read: reported frame dimensions too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
                 return null;
             }
 
@@ -323,3 +323,4 @@ namespace FenBrowser.Host.ProcessIsolation
         }
     }
 }
+

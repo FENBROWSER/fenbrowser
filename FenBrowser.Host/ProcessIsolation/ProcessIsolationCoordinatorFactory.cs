@@ -16,12 +16,13 @@ namespace FenBrowser.Host.ProcessIsolation
             if (string.Equals(mode, "brokered", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(mode, "auto", StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Info($"[ProcessIsolation] '{mode}' requested; enabling per-tab renderer child process model.", LogCategory.General);
+                EngineLogBridge.Info($"[ProcessIsolation] '{mode}' requested; enabling per-tab renderer child process model.", LogCategory.General);
                 return new BrokeredProcessIsolationCoordinator();
             }
 
-            FenLogger.Info("[ProcessIsolation] Process isolation defaults to 'in-process'. Set FEN_PROCESS_ISOLATION=brokered or auto to enable out-of-process renderer mode.", LogCategory.General);
+            EngineLogBridge.Info("[ProcessIsolation] Process isolation defaults to 'in-process'. Set FEN_PROCESS_ISOLATION=brokered or auto to enable out-of-process renderer mode.", LogCategory.General);
             return new InProcessIsolationCoordinator();
         }
     }
 }
+

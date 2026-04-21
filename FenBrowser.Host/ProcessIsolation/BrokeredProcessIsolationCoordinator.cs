@@ -48,9 +48,8 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void Initialize()
         {
-            FenLogger.Info(
-                $"[ProcessIsolation] Mode=brokered (per-tab renderer child process enabled, assignment={_assignmentPolicy}, maxRestarts={_restartPolicy.MaxRestartAttempts}, stableResetMs={_restartPolicy.StableSessionResetMs}, crashWindowMs={_restartPolicy.CrashWindowMs}, crashWindowLimit={_restartPolicy.MaxCrashCountInWindow}, quarantineMs={_restartPolicy.QuarantineMs})",
-                LogCategory.General);
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
+                $"[ProcessIsolation] Mode=brokered (per-tab renderer child process enabled, assignment={_assignmentPolicy}, maxRestarts={_restartPolicy.MaxRestartAttempts}, stableResetMs={_restartPolicy.StableSessionResetMs}, crashWindowMs={_restartPolicy.CrashWindowMs}, crashWindowLimit={_restartPolicy.MaxCrashCountInWindow}, quarantineMs={_restartPolicy.QuarantineMs})");
         }
 
         public void OnTabCreated(BrowserTab tab)
@@ -64,7 +63,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
             if (!TryStartSession(state, restartAttempt: 0, restartReason: "tab-created"))
             {
-                FenLogger.Warn($"[ProcessIsolation] Initial renderer spawn failed for tab {tab.Id}; will retry on next navigation.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Initial renderer spawn failed for tab {tab.Id}; will retry on next navigation.");
                 return;
             }
         }
@@ -80,9 +79,8 @@ namespace FenBrowser.Host.ProcessIsolation
                 var process = session?.ChildProcess;
                 if (process != null && !process.HasExited)
                 {
-                    FenLogger.Debug(
-                        $"[ProcessIsolation] Activated tab {tab.Id} backed by renderer pid={process.Id}, assignment={state.AssignmentKey ?? "<none>"}",
-                        LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, 
+                        $"[ProcessIsolation] Activated tab {tab.Id} backed by renderer pid={process.Id}, assignment={state.AssignmentKey ?? "<none>"}");
                 }
                 session?.SendTabActivated();
             }
@@ -103,9 +101,8 @@ namespace FenBrowser.Host.ProcessIsolation
             {
                 if (navDecision.RequiresReassignment)
                 {
-                    FenLogger.Info(
-                        $"[ProcessIsolation] Reassigning renderer process for tab {tab.Id}: {navDecision.PreviousAssignmentKey} -> {navDecision.RequestedAssignmentKey}",
-                        LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
+                        $"[ProcessIsolation] Reassigning renderer process for tab {tab.Id}: {navDecision.PreviousAssignmentKey} -> {navDecision.RequestedAssignmentKey}");
                     RecycleSessionForAssignmentChange(state, navDecision.RequestedAssignmentKey);
                 }
 
@@ -226,9 +223,8 @@ namespace FenBrowser.Host.ProcessIsolation
             if (!_isolationRegistry.CanStartSession(state.TabId, out var retryAfterMs, out var denyReason))
             {
                 var retrySuffix = retryAfterMs > 0 ? $" retryAfterMs={retryAfterMs}" : string.Empty;
-                FenLogger.Warn(
-                    $"[ProcessIsolation] Start denied for tab {state.TabId} (reason={denyReason}{retrySuffix})",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, 
+                    $"[ProcessIsolation] Start denied for tab {state.TabId} (reason={denyReason}{retrySuffix})");
                 return false;
             }
 
@@ -257,9 +253,8 @@ namespace FenBrowser.Host.ProcessIsolation
             var ready = session.WaitForReadyAsync(_rendererReadyTimeout).GetAwaiter().GetResult();
             if (!ready)
             {
-                FenLogger.Error(
-                    $"[ProcessIsolation] Renderer child failed startup contract for tab {state.TabId} (pid={startedPid}, readyTimeoutMs={(int)_rendererReadyTimeout.TotalMilliseconds}).",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
+                    $"[ProcessIsolation] Renderer child failed startup contract for tab {state.TabId} (pid={startedPid}, readyTimeoutMs={(int)_rendererReadyTimeout.TotalMilliseconds}).");
                 StopSession(session, $"tab {state.TabId} startup contract failure");
                 sandbox?.Dispose();
                 return false;
@@ -269,9 +264,8 @@ namespace FenBrowser.Host.ProcessIsolation
             state.ActivePid = startedPid;
             _isolationRegistry.MarkSessionStarted(state.TabId, startedPid);
 
-            FenLogger.Info(
-                $"[ProcessIsolation] Renderer child started for tab {state.TabId} (pid={startedPid}, pipe={pipeName}, assignment={state.AssignmentKey ?? "<none>"}, reason={restartReason})",
-                LogCategory.General);
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
+                $"[ProcessIsolation] Renderer child started for tab {state.TabId} (pid={startedPid}, pipe={pipeName}, assignment={state.AssignmentKey ?? "<none>"}, reason={restartReason})");
             return true;
         }
 
@@ -296,18 +290,16 @@ namespace FenBrowser.Host.ProcessIsolation
             if (!exitDecision.ShouldRestart)
             {
                 var retryAfterSuffix = exitDecision.RetryAfterMs > 0 ? $", retryAfterMs={exitDecision.RetryAfterMs}" : string.Empty;
-                FenLogger.Warn(
-                    $"[ProcessIsolation] Renderer crash restart unavailable for tab {tabId} (pid={exitedPid}, reason={exitDecision.Reason}{retryAfterSuffix}).",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, 
+                    $"[ProcessIsolation] Renderer crash restart unavailable for tab {tabId} (pid={exitedPid}, reason={exitDecision.Reason}{retryAfterSuffix}).");
                     
                 // Fire crash event to UI
                 RendererCrashed?.Invoke(tabId, exitDecision.Reason);
                 return;
             }
 
-            FenLogger.Warn(
-                $"[ProcessIsolation] Renderer child exited unexpectedly for tab {tabId} (pid={exitedPid}). Restart attempt {exitDecision.RestartAttempt}/{_restartPolicy.MaxRestartAttempts} in {exitDecision.RestartDelayMs}ms.",
-                LogCategory.General);
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, 
+                $"[ProcessIsolation] Renderer child exited unexpectedly for tab {tabId} (pid={exitedPid}). Restart attempt {exitDecision.RestartAttempt}/{_restartPolicy.MaxRestartAttempts} in {exitDecision.RestartDelayMs}ms.");
 
             _ = Task.Run(async () =>
             {
@@ -367,9 +359,10 @@ namespace FenBrowser.Host.ProcessIsolation
                     Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
                     "1",
                     StringComparison.OrdinalIgnoreCase);
-                using var launchScope = FenLogger.BeginScope(
-                    component: "RendererProcessLauncher",
-                    data: new System.Collections.Generic.Dictionary<string, object>
+                using var launchScope = EngineLog.BeginScope(
+                    LogSubsystem.ProcessIsolation,
+                    "RendererProcessLauncher",
+                    fields: new System.Collections.Generic.Dictionary<string, object>
                     {
                         ["tabId"] = tabId,
                         ["assignmentKey"] = assignmentKey ?? string.Empty,
@@ -383,7 +376,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
                 if (string.IsNullOrWhiteSpace(exePath))
                 {
-                    FenLogger.Warn("[ProcessIsolation] Could not resolve host executable path for brokered child launch.", LogCategory.ProcessIsolation);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, "[ProcessIsolation] Could not resolve host executable path for brokered child launch.");
                     return null;
                 }
 
@@ -430,16 +423,14 @@ namespace FenBrowser.Host.ProcessIsolation
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error(
-                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}",
-                            LogCategory.ProcessIsolation);
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
+                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}");
                         rendererSandbox.Dispose();
                         rendererSandbox = null;
                         if (!allowUnsandboxedFallback)
                         {
-                            FenLogger.Error(
-                                $"[ProcessIsolation] Refusing unsandboxed renderer retry for tab {tabId}. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
-                                LogCategory.ProcessIsolation);
+                            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
+                                $"[ProcessIsolation] Refusing unsandboxed renderer retry for tab {tabId}. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.");
                             return null;
                         }
                         process = Process.Start(startInfo);
@@ -450,9 +441,8 @@ namespace FenBrowser.Host.ProcessIsolation
                     // Standard .NET process start (Job Object sandbox or NullSandbox).
                     if (rendererSandbox == null && !allowUnsandboxedFallback)
                     {
-                        FenLogger.Error(
-                            $"[ProcessIsolation] Refusing renderer launch for tab {tabId} because no sandbox is active. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.",
-                            LogCategory.ProcessIsolation);
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
+                            $"[ProcessIsolation] Refusing renderer launch for tab {tabId} because no sandbox is active. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.");
                         return null;
                     }
 
@@ -466,9 +456,8 @@ namespace FenBrowser.Host.ProcessIsolation
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn(
-                                $"[ProcessIsolation] Sandbox.AttachToProcess failed for tab {tabId} pid={process.Id}: {ex.Message}",
-                                LogCategory.ProcessIsolation);
+                            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, 
+                                $"[ProcessIsolation] Sandbox.AttachToProcess failed for tab {tabId} pid={process.Id}: {ex.Message}");
                             if (!allowUnsandboxedFallback)
                             {
                                 try { process.Kill(entireProcessTree: true); } catch { }
@@ -481,9 +470,8 @@ namespace FenBrowser.Host.ProcessIsolation
 
                 if (process != null && rendererSandbox != null)
                 {
-                    FenLogger.Info(
-                        $"[ProcessIsolation] Renderer child sandboxed via '{rendererSandbox.ProfileName}' for tab {tabId}.",
-                        LogCategory.ProcessIsolation);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
+                        $"[ProcessIsolation] Renderer child sandboxed via '{rendererSandbox.ProfileName}' for tab {tabId}.");
                     sandbox = rendererSandbox;
                 }
                 else
@@ -495,7 +483,7 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[ProcessIsolation] Failed to start renderer child for tab {tabId}: {ex.Message}", LogCategory.ProcessIsolation);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, $"[ProcessIsolation] Failed to start renderer child for tab {tabId}: {ex.Message}");
                 return null;
             }
         }
@@ -522,7 +510,7 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ProcessIsolation] Failed to stop renderer child ({reason}): {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Failed to stop renderer child ({reason}): {ex.Message}");
             }
             finally
             {
@@ -585,3 +573,5 @@ namespace FenBrowser.Host.ProcessIsolation
         }
     }
 }
+
+

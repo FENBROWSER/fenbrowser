@@ -257,7 +257,7 @@ public class SettingsPageWidget : Widget
 
         _clearDataButton = new ButtonWidget { Text = "Clear now" };
         _clearDataButton.Clicked += () => {
-            FenBrowser.Core.FenLogger.Info("Clearing browsing data...", LogCategory.General);
+            EngineLogBridge.Info("Clearing browsing data...", LogCategory.General);
             // In a real implementation we would call a cleanup service here
         };
         AddChild(_clearDataButton);
@@ -370,8 +370,8 @@ public class SettingsPageWidget : Widget
         _enableLogging.CheckedChanged += (val) => {
             BrowserSettings.Instance.Logging.EnableLogging = val;
             BrowserSettings.Instance.Save();
-            // Apply immediately to LogManager
-            FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+            // Apply immediately to engine logging runtime
+            FenBrowser.Core.Logging.EngineLog.InitializeFromSettings();
         };
         AddChild(_enableLogging);
         
@@ -389,7 +389,7 @@ public class SettingsPageWidget : Widget
         _logLevelDropdown.SelectionChanged += (idx, val) => {
             BrowserSettings.Instance.Logging.MinimumLevel = idx;
             BrowserSettings.Instance.Save();
-            FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+            FenBrowser.Core.Logging.EngineLog.InitializeFromSettings();
         };
         AddChild(_logLevelDropdown);
         
@@ -477,7 +477,7 @@ public class SettingsPageWidget : Widget
             current &= ~(1 << bit);
         BrowserSettings.Instance.Logging.EnabledCategories = current;
         BrowserSettings.Instance.Save();
-        FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+        FenBrowser.Core.Logging.EngineLog.InitializeFromSettings();
     }
 
     private void RefreshLayout()
@@ -491,7 +491,7 @@ public class SettingsPageWidget : Widget
         
         if (current is RootWidget root)
         {
-            FenBrowser.Core.FenLogger.Info($"[Settings] RefreshLayout found RootWidget. Calling RefreshBookmarks and Invalidate.", FenBrowser.Core.Logging.LogCategory.General);
+            EngineLogBridge.Info($"[Settings] RefreshLayout found RootWidget. Calling RefreshBookmarks and Invalidate.", FenBrowser.Core.Logging.LogCategory.General);
             root.BookmarksBar.RefreshBookmarks();
             root.InvalidateLayout();
             root.Invalidate();
@@ -1348,3 +1348,5 @@ public class SettingsPageWidget : Widget
         }
     }
 }
+
+

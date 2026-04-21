@@ -48,7 +48,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 Environment.GetEnvironmentVariable(_contract.AllowUnsandboxedEnvKey),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
-            using var launchScope = FenLogger.BeginScope(
+            using var launchScope = EngineLogBridge.BeginScope(
                 component: $"{_targetKind}ProcessLauncher",
                 data: new System.Collections.Generic.Dictionary<string, object>
                 {
@@ -64,7 +64,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
             if (string.IsNullOrWhiteSpace(exePath))
             {
-                FenLogger.Error($"[{_targetKind}Process] Could not resolve host executable path for child launch.", LogCategory.General);
+                EngineLogBridge.Error($"[{_targetKind}Process] Could not resolve host executable path for child launch.", LogCategory.General);
                 return false;
             }
 
@@ -124,7 +124,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 {
                     sandbox?.Dispose();
                     session.Dispose();
-                    FenLogger.Error($"[{_targetKind}Process] Failed to spawn child process.", LogCategory.ProcessIsolation);
+                    EngineLogBridge.Error($"[{_targetKind}Process] Failed to spawn child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
@@ -132,7 +132,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 var ready = session.WaitForReadyAsync(_readyTimeout).GetAwaiter().GetResult();
                 if (!ready)
                 {
-                    FenLogger.Error(
+                    EngineLogBridge.Error(
                         $"[{_targetKind}Process] Child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
                         LogCategory.ProcessIsolation);
                     try { child.Kill(entireProcessTree: true); } catch { }
@@ -145,7 +145,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 _sandbox = sandbox;
                 _session = session;
 
-                FenLogger.Info(
+                EngineLogBridge.Info(
                     $"[{_targetKind}Process] Child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
                     LogCategory.ProcessIsolation);
                 return true;
@@ -153,7 +153,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             catch (Exception ex)
             {
                 session.Dispose();
-                FenLogger.Error($"[{_targetKind}Process] Failed to start child: {ex.Message}", LogCategory.ProcessIsolation);
+                EngineLogBridge.Error($"[{_targetKind}Process] Failed to start child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
             }
         }
@@ -195,3 +195,4 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         }
     }
 }
+

@@ -50,7 +50,7 @@ namespace FenBrowser.Host.Context
                 }, enabled: onOpenInNewTab != null && !string.IsNullOrEmpty(hit.ImageSrc)));
                 items.Add(ContextMenuItem.Create("Save Image As...", () =>
                 {
-                    FenBrowser.Core.FenLogger.Info($"[ContextMenu] Save Image As... requested: {hit.ImageSrc}", FenBrowser.Core.Logging.LogCategory.General);
+                    EngineLogBridge.Info($"[ContextMenu] Save Image As... requested: {hit.ImageSrc}", FenBrowser.Core.Logging.LogCategory.General);
                 }, enabled: !string.IsNullOrEmpty(hit.ImageSrc)));
                 items.Add(ContextMenuItem.Create("Copy Image Address", () =>
                 {
@@ -98,3 +98,5 @@ namespace FenBrowser.Host.Context
         }
     }
 }
+
+

@@ -69,7 +69,7 @@ public class Compositor
             // Arrange pass
             _root.Arrange(new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
             
-            FenLogger.Debug($"[Compositor] Layout executed for size {logicalSize.Width}x{logicalSize.Height}. Root desired: {_root.DesiredSize.Width}x{_root.DesiredSize.Height}", LogCategory.General);
+            EngineLogBridge.Debug($"[Compositor] Layout executed for size {logicalSize.Width}x{logicalSize.Height}. Root desired: {_root.DesiredSize.Width}x{_root.DesiredSize.Height}", LogCategory.General);
         }
     }
     
@@ -302,3 +302,4 @@ public class CompositorLayer : IDisposable
         _surface = null;
     }
 }
+

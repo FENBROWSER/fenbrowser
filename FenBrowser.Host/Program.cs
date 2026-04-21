@@ -15,6 +15,7 @@ using FenBrowser.Host.ProcessIsolation.Network;
 using FenBrowser.Host.ProcessIsolation.Targets;
 using FenBrowser.Host.ProcessIsolation.Utility;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net.Http;
 using FenBrowser.Core.Network;
 
@@ -81,11 +82,13 @@ namespace FenBrowser.Host
 
                 // Global Exception Handling
                 AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
-                    FenLogger.Error($"[CRASH] Unhandled Domain Exception: {e.ExceptionObject}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Error, $"[CRASH] Unhandled Domain Exception: {e.ExceptionObject}", LogMarker.Invariant);
+                    TryExportCrashBundle("Unhandled domain exception", e.ExceptionObject as Exception);
                 };
 
                 TaskScheduler.UnobservedTaskException += (sender, e) => {
-                    FenLogger.Error($"[CRASH] Unobserved Task Exception: {e.Exception}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Error, $"[CRASH] Unobserved Task Exception: {e.Exception}", LogMarker.EngineBug);
+                    TryExportCrashBundle("Unobserved task exception", e.Exception);
                     e.SetObserved();
                 };
 
@@ -117,7 +120,7 @@ namespace FenBrowser.Host
                 }
 
                 // 1. Logging Setup
-                FenBrowser.Core.Logging.LogManager.InitializeFromSettings();
+                EngineLog.InitializeFromSettings();
                 RejectToolingArguments(args);
 
                 if (args.Contains("--log-level") && args.Length > Array.IndexOf(args, "--log-level") + 1)
@@ -130,7 +133,7 @@ namespace FenBrowser.Host
                 }
 
                 string initialUrl = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "https://www.google.com";
-                FenLogger.Info($"[Host] Starting FenBrowser with URL: {initialUrl}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[Host] Starting FenBrowser with URL: {initialUrl}");
 
                 // 2. Engine Config
                 CssEngineConfig.CurrentEngine = CssEngineType.Custom;
@@ -146,9 +149,9 @@ namespace FenBrowser.Host
 
                     // DIAGNOSTIC LOGGING
                     var wm = WindowManager.Instance;
-                    FenLogger.Info($"[DPI-CHECK] Physical: {wm.Window.FramebufferSize.X}x{wm.Window.FramebufferSize.Y}", LogCategory.General);
-                    FenLogger.Info($"[DPI-CHECK] Logical:  {wm.Window.Size.X}x{wm.Window.Size.Y}", LogCategory.General);
-                    FenLogger.Info($"[DPI-CHECK] Scale:    {wm.DpiScale}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[DPI-CHECK] Physical: {wm.Window.FramebufferSize.X}x{wm.Window.FramebufferSize.Y}");
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[DPI-CHECK] Logical:  {wm.Window.Size.X}x{wm.Window.Size.Y}");
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[DPI-CHECK] Scale:    {wm.DpiScale}");
                 };
 
                 // 5. Run Application
@@ -158,7 +161,8 @@ namespace FenBrowser.Host
             {
                 AttachConsole(ATTACH_PARENT_PROCESS); // Ensure crash logs are visible if run from console
                 Console.WriteLine($"[Host] Fatal Shutdown: {ex}");
-                FenLogger.Error($"[Host] Fatal Shutdown: {ex}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.General, LogSeverity.Error, $"[Host] Fatal Shutdown: {ex}", LogMarker.Invariant);
+                TryExportCrashBundle("Host fatal shutdown", ex);
                 throw;
             }
         }
@@ -170,6 +174,45 @@ namespace FenBrowser.Host
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetProcessDpiAwarenessContext(int dpiContext);
         private const int DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4;
+
+        private static void TryExportCrashBundle(string summary, Exception? exception)
+        {
+            try
+            {
+                var bundlePath = EngineLog.ExportFailureBundle(
+                    summary: string.IsNullOrWhiteSpace(summary)
+                        ? "FenBrowser crash snapshot"
+                        : summary,
+                    url: null,
+                    testId: null,
+                    maxEntries: 4000);
+
+                EngineLog.Write(
+                    LogSubsystem.General,
+                    LogSeverity.Error,
+                    $"[CRASH] Failure bundle exported to {bundlePath}",
+                    LogMarker.Fallback,
+                    default,
+                    exception == null
+                        ? null
+                        : new Dictionary<string, object> { ["exception"] = exception.ToString() });
+            }
+            catch (Exception exportError)
+            {
+                try
+                {
+                    EngineLog.Write(
+                        LogSubsystem.General,
+                        LogSeverity.Error,
+                        $"[CRASH] Failed to export failure bundle: {exportError.Message}",
+                        LogMarker.Fallback);
+                }
+                catch
+                {
+                    // no-op
+                }
+            }
+        }
 
         private static void RejectToolingArguments(string[] args)
         {
@@ -209,7 +252,7 @@ namespace FenBrowser.Host
 
         private static async Task RunRendererChildLoopAsync(string[] args)
         {
-            LogManager.InitializeFromSettings();
+            EngineLog.InitializeFromSettings();
 
             int tabId = 0;
             var tabArg = args.FirstOrDefault(a => a.StartsWith("--tab-id=", StringComparison.OrdinalIgnoreCase));
@@ -233,7 +276,7 @@ namespace FenBrowser.Host
             // Shared memory writer for frame delivery. Created lazily on first FrameRequest.
             FenBrowser.Host.ProcessIsolation.FrameSharedMemory frameSharedMemory = null;
 
-            FenLogger.Info($"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}", LogCategory.General);
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}");
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
             {
@@ -246,16 +289,14 @@ namespace FenBrowser.Host
                     }
                     await Task.Delay(500).ConfigureAwait(false);
                 }
-                FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Exiting for tab={tabId}");
                 return;
             }
 
             if (!string.Equals(sandboxProfile, "renderer_minimal", StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(capabilitySet, "navigate,input,frame", StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Warn(
-                    $"[RendererChild] Startup policy assertion failed for tab={tabId}. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[RendererChild] Startup policy assertion failed for tab={tabId}. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.");
                 return;
             }
 
@@ -266,19 +307,25 @@ namespace FenBrowser.Host
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[RendererChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[RendererChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}");
                 return;
             }
 
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
+            using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
 
             bool handshakeComplete = false;
             bool running = true;
 
             while (running)
             {
+                if (handshakeComplete)
+                {
+                    logForwarder.FlushRenderer(writer, tabId);
+                }
+
                 if (!IsParentAlive(parentPid))
                 {
                     break;
@@ -465,16 +512,16 @@ namespace FenBrowser.Host
                                     frameSharedMemory.WriteFrame(iWidth, iHeight, pixelBytes);
                                     frameSharedMemory.SignalReady();
                                     seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
-                                    FenLogger.Debug($"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId}", LogCategory.Rendering);
+                                    EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId}");
                                 }
                                 else
                                 {
-                                    FenLogger.Debug($"[RendererChild] No DOM root for tab={tabId}; skipping frame write.", LogCategory.Rendering);
+                                    EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] No DOM root for tab={tabId}; skipping frame write.");
                                 }
                             }
                             catch (Exception renderEx)
                             {
-                                FenLogger.Warn($"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}", LogCategory.Rendering);
+                                EngineLog.Write(LogSubsystem.Paint, LogSeverity.Warn, $"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}");
                             }
                         }
 
@@ -541,8 +588,13 @@ namespace FenBrowser.Host
                 }
             }
 
+            if (handshakeComplete)
+            {
+                logForwarder.FlushRenderer(writer, tabId);
+            }
+
             frameSharedMemory?.Dispose();
-            FenLogger.Info($"[RendererChild] Exiting for tab={tabId}", LogCategory.General);
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Exiting for tab={tabId}");
         }
 
         private static async Task RunNetworkChildLoopAsync()
@@ -556,15 +608,13 @@ namespace FenBrowser.Host
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
             {
-                FenLogger.Warn("[NetworkChild] Missing required startup environment.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, "[NetworkChild] Missing required startup environment.");
                 return;
             }
 
             if (!string.Equals(sandboxProfile, "network_process", StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Warn(
-                    $"[NetworkChild] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkChild] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.");
                 return;
             }
 
@@ -575,7 +625,7 @@ namespace FenBrowser.Host
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NetworkChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkChild] Failed to connect IPC pipe '{pipeName}': {ex.Message}");
                 return;
             }
 
@@ -584,6 +634,7 @@ namespace FenBrowser.Host
             using var httpClient = HttpClientFactory.CreateClient();
             using var noProxyHandler = HttpClientFactory.CreateHandler();
             using var noProxyClient = HttpClientFactory.CreateClient(noProxyHandler);
+            using var logForwarder = new ChildProcessLogForwarder("network", 0);
             var activeRequests = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal);
             bool handshakeComplete = false;
             bool running = true;
@@ -592,6 +643,11 @@ namespace FenBrowser.Host
 
             while (running)
             {
+                if (handshakeComplete)
+                {
+                    logForwarder.FlushNetwork(writer);
+                }
+
                 if (!IsParentAlive(parentPid))
                 {
                     break;
@@ -802,7 +858,12 @@ namespace FenBrowser.Host
                 try { kvp.Value.Dispose(); } catch { }
             }
 
-            FenLogger.Info("[NetworkChild] Exiting.", LogCategory.Network);
+            if (handshakeComplete)
+            {
+                logForwarder.FlushNetwork(writer);
+            }
+
+            EngineLog.Write(LogSubsystem.Net, LogSeverity.Info, "[NetworkChild] Exiting.");
         }
 
         private static async Task RunTargetChildLoopAsync(TargetProcessKind expectedKind)
@@ -820,21 +881,19 @@ namespace FenBrowser.Host
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
             {
-                FenLogger.Warn($"[{expectedKind}Child] Missing required startup environment.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{expectedKind}Child] Missing required startup environment.");
                 return;
             }
 
             if (!string.Equals(targetKindRaw, expectedKind.ToString().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase))
             {
-                FenLogger.Warn($"[{expectedKind}Child] Startup kind assertion failed. targetKind={targetKindRaw}.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{expectedKind}Child] Startup kind assertion failed. targetKind={targetKindRaw}.");
                 return;
             }
 
             if (!contract.Matches(sandboxProfile, capabilitySet))
             {
-                FenLogger.Warn(
-                    $"[{expectedKind}Child] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.",
-                    LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{expectedKind}Child] Startup policy assertion failed. sandboxProfile={sandboxProfile}, capabilities={capabilitySet}.");
                 return;
             }
 
@@ -845,17 +904,23 @@ namespace FenBrowser.Host
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[{expectedKind}Child] Failed to connect IPC pipe '{pipeName}': {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{expectedKind}Child] Failed to connect IPC pipe '{pipeName}': {ex.Message}");
                 return;
             }
 
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+            using var logForwarder = new ChildProcessLogForwarder(expectedKind.ToString().ToLowerInvariant(), 0);
 
             var handshakeComplete = false;
             var running = true;
             while (running)
             {
+                if (handshakeComplete)
+                {
+                    logForwarder.FlushTarget(writer);
+                }
+
                 if (!IsParentAlive(parentPid))
                 {
                     break;
@@ -943,7 +1008,152 @@ namespace FenBrowser.Host
                 }
             }
 
-            FenLogger.Info($"[{expectedKind}Child] Exiting.", LogCategory.General);
+            if (handshakeComplete)
+            {
+                logForwarder.FlushTarget(writer);
+            }
+
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[{expectedKind}Child] Exiting.");
+        }
+
+        private sealed class ChildProcessLogForwarder : IDisposable
+        {
+            private readonly ConcurrentQueue<EngineLogEvent> _queue = new();
+            private readonly Action<EngineLogEvent> _handler;
+            private readonly string _processKind;
+            private readonly int _tabId;
+            private int _dropped;
+
+            public ChildProcessLogForwarder(string processKind, int tabId)
+            {
+                _processKind = processKind;
+                _tabId = tabId;
+                _handler = OnEvent;
+                EngineLog.EngineEventWritten += _handler;
+            }
+
+            public void Dispose()
+            {
+                EngineLog.EngineEventWritten -= _handler;
+            }
+
+            private void OnEvent(EngineLogEvent evt)
+            {
+                // Avoid re-forwarding aggregation traffic or self-referential IPC noise.
+                if (evt.Header.Subsystem == LogSubsystem.Ipc)
+                {
+                    return;
+                }
+
+                if (_queue.Count >= 4096)
+                {
+                    Interlocked.Increment(ref _dropped);
+                    return;
+                }
+
+                _queue.Enqueue(evt);
+            }
+
+            public void FlushRenderer(StreamWriter writer, int tabId)
+            {
+                FlushCore(batch =>
+                {
+                    SendRendererEnvelope(writer, new RendererIpcEnvelope
+                    {
+                        Type = RendererIpcMessageType.LogBatch.ToString(),
+                        TabId = tabId,
+                        CorrelationId = Guid.NewGuid().ToString("N"),
+                        Payload = RendererIpc.SerializePayload(batch)
+                    });
+                });
+            }
+
+            public void FlushNetwork(StreamWriter writer)
+            {
+                FlushCore(batch =>
+                {
+                    SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                    {
+                        Type = NetworkIpcMessageType.LogBatch.ToString(),
+                        RequestId = Guid.NewGuid().ToString("N"),
+                        Payload = NetworkIpc.SerializePayload(batch)
+                    });
+                });
+            }
+
+            public void FlushTarget(StreamWriter writer)
+            {
+                FlushCore(batch =>
+                {
+                    SendTargetEnvelope(writer, new TargetIpcEnvelope
+                    {
+                        Type = TargetIpcMessageType.LogBatch.ToString(),
+                        RequestId = Guid.NewGuid().ToString("N"),
+                        Payload = TargetIpc.SerializePayload(batch)
+                    });
+                });
+            }
+
+            private void FlushCore(Action<EngineLogBatchPayload> send)
+            {
+                if (send == null)
+                {
+                    return;
+                }
+
+                var dropped = Interlocked.Exchange(ref _dropped, 0);
+                if (dropped > 0)
+                {
+                    _queue.Enqueue(BuildDropEvent(dropped));
+                }
+
+                while (_queue.TryDequeue(out var first))
+                {
+                    var events = new List<EngineLogEvent>(64) { first };
+                    while (events.Count < 64 && _queue.TryDequeue(out var next))
+                    {
+                        events.Add(next);
+                    }
+
+                    send(new EngineLogBatchPayload
+                    {
+                        ProcessKind = _processKind,
+                        TabId = _tabId,
+                        Events = events
+                    });
+                }
+            }
+
+            private EngineLogEvent BuildDropEvent(int dropped)
+            {
+                var context = new EngineLogContext(
+                    TabId: _tabId > 0 ? _tabId.ToString() : null,
+                    Source: _processKind);
+
+                var header = new EngineLogHeader(
+                    DateTimeOffset.UtcNow,
+                    0,
+                    Environment.ProcessId,
+                    Environment.CurrentManagedThreadId,
+                    LogSubsystem.Ipc,
+                    LogSeverity.Warn,
+                    LogMarker.Fallback,
+                    Guid.NewGuid(),
+                    null,
+                    null,
+                    context);
+
+                var payload = new EngineLogPayload
+                {
+                    MessageTemplate = "Child log forwarder dropped events before flush",
+                    Fields = new Dictionary<string, object>
+                    {
+                        ["droppedCount"] = dropped
+                    }
+                };
+
+                return new EngineLogEvent(header, payload);
+            }
         }
 
         private static bool IsParentAlive(int parentPid)
@@ -1131,4 +1341,5 @@ namespace FenBrowser.Host
         }
     }
 }
+
 

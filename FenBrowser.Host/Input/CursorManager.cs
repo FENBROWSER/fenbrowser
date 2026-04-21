@@ -39,7 +39,7 @@ public static class CursorManager
             return;
         }
         
-        FenLogger.Debug($"[Cursor] Changed: {_currentCursor} → {_pendingCursor}", LogCategory.Events);
+        EngineLogBridge.Debug($"[Cursor] Changed: {_currentCursor} → {_pendingCursor}", LogCategory.Events);
         _currentCursor = _pendingCursor;
         _lastUpdate = DateTime.UtcNow;
         
@@ -105,4 +105,5 @@ public static class CursorManager
         };
     }
 }
+
 

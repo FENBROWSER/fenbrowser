@@ -14,7 +14,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void Initialize()
         {
-            FenLogger.Info("[ProcessIsolation] Mode=in-process (single-process renderer)", LogCategory.General);
+            EngineLogBridge.Info("[ProcessIsolation] Mode=in-process (single-process renderer)", LogCategory.General);
         }
 
         public void OnTabCreated(BrowserTab tab)
@@ -49,3 +49,4 @@ namespace FenBrowser.Host.ProcessIsolation
         public event Action<int, string> RendererCrashed;
     }
 }
+

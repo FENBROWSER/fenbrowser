@@ -36,7 +36,7 @@ public class BookmarksBarWidget : Widget
         _buttons.Clear();
 
         var bookmarks = BrowserSettings.Instance.Bookmarks;
-        FenBrowser.Core.FenLogger.Info($"[BookmarksBar] RefreshBookmarks - Count: {bookmarks.Count}, ShowFavoritesBar: {BrowserSettings.Instance.ShowFavoritesBar}", FenBrowser.Core.Logging.LogCategory.General);
+        EngineLogBridge.Info($"[BookmarksBar] RefreshBookmarks - Count: {bookmarks.Count}, ShowFavoritesBar: {BrowserSettings.Instance.ShowFavoritesBar}", FenBrowser.Core.Logging.LogCategory.General);
         foreach (var bm in bookmarks)
         {
             var btn = new BookmarkButton(bm);
@@ -164,3 +164,5 @@ public class BookmarksBarWidget : Widget
         }
     }
 }
+
+

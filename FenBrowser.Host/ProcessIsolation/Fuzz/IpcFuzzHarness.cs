@@ -312,7 +312,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
             {
-                FenLogger.Warn($"[Fuzz:RendererIpc] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
+                EngineLogBridge.Warn($"[Fuzz:RendererIpc] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
                 return false;
             }
         }
@@ -351,7 +351,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
             {
-                FenLogger.Warn($"[Fuzz:NetworkIpc] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
+                EngineLogBridge.Warn($"[Fuzz:NetworkIpc] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
                 return false;
             }
         }
@@ -400,7 +400,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             }
             catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
             {
-                FenLogger.Warn($"[Fuzz:SharedMemory] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
+                EngineLogBridge.Warn($"[Fuzz:SharedMemory] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
                 return false;
             }
         }
@@ -501,7 +501,7 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                         Interlocked.Increment(ref _crashes);
                         var detail = $"[{endpoint.Name}] Input: {Convert.ToBase64String(mutated)}";
                         crashDetails.Add(detail);
-                        FenLogger.Warn($"[IpcFuzz] Crash detected: {detail}", LogCategory.General);
+                        EngineLogBridge.Warn($"[IpcFuzz] Crash detected: {detail}", LogCategory.General);
 
                         // Add the crashing input to corpus for further exploration
                         _seedCorpus.Add(mutated);
@@ -533,3 +533,4 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
         public bool Passed => Crashes == 0;
     }
 }
+

@@ -69,7 +69,7 @@ public class WebContentWidget : Widget
     
     protected override void OnArrange(SKRect finalRect)
     {
-        FenLogger.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
+        EngineLogBridge.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
         try
         {
             string logPath = DiagnosticPaths.GetLogArtifactPath("click_debug.log");
@@ -77,7 +77,7 @@ public class WebContentWidget : Widget
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[WebContentWidget] click_debug log write failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+            EngineLogBridge.Error($"[WebContentWidget] click_debug log write failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
         }
         
         // Bounds set by parent
@@ -332,3 +332,4 @@ public class WebContentWidget : Widget
         }
     }
 }
+

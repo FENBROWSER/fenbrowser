@@ -15,6 +15,7 @@ namespace FenBrowser.Host.ProcessIsolation
     {
         Hello,
         Ready,
+        LogBatch,
         Navigate,
         Input,
         FrameRequest,
@@ -310,7 +311,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 FlushPendingOutbound();
 
                 _readLoop = Task.Run(ReadLoopAsync);
-                FenLogger.Info($"[ProcessIsolation] IPC connected for tab {TabId} via pipe '{PipeName}'.", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[ProcessIsolation] IPC connected for tab {TabId} via pipe '{PipeName}'.");
             }
             catch (OperationCanceledException)
             {
@@ -319,7 +320,7 @@ namespace FenBrowser.Host.ProcessIsolation
             catch (Exception ex)
             {
                 _readyTcs.TrySetResult(false);
-                FenLogger.Warn($"[ProcessIsolation] IPC connect failed for tab {TabId}: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] IPC connect failed for tab {TabId}: {ex.Message}");
             }
         }
 
@@ -343,7 +344,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     if (string.Equals(envelope.Type, RendererIpcMessageType.Ready.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
                         _readyTcs.TrySetResult(true);
-                        FenLogger.Info($"[ProcessIsolation] Renderer child ready for tab {TabId}.", LogCategory.General);
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[ProcessIsolation] Renderer child ready for tab {TabId}.");
                     }
                     else if (string.Equals(envelope.Type, RendererIpcMessageType.FrameReady.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
@@ -352,7 +353,7 @@ namespace FenBrowser.Host.ProcessIsolation
                         var width = payload?.SurfaceWidth ?? 0f;
                         var height = payload?.SurfaceHeight ?? 0f;
                         var dirtyCount = payload?.DirtyRegionCount ?? 0;
-                        FenLogger.Debug($"[ProcessIsolation] FrameReady tab={TabId} url={url} surface={width}x{height} dirtyRegions={dirtyCount}", LogCategory.Rendering);
+                        EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[ProcessIsolation] FrameReady tab={TabId} url={url} surface={width}x{height} dirtyRegions={dirtyCount}");
 
                         if (payload != null)
                         {
@@ -365,7 +366,7 @@ namespace FenBrowser.Host.ProcessIsolation
                                 }
                                 catch (Exception ex)
                                 {
-                                    FenLogger.Warn($"[ProcessIsolation] Failed to open FrameSharedMemory for tab {TabId}: {ex.Message}", LogCategory.General);
+                                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Failed to open FrameSharedMemory for tab {TabId}: {ex.Message}");
                                 }
                             }
 
@@ -385,7 +386,7 @@ namespace FenBrowser.Host.ProcessIsolation
                                 }
                                 catch (Exception ex)
                                 {
-                                    FenLogger.Warn($"[ProcessIsolation] FrameSharedMemory read failed for tab {TabId}: {ex.Message}", LogCategory.General);
+                                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] FrameSharedMemory read failed for tab {TabId}: {ex.Message}");
                                 }
                             }
 
@@ -394,7 +395,12 @@ namespace FenBrowser.Host.ProcessIsolation
                     }
                     else if (string.Equals(envelope.Type, RendererIpcMessageType.Error.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
-                        FenLogger.Warn($"[ProcessIsolation] Renderer child error tab={TabId}: {envelope.Payload}", LogCategory.General);
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Renderer child error tab={TabId}: {envelope.Payload}");
+                    }
+                    else if (string.Equals(envelope.Type, RendererIpcMessageType.LogBatch.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        var batch = RendererIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
+                        ProcessIsolationLogCollector.PublishBatch(batch);
                     }
                 }
             }
@@ -403,7 +409,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 _readyTcs.TrySetResult(false);
                 if (!_cts.IsCancellationRequested)
                 {
-                    FenLogger.Warn($"[ProcessIsolation] IPC read loop terminated for tab {TabId}: {ex.Message}", LogCategory.General);
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] IPC read loop terminated for tab {TabId}: {ex.Message}");
                 }
             }
         }
@@ -430,7 +436,7 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ProcessIsolation] Failed to send IPC message for tab {TabId}: {ex.Message}", LogCategory.General);
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Failed to send IPC message for tab {TabId}: {ex.Message}");
             }
         }
 
@@ -507,3 +513,4 @@ namespace FenBrowser.Host.ProcessIsolation
         }
     }
 }
+

@@ -60,6 +60,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
                     _ = RendererIpc.DeserializePayload<RendererFrameReadyPayload>(envelope);
                     _ = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
+                    _ = RendererIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                     return true;
                 });
         }
@@ -95,6 +96,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     _ = NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(envelope);
                     _ = NetworkIpc.DeserializePayload<NetworkFetchResponseHeadPayload>(envelope);
                     _ = NetworkIpc.DeserializePayload<NetworkFetchFailedPayload>(envelope);
+                    _ = NetworkIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                     return true;
                 });
         }
@@ -126,6 +128,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     }
 
                     _ = TargetIpc.DeserializePayload<TargetReadyPayload>(envelope);
+                    _ = TargetIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                     return true;
                 });
         }

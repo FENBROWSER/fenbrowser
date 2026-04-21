@@ -61,7 +61,7 @@ namespace FenBrowser.Host
 
         public void Initialize(string initialUrl)
         {
-            FenLogger.Info("[ChromeManager] Initializing Widgets...", LogCategory.General);
+            EngineLogBridge.Info("[ChromeManager] Initializing Widgets...", LogCategory.General);
             _processIsolation = ProcessIsolationCoordinatorFactory.CreateFromEnvironment();
             _processIsolation.Initialize();
             ProcessIsolationRuntime.SetCoordinator(_processIsolation);
@@ -187,16 +187,16 @@ namespace FenBrowser.Host
                 var token = Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_TOKEN");
                 _remoteDebugServer = new RemoteDebugServer(_devToolsServer, port, bindAddress, token);
                 _remoteDebugServer.Start();
-                FenLogger.Warn($"[ChromeManager] RemoteDebug ENABLED on {bindAddress}:{port}.", LogCategory.General);
+                EngineLogBridge.Warn($"[ChromeManager] RemoteDebug ENABLED on {bindAddress}:{port}.", LogCategory.General);
             }
             else
             {
-                FenLogger.Info("[ChromeManager] RemoteDebug disabled by default (set FEN_REMOTE_DEBUG=1 to enable).", LogCategory.General);
+                EngineLogBridge.Info("[ChromeManager] RemoteDebug disabled by default (set FEN_REMOTE_DEBUG=1 to enable).", LogCategory.General);
             }
 
             _domInstrumenter = new FenBrowser.DevTools.Instrumentation.DomInstrumenter(_devToolsServer);
             
-            _devToolsServer.OnJsonOutput(json => FenLogger.Debug($"[DevTools-JSON] {json}", LogCategory.General));
+            _devToolsServer.OnJsonOutput(json => EngineLogBridge.Debug($"[DevTools-JSON] {json}", LogCategory.General));
 
             _devTools = new DevToolsController();
             _devTools.RegisterPanel(new FenBrowser.DevTools.Panels.ElementsPanel());
@@ -207,7 +207,7 @@ namespace FenBrowser.Host
             TabManager.Instance.ActiveTabChanged += SetupDevToolsForTab;
             _devTools.Invalidated += () => _root?.Invalidate();
             
-            FenLogger.Info("[ChromeManager] DevTools Initialized", LogCategory.General);
+            EngineLogBridge.Info("[ChromeManager] DevTools Initialized", LogCategory.General);
         }
 
         private void SetupDevToolsForTab(BrowserTab tab)
@@ -663,3 +663,4 @@ namespace FenBrowser.Host
         }
     }
 }
+

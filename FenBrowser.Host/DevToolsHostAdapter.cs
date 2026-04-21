@@ -85,6 +85,7 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
         _server.InitializeRuntime(this);
         _server.InitializeNetwork(this);
         _server.InitializeDebugger(this);
+        _server.InitializeLog();
         
         // Wire up network events from legacy DevToolsCore (correlate with protocol)
         DevToolsCore.Instance.OnNetworkRequest += _networkRequestHandler;

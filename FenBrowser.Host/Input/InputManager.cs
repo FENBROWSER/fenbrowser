@@ -42,7 +42,7 @@ public class InputManager
             _focusedWidget.IsFocused = true;
             _focusedWidget.OnFocus();
             
-            FenLogger.Info($"[Accessibility] Focus set to '{_focusedWidget.Name}' ({_focusedWidget.Role})", LogCategory.General);
+            EngineLogBridge.Info($"[Accessibility] Focus set to '{_focusedWidget.Name}' ({_focusedWidget.Role})", LogCategory.General);
         }
         
         return true;
@@ -100,3 +100,4 @@ public class InputManager
         foreach (var child in widget.Children) CollectFocusablesRecursive(child, result);
     }
 }
+

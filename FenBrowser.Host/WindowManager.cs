@@ -75,7 +75,7 @@ namespace FenBrowser.Host
                 options.WindowState = WindowState.Normal;
                 options.Position = new Vector2D<int>(-32000, -32000);
                 options.WindowBorder = WindowBorder.Hidden;
-                FenLogger.Info("[WindowManager] Initializing in HEADLESS mode (Off-screen)", LogCategory.General);
+                EngineLogBridge.Info("[WindowManager] Initializing in HEADLESS mode (Off-screen)", LogCategory.General);
             }
             else
             {
@@ -101,7 +101,7 @@ namespace FenBrowser.Host
 
         private void Load()
         {
-            FenLogger.Info("[WindowManager] Window loaded, initializing Graphics...", LogCategory.General);
+            EngineLogBridge.Info("[WindowManager] Window loaded, initializing Graphics...", LogCategory.General);
             
             _gl = _window.CreateOpenGLES();
             InitializeInput();
@@ -184,7 +184,7 @@ namespace FenBrowser.Host
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[WindowManager] Failed to set window icon: {ex.Message}", LogCategory.General);
+                EngineLogBridge.Warn($"[WindowManager] Failed to set window icon: {ex.Message}", LogCategory.General);
             }
         }
 
@@ -249,7 +249,7 @@ namespace FenBrowser.Host
             _renderTarget = new GRBackendRenderTarget(_physicalWidth, _physicalHeight, samples, stencil, fbInfo);
             _surface = SKSurface.Create(_grContext, _renderTarget, GRSurfaceOrigin.BottomLeft, SKColorType.Rgba8888);
 
-            if (_surface == null) FenLogger.Error("[WindowManager] Failed to create SKSurface", LogCategory.General);
+            if (_surface == null) EngineLogBridge.Error("[WindowManager] Failed to create SKSurface", LogCategory.General);
         }
 
         private void Resize(Vector2D<int> size)
@@ -258,7 +258,7 @@ namespace FenBrowser.Host
             _gl.Viewport(0, 0, (uint)_physicalWidth, (uint)_physicalHeight);
             CreateRenderTarget();
 
-            FenLogger.Info($"[WindowManager] Resized: Logical={_logicalWidth}x{_logicalHeight}, DPI={_dpiScale:F2}", LogCategory.General);
+            EngineLogBridge.Info($"[WindowManager] Resized: Logical={_logicalWidth}x{_logicalHeight}, DPI={_dpiScale:F2}", LogCategory.General);
             OnResize?.Invoke(size);
         }
 
@@ -276,7 +276,7 @@ namespace FenBrowser.Host
 
         private void Close()
         {
-            FenLogger.Info("[WindowManager] Closing...", LogCategory.General);
+            EngineLogBridge.Info("[WindowManager] Closing...", LogCategory.General);
             OnClose?.Invoke();
             Dispose();
         }
@@ -285,7 +285,7 @@ namespace FenBrowser.Host
         {
             if (_surface == null) 
             {
-                FenLogger.Error("[WindowManager] CaptureScreenshot: Surface is NULL", LogCategory.General);
+                EngineLogBridge.Error("[WindowManager] CaptureScreenshot: Surface is NULL", LogCategory.General);
                 return null;
             }
             
@@ -297,7 +297,7 @@ namespace FenBrowser.Host
                 return bitmap;
             }
             
-            FenLogger.Error("[WindowManager] CaptureScreenshot: ReadPixels failed", LogCategory.General);
+            EngineLogBridge.Error("[WindowManager] CaptureScreenshot: ReadPixels failed", LogCategory.General);
             return null;
         }
 
@@ -351,12 +351,12 @@ namespace FenBrowser.Host
                 else
                 {
                     // Non-Windows fallback path is intentionally non-fatal until native adapters are added.
-                    FenLogger.Warn($"[WindowManager] Clipboard not supported on this platform", LogCategory.General);
+                    EngineLogBridge.Warn($"[WindowManager] Clipboard not supported on this platform", LogCategory.General);
                 }
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[WindowManager] Clipboard error: {ex.Message}", LogCategory.General);
+                EngineLogBridge.Error($"[WindowManager] Clipboard error: {ex.Message}", LogCategory.General);
             }
         }
     }
@@ -417,4 +417,5 @@ namespace FenBrowser.Host
         }
     }
 }
+
 
