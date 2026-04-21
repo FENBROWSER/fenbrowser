@@ -119,7 +119,7 @@ namespace FenBrowser.FenEngine.DOM
 
                 _definitions[name] = definition;
 
-                FenLogger.Debug($"[CustomElements] Defined custom element: {name}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[CustomElements] Defined custom element: {name}", LogCategory.JavaScript);
 
                 // Resolve whenDefined promise if any
                 if (_whenDefinedPromises.TryGetValue(name, out var tcs))
@@ -229,7 +229,7 @@ namespace FenBrowser.FenEngine.DOM
 
                 // WHATWG HTML §4.13.6: Custom element upgrade algorithm
                 element.SetAttribute("data-ce-upgraded", "true");
-                FenLogger.Debug($"[CustomElements] Upgrading element: {tag}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[CustomElements] Upgrading element: {tag}", LogCategory.JavaScript);
 
                 // Step 1: Invoke the constructor
                 if (_context != null && definition.Constructor is FenValue ctorVal && ctorVal.IsFunction)
@@ -241,7 +241,7 @@ namespace FenBrowser.FenEngine.DOM
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error($"[CustomElements] Constructor error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Error($"[CustomElements] Constructor error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                     }
                 }
 
@@ -266,7 +266,7 @@ namespace FenBrowser.FenEngine.DOM
                             }
                             catch (Exception ex)
                             {
-                                FenLogger.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
+                                EngineLogCompat.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
                             }
                         }
                     }
@@ -284,7 +284,7 @@ namespace FenBrowser.FenEngine.DOM
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error($"[CustomElements] connectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Error($"[CustomElements] connectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                     }
                 }
             }
@@ -324,7 +324,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[CustomElements] disconnectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[CustomElements] disconnectedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                 }
             }
         }
@@ -370,7 +370,7 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[CustomElements] attributeChangedCallback error on <{tag}> attr={attrName}: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -407,7 +407,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[CustomElements] adoptedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[CustomElements] adoptedCallback error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                 }
             }
         }
@@ -532,7 +532,7 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[CustomElements] Failed to auto-upgrade existing elements after define(): {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[CustomElements] Failed to auto-upgrade existing elements after define(): {ex.Message}", LogCategory.JavaScript);
             }
         }
 

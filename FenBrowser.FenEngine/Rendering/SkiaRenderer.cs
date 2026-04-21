@@ -50,6 +50,14 @@ namespace FenBrowser.FenEngine.Rendering
     public sealed class SkiaRenderer
     {
         private static readonly TimeSpan DebugScreenshotMinimumInterval = TimeSpan.FromMilliseconds(500);
+        
+        private sealed class RenderPassStats
+        {
+            public int VisitedNodes;
+            public int InvalidBoundsSkipped;
+            public int ViewportCulled;
+            public int DrawErrors;
+        }
 
         // ═══════════════════════════════════════════════════════════════════
         // NO FIELDS - COMPLETELY STATELESS
@@ -71,13 +79,16 @@ namespace FenBrowser.FenEngine.Rendering
         public void Render(IRenderBackend backend, ImmutablePaintTree tree, SKRect viewport)
         {
             if (backend == null || tree == null) return;
-            
+            var stats = new RenderPassStats();
+             
             backend.Clear(SKColors.White);
-            
+             
             foreach (var root in tree.Roots)
             {
-                DrawNodeSafe(backend, root, viewport);
+                DrawNodeSafe(backend, root, viewport, stats);
             }
+
+            LogRenderSummary(viewport, tree.NodeCount, stats, "RenderBackend");
         }
         
         /// <summary>
@@ -86,7 +97,8 @@ namespace FenBrowser.FenEngine.Rendering
         public void Render(SKCanvas canvas, ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor)
         {
             if (canvas == null || tree == null) return;
-            
+            var stats = new RenderPassStats();
+             
             // Wrap canvas in adapter (Rule 4)
             var backend = new SkiaRenderBackend(canvas);
             
@@ -99,9 +111,11 @@ namespace FenBrowser.FenEngine.Rendering
             
             foreach (var root in tree.Roots)
             {
-                FenLogger.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
-                DrawNodeSafe(backend, root, viewport);
+                EngineLogCompat.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
+                DrawNodeSafe(backend, root, viewport, stats);
             }
+
+            LogRenderSummary(viewport, tree.NodeCount, stats, "RenderCanvas");
         }
 
         /// <summary>
@@ -130,6 +144,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var backend = new SkiaRenderBackend(canvas);
+            var stats = new RenderPassStats();
             using var bgPaint = new SKPaint
             {
                 Color = backgroundColor,
@@ -150,11 +165,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                 foreach (var root in tree.Roots)
                 {
-                    DrawNodeSafe(backend, root, viewport);
+                    DrawNodeSafe(backend, root, viewport, stats);
                 }
 
                 canvas.Restore();
             }
+
+            LogRenderSummary(viewport, tree.NodeCount, stats, "RenderDamaged");
         }
         
         private void CaptureDebugScreenshot(ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor)
@@ -163,7 +180,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (viewport.Width <= 0 || viewport.Height <= 0)
                 {
-                    FenLogger.Debug($"[SkiaRenderer] Skipping debug_screenshot.png capture due to invalid viewport {viewport.Width}x{viewport.Height}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[SkiaRenderer] Skipping debug_screenshot.png capture due to invalid viewport {viewport.Width}x{viewport.Height}", LogCategory.Rendering);
                     return;
                 }
 
@@ -177,7 +194,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (surface == null)
                     {
-                        FenLogger.Warn("[SkiaRenderer] Failed to allocate debug screenshot surface", LogCategory.Rendering);
+                        EngineLogCompat.Warn("[SkiaRenderer] Failed to allocate debug screenshot surface", LogCategory.Rendering);
                         return;
                     }
 
@@ -189,9 +206,10 @@ namespace FenBrowser.FenEngine.Rendering
                     offCanvas.Save();
                     offCanvas.Translate(-viewport.Left, -viewport.Top);
                     var backend = new SkiaRenderBackend(offCanvas);
+                    var stats = new RenderPassStats();
                     foreach (var root in tree.Roots)
                     {
-                        DrawNodeSafe(backend, root, viewport);
+                        DrawNodeSafe(backend, root, viewport, stats);
                     }
                     offCanvas.Restore();
 
@@ -199,7 +217,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         if (image == null)
                         {
-                            FenLogger.Warn($"[SkiaRenderer] Snapshot returned null while writing {screenshotPath}", LogCategory.Rendering);
+                            EngineLogCompat.Warn($"[SkiaRenderer] Snapshot returned null while writing {screenshotPath}", LogCategory.Rendering);
                             return;
                         }
 
@@ -207,7 +225,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             if (data == null)
                             {
-                                FenLogger.Warn($"[SkiaRenderer] PNG encode returned null while writing {screenshotPath}", LogCategory.Rendering);
+                                EngineLogCompat.Warn($"[SkiaRenderer] PNG encode returned null while writing {screenshotPath}", LogCategory.Rendering);
                                 return;
                             }
 
@@ -215,14 +233,14 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 data.SaveTo(stream);
                                 WriteDebugScreenshotMetadata(screenshotPath, tree.NodeCount, viewport);
-                                FenLogger.Debug($"[SkiaRenderer] Wrote debug_screenshot.png to {screenshotPath} ({viewport.Width}x{viewport.Height}, NodeCount={tree.NodeCount})", LogCategory.Rendering);
+                                EngineLogCompat.Debug($"[SkiaRenderer] Wrote debug_screenshot.png to {screenshotPath} ({viewport.Width}x{viewport.Height}, NodeCount={tree.NodeCount})", LogCategory.Rendering);
                                 FenBrowser.Core.Verification.ContentVerifier.RegisterScreenshot(screenshotPath);
                             }
                         }
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[SkiaRenderer] RenderToBitmap failed: {ex.Message}", LogCategory.Rendering); }
         }
 
         private static bool ShouldCaptureDebugScreenshot(string screenshotPath, int nodeCount, SKRect viewport)
@@ -341,23 +359,24 @@ namespace FenBrowser.FenEngine.Rendering
         /// Non-fatal wrapper for DrawNode. Catches any exceptions and skips bad nodes.
         /// INVARIANT: Renderer must never crash due to content.
         /// </summary>
-        private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport)
+        private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats)
         {
             int initialSaveDepth = backend.SaveDepth;
 
             try
             {
-                DrawNode(backend, node, viewport);
+                DrawNode(backend, node, viewport, stats);
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[SkiaRenderer] DrawNode Failed for {node.GetType().Name}: {ex.Message}");
+                if (stats != null) stats.DrawErrors++;
+                EngineLogCompat.Error($"[SkiaRenderer] DrawNode Failed for {node.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 if (backend.SaveDepth != initialSaveDepth)
                 {
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[SkiaRenderer] Correcting backend save-depth imbalance for {node?.GetType().Name}: {backend.SaveDepth} -> {initialSaveDepth}",
                         LogCategory.Rendering);
                     backend.RestoreToSaveDepth(initialSaveDepth);
@@ -370,12 +389,17 @@ namespace FenBrowser.FenEngine.Rendering
         /// INVARIANT: Uses recursive traversal ONLY - visitor pattern is for tooling.
         /// INVARIANT: Same input → identical output (deterministic).
         /// </summary>
-        private void DrawNode(IRenderBackend backend, PaintNodeBase node, SKRect viewport)
+        private void DrawNode(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats)
         {
             if (node == null) return;
-            
+            if (stats != null) stats.VisitedNodes++;
+             
             // INVARIANT: Skip invalid geometry, don't crash
-            if (!IsValidBounds(node.Bounds)) return;
+            if (!IsValidBounds(node.Bounds))
+            {
+                if (stats != null) stats.InvalidBoundsSkipped++;
+                return;
+            }
             
             // Cull leaf/visual nodes outside the viewport.
             // Grouping nodes can legitimately carry approximate bounds while their children
@@ -384,6 +408,7 @@ namespace FenBrowser.FenEngine.Rendering
                 node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
                 !IntersectsViewportBounds(node.Bounds, viewport))
             {
+                if (stats != null) stats.ViewportCulled++;
                 return;
             }
             
@@ -408,7 +433,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle ClipPaintNode specific path clip (e.g. border-radius)
             else if (node is ClipPaintNode clipNode && clipNode.ClipPath != null)
             {
-                // FenLogger.Debug($"[SkiaRenderer] Pushing Path Clip for {node.GetType().Name}");
+                // EngineLogCompat.Debug($"[SkiaRenderer] Pushing Path Clip for {node.GetType().Name}");
                 backend.PushClip(clipNode.ClipPath);
                 pushedClip = true;
             }
@@ -485,7 +510,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 foreach (var child in node.Children)
                 {
-                    DrawNodeSafe(backend, child, viewport);
+                    DrawNodeSafe(backend, child, viewport, stats);
                 }
             }
             
@@ -514,15 +539,15 @@ namespace FenBrowser.FenEngine.Rendering
                  }
                  catch (ObjectDisposedException)
                  {
-                     FenLogger.Debug($"[SkiaRenderer] Mask skipped: MaskBitmap was disposed");
+                     EngineLogCompat.Debug($"[SkiaRenderer] Mask skipped: MaskBitmap was disposed");
                  }
                  catch (AccessViolationException)
                  {
-                     FenLogger.Warn($"[SkiaRenderer] Mask skipped: AccessViolationException (native memory corruption)");
+                     EngineLogCompat.Warn($"[SkiaRenderer] Mask skipped: AccessViolationException (native memory corruption)");
                  }
                  catch (Exception ex)
                  {
-                     FenLogger.Error($"[SkiaRenderer] Mask failed: {ex.Message}");
+                     EngineLogCompat.Error($"[SkiaRenderer] Mask failed: {ex.Message}");
                  }
                  // Pop isolation layer (always pop, even if mask failed)
                  backend.PopLayer();
@@ -820,7 +845,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 string txt = !string.IsNullOrEmpty(node.FallbackText) ? node.FallbackText : (node.Glyphs?.Count > 0 ? $"[Glyphs:{node.Glyphs.Count}]" : "[Empty]");
                 if (txt.Contains("Google") || txt.Contains("Wiki") || txt.Contains("Reddit"))
-                     FenBrowser.Core.FenLogger.Debug($"[SKIA-RENDERER-DRAW] '{txt}' at {node.TextOrigin} Color={node.Color} Alpha={node.Color.Alpha} Glyphs={node.Glyphs?.Count ?? 0}");
+                     FenBrowser.Core.EngineLogCompat.Debug($"[SKIA-RENDERER-DRAW] '{txt}' at {node.TextOrigin} Color={node.Color} Alpha={node.Color.Alpha} Glyphs={node.Glyphs?.Count ?? 0}");
             }
 
             bool isVertical = node.WritingMode == "vertical-rl";
@@ -850,7 +875,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (cleanText.IndexOf("centered", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     cleanText.Contains("This text"))
                 {
-                    FenBrowser.Core.FenLogger.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
                 }
 
                 backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
@@ -972,7 +997,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return;
                 }
 
-                FenLogger.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
+                EngineLogCompat.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
                 
                 // Guard: Check bitmap validity before accessing
                 if (node.Bitmap == null) return;
@@ -981,14 +1006,14 @@ namespace FenBrowser.FenEngine.Rendering
                 // SKBitmap.IsNull indicates if the native handle is valid
                 if (node.Bitmap.IsNull)
                 {
-                    FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap is disposed/null");
+                    EngineLogCompat.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap is disposed/null");
                     return;
                 }
                 
                 // Validate bitmap dimensions to prevent divide-by-zero or invalid geometry
                 if (node.Bitmap.Width <= 0 || node.Bitmap.Height <= 0)
                 {
-                    FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Invalid bitmap dimensions");
+                    EngineLogCompat.Debug($"[SkiaRenderer] DrawImage skipped: Invalid bitmap dimensions");
                     return;
                 }
 
@@ -1001,7 +1026,7 @@ namespace FenBrowser.FenEngine.Rendering
                 SKRect srcRect = node.SourceRect ?? new SKRect(0, 0, node.Bitmap.Width, node.Bitmap.Height);
                 SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit);
                 
-                FenLogger.Debug($"[SkiaRenderer] DrawImage destRect={destRect}");
+                EngineLogCompat.Debug($"[SkiaRenderer] DrawImage destRect={destRect}");
                 
                 // CRITICAL: Wrap SKImage.FromBitmap in try-catch as this is where AccessViolationException
                 // typically occurs when the underlying native bitmap memory is corrupted
@@ -1022,17 +1047,17 @@ namespace FenBrowser.FenEngine.Rendering
             catch (ObjectDisposedException)
             {
                 // Bitmap was disposed between check and use - safe to skip
-                FenLogger.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap was disposed");
+                EngineLogCompat.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap was disposed");
             }
             catch (AccessViolationException)
             {
                 // Native memory was corrupted or freed - can't recover, just skip this image
-                FenLogger.Warn($"[SkiaRenderer] DrawImage skipped: AccessViolationException (native memory corruption)");
+                EngineLogCompat.Warn($"[SkiaRenderer] DrawImage skipped: AccessViolationException (native memory corruption)");
             }
             catch (Exception ex)
             {
                 // Catch any other unexpected errors to prevent renderer crash
-                FenLogger.Error($"[SkiaRenderer] DrawImage failed: {ex.Message}");
+                EngineLogCompat.Error($"[SkiaRenderer] DrawImage failed: {ex.Message}");
             }
         }
 
@@ -1209,6 +1234,29 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return normalized;
+        }
+
+        private static void LogRenderSummary(SKRect viewport, int nodeCount, RenderPassStats stats, string phase)
+        {
+            if (stats == null) return;
+
+            EngineLog.Write(
+                LogSubsystem.Paint,
+                LogSeverity.Info,
+                "Renderer pass complete",
+                LogMarker.None,
+                default,
+                new Dictionary<string, object?>
+                {
+                    ["phase"] = phase,
+                    ["nodeCount"] = nodeCount,
+                    ["visitedNodes"] = stats.VisitedNodes,
+                    ["invalidSkipped"] = stats.InvalidBoundsSkipped,
+                    ["culledByViewport"] = stats.ViewportCulled,
+                    ["drawErrors"] = stats.DrawErrors,
+                    ["viewportWidth"] = viewport.Width,
+                    ["viewportHeight"] = viewport.Height
+                });
         }
 
         private static bool TryIntersect(SKRect a, SKRect b, out SKRect intersection)

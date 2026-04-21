@@ -24,6 +24,10 @@ namespace FenBrowser.FenEngine.Rendering
         private static DateTime _frameStartedUtc;
         [ThreadStatic]
         private static TimeSpan _lastFrameDuration;
+        [ThreadStatic]
+        private static bool _firstLayoutLogged;
+        [ThreadStatic]
+        private static bool _firstPaintLogged;
 
         public static bool StrictInvariants { get; set; } = true;
         public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
@@ -38,6 +42,8 @@ namespace FenBrowser.FenEngine.Rendering
             _currentPhase = RenderPhase.Idle;
             _frameStartedUtc = default;
             _lastFrameDuration = TimeSpan.Zero;
+            _firstLayoutLogged = false;
+            _firstPaintLogged = false;
         }
 
         public static void EnterLayout()
@@ -52,6 +58,11 @@ namespace FenBrowser.FenEngine.Rendering
         {
             RequirePhase(RenderPhase.Layout, nameof(EndLayout));
             _currentPhase = RenderPhase.LayoutFrozen;
+            if (!_firstLayoutLogged)
+            {
+                _firstLayoutLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
+            }
         }
 
         public static void EnterPaint()
@@ -64,6 +75,11 @@ namespace FenBrowser.FenEngine.Rendering
         {
             RequirePhase(RenderPhase.Paint, nameof(EndPaint));
             _currentPhase = RenderPhase.Composite;
+            if (!_firstPaintLogged)
+            {
+                _firstPaintLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
+            }
         }
 
         public static void EnterPresent()
@@ -78,9 +94,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (_frameStartedUtc != default)
             {
                 _lastFrameDuration = DateTime.UtcNow - _frameStartedUtc;
+                EngineLogCompat.Debug(
+                    $"[PIPELINE][SUMMARY] frame={FrameSequence} durationMs={_lastFrameDuration.TotalMilliseconds:F2} phase={_currentPhase}",
+                    LogCategory.Rendering);
                 if (LastFrameExceededBudget)
                 {
-                    FenLogger.Warn($"[PIPELINE] Frame {FrameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                    EngineLogCompat.Warn($"[PIPELINE] Frame {FrameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
                 }
             }
 
@@ -133,7 +152,7 @@ namespace FenBrowser.FenEngine.Rendering
                 throw new RenderPipelineInvariantException(message);
             }
 
-            FenLogger.Warn($"[PIPELINE RECOVERY] {message}", LogCategory.Rendering);
+            EngineLogCompat.Warn($"[PIPELINE RECOVERY] {message}", LogCategory.Rendering);
             if (recoverTo.HasValue)
             {
                 _currentPhase = recoverTo.Value;

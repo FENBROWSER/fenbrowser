@@ -34,7 +34,7 @@ namespace FenBrowser.FenEngine.Storage
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             };
 
-            FenLogger.Debug($"[FileStorageBackend] Initialized at: {_basePath}", LogCategory.Storage);
+            EngineLogCompat.Debug($"[FileStorageBackend] Initialized at: {_basePath}", LogCategory.Storage);
         }
 
         #region Database Operations
@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.Storage
                 _databases[dbKey] = state;
                 await SaveDatabaseState(dbPath, state);
 
-                FenLogger.Debug($"[FileStorageBackend] Opened database: {name} v{version} (origin: {origin})", LogCategory.Storage);
+                EngineLogCompat.Debug($"[FileStorageBackend] Opened database: {name} v{version} (origin: {origin})", LogCategory.Storage);
 
                 return new DatabaseOpenResult
                 {
@@ -102,7 +102,7 @@ namespace FenBrowser.FenEngine.Storage
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[FileStorageBackend] OpenDatabase error: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[FileStorageBackend] OpenDatabase error: {ex.Message}", LogCategory.Errors);
                 return new DatabaseOpenResult { Success = false, Error = ex.Message };
             }
         }
@@ -119,7 +119,7 @@ namespace FenBrowser.FenEngine.Storage
                 File.Delete(dbPath);
             }
 
-            FenLogger.Debug($"[FileStorageBackend] Deleted database: {name}", LogCategory.Storage);
+            EngineLogCompat.Debug($"[FileStorageBackend] Deleted database: {name}", LogCategory.Storage);
             await Task.CompletedTask;
         }
 
@@ -147,7 +147,7 @@ namespace FenBrowser.FenEngine.Storage
                 await SaveDatabaseState(dbPath, state);
             }
 
-            FenLogger.Debug($"[FileStorageBackend] Closed database: {name}", LogCategory.Storage);
+            EngineLogCompat.Debug($"[FileStorageBackend] Closed database: {name}", LogCategory.Storage);
         }
 
         #endregion
@@ -173,7 +173,7 @@ namespace FenBrowser.FenEngine.Storage
             };
 
             await SaveDatabaseState(GetDatabasePath(origin, dbName), state);
-            FenLogger.Debug($"[FileStorageBackend] Created object store: {storeName}", LogCategory.Storage);
+            EngineLogCompat.Debug($"[FileStorageBackend] Created object store: {storeName}", LogCategory.Storage);
         }
 
         public async Task DeleteObjectStore(string origin, string dbName, string storeName)
@@ -410,7 +410,7 @@ namespace FenBrowser.FenEngine.Storage
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[FileStorageBackend] Load error: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[FileStorageBackend] Load error: {ex.Message}", LogCategory.Errors);
                 return null;
             }
         }
@@ -440,7 +440,7 @@ namespace FenBrowser.FenEngine.Storage
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[FileStorageBackend] Save error: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[FileStorageBackend] Save error: {ex.Message}", LogCategory.Errors);
             }
         }
 

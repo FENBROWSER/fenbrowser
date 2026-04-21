@@ -555,7 +555,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             if (DEBUG_FILE_LOGGING && depth == 0)
-                FenLogger.Debug($"[CSS-VAR] {varName} NOT FOUND and NO FALLBACK", LogCategory.Layout);
+                EngineLogCompat.Debug($"[CSS-VAR] {varName} NOT FOUND and NO FALLBACK", LogCategory.Layout);
             return null;
         }
         

@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.Core
             Interlocked.Increment(ref _totalScheduled);
 
 #if DEBUG
-            FenLogger.Debug($"[RAF] Scheduled callback {id}", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[RAF] Scheduled callback {id}", LogCategory.JavaScript);
 #endif
 
             return handle;
@@ -162,7 +162,7 @@ namespace FenBrowser.FenEngine.Core
             Interlocked.Increment(ref _totalCancelled);
 
 #if DEBUG
-            FenLogger.Debug($"[RAF] Cancelled callback {callbackId}", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[RAF] Cancelled callback {callbackId}", LogCategory.JavaScript);
 #endif
         }
 
@@ -258,7 +258,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[RAF] Callback {handle.Id} threw: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Debug($"[RAF] Callback {handle.Id} threw: {ex.Message}", LogCategory.Errors);
                 }
             }
 
@@ -267,7 +267,7 @@ namespace FenBrowser.FenEngine.Core
 #if DEBUG
             if (executed > 0)
             {
-                FenLogger.Debug($"[RAF] Executed {executed} callbacks at t={timestamp:F2}ms", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[RAF] Executed {executed} callbacks at t={timestamp:F2}ms", LogCategory.JavaScript);
             }
 #endif
 

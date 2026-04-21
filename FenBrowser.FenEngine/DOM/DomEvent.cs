@@ -43,7 +43,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 // UI Events §4.3.2: "If the passive flag is set, do nothing."
                 // Log once per dispatch to help developers diagnose the violation.
-                FenBrowser.Core.FenLogger.Warn(
+                FenBrowser.Core.EngineLogCompat.Warn(
                     $"[Event] preventDefault() ignored inside passive listener for '{Type}'.",
                     FenBrowser.Core.Logging.LogCategory.Events);
                 return;

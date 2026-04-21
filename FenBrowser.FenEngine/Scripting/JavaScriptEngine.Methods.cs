@@ -34,7 +34,7 @@ namespace FenBrowser.FenEngine.Scripting
                 // DEBUG: Log execution attempt
                 string snippet = code.Length > 100 ? code.Substring(0, 100) + "..." : code;
                 snippet = snippet.Replace("\n", " ").Replace("\r", "");
-                FenLogger.Debug($"[JS] RunInline (evt={evt} target={target}): {snippet}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[JS] RunInline (evt={evt} target={target}): {snippet}", LogCategory.JavaScript);
 
                 var execution = ExecuteRuntimeScript(
                     code,
@@ -42,13 +42,13 @@ namespace FenBrowser.FenEngine.Scripting
                     BuildInlineSourceName(evt, target));
                 if (execution.Exception != null)
                 {
-                    FenLogger.Error($"[JS] RunInline Error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
+                    EngineLogCompat.Error($"[JS] RunInline Error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
                     return false;
                 }
 
                 if (!execution.Succeeded)
                 {
-                    FenLogger.Warn($"[JS] RunInline failed: {execution.Value}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JS] RunInline failed: {execution.Value}", LogCategory.JavaScript);
                     return false;
                 }
 
@@ -56,7 +56,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[JS] RunInline Error: {ex.Message}", LogCategory.JavaScript, ex);
+                EngineLogCompat.Error($"[JS] RunInline Error: {ex.Message}", LogCategory.JavaScript, ex);
                 return false;
             }
         }
@@ -70,7 +70,7 @@ namespace FenBrowser.FenEngine.Scripting
                 _lastFeatureTraceKey = key;
                 _lastFeatureTraceTime = DateTime.UtcNow;
                 
-                FenLogger.Warn($"[FeatureGap] {category} - {feature}: {detail}", LogCategory.FeatureGaps);
+                EngineLogCompat.Warn($"[FeatureGap] {category} - {feature}: {detail}", LogCategory.FeatureGaps);
             }
         }
 
@@ -110,7 +110,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[JS] Microtask Error: {ex.Message}", LogCategory.JavaScript, ex);
+                    EngineLogCompat.Error($"[JS] Microtask Error: {ex.Message}", LogCategory.JavaScript, ex);
                 }
                 drained++;
             }
@@ -162,14 +162,14 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            FenLogger.Warn($"[JS] Blocked module fetch without centralized fetcher: {uri}", LogCategory.Network);
+            EngineLogCompat.Warn($"[JS] Blocked module fetch without centralized fetcher: {uri}", LogCategory.Network);
             return null;
         }
 
         public void ExecuteScriptBlock(string code, string src = null)
         {
              if (string.IsNullOrWhiteSpace(code)) return;
-             FenLogger.Debug($"[JS] ExecuteScriptBlock src={src ?? "inline"}", LogCategory.JavaScript);
+             EngineLogCompat.Debug($"[JS] ExecuteScriptBlock src={src ?? "inline"}", LogCategory.JavaScript);
              ExecuteRuntimeScript(code, JavaScriptExecutionKind.ScriptBlock, src ?? "script-block");
         }
 
@@ -187,7 +187,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[JS] EvalToString failed: {ex.Message}", LogCategory.JavaScript, ex);
+                EngineLogCompat.Error($"[JS] EvalToString failed: {ex.Message}", LogCategory.JavaScript, ex);
                 return "";
             }
         }

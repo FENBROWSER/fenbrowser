@@ -23,7 +23,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {
-            // FenLogger.Debug($"[FLEX-CTX] Layout called for {box.SourceNode?.NodeName} ({(box.SourceNode as Element)?.TagName})");
+            // EngineLogCompat.Debug($"[FLEX-CTX] Layout called for {box.SourceNode?.NodeName} ({(box.SourceNode as Element)?.TagName})");
             var container = box;
 
             // Flex items are frequently relaid out during probing/stretching. Reset subtree

@@ -135,7 +135,7 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (chromiumData == null)
                 {
-                    global::FenBrowser.Core.FenLogger.Error("[Comparator] Failed to parse Chromium JSON", LogCategory.Verification);
+                    global::FenBrowser.Core.EngineLogCompat.Error("[Comparator] Failed to parse Chromium JSON", LogCategory.Verification);
                     return report;
                 }
 
@@ -194,7 +194,7 @@ namespace FenBrowser.FenEngine.Testing
             }
             catch (Exception ex)
             {
-                global::FenBrowser.Core.FenLogger.Error($"[Comparator] Comparison failed: {ex.Message}", LogCategory.Verification);
+                global::FenBrowser.Core.EngineLogCompat.Error($"[Comparator] Comparison failed: {ex.Message}", LogCategory.Verification);
             }
 
             return report;

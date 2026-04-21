@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             if (!hasBlock && element != null)
             {
                 // Pure Inline Context - Delegate completely
-                FenLogger.Debug($"[LAYOUT-TRACE] PURE IFC shortcut taken for {element.TagName} (ID={element.GetAttribute("id")}). Delegating to InlineLayoutComputer. AvailWidth={context.AvailableSize.Width}");
+                EngineLogCompat.Debug($"[LAYOUT-TRACE] PURE IFC shortcut taken for {element.TagName} (ID={element.GetAttribute("id")}). Delegating to InlineLayoutComputer. AvailWidth={context.AvailableSize.Width}");
                 return context.Computer.MeasureInlineContextInternal(element, context.AvailableSize, context.Depth); 
             }
 
@@ -66,7 +66,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             var className = element?.GetAttribute("class");
             if (element != null && element.TagName == "DIV" && DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenLogger.Info($"[STYLE-DEBUG] Element {element.TagName}.{className}: Width={context.Style?.Width}, MaxWidth={context.Style?.MaxWidth}, TextAlign={context.Style?.TextAlign}, AvailableInline={logicalAvailableInline}", LogCategory.Layout);
+                EngineLogCompat.Info($"[STYLE-DEBUG] Element {element.TagName}.{className}: Width={context.Style?.Width}, MaxWidth={context.Style?.MaxWidth}, TextAlign={context.Style?.TextAlign}, AvailableInline={logicalAvailableInline}", LogCategory.Layout);
             }
 
             bool parentPreventCollapse = (context.Style?.Padding.Top ?? 0) > 0 || (context.Style?.BorderThickness.Top ?? 0) > 0;
@@ -150,7 +150,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
 
                 if (child is Element tel && tel.TagName == "A")
                 {
-                     FenLogger.Debug($"[LAYOUT-TRACE] Found <A> tag. IsInline={isInlineLevel} Float={childStyle?.Float} Display={childStyle?.Display} Pos={pos}");
+                     EngineLogCompat.Debug($"[LAYOUT-TRACE] Found <A> tag. IsInline={isInlineLevel} Float={childStyle?.Float} Display={childStyle?.Display} Pos={pos}");
                 }
 
                 if (isInlineLevel)
@@ -162,7 +162,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                 // Block-level or Float encountered -> Flush previous run
                 if (child is Element tel2 && tel2.TagName == "A")
                 {
-                     FenLogger.Debug($"[LAYOUT-TRACE] Flushing run due to <A> tag being block/float? RunCount={currentInlineRun.Count}");
+                     EngineLogCompat.Debug($"[LAYOUT-TRACE] Flushing run due to <A> tag being block/float? RunCount={currentInlineRun.Count}");
                 }
                 FlushInlineRun();
 
@@ -365,11 +365,11 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
             // FIX: Guard against NaN input for Arrange
             if (float.IsNaN(finalRect.Left) || float.IsNaN(finalRect.Top) || float.IsNaN(finalRect.Width) || float.IsNaN(finalRect.Height))
             {
-                FenLogger.Error($"[BLOCK-ARRANGE-ERROR] Received NaN finalRect for {context.Node?.TagName}: {finalRect}");
+                EngineLogCompat.Error($"[BLOCK-ARRANGE-ERROR] Received NaN finalRect for {context.Node?.TagName}: {finalRect}");
                 return;
             }
 
-            FenLogger.Error($"[BLOCK-ARRANGE-START] Node={context.Node?.NodeName} children={(context.Node?.Children?.Length ?? 0)} finalRect={finalRect}");
+            EngineLogCompat.Error($"[BLOCK-ARRANGE-START] Node={context.Node?.NodeName} children={(context.Node?.Children?.Length ?? 0)} finalRect={finalRect}");
             // RE-IMPLEMENTATION of Arrange logic to support Anonymous Blocks
             // We must replicate the exact flow logic from Measure to position elements correctly.
             var element = context.Node as Element;
@@ -465,7 +465,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                     {
                         float oldVal = logicalCurBlock;
                         logicalCurBlock += currentMarginGroup.Collapsed;
-                        // FenLogger.Log($"[ICB-OVERLAP] Child {i} ({child.NodeName}) Advancing CurBlock by collapsed margin {currentMarginGroup.Collapsed}: {oldVal} -> {logicalCurBlock}", LogCategory.Layout);
+                        // EngineLogCompat.Log($"[ICB-OVERLAP] Child {i} ({child.NodeName}) Advancing CurBlock by collapsed margin {currentMarginGroup.Collapsed}: {oldVal} -> {logicalCurBlock}", LogCategory.Layout);
                     }
                     
                     float startInline = 0;
@@ -512,7 +512,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                         // Fix: Ensure BoxModel is created for text node so renderer can find it
                         if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                         {
-                            FenBrowser.Core.FenLogger.Info($"[ARRANGE-TEXT-DEBUG] Node={node} FinalRect={finalRect} BlockOffset={blockOffset} LineCount={lines.Count} FirstLineY={(lines.Count>0?lines[0].Origin.Y:-999)}", FenBrowser.Core.Logging.LogCategory.Layout);
+                            FenBrowser.Core.EngineLogCompat.Info($"[ARRANGE-TEXT-DEBUG] Node={node} FinalRect={finalRect} BlockOffset={blockOffset} LineCount={lines.Count} FirstLineY={(lines.Count>0?lines[0].Origin.Y:-999)}", FenBrowser.Core.Logging.LogCategory.Layout);
                         }
                         context.Computer.ArrangeText(node, finalRect); // finalRect is ContentBox
                     }
@@ -546,7 +546,7 @@ namespace FenBrowser.FenEngine.Layout.Algorithms
                 
                  if (child is Element tel3 && tel3.TagName == "A")
                 {
-                     FenLogger.Debug($"[ARRANGE-TRACE] Found <A> tag. IsInline={isInlineLevel}");
+                     EngineLogCompat.Debug($"[ARRANGE-TRACE] Found <A> tag. IsInline={isInlineLevel}");
                 }
 
                  if (isInlineLevel)

@@ -177,6 +177,18 @@ namespace FenBrowser.FenEngine.Testing
         public async Task<TestExecutionResult> RunSingleTestAsync(string testFile, bool verbose = false)
         {
             testFile = NormalizeTestFilePath(testFile);
+            string testId = GetRelativeWptTestId(testFile);
+            string fileUrl = string.Empty;
+            try { fileUrl = new Uri(testFile).AbsoluteUri; } catch { fileUrl = testFile; }
+            using var testScope = EngineLogCompat.BeginScope(
+                component: "WPTTestRunner",
+                data: new Dictionary<string, object>
+                {
+                    ["testId"] = testId,
+                    ["url"] = fileUrl,
+                    ["specArea"] = "WPT"
+                });
+
             var result = new TestExecutionResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
             string? source = null;
@@ -986,6 +998,22 @@ namespace FenBrowser.FenEngine.Testing
         private static string NormalizeTestFilePath(string testFile)
         {
             return Path.GetFullPath(testFile);
+        }
+
+        private string GetRelativeWptTestId(string testFile)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_wptRootPath) && !string.IsNullOrWhiteSpace(testFile))
+                {
+                    return Path.GetRelativePath(_wptRootPath, testFile).Replace('\\', '/');
+                }
+            }
+            catch
+            {
+            }
+
+            return testFile ?? "wpt/unknown";
         }
     }
 }

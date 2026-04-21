@@ -268,25 +268,25 @@ namespace FenBrowser.FenEngine.Rendering
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
         private static void TryLogDebug(string message, LogCategory category = LogCategory.General)
         {
-            try { FenLogger.Debug(message, category); }
+            try { EngineLogCompat.Debug(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Debug log failed: {ex.Message}"); }
         }
 
         private static void TryLogInfo(string message, LogCategory category = LogCategory.General)
         {
-            try { FenLogger.Info(message, category); }
+            try { EngineLogCompat.Info(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Info log failed: {ex.Message}"); }
         }
 
         private static void TryLogWarn(string message, LogCategory category = LogCategory.General)
         {
-            try { FenLogger.Warn(message, category); }
+            try { EngineLogCompat.Warn(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Warn log failed: {ex.Message}"); }
         }
 
         private static void TryLogError(string message, LogCategory category = LogCategory.General)
         {
-            try { FenLogger.Error(message, category); }
+            try { EngineLogCompat.Error(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
         }
 
@@ -463,7 +463,7 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 string engineSource = BuildEngineSourceSnapshot(activeNode, uri);
-                string enginePath = StructuredLogger.DumpEngineSource(uri.AbsoluteUri, engineSource);
+                string enginePath = EngineLogCompat.DumpEngineSource(uri.AbsoluteUri, engineSource);
                 if (!string.IsNullOrEmpty(enginePath))
                 {
                     FenBrowser.Core.Verification.ContentVerifier.RegisterEngineSourceFile(enginePath);
@@ -497,7 +497,7 @@ namespace FenBrowser.FenEngine.Rendering
                     renderedTextLength,
                     authoritative: true);
 
-                string renderedPath = StructuredLogger.DumpRenderedText(uri.AbsoluteUri, textContent);
+                string renderedPath = EngineLogCompat.DumpRenderedText(uri.AbsoluteUri, textContent);
                 if (!string.IsNullOrEmpty(renderedPath))
                 {
                     FenBrowser.Core.Verification.ContentVerifier.RegisterRenderedFile(renderedPath);
@@ -648,7 +648,7 @@ namespace FenBrowser.FenEngine.Rendering
             var httpClient = FenBrowser.Core.Network.HttpClientFactory.CreateClient(handler);
             
             // Log HTTP/2 and Brotli configuration
-            FenLogger.Info($"[BrowserHost] HTTP/2: {config.EnableHttp2}, Brotli: {config.EnableBrotli}, " +
+            EngineLogCompat.Info($"[BrowserHost] HTTP/2: {config.EnableHttp2}, Brotli: {config.EnableBrotli}, " +
                           $"Version: {httpClient.DefaultRequestVersion}", LogCategory.Network);
             
             _resources = new ResourceManager(httpClient, isPrivate);
@@ -673,7 +673,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                          var dump = new Dictionary<string, string>(headers);
                          if (!dump.ContainsKey("User-Agent") && req.Headers.UserAgent != null) dump["User-Agent"] = req.Headers.UserAgent.ToString();
-                         FenLogger.Debug($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
+                         EngineLogCompat.Debug($"[Compliance] HTTP Request: {req.Method} {req.RequestUri} Headers: {JsonSerializer.Serialize(dump)}", LogCategory.Network);
                     }
                     catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[BrowserHost] Error log failed: {ex.Message}"); }
 
@@ -862,7 +862,7 @@ namespace FenBrowser.FenEngine.Rendering
                             bool isJsMime = scriptCt.Contains("javascript") || scriptCt.Contains("ecmascript");
                             if (!isJsMime)
                             {
-                                FenLogger.Warn($"[nosniff] Blocked script â€” Content-Type '{scriptResult.ContentType}' is not a JS MIME type: {u}", LogCategory.JavaScript);
+                                EngineLogCompat.Warn($"[nosniff] Blocked script â€” Content-Type '{scriptResult.ContentType}' is not a JS MIME type: {u}", LogCategory.JavaScript);
                                 return null;
                             }
                         }
@@ -890,7 +890,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 try
                 {
-                    FenLogger.Debug($"[FontRegistry-Repaint] Triggering relayout after font load: {family}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[FontRegistry-Repaint] Triggering relayout after font load: {family}", LogCategory.Rendering);
                     // Force CSS to re-evaluate so CssComputed drops the cached system fallback fonts
                     _engine.ScheduleRecascade();
                     var dom = _engine.GetActiveDom();
@@ -926,7 +926,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        FenLogger.Debug("[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
+                        EngineLogCompat.Debug("[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
                         RepaintReady?.Invoke(this, null);
                     }
                     catch (Exception ex)
@@ -938,7 +938,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        FenLogger.Debug("[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
+                        EngineLogCompat.Debug("[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
                         var dom = _engine.GetActiveDom();
                         if (dom != null)
                         {
@@ -1183,7 +1183,7 @@ namespace FenBrowser.FenEngine.Rendering
                         break;
 
                     int retryDelayMs = 350 * attempt;
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[BrowserHost] Transient navigation failure ({result.Status}) for '{url}'. Retrying {attempt}/{maxTransientNavAttempts - 1} after {retryDelayMs}ms.",
                         LogCategory.Network);
                     await Task.Delay(retryDelayMs);
@@ -1283,7 +1283,7 @@ pre {{
                     System.Diagnostics.Debug.WriteLine("[NavigateAsync] CRITICAL: FinalUri is null! Defaulting to about:blank");
                     uri = new Uri("about:blank");
                 }
-                FenLogger.Debug($"[BrowserHost] Navigation done. FinalUri: {uri.AbsoluteUri} (Status: {result.Status})", LogCategory.General);
+                EngineLogCompat.Debug($"[BrowserHost] Navigation done. FinalUri: {uri.AbsoluteUri} (Status: {result.Status})", LogCategory.General);
 
                 if (result.Status != FetchStatus.Success)
                 {
@@ -1339,7 +1339,7 @@ pre {{
                 // Dump raw HTML source for debugging (CURL level)
                 try 
                 { 
-                    string dumpPath = StructuredLogger.DumpRawSource(uri.AbsoluteUri, htmlToRender); 
+                    string dumpPath = EngineLogCompat.DumpRawSource(uri.AbsoluteUri, htmlToRender); 
                     if (!string.IsNullOrEmpty(dumpPath))
                     {
                         FenBrowser.Core.Verification.ContentVerifier.RegisterSourceFile(dumpPath);
@@ -1794,7 +1794,7 @@ pre {{
                             // Resize if too large? Tab is small (16px), but keep quality High.
                             // Set property and fire event
                             Favicon = bitmap;
-                            FenBrowser.Core.FenLogger.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
+                            FenBrowser.Core.EngineLogCompat.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
                             
                             // Marshall to UI thread handled by consumers
                             RepaintReady?.Invoke(this, null); // Trigger repaint? Or specific event
@@ -1810,7 +1810,7 @@ pre {{
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[BrowserHost] Failed to fetch favicon: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+                FenBrowser.Core.EngineLogCompat.Warn($"[BrowserHost] Failed to fetch favicon: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
         }
 
@@ -1951,6 +1951,22 @@ pre {{
                 ? settleDetail
                 : $"{baseDetail};{settleDetail}";
             _navigationLifecycle.MarkComplete(navigationId, detail);
+            EngineLog.EmitSuppressedSummary();
+            var (unsupportedHtml, unsupportedCss, unsupportedJs) = EngineCapabilities.GetUnsupportedCounts();
+            EngineLog.WriteRateLimited(
+                key: "summary:unsupported-features",
+                window: TimeSpan.FromMinutes(1),
+                subsystem: LogSubsystem.Verification,
+                severity: LogSeverity.Info,
+                message: "Unsupported feature summary",
+                marker: LogMarker.Fallback,
+                context: default,
+                fields: new Dictionary<string, object>
+                {
+                    ["unsupportedHtml"] = unsupportedHtml,
+                    ["unsupportedCss"] = unsupportedCss,
+                    ["unsupportedJs"] = unsupportedJs
+                });
             _navigationSubresources.AbandonNavigation(navigationId);
         }
 
@@ -4761,7 +4777,7 @@ pre {{
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[BrowserHost] PushState failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[BrowserHost] PushState failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -4786,7 +4802,7 @@ pre {{
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[BrowserHost] ReplaceState failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[BrowserHost] ReplaceState failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
         public void Go(int delta)

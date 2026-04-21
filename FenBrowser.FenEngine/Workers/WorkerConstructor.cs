@@ -47,12 +47,12 @@ namespace FenBrowser.FenEngine.Workers
         {
             if (args.Length == 0 || args[0].IsUndefined || args[0].IsNull)
             {
-                FenLogger.Debug("[WorkerConstructor] Missing script URL", LogCategory.Errors);
+                EngineLogCompat.Debug("[WorkerConstructor] Missing script URL", LogCategory.Errors);
                 throw new ArgumentException("Worker constructor requires a script URL");
             }
 
             var scriptUrl = args[0].ToString();
-            FenLogger.Debug($"[WorkerConstructor] Creating worker for: {scriptUrl}", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[WorkerConstructor] Creating worker for: {scriptUrl}", LogCategory.JavaScript);
 
             if (!TryResolveScriptUri(scriptUrl, _baseUri, out var resolvedScriptUri))
             {
@@ -151,7 +151,7 @@ namespace FenBrowser.FenEngine.Workers
                 worker.Dispose();
             }
             _activeWorkers.Clear();
-            FenLogger.Debug("[WorkerConstructor] All workers terminated", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[WorkerConstructor] All workers terminated", LogCategory.JavaScript);
         }
 
         /// <summary>

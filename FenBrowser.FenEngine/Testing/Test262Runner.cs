@@ -323,7 +323,7 @@ namespace FenBrowser.FenEngine.Testing
             var categoryPath = Path.Combine(_test262RootPath, "test", category);
             if (!Directory.Exists(categoryPath))
             {
-                FenLogger.Warn($"[Test262] Category path not found: {categoryPath}", LogCategory.General);
+                EngineLogCompat.Warn($"[Test262] Category path not found: {categoryPath}", LogCategory.General);
                 return _results.AsReadOnly();
             }
             
@@ -359,7 +359,7 @@ namespace FenBrowser.FenEngine.Testing
             var categoryPath = Path.Combine(_test262RootPath, "test", category);
             if (!Directory.Exists(categoryPath))
             {
-                FenLogger.Warn($"[Test262] Category path not found: {categoryPath}", LogCategory.General);
+                EngineLogCompat.Warn($"[Test262] Category path not found: {categoryPath}", LogCategory.General);
                 return _results.AsReadOnly();
             }
             
@@ -418,6 +418,18 @@ namespace FenBrowser.FenEngine.Testing
 
         public async Task<TestResult> RunSingleTestAsync(string testFile)
         {
+            string testId = GetRelativeTest262Id(testFile);
+            string fileUrl = string.Empty;
+            try { fileUrl = new Uri(Path.GetFullPath(testFile)).AbsoluteUri; } catch { fileUrl = testFile; }
+            using var testScope = EngineLogCompat.BeginScope(
+                component: "Test262Runner",
+                data: new Dictionary<string, object>
+                {
+                    ["testId"] = testId,
+                    ["url"] = fileUrl,
+                    ["specArea"] = "Test262"
+                });
+
             var result = new TestResult { TestFile = testFile };
             var sw = System.Diagnostics.Stopwatch.StartNew();
             Test262AgentController agentController = null;
@@ -585,7 +597,7 @@ namespace FenBrowser.FenEngine.Testing
                         }
                         else
                         {
-                            FenLogger.Warn($"[Test262] Missing include: {include}", LogCategory.General);
+                            EngineLogCompat.Warn($"[Test262] Missing include: {include}", LogCategory.General);
                         }
                     }
                 }
@@ -1767,7 +1779,7 @@ namespace FenBrowser.FenEngine.Testing
 
             if (!Directory.Exists(path))
             {
-                FenLogger.Warn($"[Test262] Path not found: {path}", LogCategory.General);
+                EngineLogCompat.Warn($"[Test262] Path not found: {path}", LogCategory.General);
                 return new List<string>();
             }
 
@@ -1823,6 +1835,30 @@ namespace FenBrowser.FenEngine.Testing
                 _results.AddRange(list);
             }
             return list.AsReadOnly();
+        }
+
+        private string GetRelativeTest262Id(string testFile)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_test262RootPath) || string.IsNullOrWhiteSpace(testFile))
+                {
+                    return testFile ?? "test262/unknown";
+                }
+
+                var root = Path.Combine(_test262RootPath, "test");
+                var full = Path.GetFullPath(testFile);
+                if (full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Path.GetRelativePath(root, full).Replace('\\', '/');
+                }
+
+                return Path.GetRelativePath(_test262RootPath, full).Replace('\\', '/');
+            }
+            catch
+            {
+                return testFile ?? "test262/unknown";
+            }
         }
     }
 }

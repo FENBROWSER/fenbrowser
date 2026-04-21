@@ -73,7 +73,7 @@ namespace FenBrowser.FenEngine.Workers
 
         public async Task<ServiceWorkerRegistration> Register(string scriptUrl, string scope)
         {
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Registering {scriptUrl} for scope {scope}", LogCategory.ServiceWorker);
+            FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Registering {scriptUrl} for scope {scope}", LogCategory.ServiceWorker);
 
             var normalizedScope = NormalizeScope(scope);
             if (normalizedScope == null)
@@ -104,7 +104,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Script fetch failed: {ex.Message}", LogCategory.ServiceWorker);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[ServiceWorkerManager] Script fetch failed: {ex.Message}", LogCategory.ServiceWorker);
                 }
             }
 
@@ -114,7 +114,7 @@ namespace FenBrowser.FenEngine.Workers
                 if (_scriptHashes.TryGetValue(normalizedScope, out var existingHash) && existingHash == newHash)
                 {
                     // Script unchanged — no update needed (SW §8.4 byte-for-byte check)
-                    FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Script unchanged for {normalizedScope}, skipping install", LogCategory.ServiceWorker);
+                    FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Script unchanged for {normalizedScope}, skipping install", LogCategory.ServiceWorker);
                     return registration;
                 }
                 _scriptHashes[normalizedScope] = newHash;
@@ -222,7 +222,7 @@ namespace FenBrowser.FenEngine.Workers
             var normalizedScope = NormalizeScope(scope);
             if (normalizedScope == null) return;
             _skipWaitingScopes[normalizedScope] = true;
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] skipWaiting for scope {normalizedScope}", LogCategory.ServiceWorker);
+            FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] skipWaiting for scope {normalizedScope}", LogCategory.ServiceWorker);
         }
 
         /// <summary>
@@ -238,7 +238,7 @@ namespace FenBrowser.FenEngine.Workers
                 return;
 
             NotifyControllersChanged(normalizedScope, reg.Active);
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] clients.claim for scope {normalizedScope}", LogCategory.ServiceWorker);
+            FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] clients.claim for scope {normalizedScope}", LogCategory.ServiceWorker);
         }
 
         public async Task<ServiceWorkerRegistration> UpdateRegistrationAsync(string scope)
@@ -271,7 +271,7 @@ namespace FenBrowser.FenEngine.Workers
                     runtime.Terminate();
                     runtime.Dispose();
                 }
-                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
+                catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[ServiceWorkerManager] Runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
             }
 
             removed.Installing?.UpdateState("redundant");
@@ -289,7 +289,7 @@ namespace FenBrowser.FenEngine.Workers
                 catch { /* best effort */ }
             }
 
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Unregistered scope {key}", LogCategory.ServiceWorker);
+            FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Unregistered scope {key}", LogCategory.ServiceWorker);
             return Task.FromResult(true);
         }
 
@@ -302,11 +302,11 @@ namespace FenBrowser.FenEngine.Workers
             if (_activeRuntimes.TryGetValue(scope, out var runtime))
             {
                 runtime.PostMessage(message);
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] PostMessage to scope {scope}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] PostMessage to scope {scope}", LogCategory.ServiceWorker);
             }
             else
             {
-               FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] No active runtime found for scope {scope}", LogCategory.ServiceWorker);
+               FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] No active runtime found for scope {scope}", LogCategory.ServiceWorker);
             }
         }
 
@@ -340,7 +340,7 @@ namespace FenBrowser.FenEngine.Workers
                     isServiceWorker: true);
 
                 // SW §4.4.2: Installing — fire 'install' ExtendableEvent
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Installing {scope}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Installing {scope}", LogCategory.ServiceWorker);
                 DispatchLifecycleEvent(runtime, "install");
 
                 sw.UpdateState("installed");
@@ -352,7 +352,7 @@ namespace FenBrowser.FenEngine.Workers
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Error($"[ServiceWorkerManager] Runtime start failed: {ex.Message}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Error($"[ServiceWorkerManager] Runtime start failed: {ex.Message}", LogCategory.ServiceWorker);
                 sw.UpdateState("redundant");
             }
         }
@@ -384,11 +384,11 @@ namespace FenBrowser.FenEngine.Workers
                     runtime.DispatchGlobalEvent(eventType, FenBrowser.FenEngine.Core.FenValue.FromObject(evt));
                 }, $"ServiceWorker.{eventType}");
 
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Dispatched '{eventType}' event", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Dispatched '{eventType}' event", LogCategory.ServiceWorker);
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Lifecycle event '{eventType}' dispatch failed: {ex.Message}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Warn($"[ServiceWorkerManager] Lifecycle event '{eventType}' dispatch failed: {ex.Message}", LogCategory.ServiceWorker);
             }
         }
 
@@ -399,7 +399,7 @@ namespace FenBrowser.FenEngine.Workers
             // Lookup runtime by scope directly
             if (_activeRuntimes.TryGetValue(sw.Scope, out var runtime))
             {
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Dispatch FetchEvent to {sw.Scope}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Dispatch FetchEvent to {sw.Scope}", LogCategory.ServiceWorker);
                 return await runtime.DispatchServiceWorkerFetchAsync(fetchEvt).ConfigureAwait(false);
             }
             return false;
@@ -480,7 +480,7 @@ namespace FenBrowser.FenEngine.Workers
 
         private void ActivateWorker(string scope, ServiceWorkerRegistration reg, ServiceWorker sw, WorkerRuntime runtime)
         {
-            FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Activating {scope}", LogCategory.ServiceWorker);
+            FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Activating {scope}", LogCategory.ServiceWorker);
             sw.UpdateState("activating");
 
             WorkerRuntime oldRuntime = null;
@@ -507,7 +507,7 @@ namespace FenBrowser.FenEngine.Workers
                     oldRuntime.Terminate();
                     oldRuntime.Dispose();
                 }
-                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[ServiceWorkerManager] Old runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
+                catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[ServiceWorkerManager] Old runtime disposal failed: {ex.Message}", LogCategory.ServiceWorker); }
             }
         }
 
@@ -563,7 +563,7 @@ namespace FenBrowser.FenEngine.Workers
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Failed to persist registration: {ex.Message}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Failed to persist registration: {ex.Message}", LogCategory.ServiceWorker);
             }
         }
 
@@ -596,7 +596,7 @@ namespace FenBrowser.FenEngine.Workers
                             }
                             catch (Exception ex)
                             {
-                                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Failed to restore registration {scope}: {ex.Message}", LogCategory.ServiceWorker);
+                                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Failed to restore registration {scope}: {ex.Message}", LogCategory.ServiceWorker);
                             }
                         }
                     }
@@ -604,7 +604,7 @@ namespace FenBrowser.FenEngine.Workers
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Debug($"[ServiceWorkerManager] Failed to load persisted registrations: {ex.Message}", LogCategory.ServiceWorker);
+                FenBrowser.Core.EngineLogCompat.Debug($"[ServiceWorkerManager] Failed to load persisted registrations: {ex.Message}", LogCategory.ServiceWorker);
             }
         }
     }

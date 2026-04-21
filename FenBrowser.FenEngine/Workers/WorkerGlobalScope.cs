@@ -62,7 +62,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[WorkerGlobalScope] Detached async operation error: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[WorkerGlobalScope] Detached async operation error: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.DenyChildAttach, System.Threading.Tasks.TaskScheduler.Default).Unwrap();
         }        private void InitializeProperties()
@@ -154,7 +154,7 @@ namespace FenBrowser.FenEngine.Workers
             // close() - terminate worker from inside
             Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
             {
-                FenLogger.Debug("[WorkerGlobalScope] close() called", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[WorkerGlobalScope] close() called", LogCategory.JavaScript);
                 _runtime.Terminate();
                 return FenValue.Undefined;
             })));
@@ -218,7 +218,7 @@ namespace FenBrowser.FenEngine.Workers
                         {
                             try { callback.AsFunction().Invoke(callbackArgs, Runtime.Context); }
                             catch (Exception ex)
-                            { FenLogger.Debug($"[WorkerGlobalScope] setTimeout callback error: {ex.Message}", LogCategory.JavaScript); }
+                            { EngineLogCompat.Debug($"[WorkerGlobalScope] setTimeout callback error: {ex.Message}", LogCategory.JavaScript); }
                         }
                     }, $"setTimeout({capturedId})");
                 });
@@ -284,7 +284,7 @@ namespace FenBrowser.FenEngine.Workers
                             {
                                 try { callback.AsFunction().Invoke(callbackArgs, Runtime.Context); }
                                 catch (Exception ex)
-                                { FenLogger.Debug($"[WorkerGlobalScope] setInterval callback error: {ex.Message}", LogCategory.JavaScript); }
+                                { EngineLogCompat.Debug($"[WorkerGlobalScope] setInterval callback error: {ex.Message}", LogCategory.JavaScript); }
                             }
                         }, $"setInterval({capturedId})");
                     }
@@ -316,13 +316,13 @@ namespace FenBrowser.FenEngine.Workers
             console.Set("log", FenValue.FromFunction(new FenFunction("log", (args, thisVal) =>
             {
                 var message = string.Join(" ", Array.ConvertAll(args, a => a.ToString()));
-                FenLogger.Debug($"[Worker Console] {message}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[Worker Console] {message}", LogCategory.JavaScript);
                 return FenValue.Undefined;
             })));
             console.Set("error", FenValue.FromFunction(new FenFunction("error", (args, thisVal) =>
             {
                 var message = string.Join(" ", Array.ConvertAll(args, a => a.ToString()));
-                FenLogger.Debug($"[Worker Console ERROR] {message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[Worker Console ERROR] {message}", LogCategory.Errors);
                 return FenValue.Undefined;
             })));
             Set("console", FenValue.FromObject(console));

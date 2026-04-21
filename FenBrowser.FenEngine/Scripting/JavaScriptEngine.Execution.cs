@@ -100,7 +100,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[JavaScriptEngine] Prototype hardening failed for profile '{RuntimeProfile.Name}': {ex.Message}",
                     LogCategory.JsExecution);
             }
@@ -194,7 +194,7 @@ namespace FenBrowser.FenEngine.Scripting
                 return;
             }
 
-            FenLogger.Warn(
+            EngineLogCompat.Warn(
                 $"[JS-EXEC] Large script queued: kind={kind} source={sourceName} length={scriptLength}",
                 LogCategory.JsExecution);
         }

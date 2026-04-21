@@ -71,7 +71,7 @@ namespace FenBrowser.FenEngine.Layout
                         var matched = SKFontManager.Default.MatchCharacter(c);
                         if (matched != null) 
                         {
-                            FenBrowser.Core.FenLogger.Debug($"[FONT-MATCH] Resolved typeface for non-ASCII char '{c}' (0x{(int)c:X4}): {matched.FamilyName}");
+                            FenBrowser.Core.EngineLogCompat.Debug($"[FONT-MATCH] Resolved typeface for non-ASCII char '{c}' (0x{(int)c:X4}): {matched.FamilyName}");
                             return matched;
                         }
                     }

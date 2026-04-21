@@ -133,9 +133,9 @@ namespace FenBrowser.FenEngine.Layout
 
             
             // DUMP TREE FOR DEBUGGING
-            FenLogger.Debug("--- NEW PIPELINE LAYOUT DUMP ---", LogCategory.Rendering);
+            EngineLogCompat.Debug("--- NEW PIPELINE LAYOUT DUMP ---", LogCategory.Rendering);
             DumpBoxTree(rootBox, 0);
-            FenLogger.Debug("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
+            EngineLogCompat.Debug("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
 
             float contentHeight = ComputeDocumentContentHeight(rootBox, availableHeight);
 
@@ -191,23 +191,11 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (box == null) return;
 
-            float relOffsetX = 0;
-            float relOffsetY = 0;
-            var style = box.ComputedStyle;
-            if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
-            {
-                if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
-                else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
-
-                if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
-                else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
-            }
-
-            string position = LayoutStyleResolver.GetEffectivePosition(style);
+            string position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
             bool isFixed = position == "fixed";
             if (!isFixed)
             {
-                float absoluteBottom = box.Geometry.MarginBox.Bottom + relOffsetY;
+                float absoluteBottom = box.Geometry.MarginBox.Bottom;
                 if (!float.IsNaN(absoluteBottom) && !float.IsInfinity(absoluteBottom))
                 {
                     maxBottom = Math.Max(maxBottom, absoluteBottom);
@@ -226,19 +214,6 @@ namespace FenBrowser.FenEngine.Layout
         private void CollectBoxesAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> dict, float parentContentAbsX, float parentContentAbsY)
         {
             if (box == null) return;
-
-            // Calculate relative position offset (applied to this element only, not children)
-            float relOffsetX = 0, relOffsetY = 0;
-            var style = box.ComputedStyle;
-            if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
-            {
-                // CSS spec: top/left take priority over bottom/right
-                if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
-                else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
-
-                if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
-                else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
-            }
 
             if (box.SourceNode != null)
             {
@@ -259,8 +234,6 @@ namespace FenBrowser.FenEngine.Layout
                 // before LayoutEngine materializes renderer-facing boxes. Re-applying the
                 // parent content origin here double-shifts nested descendants and produces
                 // ghost borders/backgrounds detached from their content.
-                FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftBoxModel(absModel, relOffsetX, relOffsetY);
-
                 if (!dict.TryGetValue(box.SourceNode, out var existingModel) ||
                     ShouldPreferMaterializedBox(existingModel, absModel))
                 {
@@ -312,22 +285,9 @@ namespace FenBrowser.FenEngine.Layout
         {
              if (box == null) return;
 
-             // Calculate relative position offset
-             float relOffsetX = 0, relOffsetY = 0;
-             var style = box.ComputedStyle;
-             if (style != null && string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
-             {
-                 // CSS spec: top/left take priority over bottom/right
-                 if (style.Top.HasValue) relOffsetY = (float)style.Top.Value;
-                 else if (style.Bottom.HasValue) relOffsetY = -(float)style.Bottom.Value;
-
-                 if (style.Left.HasValue) relOffsetX = (float)style.Left.Value;
-                 else if (style.Right.HasValue) relOffsetX = -(float)style.Right.Value;
-             }
-
              // The box tree already carries document coordinates for visual geometry.
-             float absBorderX = (float)box.Geometry.BorderBox.Left + relOffsetX;
-             float absBorderY = (float)box.Geometry.BorderBox.Top + relOffsetY;
+             float absBorderX = (float)box.Geometry.BorderBox.Left;
+             float absBorderY = (float)box.Geometry.BorderBox.Top;
 
              if (box.SourceNode is Element el)
              {

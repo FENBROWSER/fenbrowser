@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             state.LastScrollUpdateUtc = now;
 
-            FenLogger.Debug($"[ScrollManager] {(element?.TagName ?? "#viewport")} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[ScrollManager] {(element?.TagName ?? "#viewport")} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
         }
 
         /// <summary>
@@ -625,7 +625,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 float offset = box.Top - state.ScrollY;
                 
                 _anchors[container] = new AnchorData { Node = candidate, OffsetY = offset };
-                FenLogger.Debug($"[ScrollManager] Selected Anchor: {candidate.GetType().Name} (Tag: {(candidate as Element)?.TagName}) @ Offset {offset}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ScrollManager] Selected Anchor: {candidate.GetType().Name} (Tag: {(candidate as Element)?.TagName}) @ Offset {offset}", LogCategory.Rendering);
             }
             else
             {
@@ -699,7 +699,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             if (Math.Abs(targetScrollY - currentScrollY) > 0.5f)
             {
                 float diff = targetScrollY - currentScrollY;
-                FenLogger.Debug($"[ScrollManager] Adjusting Scroll by {diff}px (Anchor moved from {anchorRef.Node.GetHashCode()})", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ScrollManager] Adjusting Scroll by {diff}px (Anchor moved from {anchorRef.Node.GetHashCode()})", LogCategory.Rendering);
                 
                 // Update state directly without clamping immediately? 
                 // Clamping happens in SetScrollPosition.

@@ -14,8 +14,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
     /// Implements the CSS Flexbox Layout Algorithm.
     /// Handles main/cross axis sizing, wrapping, alignment, and gap support.
     /// </summary>
-    public static class CssFlexLayout
-    {
+        public static class CssFlexLayout
+        {
+        private static float NormalizeAvailableMain(float value)
+        {
+            if (!float.IsFinite(value) || value < 0f)
+            {
+                return 0f;
+            }
+
+            return value;
+        }
         // Helper to track flex item state during algorithm
         public class FlexItem
         {
@@ -109,7 +118,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (container.TagName == "DIV" && children.Any(c => c is Element e && e.TagName == "A"))
             {
-                 FenLogger.Error($"[FLEX-TRACE-V2] Container={container.TagName} Class={container.GetAttribute("class")} IsRow={isRow} IsWrap={isWrap} MainAvail={mainAvailable} Width={availableSize.Width}");
+                 EngineLogCompat.Error($"[FLEX-TRACE-V2] Container={container.TagName} Class={container.GetAttribute("class")} IsRow={isRow} IsWrap={isWrap} MainAvail={mainAvailable} Width={availableSize.Width}");
             }
 
             // 1. Generate Flex Items
@@ -117,7 +126,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             int itemCountGuard = 0;
             foreach (var child in children)
             {
-                if (itemCountGuard++ > 10000) { FenLogger.Log("[CssFlexLayout] Item limit reached, truncating", LogCategory.Layout); break; }
+                if (itemCountGuard++ > 10000) { EngineLogCompat.Log("[CssFlexLayout] Item limit reached, truncating", LogCategory.Layout); break; }
                 var cStyle = getStyle(child);
                 var item = new FlexItem(child, cStyle);
                 
@@ -386,11 +395,26 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // DEBUG: Log flex container dimensions
             if (container.TagName == "BODY" || container.TagName == "HTML")
             {
-                FenLogger.Debug($"[FLEX-ARRANGE] <{container.TagName}> contentBox={contentBox} isRow={isRow} Justify={justify} AlignItems={alignItems}", LogCategory.Layout);
+                EngineLogCompat.Debug($"[FLEX-ARRANGE] <{container.TagName}> contentBox={contentBox} isRow={isRow} Justify={justify} AlignItems={alignItems}", LogCategory.Layout);
             }
             
-            // Spec compliance check
-            SpecComplianceLogger.LogContentBox(container.TagName ?? "unknown", container.Id ?? "", contentBox.Width, contentBox.Height);
+            // Invariant check for negative content-box dimensions.
+            if (contentBox.Width < 0 || contentBox.Height < 0)
+            {
+                EngineLog.Write(
+                    LogSubsystem.Layout,
+                    LogSeverity.Warn,
+                    "Negative content-box dimensions detected during flex arrange",
+                    LogMarker.Invariant,
+                    default,
+                    new Dictionary<string, object>
+                    {
+                        ["tag"] = container.TagName ?? "unknown",
+                        ["id"] = container.Id ?? string.Empty,
+                        ["width"] = contentBox.Width,
+                        ["height"] = contentBox.Height
+                    });
+            }
 
             var source = childrenSource ?? container.ChildNodes;
             var children = source.Where(c => 
@@ -407,11 +431,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Sort children by CSS order property (stable sort preserves source order for equal values)
             children = children.OrderBy(c => getStyle(c)?.Order ?? 0).ToList();
 
-            float mainAvailable = isRow ? contentBox.Width : contentBox.Height;
-             if (float.IsInfinity(mainAvailable) || float.IsNaN(mainAvailable))
-            {
-                mainAvailable = isRow ? 1920f : 1080f; 
-            }
+            float mainAvailable = NormalizeAvailableMain(isRow ? contentBox.Width : contentBox.Height);
             
             // FIX for collapsed container
             float calculatedContentMain = 0;
@@ -633,7 +653,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (freeMain > 0)
                 {
                      if (container.TagName == "BODY")
-                        FenLogger.Debug($"[FLEX-JUSTIFY] BODY Line={line.MainSize} Avail={mainAvailable} Free={freeMain} Justify={justify} StartOffset={startOffset}", LogCategory.Layout);
+                        EngineLogCompat.Debug($"[FLEX-JUSTIFY] BODY Line={line.MainSize} Avail={mainAvailable} Free={freeMain} Justify={justify} StartOffset={startOffset}", LogCategory.Layout);
 
                      switch (justify)
                     {
@@ -648,7 +668,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 else if (container.TagName == "BODY")
                 {
-                    FenLogger.Debug($"[FLEX-JUSTIFY-FAIL] BODY freeMain={freeMain} (Avail={mainAvailable} - Line={line.MainSize})", LogCategory.Layout);
+                    EngineLogCompat.Debug($"[FLEX-JUSTIFY-FAIL] BODY freeMain={freeMain} (Avail={mainAvailable} - Line={line.MainSize})", LogCategory.Layout);
                 }
                 
                 float totalFlexGrow = 0;
@@ -724,7 +744,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                      // DIAGNOSTIC LOG for Alignment (Moved here to fix build error)
                      if (align == "center" || isRow==false) 
                      {
-                          FenLogger.Debug($"[FLEX-ALIGN] Item={item.Node.NodeName} Align={align} " +
+                          EngineLogCompat.Debug($"[FLEX-ALIGN] Item={item.Node.NodeName} Align={align} " +
                                        $"CrossAvailable={crossAvailable} (Line={lineCrossSize} - Child={childCrossSize} - Margins={childCrossMargins}) " +
                                        $"AutoStart={crossAutoStart} AutoEnd={crossAutoEnd}", LogCategory.Layout);
                      }
@@ -763,7 +783,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                      if (align == "stretch" && crossAvailable > 0) 
                      {
-                         FenLogger.Info($"[FLEX-STRETCH] Item stretch: childCross={childCrossSize:F1} crossAvail={crossAvailable:F1} lineCross={lineCrossSize:F1} -> finalCross={childCrossSize + crossAvailable:F1}", LogCategory.Layout);
+                         EngineLogCompat.Info($"[FLEX-STRETCH] Item stretch: childCross={childCrossSize:F1} crossAvail={crossAvailable:F1} lineCross={lineCrossSize:F1} -> finalCross={childCrossSize + crossAvailable:F1}", LogCategory.Layout);
                          finalCross += crossAvailable;
                      }
                      
@@ -797,7 +817,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                           h = finalMain;
                      }
                      
-                     arrangeChild(item.Node, new SKRect(x, y, x + w, y + h), depth + 1);
+                     var arrangedRect = LayoutHelper.NormalizeRect(new SKRect(x, y, x + w, y + h), contentBox, clampToContainer: true);
+                     arrangeChild(item.Node, arrangedRect, depth + 1);
                      
                      float extraMainMargin = 0;
                      if (hasAutoMargins) {

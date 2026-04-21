@@ -64,11 +64,11 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             {
                 var content = DumpTree(root, boxes, styles, format);
                 File.WriteAllText(path, content);
-                global::FenBrowser.Core.FenLogger.Log($"[LayoutDump] Written to: {path}", LogCategory.Rendering);
+                global::FenBrowser.Core.EngineLogCompat.Log($"[LayoutDump] Written to: {path}", LogCategory.Rendering);
             }
             catch (Exception ex)
             {
-                global::FenBrowser.Core.FenLogger.Error($"[LayoutDump] Failed to write: {ex.Message}", LogCategory.Rendering);
+                global::FenBrowser.Core.EngineLogCompat.Error($"[LayoutDump] Failed to write: {ex.Message}", LogCategory.Rendering);
             }
         }
 

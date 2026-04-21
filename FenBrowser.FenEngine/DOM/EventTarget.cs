@@ -384,7 +384,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[EventTarget] Error in listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                    EngineLogCompat.Error($"[EventTarget] Error in listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                     // Per spec, report the error to window.onerror
                     TryReportErrorToWindow(element, context, ex);
                 }
@@ -458,7 +458,7 @@ namespace FenBrowser.FenEngine.DOM
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error($"[EventTarget] Error in legacy-prefixed listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                        EngineLogCompat.Error($"[EventTarget] Error in legacy-prefixed listener for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                         TryReportErrorToWindow(element, context, ex);
                     }
                 }
@@ -572,7 +572,7 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception reportingException)
             {
-                FenLogger.Warn($"[EventTarget] window.onerror reporting failed: {reportingException.Message}", LogCategory.Events);
+                EngineLogCompat.Warn($"[EventTarget] window.onerror reporting failed: {reportingException.Message}", LogCategory.Events);
             }
         }
 
@@ -721,7 +721,7 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeFenListenerArray(winVal.AsObject(), evt, context, capturePhase);
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
 
             if (evt.PropagationStopped) return;
 
@@ -733,7 +733,7 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeFenListenerArray(docVal.AsObject(), evt, context, capturePhase);
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[EventTarget] Window top-level listeners invocation failed: {ex.Message}", LogCategory.Events); }
         }
 
         private static void InvokeFenListenerArray(IObject targetObj, DomEvent evt, IExecutionContext context, bool capturePhase)
@@ -797,7 +797,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[EventTarget] FenRuntime listener error for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                    EngineLogCompat.Error($"[EventTarget] FenRuntime listener error for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                 }
                 finally
                 {
@@ -880,7 +880,7 @@ namespace FenBrowser.FenEngine.DOM
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[EventTarget] Error in handler property for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
+                EngineLogCompat.Error($"[EventTarget] Error in handler property for {evt.Type}: {ex.Message}", LogCategory.Events, ex);
                 TryReportErrorToWindow(evt.Target, context, ex);
             }
         }

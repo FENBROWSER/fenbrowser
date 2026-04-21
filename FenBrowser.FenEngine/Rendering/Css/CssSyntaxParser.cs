@@ -32,7 +32,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 if (loopCount++ > 1000000) // Safety break
                 {
-                    FenBrowser.Core.FenLogger.Warn("[CssSyntaxParser] ParseStylesheet infinite loop detected. Aborting.", FenBrowser.Core.Logging.LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Warn("[CssSyntaxParser] ParseStylesheet infinite loop detected. Aborting.", FenBrowser.Core.Logging.LogCategory.CSS);
                     break;
                 }
 
@@ -279,7 +279,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (!_declarationLimitLogged)
                     {
                         _declarationLimitLogged = true;
-                        FenBrowser.Core.FenLogger.Warn($"[CssSyntaxParser] Declaration block limit reached ({MaxDeclarationsPerBlock}). Remaining declarations were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
+                        FenBrowser.Core.EngineLogCompat.Warn($"[CssSyntaxParser] Declaration block limit reached ({MaxDeclarationsPerBlock}). Remaining declarations were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
                     }
 
                     while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
@@ -323,7 +323,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (!_ruleLimitLogged)
                 {
                     _ruleLimitLogged = true;
-                    FenBrowser.Core.FenLogger.Warn($"[CssSyntaxParser] Rule limit reached ({MaxRules}). Remaining rules were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[CssSyntaxParser] Rule limit reached ({MaxRules}). Remaining rules were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
                 }
                 return false;
             }
@@ -404,7 +404,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (property == "visibility")
             {
-                global::FenBrowser.Core.FenLogger.Log($"[CssSyntaxParser] Parsed declaration: {property}: {valueStr.Trim()} (Important: {important})", global::FenBrowser.Core.Logging.LogCategory.CSS, global::FenBrowser.Core.Logging.LogLevel.Debug);
+                global::FenBrowser.Core.EngineLogCompat.Log($"[CssSyntaxParser] Parsed declaration: {property}: {valueStr.Trim()} (Important: {important})", global::FenBrowser.Core.Logging.LogCategory.CSS, global::FenBrowser.Core.Logging.LogLevel.Debug);
             }
 
             return new CssDeclaration 
@@ -489,7 +489,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (safety++ > MAX_TOKENS)
                     {
                         var msg = $"CssSyntaxParser: Block too large or infinite loop. Stack={stack.Count} Token={_currentToken.Type}";
-                        FenBrowser.Core.FenLogger.Error(msg, FenBrowser.Core.Logging.LogCategory.Rendering);
+                        FenBrowser.Core.EngineLogCompat.Error(msg, FenBrowser.Core.Logging.LogCategory.Rendering);
                         throw new InvalidOperationException(msg);
                     }
 
@@ -527,7 +527,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             catch (Exception ex)
             {
                  // Log and rethrow to Ensure visibility
-                 FenBrowser.Core.FenLogger.Error($"[CssSyntaxParser] Crash in ConsumeSimpleBlock: {ex}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                 FenBrowser.Core.EngineLogCompat.Error($"[CssSyntaxParser] Crash in ConsumeSimpleBlock: {ex}", FenBrowser.Core.Logging.LogCategory.Rendering);
                  throw;
             }
         }

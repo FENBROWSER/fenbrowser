@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (!string.IsNullOrEmpty(description))
                 {
-                    FenLogger.Warn($"[LAYOUT-INVALID] {description}: Invalid value {value}, using fallback {fallback}", LogCategory.Layout);
+                    EngineLogCompat.Warn($"[LAYOUT-INVALID] {description}: Invalid value {value}, using fallback {fallback}", LogCategory.Layout);
                 }
                 return fallback;
             }
@@ -49,7 +49,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (!string.IsNullOrEmpty(description))
                 {
-                    FenLogger.Error($"[LAYOUT-CORRUPTION] {description}: Invalid bounds {bounds}", LogCategory.Layout);
+                    EngineLogCompat.Error($"[LAYOUT-CORRUPTION] {description}: Invalid bounds {bounds}", LogCategory.Layout);
                 }
 
                 return new SKRect(
@@ -79,7 +79,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (!string.IsNullOrEmpty(description))
                 {
-                    FenLogger.Warn($"[LAYOUT-SAFE-DIVIDE] {description}: Division by near-zero ({divisor}), using fallback {fallback}", LogCategory.Layout);
+                    EngineLogCompat.Warn($"[LAYOUT-SAFE-DIVIDE] {description}: Division by near-zero ({divisor}), using fallback {fallback}", LogCategory.Layout);
                 }
                 return fallback;
             }

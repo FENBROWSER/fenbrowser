@@ -229,7 +229,7 @@ namespace FenBrowser.FenEngine.Compatibility
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[COMPAT] Predicate failure for '{intervention.Id}': {ex.Message}", LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[COMPAT] Predicate failure for '{intervention.Id}': {ex.Message}", LogCategory.CSS);
                     continue;
                 }
 
@@ -246,7 +246,7 @@ namespace FenBrowser.FenEngine.Compatibility
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[COMPAT] Apply failure for '{intervention.Id}': {ex.Message}", LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[COMPAT] Apply failure for '{intervention.Id}': {ex.Message}", LogCategory.CSS);
                 }
             }
 

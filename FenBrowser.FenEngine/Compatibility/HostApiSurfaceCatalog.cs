@@ -116,7 +116,7 @@ namespace FenBrowser.FenEngine.Compatibility
                     return;
             }
 
-            FenLogger.Warn(
+            EngineLogCompat.Warn(
                 $"[HostApiSurface] {descriptor.Id} is classified as {descriptor.ImplementationClass}: {descriptor.Summary}",
                 LogCategory.FeatureGaps);
         }

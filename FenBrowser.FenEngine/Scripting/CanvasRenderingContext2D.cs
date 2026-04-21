@@ -362,7 +362,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[Canvas2D] {name} failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[Canvas2D] {name} failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 }
                 return FenValue.Undefined;
             }));
@@ -431,7 +431,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[Canvas2D] EnsureSurface failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+            catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[Canvas2D] EnsureSurface failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
         }
 
         private void Draw(Action<SKCanvas> drawAction)

@@ -143,7 +143,7 @@ namespace FenBrowser.FenEngine.Typography
             }
 
             if (FenBrowser.Core.Logging.DebugConfig.LogTextShaping)
-                 global::FenBrowser.Core.FenLogger.Log($"[Text] Resolving Font: '{descriptor.Family}' Size={descriptor.Size} B={descriptor.Bold} I={descriptor.Italic}", LogCategory.Text);
+                 global::FenBrowser.Core.EngineLogCompat.Log($"[Text] Resolving Font: '{descriptor.Family}' Size={descriptor.Size} B={descriptor.Bold} I={descriptor.Italic}", LogCategory.Text);
 
             // Find typeface
             var weight = descriptor.Bold ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal;
@@ -184,7 +184,7 @@ namespace FenBrowser.FenEngine.Typography
             if (FenBrowser.Core.Logging.DebugConfig.LogTextShaping)
             {
                  var shortText = text.Length > 20 ? text.Substring(0, 20) + "..." : text;
-                 global::FenBrowser.Core.FenLogger.Log($"[Text] Method:Measure '{shortText}' (Length: {text.Length}) -> W={width:F2}", LogCategory.Text);
+                 global::FenBrowser.Core.EngineLogCompat.Log($"[Text] Method:Measure '{shortText}' (Length: {text.Length}) -> W={width:F2}", LogCategory.Text);
             }
             
             return new TextMetrics
@@ -239,7 +239,7 @@ namespace FenBrowser.FenEngine.Typography
                 if (FontSupportsText(fallbackFont, text))
                 {
                     if (DebugConfig.LogTextShaping)
-                        global::FenBrowser.Core.FenLogger.Debug(
+                        global::FenBrowser.Core.EngineLogCompat.Debug(
                             $"[Text] Font fallback: '{primaryFont.Family}' → '{fallbackFamily}' for text '{text.Substring(0, Math.Min(20, text.Length))}'",
                             LogCategory.Text
                         );

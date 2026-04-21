@@ -60,7 +60,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\"))
                 {
                     url = "file:///" + url.Replace("\\", "/");
-                    try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Converted to file URI: {url}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
+                    try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Converted to file URI: {url}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
                 }
             }
             else if (requestKind == NavigationRequestKind.Programmatic &&
@@ -78,7 +78,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://") && !url.StartsWith("fen://") && !url.StartsWith("about:") && !url.StartsWith("data:"))
             {
                 // Log what we are doing
-                try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Defaulting '{url}' to HTTPS", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
+                try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Defaulting '{url}' to HTTPS", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
                 url = "https://" + url;
             }
 
@@ -113,7 +113,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
-            try { FenBrowser.Core.FenLogger.Debug($"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
+            try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
             if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
                 path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
             {

@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
@@ -234,38 +235,21 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             public static BenchmarkMeasurementScope Enter()
             {
                 var scope = new BenchmarkMeasurementScope(
-                    StructuredLogger.GlobalEnabled,
+                    EngineLogCompat.IsEnabled,
                     DebugConfig.LogVerification,
                     DebugConfig.LogFrameTiming);
 
-                StructuredLogger.GlobalEnabled = false;
+                EngineLogCompat.IsEnabled = false;
                 DebugConfig.LogVerification = false;
                 DebugConfig.LogFrameTiming = false;
-                LogManager.Initialize(false, LogCategory.All, LogLevel.Error);
                 return scope;
             }
 
             public void Dispose()
             {
-                StructuredLogger.GlobalEnabled = _previousGlobalLoggingEnabled;
+                EngineLogCompat.IsEnabled = _previousGlobalLoggingEnabled;
                 DebugConfig.LogVerification = _previousLogVerification;
                 DebugConfig.LogFrameTiming = _previousLogFrameTiming;
-
-                if (_previousGlobalLoggingEnabled)
-                {
-                    try
-                    {
-                        LogManager.InitializeFromSettings();
-                    }
-                    catch
-                    {
-                        LogManager.Initialize(true, LogCategory.All, LogLevel.Debug);
-                    }
-                }
-                else
-                {
-                    LogManager.Initialize(false, LogCategory.All, LogLevel.Error);
-                }
             }
         }
 

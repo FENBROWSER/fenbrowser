@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -154,7 +154,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ModuleLoader] Resolve failure for '{specifier}' (referrer: '{referrer}'): {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[ModuleLoader] Resolve failure for '{specifier}' (referrer: '{referrer}'): {ex.Message}", LogCategory.JavaScript);
                 throw CreateUnresolvedModuleSpecifierError(specifier, referrer, ex);
             }
         }
@@ -345,7 +345,7 @@ namespace FenBrowser.FenEngine.Core
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[ModuleLoader] package.json parse/read failed at '{packageJsonPath}': {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[ModuleLoader] package.json parse/read failed at '{packageJsonPath}': {ex.Message}", LogCategory.JavaScript);
                         }
                     }
 
@@ -373,7 +373,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ModuleLoader] node_modules resolution failed for '{moduleName}': {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[ModuleLoader] node_modules resolution failed for '{moduleName}': {ex.Message}", LogCategory.JavaScript);
                 return null;
             }
         }
@@ -421,7 +421,7 @@ namespace FenBrowser.FenEngine.Core
             }
 
             // Pre-cache a placeholder export object before evaluation so cyclic module graphs
-            // can resolve partial bindings during linking (ECMA-262 Â§16.2.1.5.2 InnerModuleLinking).
+            // can resolve partial bindings during linking (ECMA-262 §16.2.1.5.2 InnerModuleLinking).
             // This placeholder will be replaced by the final ModuleNamespaceObject after evaluation.
             var placeholderObj = new FenObject();
             _cache[path] = placeholderObj;
@@ -450,14 +450,14 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 // Build the final ModuleNamespaceObject with live accessor bindings
-                // (ECMA-262 Â§10.4.6 Module Namespace Exotic Objects)
+                // (ECMA-262 §10.4.6 Module Namespace Exotic Objects)
                 var exportBindings = CollectExportBindings(program, moduleEnv);
                 var namespaceObj = new ModuleNamespaceObject(moduleEnv, exportBindings);
 
                 // Apply export * aggregation with live star bindings
                 ApplyExportStarAggregationsLive(program, moduleEnv, namespaceObj, exportBindings.Keys);
 
-                // Finalize: make non-extensible (ECMA-262 Â§10.4.6)
+                // Finalize: make non-extensible (ECMA-262 §10.4.6)
                 namespaceObj.SealNamespace();
 
                 // Replace placeholder in cache with the real namespace object
@@ -545,7 +545,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     var namespaceObj = BindModuleNamespace(importDecl.Source, modulePath, moduleEnv);
 
-                    // ECMA-262 Â§9.1.1.5.5 CreateImportBinding:
+                    // ECMA-262 §9.1.1.5.5 CreateImportBinding:
                     // Create indirect bindings so imported names read live from the namespace.
                     if (namespaceObj != null && importDecl.Specifiers != null)
                     {
@@ -557,7 +557,7 @@ namespace FenBrowser.FenEngine.Core
 
                             if (string.Equals(spec.Imported?.Value, "*", StringComparison.Ordinal))
                             {
-                                // import * as ns â€” the namespace binding is already set via __fen_module_ prefix.
+                                // import * as ns — the namespace binding is already set via __fen_module_ prefix.
                                 // No indirect binding needed; the bytecode reads the whole object.
                                 continue;
                             }
@@ -604,7 +604,7 @@ namespace FenBrowser.FenEngine.Core
         }
 
         /// <summary>
-        /// ECMA-262 Â§16.2.1.6.4: Declare TDZ bindings for let/const exported variables
+        /// ECMA-262 §16.2.1.6.4: Declare TDZ bindings for let/const exported variables
         /// before module evaluation. This ensures that cyclic imports accessing
         /// not-yet-initialized bindings throw ReferenceError instead of returning undefined.
         /// Function declarations and var are hoisted and do not participate in TDZ.
@@ -637,16 +637,16 @@ namespace FenBrowser.FenEngine.Core
                         moduleEnv.DeclareTDZ(name);
                     }
                 }
-                // Function declarations are hoisted â€” no TDZ
-                // var declarations are hoisted â€” no TDZ
-                // export default expr uses __fen_export_default â€” no TDZ needed
+                // Function declarations are hoisted — no TDZ
+                // var declarations are hoisted — no TDZ
+                // export default expr uses __fen_export_default — no TDZ needed
             }
         }
 
         /// <summary>
-        /// Collects the mapping from exported name â†’ source variable name in the environment.
+        /// Collects the mapping from exported name ? source variable name in the environment.
         /// Uses AST declarations to determine the local binding for each export,
-        /// falling back to __fen_export_ prefixed names (ECMA-262 Â§16.2.3).
+        /// falling back to __fen_export_ prefixed names (ECMA-262 §16.2.3).
         /// </summary>
         private static Dictionary<string, string> CollectExportBindings(Program program, FenEnvironment moduleEnv)
         {
@@ -663,14 +663,14 @@ namespace FenBrowser.FenEngine.Core
                     if (statement is not ExportDeclaration exportDecl)
                         continue;
 
-                    // export default expr â†’ export name "default", binding via __fen_export_default
+                    // export default expr ? export name "default", binding via __fen_export_default
                     if (exportDecl.DefaultExpression != null)
                     {
                         bindings["default"] = "__fen_export_default";
                         continue;
                     }
 
-                    // export const/let/var/function/class name â†’ local name is the declaration name
+                    // export const/let/var/function/class name ? local name is the declaration name
                     if (exportDecl.Declaration != null)
                     {
                         string localName = null;
@@ -687,7 +687,7 @@ namespace FenBrowser.FenEngine.Core
                         continue;
                     }
 
-                    // export { x, y as z } â€” no source means local re-export
+                    // export { x, y as z } — no source means local re-export
                     if (exportDecl.Specifiers != null && string.IsNullOrEmpty(exportDecl.Source))
                     {
                         foreach (var spec in exportDecl.Specifiers)
@@ -721,7 +721,7 @@ namespace FenBrowser.FenEngine.Core
 
         /// <summary>
         /// Applies export * aggregation using live accessor bindings on the namespace object.
-        /// ECMA-262 Â§16.2.1.7.2 GetExportedNames + Â§16.2.1.7.3 ResolveExport.
+        /// ECMA-262 §16.2.1.7.2 GetExportedNames + §16.2.1.7.3 ResolveExport.
         /// </summary>
         private void ApplyExportStarAggregationsLive(
             Program program,
@@ -758,7 +758,7 @@ namespace FenBrowser.FenEngine.Core
                     {
                         if (string.IsNullOrEmpty(exportedName) ||
                             string.Equals(exportedName, "default", StringComparison.Ordinal) ||
-                            // ECMA-262 Â§10.4.6: @@toStringTag is an internal property, skip
+                            // ECMA-262 §10.4.6: @@toStringTag is an internal property, skip
                             exportedName.StartsWith("Symbol(", StringComparison.Ordinal) ||
                             explicitSet.Contains(exportedName) ||
                             ambiguousNames.Contains(exportedName))

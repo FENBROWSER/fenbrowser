@@ -146,10 +146,10 @@ namespace FenBrowser.FenEngine.Scripting
             // Configure callbacks to run via EventLoop
             context.ScheduleCallback = (action, delay) =>
             {
-                FenLogger.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
                 _ = ObserveBackgroundTaskFailureAsync(
                     ScheduleCallbackAsync(action, delay),
-                    message => FenLogger.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {message}", LogCategory.JavaScript));
+                    message => EngineLogCompat.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {message}", LogCategory.JavaScript));
             };
 
             // Configure Microtasks (Promises)
@@ -183,7 +183,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Failed to dispatch global error event: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Failed to dispatch global error event: {ex.Message}", LogCategory.JavaScript);
                 }
             };
 
@@ -207,7 +207,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Failed to dispatch global unhandledrejection event: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Failed to dispatch global unhandledrejection event: {ex.Message}", LogCategory.JavaScript);
                 }
             };
 
@@ -223,9 +223,9 @@ namespace FenBrowser.FenEngine.Scripting
             // Connect console messages to BrowserHost
             _fenRuntime.OnConsoleMessage = msg => 
             {
-                FenLogger.Debug($"[JavaScriptEngine] Received console message from runtime: {msg}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[JavaScriptEngine] Received console message from runtime: {msg}", LogCategory.JavaScript);
                 // Console messages are logged via FenLogger and passed to the host
-                try { _host?.Log(msg); } catch (Exception ex) { FenLogger.Error($"[JavaScriptEngine] Host log error: {ex}", LogCategory.JavaScript); }
+                try { _host?.Log(msg); } catch (Exception ex) { EngineLogCompat.Error($"[JavaScriptEngine] Host log error: {ex}", LogCategory.JavaScript); }
             };
 
             context.OnMutation = RecordMutation;
@@ -251,7 +251,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -266,7 +266,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
@@ -297,7 +297,7 @@ namespace FenBrowser.FenEngine.Scripting
             var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
             eventLoop.EnqueueTask(() =>
             {
-                FenLogger.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
                 action?.Invoke();
             });
 
@@ -414,7 +414,7 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try 
             {
-                FenLogger.Debug("[JavaScriptEngine] Setting up Modern APIs (Proxy, Reflect)...", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[JavaScriptEngine] Setting up Modern APIs (Proxy, Reflect)...", LogCategory.JavaScript);
                 var existingProxy = _fenRuntime.GetGlobal("Proxy");
                 if (!existingProxy.IsFunction && !existingProxy.IsObject)
                 {
@@ -429,7 +429,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                 FenLogger.Error($"[JavaScriptEngine] Modern API Setup Failed: {ex.Message}", LogCategory.JavaScript, ex);
+                 EngineLogCompat.Error($"[JavaScriptEngine] Modern API Setup Failed: {ex.Message}", LogCategory.JavaScript, ex);
             }
         }
 
@@ -447,7 +447,7 @@ namespace FenBrowser.FenEngine.Scripting
             bool passive = false;
             ParseListenerOptions(args, 2, ref capture, ref once, ref passive);
 
-            try { FenLogger.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal.ToString()} capture={capture} once={once}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            try { EngineLogCompat.Debug($"[JS_API] addEventListener called for '{evt}' on {thisVal.ToString()} capture={capture} once={once}", LogCategory.JavaScript); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             var key = NormalizeEventTargetKey(thisVal.IsObject ? thisVal.AsObject() : null);
             if (key == null) return FenValue.Undefined;
@@ -570,7 +570,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
+                        EngineLogCompat.Error($"[DispatchEvent] Error in handler for {eventName}: {ex}", LogCategory.JavaScript);
                     }
                 }
             }
@@ -617,7 +617,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[InlineEvent] Failed to execute inline {eventName} handler on <{element.TagName}>: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[InlineEvent] Failed to execute inline {eventName} handler on <{element.TagName}>: {ex.Message}", LogCategory.JavaScript);
             }
             finally
             {
@@ -678,7 +678,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Error($"[DispatchEvent] Error in DOM handler for {evt.Type}: {ex}", LogCategory.JavaScript);
+                        EngineLogCompat.Error($"[DispatchEvent] Error in DOM handler for {evt.Type}: {ex}", LogCategory.JavaScript);
                     }
 
                     if (listener.Once)
@@ -745,7 +745,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[DispatchEvent] Error in __fen_listeners__ handler for {evt.Type}: {ex}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[DispatchEvent] Error in __fen_listeners__ handler for {evt.Type}: {ex}", LogCategory.JavaScript);
                 }
 
                 var onceVal = entry.Get("once");
@@ -889,7 +889,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[DispatchEventForElement] Failed: {ex}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[DispatchEventForElement] Failed: {ex}", LogCategory.JavaScript);
             }
         }
 
@@ -903,7 +903,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         private void SetupWindowEvents()
         {
-            try { FenLogger.Debug("[SetupWindowEvents] Configuring window/document events", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            try { EngineLogCompat.Debug("[SetupWindowEvents] Configuring window/document events", LogCategory.JavaScript); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             
             // Ensure 'window' exists
             var win = _fenRuntime.GetGlobal("window");
@@ -1416,7 +1416,7 @@ namespace FenBrowser.FenEngine.Scripting
                                 }, 0);
                             }
 
-                            FenLogger.Warn($"[JavaScriptEngine] permissions.query async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] permissions.query async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     });
 
@@ -1457,7 +1457,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Warn($"[JavaScriptEngine] geolocation permission request failed: {ex.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Warn($"[JavaScriptEngine] geolocation permission request failed: {ex.Message}", LogCategory.JavaScript);
                     }
 
                     if (granted)
@@ -1555,9 +1555,9 @@ namespace FenBrowser.FenEngine.Scripting
                 var platform = navObj.Get("platform").AsString();
                 var vendor = navObj.Get("vendor").AsString();
                 var cookie = navObj.Get("cookieEnabled").AsBoolean();
-                FenLogger.Debug($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[Compliance] JS Navigator: UA='{ua}' Platform='{platform}' Vendor='{vendor}' CookieEnabled={cookie}", LogCategory.JavaScript);
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // Service Workers API - navigator.serviceWorker
             // Service Workers API - navigator.serviceWorker
@@ -1718,7 +1718,7 @@ namespace FenBrowser.FenEngine.Scripting
         private void RecordSandboxBlock(SandboxFeature feature, string detail)
         {
             var messageDetail = detail ?? string.Empty;
-            try { TraceFeatureGap("Sandbox", feature.ToString(), messageDetail); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            try { TraceFeatureGap("Sandbox", feature.ToString(), messageDetail); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             try
             {
                 var status = string.IsNullOrWhiteSpace(messageDetail)
@@ -1726,7 +1726,7 @@ namespace FenBrowser.FenEngine.Scripting
                     : "[Sandbox] Blocked " + feature + " : " + messageDetail;
                 _host?.SetStatus(status);
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             lock (_sandboxLogLock)
             {
@@ -1919,7 +1919,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] TryGetVisualRect provider failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] TryGetVisualRect provider failed: {ex.Message}", LogCategory.JavaScript);
                 return false;
             }
         }
@@ -1968,7 +1968,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
         }
 
@@ -1984,7 +1984,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
         }
 
@@ -2078,15 +2078,15 @@ namespace FenBrowser.FenEngine.Scripting
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             
             // Dispatch to FenRuntime (simulating bubbling to window)
-            FenLogger.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime  == null ? "NULL" : "OK")}", LogCategory.Events);
+            EngineLogCompat.Debug($"[RaiseElementEvent] Check _fenRuntime: {(_fenRuntime  == null ? "NULL" : "OK")}", LogCategory.Events);
             if (_fenRuntime != null)
             {
                 try
@@ -2134,12 +2134,12 @@ namespace FenBrowser.FenEngine.Scripting
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             return _stopPropagationRequested;
         }
 
@@ -2169,14 +2169,14 @@ namespace FenBrowser.FenEngine.Scripting
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     };
                     if (repaintHost != null) repaintHost.InvokeOnUiThread(run); else run();
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
                 }
             };
             t = new Timer(tick, null, ms, ms <= 0 ? 1 : ms);
@@ -2210,7 +2210,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Feature-gap trace failed: {ex.Message}", LogCategory.JavaScript);
                 }
                 finally { CancelAnimationFrame(id); }
             }, null, 16, Timeout.Infinite);
@@ -2292,7 +2292,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
                 await Windows.Storage.FileIO.WriteTextAsync(file, sb.ToString());
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             */
         }
 
@@ -2326,12 +2326,12 @@ namespace FenBrowser.FenEngine.Scripting
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             */
         }
 
@@ -2352,7 +2352,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (jar  == null) return;
                 jar.SetCookies(scope, cookieString);
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
 
         private string GetCookieString(Uri scope)
@@ -2405,11 +2405,11 @@ namespace FenBrowser.FenEngine.Scripting
         {
             try
             {
-                FenLogger.Debug(message, LogCategory.JavaScript);
+                EngineLogCompat.Debug(message, LogCategory.JavaScript);
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Debug log failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Debug log failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2422,7 +2422,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Callback '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Callback '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2435,7 +2435,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] ExecuteFunction '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] ExecuteFunction '{operation}' failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
         private void TrySetStatus(string message)
@@ -2446,7 +2446,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Host SetStatus failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Host SetStatus failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2459,7 +2459,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Host Navigate failed for '{uri}': {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Host Navigate failed for '{uri}': {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2471,7 +2471,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] RunInline failed in callback: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] RunInline failed in callback: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2483,7 +2483,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] RunInline failed for event '{eventType}' on '{eventTarget}': {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] RunInline failed for event '{eventType}' on '{eventTarget}': {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2496,7 +2496,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Timer dispose failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Timer dispose failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2513,7 +2513,7 @@ namespace FenBrowser.FenEngine.Scripting
             if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal))
             {
                 try { FireWindowEvent("hashchange"); }
-                catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
+                catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
             }
         }
 
@@ -2527,7 +2527,7 @@ namespace FenBrowser.FenEngine.Scripting
             if (prev != null && string.Equals(BaseWithoutFragment(prev), BaseWithoutFragment(u), StringComparison.OrdinalIgnoreCase) && !string.Equals(prev.Fragment ?? "", u.Fragment ?? "", StringComparison.Ordinal))
             {
                 try { FireWindowEvent("hashchange"); }
-                catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
+                catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] hashchange dispatch failed: {ex.Message}", LogCategory.JavaScript); }
             }
         }
 
@@ -2542,12 +2542,12 @@ namespace FenBrowser.FenEngine.Scripting
         }
         public object Evaluate(string script)
         {
-            try { FenLogger.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            try { EngineLogCompat.Debug($"[JavaScriptEngine] Evaluate called with script length: {script?.Length ?? 0}", LogCategory.JavaScript); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             var execution = ExecuteRuntimeScript(script, JavaScriptExecutionKind.Eval, "eval.js");
             if (execution.Exception != null)
             {
-                FenLogger.Error($"[JS] Evaluate error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
+                EngineLogCompat.Error($"[JS] Evaluate error: {execution.Exception.Message}", LogCategory.JavaScript, execution.Exception);
                 return "Error: " + execution.Exception.Message;
             }
 
@@ -2579,7 +2579,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] localStorage.setItem failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] localStorage.setItem failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2592,7 +2592,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] localStorage.getItem failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] localStorage.getItem failed: {ex.Message}", LogCategory.JavaScript);
                 return null;
             }
         }
@@ -2606,7 +2606,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] localStorage.removeItem failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] localStorage.removeItem failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2619,7 +2619,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] localStorage.clear failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] localStorage.clear failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -2685,7 +2685,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Warn($"[JavaScriptEngine] geolocation watch permission request failed: {ex.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Warn($"[JavaScriptEngine] geolocation watch permission request failed: {ex.Message}", LogCategory.JavaScript);
                     }
 
                     if (!granted)
@@ -2859,11 +2859,11 @@ namespace FenBrowser.FenEngine.Scripting
                     return await File.ReadAllTextAsync(uri.LocalPath).ConfigureAwait(false);
                 }
 
-                FenLogger.Warn($"[JavaScriptEngine] Blocked module fetch for unsupported URI without browser fetch pipeline: {uri}", LogCategory.Network);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Blocked module fetch for unsupported URI without browser fetch pipeline: {uri}", LogCategory.Network);
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Module fetch failed for '{uri}': {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Module fetch failed for '{uri}': {ex.Message}", LogCategory.Network);
             }
 
             return string.Empty;
@@ -2918,7 +2918,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             if (depth > MaxModulePrefetchDepth)
             {
-                FenLogger.Warn($"[JavaScriptEngine] Module prefetch depth limit reached at {moduleUri}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Module prefetch depth limit reached at {moduleUri}", LogCategory.JavaScript);
                 return;
             }
 
@@ -3001,11 +3001,11 @@ namespace FenBrowser.FenEngine.Scripting
                     return File.ReadAllText(uri.LocalPath);
                 }
 
-                FenLogger.Warn($"[JavaScriptEngine] Missing prefetched module source for '{uri}'. Module graph must be prefetched asynchronously.", LogCategory.Network);
+                EngineLogCompat.Warn($"[JavaScriptEngine] Missing prefetched module source for '{uri}'. Module graph must be prefetched asynchronously.", LogCategory.Network);
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JavaScriptEngine] FetchTextSync failed for '{uri}': {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Warn($"[JavaScriptEngine] FetchTextSync failed for '{uri}': {ex.Message}", LogCategory.Network);
             }
             return "";
         }
@@ -3038,7 +3038,7 @@ namespace FenBrowser.FenEngine.Scripting
                      string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase)) &&
                     !CorsHandler.IsSameOrigin(uri, baseUri))
                 {
-                    FenLogger.Warn($"[JavaScriptEngine] Blocked cross-origin module without explicit CORS pipeline: {uri}", LogCategory.Network);
+                    EngineLogCompat.Warn($"[JavaScriptEngine] Blocked cross-origin module without explicit CORS pipeline: {uri}", LogCategory.Network);
                     return false;
                 }
             }
@@ -3082,7 +3082,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             moduleLoader.SetImportMap(imports, baseUri);
-            FenLogger.Info($"[JavaScriptEngine] Applied import map entries: {imports.Count}", LogCategory.JavaScript);
+            EngineLogCompat.Info($"[JavaScriptEngine] Applied import map entries: {imports.Count}", LogCategory.JavaScript);
         }
 
         private static void TryReadImportMapEntries(string json, Dictionary<string, string> target)
@@ -3139,10 +3139,10 @@ namespace FenBrowser.FenEngine.Scripting
             else
             {
                 // fallback: set status so developer sees mutations
-                try { _host.SetStatus("[DOM mutated]"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+                try { _host.SetStatus("[DOM mutated]"); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             }
             // after the host is requested to repaint, schedule any MutationObserver callbacks
-            try { InvokeMutationObservers(); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            try { InvokeMutationObservers(); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
             _repaintRequested = false;
         }
 
@@ -3190,7 +3190,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // 2. New Wrapper-based observers (Standard MutationObserver)
             try
@@ -3228,7 +3228,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
                 }
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
 
         private void RecordMutation(MutationRecord record)
@@ -3320,7 +3320,7 @@ namespace FenBrowser.FenEngine.Scripting
                                     // SRI check for dynamically-inserted external scripts
                                     if (!VerifySriIntegrity(content, sriIntegrity))
                                     {
-                                        FenLogger.Warn($"[SRI] Blocked dynamic script (integrity mismatch): {uri}", LogCategory.JavaScript);
+                                        EngineLogCompat.Warn($"[SRI] Blocked dynamic script (integrity mismatch): {uri}", LogCategory.JavaScript);
                                         DispatchEvent(scriptEl, "error");
                                         return;
                                     }
@@ -3341,13 +3341,13 @@ namespace FenBrowser.FenEngine.Scripting
                                     }
                                     catch (Exception ex)
                                     {
-                                        FenLogger.Error($"[DynamicScript] Exec failed: {ex.Message}", LogCategory.JavaScript);
+                                        EngineLogCompat.Error($"[DynamicScript] Exec failed: {ex.Message}", LogCategory.JavaScript);
                                         DispatchEvent(scriptEl, "error");
                                     }
                                 }
                                 else
                                 {
-                                    FenLogger.Error($"[DynamicScript] Fetch failed for {uri}", LogCategory.JavaScript);
+                                    EngineLogCompat.Error($"[DynamicScript] Fetch failed for {uri}", LogCategory.JavaScript);
                                     DispatchEvent(scriptEl, "error");
                                 }
                             }, FenBrowser.FenEngine.Core.EventLoop.TaskSource.Networking, "dynamic-script");
@@ -3358,7 +3358,7 @@ namespace FenBrowser.FenEngine.Scripting
                         }
                         catch (Exception ex)
                         {
-                             FenLogger.Error($"[DynamicScript] Background error: {ex.Message}", LogCategory.JavaScript);
+                             EngineLogCompat.Error($"[DynamicScript] Background error: {ex.Message}", LogCategory.JavaScript);
                              var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
                              eventLoop.ScheduleTask(() => DispatchEvent(scriptEl, "error"), FenBrowser.FenEngine.Core.EventLoop.TaskSource.Networking, "dynamic-script-error");
                              eventLoop.ProcessNextTask();
@@ -3527,7 +3527,7 @@ namespace FenBrowser.FenEngine.Scripting
             private void LogToFile(string level, string msg)
             {
                 DiagnosticPaths.AppendRootText("js_debug.log", $"[Console:{level}] {msg}\n");
-                try { _engine._host.Log($"[{level}] {msg}"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Host console forwarding failed: {ex.Message}", LogCategory.JavaScript); }
+                try { _engine._host.Log($"[{level}] {msg}"); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Host console forwarding failed: {ex.Message}", LogCategory.JavaScript); }
             }
         }
 
@@ -3717,7 +3717,7 @@ namespace FenBrowser.FenEngine.Scripting
             catch (Exception ex)
             {
                 Console.WriteLine($"[FenEngine] Error syncing DOM context: {ex.Message}");
-                FenLogger.Warn($"[JavaScriptEngine] SyncDomContext failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JavaScriptEngine] SyncDomContext failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -3859,7 +3859,7 @@ namespace FenBrowser.FenEngine.Scripting
                                                 }
                                                 catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                                                 continue;
                                             }
@@ -3875,7 +3875,7 @@ namespace FenBrowser.FenEngine.Scripting
                                         }
                                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                             // WHATWG HTML 4.12.1.1: network fetch error fires error on element
                             DispatchEvent(el, "error");
                         }
@@ -3921,7 +3921,7 @@ namespace FenBrowser.FenEngine.Scripting
                                         }
                                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
                         }
                                         continue; 
                                     }
@@ -3934,7 +3934,7 @@ namespace FenBrowser.FenEngine.Scripting
                                         RuntimeProfile.OversizedExternalPageScriptBytes > 0 &&
                                         code.Length >= RuntimeProfile.OversizedExternalPageScriptBytes)
                                     {
-                                        FenLogger.Warn(
+                                        EngineLogCompat.Warn(
                                             $"[JS-EXEC] Deferred oversized external script during initial load: source={srcInfo} length={code.Length}",
                                             LogCategory.JsExecution);
                                         DiagnosticPaths.AppendRootText(
@@ -3947,7 +3947,7 @@ namespace FenBrowser.FenEngine.Scripting
                                     if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
                                     {
                                         DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
-                                        FenLogger.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
+                                        EngineLogCompat.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
                                         // WHATWG HTML 4.12.1.1: SRI mismatch fires error event
                                         DispatchEvent(el, "error");
                                         continue;
@@ -3970,7 +3970,7 @@ namespace FenBrowser.FenEngine.Scripting
                                             DiagnosticPaths.AppendRootText(
                                                 "js_debug.log",
                                                 $"[ScriptRunError] Info={srcInfo}; Error={scriptFenValue}; Preview={diagnosticPreview}\n");
-                                            FenLogger.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
+                                            EngineLogCompat.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
                                             // WHATWG HTML 4.12.1.1: script execution error fires error on element
                                             DispatchEvent(el, "error");
                                         }
@@ -3993,7 +3993,7 @@ namespace FenBrowser.FenEngine.Scripting
                                         DiagnosticPaths.AppendRootText(
                                             "js_debug.log",
                                             $"[StaticScriptError] Info={srcInfo}; Error={ex.GetBaseException().Message}; Preview={diagnosticPreview}\n");
-                                        FenLogger.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
+                                        EngineLogCompat.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
                                         // WHATWG HTML 4.12.1.1: uncaught error fires error on element
                                         DispatchEvent(el, "error");
                                     }
@@ -4012,12 +4012,12 @@ namespace FenBrowser.FenEngine.Scripting
                     
                     }
 
-                    FenLogger.Debug("[JavaScriptEngine] Inline script execution complete", LogCategory.JavaScript);
+                    EngineLogCompat.Debug("[JavaScriptEngine] Inline script execution complete", LogCategory.JavaScript);
                 }
                 catch (Exception ex)
                 {
                     DiagnosticPaths.AppendRootText("js_debug.log", $"[JSExecError] {ex}\n");
-                    FenLogger.Error($"[JavaScriptEngine] Script execution error: {ex.Message}", LogCategory.JavaScript, ex);
+                    EngineLogCompat.Error($"[JavaScriptEngine] Script execution error: {ex.Message}", LogCategory.JavaScript, ex);
                 }
             }
             
@@ -4166,13 +4166,13 @@ namespace FenBrowser.FenEngine.Scripting
                     : diagResult?.ToString() ?? "null";
 
                 var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[XDiag] {phase}: {diagText};tasksPending={(eventLoop.HasPendingTasks ? 1 : 0)};microtasksPending={(eventLoop.HasPendingMicrotasks ? 1 : 0)}",
                     LogCategory.JavaScript);
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[XDiag] {phase} failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[XDiag] {phase} failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -4240,8 +4240,8 @@ namespace FenBrowser.FenEngine.Scripting
         {
              _ = ObserveBackgroundTaskFailureAsync(
                  SetDomAsync(domRoot, baseUri),
-                 message => FenLogger.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {message}", LogCategory.JavaScript),
-                 ex => FenLogger.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {ex.GetBaseException().Message}", LogCategory.JavaScript, ex));
+                 message => EngineLogCompat.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {message}", LogCategory.JavaScript),
+                 ex => EngineLogCompat.Error($"[JavaScriptEngine] Deprecated SetDom bridge failed: {ex.GetBaseException().Message}", LogCategory.JavaScript, ex));
         }
 
         private void RunGlobalScript(string js)
@@ -4311,7 +4311,7 @@ namespace FenBrowser.FenEngine.Scripting
                 var body = (root as ContainerNode)?.GetElementsByTagName("body").FirstOrDefault();
                 if (body != null) flipClass(body);
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             try
             {
@@ -4321,7 +4321,7 @@ namespace FenBrowser.FenEngine.Scripting
                         toRemove.Add(n);
                 foreach (var n in toRemove) n.Remove();
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
 
             // Do NOT remove <noscript> on this platform; we are a limited JS renderer
             // and <noscript> often contains the only usable fallback content.
@@ -4348,7 +4348,7 @@ namespace FenBrowser.FenEngine.Scripting
                 else if (op == "toggle") { if (!set.Remove(cls)) { set.Add(cls); } changed = true; }
                 if (changed) el.setAttribute("class", string.Join(" ", set.ToArray()));
             }
-            catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); }
         }
         internal sealed class ResponseEntry
         {
@@ -4458,8 +4458,8 @@ namespace FenBrowser.FenEngine.Scripting
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
             _status = status ?? (_ => { });
-            _requestRender = requestRender ?? (() => { try { _status("[DOM mutated]"); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
-            _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch (Exception ex) { FenLogger.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
+            _requestRender = requestRender ?? (() => { try { _status("[DOM mutated]"); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
+            _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
             _setTitle = setTitle ?? (_ => { });
             _alert = alert ?? (_ => { });
             _log = log ?? (_ => { });

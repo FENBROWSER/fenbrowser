@@ -68,7 +68,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
             var display = ResolveDisplay(node, style);
 
             // 1. Handle Display: None and Hidden Tags
-            if (display == "none") return result;
+            if (display == "none")
+            {
+                LogLayoutDecision(node, "Box skipped because computed display=none", "none");
+                return result;
+            }
             
             if (node is Element e)
             {
@@ -111,6 +115,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 // [Optimization] We could drop leading/trailing whitespace in blocks, 
                 // but for now let's be safe for IFC.
                 result.Add(new TextLayoutBox(textNode, style));
+                LogLayoutDecision(textNode, "Box created", "inline");
                 return result;
             }
 
@@ -188,6 +193,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
 
                 result.Add(box);
+                LogLayoutDecision(element, $"Box created type={box.GetType().Name}", display);
                 return result;
             }
 
@@ -513,6 +519,53 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (string.Equals(rawContent, "none", StringComparison.OrdinalIgnoreCase)) return null;
             if (rawContent.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0) return null;
             return rawContent.Trim().Trim('"', '\'');
+        }
+
+        private static void LogLayoutDecision(Node node, string decision, string display)
+        {
+            if (!EngineLog.IsEnabled(LogSubsystem.Layout, LogSeverity.Debug))
+            {
+                return;
+            }
+
+            EngineLog.Write(
+                LogSubsystem.Layout,
+                LogSeverity.Debug,
+                $"[LAYOUT][DEBUG] {decision}",
+                LogMarker.None,
+                new EngineLogContext(NodeDescription: DescribeNode(node)),
+                new Dictionary<string, object>
+                {
+                    ["display"] = display
+                });
+        }
+
+        private static string DescribeNode(Node node)
+        {
+            if (node is Text)
+            {
+                return "#text";
+            }
+
+            if (node is not Element element)
+            {
+                return node?.GetType().Name ?? "<null>";
+            }
+
+            var tag = string.IsNullOrWhiteSpace(element.TagName) ? "node" : element.TagName.ToLowerInvariant();
+            var id = element.GetAttribute("id");
+            var cls = element.GetAttribute("class");
+            var classToken = string.Empty;
+            if (!string.IsNullOrWhiteSpace(cls))
+            {
+                var firstClass = cls.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(firstClass))
+                {
+                    classToken = "." + firstClass;
+                }
+            }
+
+            return $"<{tag}{(string.IsNullOrWhiteSpace(id) ? string.Empty : "#" + id)}{classToken}>";
         }
     }
 }

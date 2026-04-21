@@ -5690,7 +5690,7 @@ namespace FenBrowser.FenEngine.DOM
                 _element.SetAttribute("style", sb.ToString());
             }
 
-            FenLogger.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
+            EngineLogCompat.Debug($"[CSS] Set style {key}={value}", LogCategory.CSS);
             _context.RequestRender?.Invoke();
         }
 

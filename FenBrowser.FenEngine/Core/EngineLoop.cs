@@ -79,17 +79,17 @@ namespace FenBrowser.FenEngine.Core
                 var elapsed = (DateTime.Now - startTime).TotalMilliseconds;
                 if (elapsed > FrameBudgetMs)
                 {
-                   FenLogger.Warn($"[EngineLoop] Frame exceeded budget: {elapsed:F2}ms", LogCategory.Performance);
+                   EngineLogCompat.Warn($"[EngineLoop] Frame exceeded budget: {elapsed:F2}ms", LogCategory.Performance);
                 }
             }
             // Use fully qualified name if namespace mismatch, or add using
             catch (FenBrowser.Core.Deadlines.DeadlineExceededException ex)
             {
-                FenLogger.Warn($"[EngineLoop] Frame aborted due to deadline: {ex.Phase}", LogCategory.Performance);
+                EngineLogCompat.Warn($"[EngineLoop] Frame aborted due to deadline: {ex.Phase}", LogCategory.Performance);
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[EngineLoop] Critical Error in RunFrame: {ex}", LogCategory.General);
+                EngineLogCompat.Error($"[EngineLoop] Critical Error in RunFrame: {ex}", LogCategory.General);
             }
         }
         
@@ -100,6 +100,20 @@ namespace FenBrowser.FenEngine.Core
             var styleDirty = HasStyleDirty(_root);
             var layoutDirty = HasLayoutDirty(_root);
             var paintDirty = HasPaintDirty(_root);
+            var dirtyNodeCount = CountDirtyNodes(_root);
+
+            if (layoutDirty)
+            {
+                var reason = styleDirty
+                    ? "StyleInvalidation"
+                    : paintDirty
+                        ? "PaintDependency"
+                        : "DOMMutation";
+
+                EngineLogCompat.Info(
+                    $"[LAYOUT][INFO] Reflow requested | reason={reason} dirtyNodes={dirtyNodeCount}",
+                    LogCategory.Layout);
+            }
 
             // Phase 1: Style Recalc - currently represented by clearing style dirty flags.
             if (styleDirty)
@@ -146,6 +160,25 @@ namespace FenBrowser.FenEngine.Core
                 for (var child = container.FirstChild; child != null; child = child.NextSibling)
                     ClearDirtyRecursive(child, kind, deadline);
             }
+        }
+
+        private static int CountDirtyNodes(Node node)
+        {
+            if (node == null)
+            {
+                return 0;
+            }
+
+            var count = (node.StyleDirty || node.LayoutDirty || node.PaintDirty) ? 1 : 0;
+            if (node is ContainerNode container)
+            {
+                for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                {
+                    count += CountDirtyNodes(child);
+                }
+            }
+
+            return count;
         }
     }
 }

@@ -40,7 +40,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
             _vaos[defaultVao.Id] = defaultVao;
             _currentVao = defaultVao;
             
-            FenLogger.Debug($"[WebGL2] Created context {width}x{height}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[WebGL2] Created context {width}x{height}", LogCategory.Rendering);
         }
 
         // ========== Vertex Array Objects ==========

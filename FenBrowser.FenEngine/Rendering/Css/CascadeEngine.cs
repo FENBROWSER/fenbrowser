@@ -32,7 +32,7 @@ namespace FenBrowser.FenEngine.Rendering
             _logCascade = FenBrowser.Core.Logging.DebugConfig.LogCssCascade;
             if (_logCascade)
             {
-                FenBrowser.Core.FenLogger.Info($"[DEBUG-CASCADE] Created Engine with {_styleSet.Count} sheets", FenBrowser.Core.Logging.LogCategory.CSS);
+                FenBrowser.Core.EngineLogCompat.Info($"[DEBUG-CASCADE] Created Engine with {_styleSet.Count} sheets", FenBrowser.Core.Logging.LogCategory.CSS);
             }
         }
         
@@ -151,7 +151,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (upperTag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
                     var props = string.Join(", ", styleRule.Declarations.Select(d => d.Property));
-                    FenBrowser.Core.FenLogger.Info($"[CASCADE-INDEX] Indexed DIV rule: {styleRule.Selector?.Raw} -> [{props}]", LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Info($"[CASCADE-INDEX] Indexed DIV rule: {styleRule.Selector?.Raw} -> [{props}]", LogCategory.CSS);
                 }
             }
             else
@@ -189,7 +189,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     msg.AppendLine($"   - [{src.Origin}] {src.SelectorText} :: {src.Spec}");
                 }
-                global::FenBrowser.Core.FenLogger.Log(msg.ToString().TrimEnd(), global::FenBrowser.Core.Logging.LogCategory.Cascade);
+                global::FenBrowser.Core.EngineLogCompat.Log(msg.ToString().TrimEnd(), global::FenBrowser.Core.Logging.LogCategory.Cascade);
             }
             */
 
@@ -259,7 +259,7 @@ namespace FenBrowser.FenEngine.Rendering
                 msg.AppendLine();
             }
 
-            FenBrowser.Core.FenLogger.Info(msg.ToString().TrimEnd(), LogCategory.CSS);
+            FenBrowser.Core.EngineLogCompat.Info(msg.ToString().TrimEnd(), LogCategory.CSS);
         }
 
         private static string BuildElementLabel(Element element, string pseudoElement)
@@ -329,7 +329,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // DEBUG: Log div cascade
                 if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
-                    FenBrowser.Core.FenLogger.Info($"[CASCADE-DIV] Found {tagRules.Count} indexed rules for DIV element", LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Info($"[CASCADE-DIV] Found {tagRules.Count} indexed rules for DIV element", LogCategory.CSS);
                 }
                 foreach (var rule in tagRules)
                 {
@@ -339,7 +339,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             else if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
-                FenBrowser.Core.FenLogger.Warn($"[CASCADE-DIV] NO rules found in _tagIndex for DIV! Index contains: {string.Join(", ", _tagIndex.Keys.Take(20))}", LogCategory.CSS);
+                FenBrowser.Core.EngineLogCompat.Warn($"[CASCADE-DIV] NO rules found in _tagIndex for DIV! Index contains: {string.Join(", ", _tagIndex.Keys.Take(20))}", LogCategory.CSS);
             }
             
             // 4. Always check universal rules

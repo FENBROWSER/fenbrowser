@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenBrowser.Core.FenLogger.Info(
+                FenBrowser.Core.EngineLogCompat.Info(
                     $"[LAYOUT-CONSTRAINT] {owner} Raw={Format(rawAvailable)} Resolved={resolved:0.###} Source={source} CB={Format(containingBlock)} VP={Format(viewport)}",
                     LogCategory.Layout);
             }

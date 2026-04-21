@@ -75,6 +75,55 @@ namespace FenBrowser.FenEngine.Layout
             return new SKRect(l, t, ri, b);
         }
 
+        public static SKRect NormalizeRect(SKRect rect, SKRect? container = null, bool clampToContainer = false)
+        {
+            var cleaned = CleanRect(rect);
+
+            float left = cleaned.Left;
+            float top = cleaned.Top;
+            float right = cleaned.Right;
+            float bottom = cleaned.Bottom;
+
+            if (right < left)
+            {
+                (left, right) = (right, left);
+            }
+
+            if (bottom < top)
+            {
+                (top, bottom) = (bottom, top);
+            }
+
+            var normalized = new SKRect(left, top, right, bottom);
+            if (!clampToContainer || !container.HasValue)
+            {
+                return normalized;
+            }
+
+            var c = CleanRect(container.Value);
+            float cLeft = c.Left;
+            float cTop = c.Top;
+            float cRight = c.Right;
+            float cBottom = c.Bottom;
+
+            if (cRight < cLeft)
+            {
+                (cLeft, cRight) = (cRight, cLeft);
+            }
+
+            if (cBottom < cTop)
+            {
+                (cTop, cBottom) = (cBottom, cTop);
+            }
+
+            float clampedLeft = Math.Clamp(normalized.Left, cLeft, cRight);
+            float clampedTop = Math.Clamp(normalized.Top, cTop, cBottom);
+            float clampedRight = Math.Clamp(normalized.Right, clampedLeft, cRight);
+            float clampedBottom = Math.Clamp(normalized.Bottom, clampedTop, cBottom);
+
+            return new SKRect(clampedLeft, clampedTop, clampedRight, clampedBottom);
+        }
+
         public static bool ShouldHide(Node node, CssComputed style)
         {
             if (node == null) return true;

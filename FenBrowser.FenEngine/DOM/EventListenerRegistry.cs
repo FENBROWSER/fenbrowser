@@ -103,7 +103,7 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     if (existing.Matches(callback, capture))
                     {
-                        FenLogger.Debug($"[EventListenerRegistry] Duplicate listener ignored for '{type}'", LogCategory.Events);
+                        EngineLogCompat.Debug($"[EventListenerRegistry] Duplicate listener ignored for '{type}'", LogCategory.Events);
                         return false; // Already registered
                     }
                 }
@@ -111,7 +111,7 @@ namespace FenBrowser.FenEngine.DOM
                 var listener = new EventListener(callback, capture, once, passive, signal);
                 list.Add(listener);
                 AttachAbortHandler(node, type, listener);
-                FenLogger.Debug($"[EventListenerRegistry] Added listener for '{type}' on {DescribeNode(node)} (capture={capture}, once={once})", LogCategory.Events);
+                EngineLogCompat.Debug($"[EventListenerRegistry] Added listener for '{type}' on {DescribeNode(node)} (capture={capture}, once={once})", LogCategory.Events);
                 return true;
             }
         }
@@ -140,7 +140,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         DetachAbortHandler(list[i]);
                         list.RemoveAt(i);
-                        FenLogger.Debug($"[EventListenerRegistry] Removed listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
+                        EngineLogCompat.Debug($"[EventListenerRegistry] Removed listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
                         break;
                     }
                 }
@@ -230,7 +230,33 @@ namespace FenBrowser.FenEngine.DOM
 
                 byType[type].Remove(listener);
                 DetachAbortHandler(listener);
-                FenLogger.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
+                EngineLogCompat.Debug($"[EventListenerRegistry] Removed 'once' listener for '{type}' on {DescribeNode(node)}", LogCategory.Events);
+            }
+        }
+
+        /// <summary>
+        /// Returns true when the exact listener instance is still registered for the node/type pair.
+        /// </summary>
+        public bool IsRegistered(Node node, string type, EventListener listener)
+        {
+            if (node == null || type == null || listener == null)
+            {
+                return false;
+            }
+
+            lock (_lock)
+            {
+                if (!_listeners.TryGetValue(node, out var byType))
+                {
+                    return false;
+                }
+
+                if (!byType.TryGetValue(type, out var list))
+                {
+                    return false;
+                }
+
+                return list.Contains(listener);
             }
         }
 

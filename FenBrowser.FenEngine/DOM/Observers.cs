@@ -94,7 +94,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[ResizeObserver] Callback error: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[ResizeObserver] Callback error: {ex.Message}", LogCategory.JavaScript);
                 }
             }
         }
@@ -228,7 +228,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[IntersectionObserver] Callback error: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[IntersectionObserver] Callback error: {ex.Message}", LogCategory.JavaScript);
                 }
             }
         }

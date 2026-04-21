@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
@@ -245,7 +245,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[CacheStorage] Detached async operation failed: {ex.Message}", LogCategory.Storage);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[CacheStorage] Detached async operation failed: {ex.Message}", LogCategory.Storage);
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -428,7 +428,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[CacheStorage] Promise callback failed: {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Warn($"[CacheStorage] Promise callback failed: {ex.Message}", LogCategory.Storage);
             }
         }
     }

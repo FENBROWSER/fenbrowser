@@ -19,7 +19,8 @@ namespace FenBrowser.FenEngine.Scripting
         public bool UseSandboxedResourceLimits { get; init; } = false;
         public bool AllowDynamicCodeEvaluation { get; init; } = true;
         public int LargeScriptWarningBytes { get; init; } = 64 * 1024;
-        public bool DeferOversizedExternalPageScripts { get; init; } = true;
+        // Keep balanced profile correctness-first for modern pages that rely on large bootstrap bundles.
+        public bool DeferOversizedExternalPageScripts { get; init; } = false;
         public int OversizedExternalPageScriptBytes { get; init; } = 256 * 1024;
         public TimeSpan MaxExecutionTime { get; init; } = TimeSpan.FromSeconds(15);
         public long MaxInstructionCount { get; init; } = 100_000_000;

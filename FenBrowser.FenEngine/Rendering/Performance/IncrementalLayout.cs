@@ -49,7 +49,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 }
             }
 
-            FenLogger.Debug($"[IncrementalLayout] Marked dirty: {element.TagName}", LogCategory.Layout);
+            EngineLogCompat.Debug($"[IncrementalLayout] Marked dirty: {element.TagName}", LogCategory.Layout);
         }
 
         /// <summary>

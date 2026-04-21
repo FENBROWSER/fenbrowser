@@ -44,7 +44,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[CustomCssEngine] ComputeStylesAsync error: {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[CustomCssEngine] ComputeStylesAsync error: {ex.Message}", LogCategory.Rendering);
                 return new Dictionary<Node, CssComputed>();
             }
         }
@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     }
                 }
             }
-            catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[CssEngineFactory] Named color parsing failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+            catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[CssEngineFactory] Named color parsing failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
             return result;
         }
     }

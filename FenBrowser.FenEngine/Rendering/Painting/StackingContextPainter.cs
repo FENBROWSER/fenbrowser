@@ -102,7 +102,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             var bounds = GetBounds(sc.Node);
 
 #if DEBUG
-            FenLogger.Debug($"[Painter] Painting SC: {sc}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[Painter] Painting SC: {sc}", LogCategory.Rendering);
 #endif
 
             _displayList.Add(new DisplayCommand(

@@ -234,7 +234,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FenRuntime] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -249,7 +249,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FenRuntime] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Detached operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
         }
@@ -348,14 +348,14 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
-            FenLogger.Warn($"[XDiag] {message} #{count}", LogCategory.JavaScript);
+            EngineLogCompat.Warn($"[XDiag] {message} #{count}", LogCategory.JavaScript);
         }
 
         public void NotifyPopState(object state)
         {
             try
             {
-                FenLogger.Debug($"[FenRuntime] NotifyPopState: {state}", LogCategory.Events);
+                EngineLogCompat.Debug($"[FenRuntime] NotifyPopState: {state}", LogCategory.Events);
                 var clonedState = state != null
                     ? CloneHistoryState(ConvertNativeToFenValue(state))
                     : FenValue.Null;
@@ -368,7 +368,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[FenRuntime] NotifyPopState error: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[FenRuntime] NotifyPopState error: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -734,7 +734,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[FenRuntime] MessagePort handler error: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[FenRuntime] MessagePort handler error: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -1080,16 +1080,16 @@ namespace FenBrowser.FenEngine.Core
                 var result = ExecuteSimple(hardeningScript, "fen://prototype-hardening.js");
                 if (result.Type == Interfaces.ValueType.Error)
                 {
-                    FenLogger.Error($"[FenRuntime] Prototype hardening failed in bytecode-only mode: {result}",
+                    EngineLogCompat.Error($"[FenRuntime] Prototype hardening failed in bytecode-only mode: {result}",
                         LogCategory.JavaScript);
                     return;
                 }
 
-                FenLogger.Info("[FenRuntime] Prototype hardening applied successfully", LogCategory.JavaScript);
+                EngineLogCompat.Info("[FenRuntime] Prototype hardening applied successfully", LogCategory.JavaScript);
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[FenRuntime] Failed to apply prototype hardening: {ex.Message}",
+                EngineLogCompat.Error($"[FenRuntime] Failed to apply prototype hardening: {ex.Message}",
                     LogCategory.JavaScript);
             }
         }
@@ -1467,7 +1467,7 @@ namespace FenBrowser.FenEngine.Core
         {
             try
             {
-                FenLogger.Debug("[FenRuntime] InitializeBuiltins called", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[FenRuntime] InitializeBuiltins called", LogCategory.JavaScript);
             }
             catch
             {
@@ -5082,16 +5082,16 @@ namespace FenBrowser.FenEngine.Core
 
             // console object
             var console = new FenObject();
-            FenLogger.Debug("[FenRuntime] Creating console object...", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[FenRuntime] Creating console object...", LogCategory.JavaScript);
             console.Set("log", FenValue.FromFunction(new FenFunction("log", (FenValue[] args, FenValue thisVal) =>
             {
                 try
                 {
-                    FenLogger.Debug("[FenRuntime] console.log invoked from JS", LogCategory.JavaScript);
+                    EngineLogCompat.Debug("[FenRuntime] console.log invoked from JS", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 var messages = new List<string>();
@@ -5101,23 +5101,23 @@ namespace FenBrowser.FenEngine.Core
                 // /* [PERF-REMOVED] */
                 try
                 {
-                    FenLogger.Debug($"[FenRuntime] Console.log: {msg}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[FenRuntime] Console.log: {msg}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
                 {
                     if (OnConsoleMessage == null)
-                        FenLogger.Error("[FenRuntime] OnConsoleMessage is NULL!", LogCategory.JavaScript);
-                    else FenLogger.Debug("[FenRuntime] Invoking OnConsoleMessage...", LogCategory.JavaScript);
+                        EngineLogCompat.Error("[FenRuntime] OnConsoleMessage is NULL!", LogCategory.JavaScript);
+                    else EngineLogCompat.Debug("[FenRuntime] Invoking OnConsoleMessage...", LogCategory.JavaScript);
                     OnConsoleMessage?.Invoke(msg);
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[FenRuntime] OnConsoleMessage error: {ex}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[FenRuntime] OnConsoleMessage error: {ex}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5131,11 +5131,11 @@ namespace FenBrowser.FenEngine.Core
                 // /* [PERF-REMOVED] */
                 try
                 {
-                    FenLogger.Error($"[FenRuntime] Console.error: {msg}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[FenRuntime] Console.error: {msg}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5144,7 +5144,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5158,11 +5158,11 @@ namespace FenBrowser.FenEngine.Core
                 // /* [PERF-REMOVED] */
                 try
                 {
-                    FenLogger.Info($"[FenRuntime] Console.warn: {msg}", LogCategory.JavaScript);
+                    EngineLogCompat.Info($"[FenRuntime] Console.warn: {msg}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5171,7 +5171,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5183,11 +5183,11 @@ namespace FenBrowser.FenEngine.Core
                 // /* [PERF-REMOVED] */
                 try
                 {
-                    FenLogger.Info($"[FenRuntime] Console.info: {msg}", LogCategory.JavaScript);
+                    EngineLogCompat.Info($"[FenRuntime] Console.info: {msg}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5196,7 +5196,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5210,7 +5210,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5225,11 +5225,11 @@ namespace FenBrowser.FenEngine.Core
                 Console.WriteLine(output);
                 try
                 {
-                    FenLogger.Debug($"[FenRuntime] Console.dir: {output}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[FenRuntime] Console.dir: {output}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5238,7 +5238,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5253,11 +5253,11 @@ namespace FenBrowser.FenEngine.Core
                 Console.WriteLine(output);
                 try
                 {
-                    FenLogger.Debug($"[FenRuntime] Console.table: {output}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[FenRuntime] Console.table: {output}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5266,7 +5266,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5287,7 +5287,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5366,7 +5366,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5392,11 +5392,11 @@ namespace FenBrowser.FenEngine.Core
                 Console.ResetColor();
                 try
                 {
-                    FenLogger.Error($"[FenRuntime] Console.assert: {msg}", LogCategory.JavaScript);
+                    EngineLogCompat.Error($"[FenRuntime] Console.assert: {msg}", LogCategory.JavaScript);
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 try
@@ -5405,7 +5405,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5423,7 +5423,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 return FenValue.Undefined;
@@ -5557,7 +5557,7 @@ namespace FenBrowser.FenEngine.Core
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Error($"[FenRuntime] Microtask Exception: {ex.Message}", LogCategory.JavaScript);
+                            EngineLogCompat.Error($"[FenRuntime] Microtask Exception: {ex.Message}", LogCategory.JavaScript);
                         }
                     });
                     return FenValue.Undefined;
@@ -5572,7 +5572,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[FenRuntime] Failed to initialize Intl: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Error($"[FenRuntime] Failed to initialize Intl: {ex.Message}", LogCategory.JavaScript);
             }
 
             // (Symbol API moved to line 2106)
@@ -8075,7 +8075,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 if (BrowserSettings.Instance.BlockPopups)
                 {
-                    FenLogger.Warn("[FenRuntime] window.open blocked by BlockPopups policy", LogCategory.General);
+                    EngineLogCompat.Warn("[FenRuntime] window.open blocked by BlockPopups policy", LogCategory.General);
                     return FenValue.Null;
                 }
 
@@ -11447,7 +11447,7 @@ namespace FenBrowser.FenEngine.Core
                         {
                             try
                             {
-                                FenLogger.Error($"[IdleCallback Error] {ex.Message}", LogCategory.JavaScript, ex);
+                                EngineLogCompat.Error($"[IdleCallback Error] {ex.Message}", LogCategory.JavaScript, ex);
                             }
                             catch
                             {
@@ -12667,7 +12667,7 @@ namespace FenBrowser.FenEngine.Core
                 }
                 catch (Exception logEx)
                 {
-                    FenLogger.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
                 regexObj.NativeObject = regex;
@@ -12803,7 +12803,7 @@ namespace FenBrowser.FenEngine.Core
                     thisObj.Set("multiline", FenValue.FromBoolean(fl.Contains("m")));
                     thisObj.Set("lastIndex", FenValue.FromNumber(0));
                 }
-                catch (Exception ex) { FenLogger.Warn($"[FenRuntime] RegExp.compile failed: {ex.Message}", LogCategory.JavaScript); }
+                catch (Exception ex) { EngineLogCompat.Warn($"[FenRuntime] RegExp.compile failed: {ex.Message}", LogCategory.JavaScript); }
                 return compileThis;
             })));
 
@@ -17290,7 +17290,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[FenRuntime] NavigationRequested callback failed for '{target}': {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[FenRuntime] NavigationRequested callback failed for '{target}': {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -17502,7 +17502,7 @@ namespace FenBrowser.FenEngine.Core
 
             try
             {
-                FenLogger.Debug($"[FenRuntime] CreateTimer called. ID: {id}, Delay: {delay}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[FenRuntime] CreateTimer called. ID: {id}, Delay: {delay}", LogCategory.JavaScript);
             }
             catch
             {
@@ -17567,7 +17567,7 @@ namespace FenBrowser.FenEngine.Core
 
             try
             {
-                FenLogger.Debug($"[FenRuntime] RequestAnimationFrame. ID: {id}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[FenRuntime] RequestAnimationFrame. ID: {id}", LogCategory.JavaScript);
             }
             catch
             {
@@ -17592,7 +17592,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     try
                     {
-                        FenLogger.Error($"[RAF Error] {ex.Message}", LogCategory.JavaScript, ex);
+                        EngineLogCompat.Error($"[RAF Error] {ex.Message}", LogCategory.JavaScript, ex);
                     }
                     catch
                     {
@@ -18104,7 +18104,7 @@ namespace FenBrowser.FenEngine.Core
 
                     if (traceLargeScript)
                     {
-                        FenLogger.Warn(
+                        EngineLogCompat.Warn(
                             $"[FenRuntime] Large script parsed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms length={code.Length}",
                             LogCategory.JavaScript);
                     }
@@ -18131,14 +18131,14 @@ namespace FenBrowser.FenEngine.Core
                         compiledBlock = compiler.Compile(program);
                         if (traceLargeScript)
                         {
-                            FenLogger.Warn(
+                            EngineLogCompat.Warn(
                                 $"[FenRuntime] Large script compiled url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms instructions={compiledBlock?.Instructions?.Length ?? 0}",
                                 LogCategory.JavaScript);
                         }
                     }
                     catch (Exception compileEx)
                     {
-                        FenLogger.Debug($"[FenRuntime] Compile error in {url}: {compileEx.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Debug($"[FenRuntime] Compile error in {url}: {compileEx.Message}", LogCategory.JavaScript);
                         throw new FenSyntaxError($"SyntaxError: {compileEx.Message}");
                     }
 
@@ -18153,7 +18153,7 @@ namespace FenBrowser.FenEngine.Core
                                 : vm.Execute(compiledBlock, _globalEnv);
                         if (traceLargeScript)
                         {
-                            FenLogger.Warn(
+                            EngineLogCompat.Warn(
                                 $"[FenRuntime] Large script executed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms",
                                 LogCategory.JavaScript);
                         }
@@ -18169,7 +18169,7 @@ namespace FenBrowser.FenEngine.Core
                     }
                     catch (Exception vmEx)
                     {
-                        FenLogger.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
                         if (TryExtractThrownValue(vmEx, out var thrownValue))
                         {
                             return FenValue.FromThrow(thrownValue);
@@ -18201,7 +18201,7 @@ namespace FenBrowser.FenEngine.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[FenRuntime] Runtime error in {url}: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[FenRuntime] Runtime error in {url}: {ex.Message}", LogCategory.JavaScript);
                 if (TryExtractThrownValue(ex, out var thrownValue))
                 {
                     return FenValue.FromThrow(thrownValue);

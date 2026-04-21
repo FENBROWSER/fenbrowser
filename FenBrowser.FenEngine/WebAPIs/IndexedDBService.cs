@@ -140,7 +140,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[IndexedDB] Detached async operation failed: {ex.Message}", LogCategory.Storage);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[IndexedDB] Detached async operation failed: {ex.Message}", LogCategory.Storage);
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -262,7 +262,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (_storageBackend != null)
                 {
                     try { await _storageBackend.DeleteDatabase(origin, name).ConfigureAwait(false); }
-                    catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[IndexedDB] Backend delete failed: {ex.Message}", LogCategory.Storage); }
+                    catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[IndexedDB] Backend delete failed: {ex.Message}", LogCategory.Storage); }
                 }
                 DispatchRequestSuccess(request, FenValue.Undefined, context, null, null);
             });
@@ -884,7 +884,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[IndexedDB] {propertyName} callback failed: {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Warn($"[IndexedDB] {propertyName} callback failed: {ex.Message}", LogCategory.Storage);
             }
         }
 
@@ -1438,11 +1438,11 @@ namespace FenBrowser.FenEngine.WebAPIs
                     }
                     dbState.Stores[storeName] = storeState;
                 }
-                FenBrowser.Core.FenLogger.Debug($"[IndexedDB] Loaded '{dbName}' from backend ({dbState.Stores.Count} stores)", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Debug($"[IndexedDB] Loaded '{dbName}' from backend ({dbState.Stores.Count} stores)", LogCategory.Storage);
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[IndexedDB] Backend load failed for '{dbName}': {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Warn($"[IndexedDB] Backend load failed for '{dbName}': {ex.Message}", LogCategory.Storage);
             }
         }
 
@@ -1485,11 +1485,11 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
 
                 dbState.Dirty = false;
-                FenBrowser.Core.FenLogger.Debug($"[IndexedDB] Flushed '{dbName}' to backend", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Debug($"[IndexedDB] Flushed '{dbName}' to backend", LogCategory.Storage);
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[IndexedDB] Backend flush failed for '{dbName}': {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Warn($"[IndexedDB] Backend flush failed for '{dbName}': {ex.Message}", LogCategory.Storage);
             }
         }
 

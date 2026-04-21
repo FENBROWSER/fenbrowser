@@ -50,6 +50,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
         private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
+        private static int _stylesheetRegistrationCounter;
 
         // UA stylesheet cache — read from disk only once per process lifetime
         private static string _cachedUaCss;
@@ -101,7 +102,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[CssLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[CssLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -307,7 +308,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (File.Exists(path))
                         {
                             _cachedUaCss = File.ReadAllText(path);
-                            FenLogger.Info($"[CssLoader] Loaded UA stylesheet from: {path}", LogCategory.Rendering);
+                            EngineLogCompat.Info($"[CssLoader] Loaded UA stylesheet from: {path}", LogCategory.Rendering);
                             loaded = true;
                             break;
                         }
@@ -315,7 +316,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (!loaded)
                     {
-                        FenLogger.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
+                        EngineLogCompat.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
                         _cachedUaCss = @"
                             html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
                             body{margin:8px;}
@@ -335,7 +336,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
             }
 
             // 1) Inline <style> tags first (DOM order)
@@ -531,22 +532,22 @@ namespace FenBrowser.FenEngine.Rendering
             }
             if (extTasks.Count > 0) 
             {
-                FenLogger.Debug($"[PERF-CSS] Waiting for {extTasks.Count} external CSS fetches...", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[PERF-CSS] Waiting for {extTasks.Count} external CSS fetches...", LogCategory.Rendering);
                 try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } 
             }
-            FenLogger.Debug($"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
             // 3) Expand @import (depth-bounded)
-            FenLogger.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
+            EngineLogCompat.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
-            FenLogger.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})", LogCategory.Rendering);
 
             // 4) Parse rules from all sources (parallel, bounded)
-            FenLogger.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (Global Gate Limit: {_globalParseGate.CurrentCount})...", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (Global Gate Limit: {_globalParseGate.CurrentCount})...", LogCategory.Rendering);
             var styleSet = new StyleSet();
             var parseTasks = new List<Task>();
             
-            FenLogger.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
             foreach (var blob in expanded)
             {
                 parseTasks.Add(RunDetachedAsync(async () =>
@@ -579,7 +580,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     await _globalParseGate.WaitAsync().ConfigureAwait(false);
                                     try
                                     {
-                                        FenLogger.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
+                                        EngineLogCompat.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
                                         var result = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                                         
                                         // Once finished, move from in-flight to complete cache
@@ -596,7 +597,7 @@ namespace FenBrowser.FenEngine.Rendering
                                             _inFlightParses.Remove(parseCacheKey);
                                         }
                                         _globalParseGate.Release();
-                                        FenLogger.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
+                                        EngineLogCompat.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
                                     }
                                 });
                                 _inFlightParses[parseCacheKey] = inFlightTask;
@@ -641,7 +642,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (finished == parseTimeoutTask)
                 {
-                    FenLogger.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Continuing with partial StyleSet ({styleSet.Count} sheets).", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Continuing with partial StyleSet ({styleSet.Count} sheets).", LogCategory.Rendering);
                 }
                 else
                 {
@@ -649,20 +650,20 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            FenLogger.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})", LogCategory.Rendering);
+            EngineLogCompat.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})", LogCategory.Rendering);
 
             // Extract all rules purely for variable resolution (which is order-independent for initial pass)
             var allRulesForVars = new List<NewCss.CssRule>();
             foreach (var s in styleSet.Sheets) allRulesForVars.AddRange(s.Rules);
 
             // 4.5) Resolve CSS variables
-            FenLogger.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
+            EngineLogCompat.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
             ResolveVariables(allRulesForVars);
-            FenLogger.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
             var computed = CascadeIntoComputedStyles(root, styleSet, log, deadline);
             ApplyMediaWikiToolbarLayoutFallbacks(computed, baseUri);
-            FenLogger.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
+            EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
                 return new CssLoadResult
                 {
@@ -1058,7 +1059,7 @@ namespace FenBrowser.FenEngine.Rendering
                         css = await fetchExternal(abs).ConfigureAwait(false);
                     }
                     catch (Exception ex) { Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message); }
-                    finally { try { gate.Release(); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS); } }
+                    finally { try { gate.Release(); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS); } }
 
                     if (!string.IsNullOrWhiteSpace(css))
                     {
@@ -1267,7 +1268,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static string ExtractFontFace(string text, Uri baseUri, Action<string> log)
         {
-            // FenLogger.Debug($"[PERF-CSS-TRACK] Enter ExtractFontFace Len={text?.Length ?? 0}", LogCategory.Rendering);
+            // EngineLogCompat.Debug($"[PERF-CSS-TRACK] Enter ExtractFontFace Len={text?.Length ?? 0}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(text)) return text;
             if (text.IndexOf("@font-face", StringComparison.OrdinalIgnoreCase) < 0) return text;
 
@@ -1297,9 +1298,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Find matching closing brace
-                // FenLogger.Debug($"[PERF-CSS-TRACK] FindMatchingBrace start i={i}", LogCategory.Rendering);
+                // EngineLogCompat.Debug($"[PERF-CSS-TRACK] FindMatchingBrace start i={i}", LogCategory.Rendering);
                 int braceClose = FindMatchingBrace(text, braceOpen);
-                // FenLogger.Debug($"[PERF-CSS-TRACK] FindMatchingBrace done close={braceClose}", LogCategory.Rendering);
+                // EngineLogCompat.Debug($"[PERF-CSS-TRACK] FindMatchingBrace done close={braceClose}", LogCategory.Rendering);
                 
                 if (braceClose < 0)
                 {
@@ -1312,9 +1313,9 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 try
                 {
-                    // FenLogger.Debug($"[PERF-CSS-TRACK] calling ParseAndRegister", LogCategory.Rendering);
+                    // EngineLogCompat.Debug($"[PERF-CSS-TRACK] calling ParseAndRegister", LogCategory.Rendering);
                     FontRegistry.ParseAndRegister(fontFaceBody, baseUri);
-                    // FenLogger.Debug($"[PERF-CSS-TRACK] done ParseAndRegister", LogCategory.Rendering);
+                    // EngineLogCompat.Debug($"[PERF-CSS-TRACK] done ParseAndRegister", LogCategory.Rendering);
                 }
                 catch (Exception ex)
                 {
@@ -1323,9 +1324,9 @@ namespace FenBrowser.FenEngine.Rendering
 
                 i = braceClose + 1;
             }
-            // FenLogger.Debug($"[PERF-CSS-TRACK] Exit ExtractFontFace loop loopCount={loopCount}", LogCategory.Rendering);
+            // EngineLogCompat.Debug($"[PERF-CSS-TRACK] Exit ExtractFontFace loop loopCount={loopCount}", LogCategory.Rendering);
             
-            if (loopCount > 1000) FenLogger.Debug($"[CSS-DEBUG] ExtractFontFace finished with {loopCount} iterations.", LogCategory.Rendering);
+            if (loopCount > 1000) EngineLogCompat.Debug($"[CSS-DEBUG] ExtractFontFace finished with {loopCount} iterations.", LogCategory.Rendering);
             
             return result.ToString();
         }
@@ -1886,7 +1887,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (!property.StartsWith("-") && !property.StartsWith("--"))
                 {
                     if (FenBrowser.Core.Logging.DebugConfig.LogCssParse)
-                        global::FenBrowser.Core.FenLogger.Log($"[CSS] Ignored Property: '{property}' (Value: '{value ?? ""}')", LogCategory.CssParsing);
+                        global::FenBrowser.Core.EngineLogCompat.Log($"[CSS] Ignored Property: '{property}' (Value: '{value ?? ""}')", LogCategory.CssParsing);
                         
                     EngineCapabilities.LogUnsupportedCss(property, value, "CSS property not implemented");
                 }
@@ -1984,13 +1985,18 @@ namespace FenBrowser.FenEngine.Rendering
             var rules = new List<NewCss.CssRule>();
             if (string.IsNullOrWhiteSpace(css)) return rules;
 
-            FenLogger.Debug($"[DEBUG-CSS] ParseRules input length: {css.Length}", LogCategory.Rendering);
+            int registrationOrder = System.Threading.Interlocked.Increment(ref _stylesheetRegistrationCounter);
+            EngineLogCompat.Info(
+                $"[STYLE][INFO] Stylesheet registered order={registrationOrder} sourceOrder={sourceOrder} origin={origin} href={(baseForUrls?.ToString() ?? "inline")}",
+                LogCategory.CSS);
 
-            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug raw css log failed: {ex.Message}", LogCategory.CSS); }
+            EngineLogCompat.Debug($"[DEBUG-CSS] ParseRules input length: {css.Length}", LogCategory.Rendering);
+
+            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug raw css log failed: {ex.Message}", LogCategory.CSS); }
             var text = StripComments(css);
-            FenLogger.Debug($"[DEBUG-CSS] After StripComments length: {text.Length}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[DEBUG-CSS] After StripComments length: {text.Length}", LogCategory.Rendering);
             
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug preprocessed css log failed: {ex.Message}", LogCategory.CSS); }
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug preprocessed css log failed: {ex.Message}", LogCategory.CSS); }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
@@ -1998,13 +2004,13 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Extract non-standard/unimplemented blocks to avoid parser errors
             text = ExtractKeyframes(text, log);
-            FenLogger.Debug($"[PERF-CSS] ExtractKeyframes: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+            EngineLogCompat.Debug($"[PERF-CSS] ExtractKeyframes: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
             
             text = ExtractFontFace(text, baseForUrls, log);
-            FenLogger.Debug($"[PERF-CSS] ExtractFontFace: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+            EngineLogCompat.Debug($"[PERF-CSS] ExtractFontFace: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
             text = FlattenSupports(text, log);
-            FenLogger.Debug($"[PERF-CSS] FlattenSupports: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+            EngineLogCompat.Debug($"[PERF-CSS] FlattenSupports: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
             // text = ExtractLayers(text, log); // REMOVED: Now handled by proper parsing
             
@@ -2013,12 +2019,12 @@ namespace FenBrowser.FenEngine.Rendering
                 (float)(viewportWidth ?? 1024),
                 (float)(viewportHeight ?? (CssParser.MediaViewportHeight ?? 768)),
                 log);
-             FenLogger.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
+             EngineLogCompat.Debug($"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms", LogCategory.Rendering); sw.Restart();
 
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug processed css log failed: {ex.Message}", LogCategory.CSS); }
+             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug processed css log failed: {ex.Message}", LogCategory.CSS); }
 
             // New Pipeline: Tokenize -> Parse
-            FenLogger.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[DEBUG-CSS] Creating tokenizer for text length {text.Length}", LogCategory.Rendering);
             var tokenizer = new CssTokenizer(text);
             var parser = new CssSyntaxParser(tokenizer);
             var policy = ActiveParserSecurityPolicy ?? ParserSecurityPolicy.Default;
@@ -2028,9 +2034,9 @@ namespace FenBrowser.FenEngine.Rendering
             NewCss.CssStylesheet sheet = null;
             try 
             {
-                FenLogger.Debug($"[DEBUG-CSS] Starting ParseStylesheet...", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[DEBUG-CSS] Starting ParseStylesheet...", LogCategory.Rendering);
                 sheet = parser.ParseStylesheet();
-                FenLogger.Debug($"[DEBUG-CSS] ParseStylesheet returned {sheet.Rules.Count} rules", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[DEBUG-CSS] ParseStylesheet returned {sheet.Rules.Count} rules", LogCategory.Rendering);
             
                 int ruleIndexInsideSheet = 0;
                 
@@ -2108,11 +2114,11 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 ProcessRuleList(sheet.Rules);
                 
-                FenLogger.Debug($"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes.", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes.", LogCategory.Rendering);
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[DEBUG-CSS] CRASH in ParseStylesheet: {ex}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[DEBUG-CSS] CRASH in ParseStylesheet: {ex}", LogCategory.Rendering);
                 return rules;
             }
 
@@ -2906,7 +2912,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, StyleSet styleSet, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            FenBrowser.Core.FenLogger.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.TagName}. Sheet count: {styleSet?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
+            FenBrowser.Core.EngineLogCompat.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.TagName}. Sheet count: {styleSet?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
             
@@ -3149,7 +3155,7 @@ private static double? ExtractPx(string text, string prop)
                 if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
                     var propsStr = string.Join(", ", css.Map.Select(kv => $"{kv.Key}={kv.Value}"));
-                    FenBrowser.Core.FenLogger.Info($"[DIV-CASCADE] Cascaded props for <div>: {propsStr}", LogCategory.CSS);
+                    FenBrowser.Core.EngineLogCompat.Info($"[DIV-CASCADE] Cascaded props for <div>: {propsStr}", LogCategory.CSS);
                 }
 
                 // Populate core display/positioning properties from the map
@@ -3158,7 +3164,7 @@ private static double? ExtractPx(string text, string prop)
                 // DEBUG: Trace display:flex application
                 if (css.Display == "flex" || css.Display == "inline-flex")
                 {
-                    FenLogger.Debug($"[FLEX-DEBUG] Element={n.TagName}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
+                    EngineLogCompat.Debug($"[FLEX-DEBUG] Element={n.TagName}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
                 }
                 
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
@@ -3438,7 +3444,7 @@ private static double? ExtractPx(string text, string prop)
 
             if (!string.IsNullOrEmpty(maxWStr) && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
-                FenLogger.Info($"[CSS-MAXWIDTH] <{tag}#{n.Id}> Raw='{maxWStr}' MW={css.MaxWidth} MWP={css.MaxWidthPercent}", LogCategory.CSS);
+                EngineLogCompat.Info($"[CSS-MAXWIDTH] <{tag}#{n.Id}> Raw='{maxWStr}' MW={css.MaxWidth} MWP={css.MaxWidthPercent}", LogCategory.CSS);
             }
 
             string maxHStr = DictGet(css.Map, "max-height");
@@ -3526,7 +3532,7 @@ private static double? ExtractPx(string text, string prop)
             // DEBUG: Log background-color for div elements
             if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
-                FenBrowser.Core.FenLogger.Info($"[BG-DEBUG] DIV background-color: raw='{bgColorRaw}' parsed={explicitBgColor}", LogCategory.CSS);
+                FenBrowser.Core.EngineLogCompat.Info($"[BG-DEBUG] DIV background-color: raw='{bgColorRaw}' parsed={explicitBgColor}", LogCategory.CSS);
             }
             if (explicitBgColor.HasValue)
             {
@@ -3630,7 +3636,7 @@ private static double? ExtractPx(string text, string prop)
                 {
                     // Store the url() value directly for ImageLoader to process
                     css.BackgroundImage = bgImage;
-                    FenLogger.Debug($"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...", LogCategory.CSS);
+                    EngineLogCompat.Debug($"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...", LogCategory.CSS);
                 }
                 else if (containsGradient)
                 {
@@ -3657,7 +3663,7 @@ private static double? ExtractPx(string text, string prop)
                 if (!string.IsNullOrEmpty(resolved))
                     css.FontFamilyName = resolved;
             }
-            catch (Exception ex) { FenLogger.Warn($"[CssLoader] Font-family resolution failed: {ex.Message}", LogCategory.CSS); }
+            catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Font-family resolution failed: {ex.Message}", LogCategory.CSS); }
 
             var fwRaw = Safe(DictGet(css.Map, "font-weight"));
             if (!string.IsNullOrEmpty(fwRaw))
@@ -3776,7 +3782,7 @@ private static double? ExtractPx(string text, string prop)
 
             if (css.MarginLeftAuto || css.MarginRightAuto)
             {
-                FenLogger.Info($"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'", LogCategory.CSS);
+                EngineLogCompat.Info($"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'", LogCategory.CSS);
             }
 
             // DEBUG: Log margin auto detection for DIV elements
@@ -4198,7 +4204,7 @@ private static double? ExtractPx(string text, string prop)
                         var brush = ParseGradient(bgValue);
                         if (brush != null) css.Background = brush;
                     }
-                    catch (Exception ex) { FenLogger.Warn($"[CssLoader] Background gradient parse failed: {ex.Message}", LogCategory.CSS); }
+                    catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Background gradient parse failed: {ex.Message}", LogCategory.CSS); }
                 }
                 else if (bgValue.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
@@ -4207,7 +4213,7 @@ private static double? ExtractPx(string text, string prop)
                         var brush = ParseBackgroundImage(bgValue);
                         if (brush != null) css.Background = brush;
                     }
-                    catch (Exception ex) { FenLogger.Warn($"[CssLoader] Background image parse failed: {ex.Message}", LogCategory.CSS); }
+                    catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Background image parse failed: {ex.Message}", LogCategory.CSS); }
                 }
                 else if (string.Equals(bgValue, "none", StringComparison.OrdinalIgnoreCase))
                 {
@@ -4368,7 +4374,7 @@ private static double? ExtractPx(string text, string prop)
                     if(s.Classes!=null) foreach(var c in s.Classes) sb.Append("." + c);
                     sb.Append(" ");
                 }
-                FenLogger.Debug($"[SelectorProbe] Checking UL against rule: {sb}", LogCategory.Layout);
+                EngineLogCompat.Debug($"[SelectorProbe] Checking UL against rule: {sb}", LogCategory.Layout);
 
                 // Log Ancestor Chain EXACTLY ONCE per element (cache key?)
                 // Actually, just log it. It's spammy but needed.
@@ -4382,7 +4388,7 @@ private static double? ExtractPx(string text, string prop)
                     p = p.ParentNode;
                     depth++;
                 }
-                FenLogger.Debug($"[SelectorProbe] {chainLog}", LogCategory.Layout);
+                EngineLogCompat.Debug($"[SelectorProbe] {chainLog}", LogCategory.Layout);
             }
 
             // Delegate implementation to the shared SelectorMatcher (V2 DOM compliant)
@@ -4543,7 +4549,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 if (!string.Equals(n.TagName, seg.TagName, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Tag mismatch. Validating '{seg.TagName}' against '{n.TagName}' for classes {string.Join(",", seg.Classes)}", LogCategory.Layout);
+                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Tag mismatch. Validating '{seg.TagName}' against '{n.TagName}' for classes {string.Join(",", seg.Classes)}", LogCategory.Layout);
                     return false;
                 }
             }
@@ -4553,7 +4559,7 @@ private static double? ExtractPx(string text, string prop)
                 string id = n.Id;
                 if (!string.Equals(id ?? "", seg.Id, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: ID mismatch. Validating '{seg.Id}' against '{id ?? "null"}'", LogCategory.Layout);
+                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: ID mismatch. Validating '{seg.Id}' against '{id ?? "null"}'", LogCategory.Layout);
                     return false;
                 }
             }
@@ -4563,7 +4569,7 @@ private static double? ExtractPx(string text, string prop)
                 string cls = n.GetAttribute("class");
                 if (string.IsNullOrWhiteSpace(cls))
                 {
-                    if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: No class attr. Expected {string.Join(",", seg.Classes)}", LogCategory.Layout);
+                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: No class attr. Expected {string.Join(",", seg.Classes)}", LogCategory.Layout);
                     return false;
                 }
 
@@ -4572,7 +4578,7 @@ private static double? ExtractPx(string text, string prop)
                 {
                     if (!have.Contains(c, StringComparer.OrdinalIgnoreCase)) 
                     {
-                        if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Missing class '{c}'. Have '{cls}'", LogCategory.Layout);
+                        if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Missing class '{c}'. Have '{cls}'", LogCategory.Layout);
                         return false;
                     }
                 }
@@ -4585,7 +4591,7 @@ private static double? ExtractPx(string text, string prop)
                     string val = n.GetAttribute(attr.Name);
                     if (val == null)
                     {
-                         if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Missing attribute '{attr.Name}'", LogCategory.Layout);
+                         if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Missing attribute '{attr.Name}'", LogCategory.Layout);
                          return false;
                     }
                     
@@ -5107,13 +5113,13 @@ private static double? ExtractPx(string text, string prop)
                 {
                     if (MatchesSelectorChain(new SelectorChain { Segments = new List<SelectorSegment> { notSeg } }, n))
                     {
-                        if (isDebug) FenLogger.Debug($"[DeepDive] Match FAIL: Matches :not() selector", LogCategory.Layout);
+                        if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Matches :not() selector", LogCategory.Layout);
                         return false; // Element matches the :not() selector, so it should NOT match the overall selector
                     }
                 }
             }
 
-            if (isDebug) FenLogger.Debug($"[DeepDive] Match SUCCESS: {seg.TagName} {string.Join(".", seg.Classes ?? new List<string>())}", LogCategory.Layout);
+            if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match SUCCESS: {seg.TagName} {string.Join(".", seg.Classes ?? new List<string>())}", LogCategory.Layout);
             return true;
             */
         }
@@ -6661,7 +6667,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static void Log(Action<string> log, string msg)
         {
-            try { if (log != null) log(msg); } catch (Exception ex) { FenLogger.Warn($"[CssLoader] External logger callback failed: {ex.Message}", LogCategory.CSS); }
+            try { if (log != null) log(msg); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] External logger callback failed: {ex.Message}", LogCategory.CSS); }
         }
 
 
@@ -6700,7 +6706,7 @@ private static double? ExtractPx(string text, string prop)
                 safeName = "css_debug.txt";
             DiagnosticPaths.AppendRootText(safeName, message);
         }
-        catch (Exception ex) { FenLogger.Warn($"[CssLoader] Debug file write failed: {ex.Message}", LogCategory.CSS); }
+        catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug file write failed: {ex.Message}", LogCategory.CSS); }
 #endif
     }
 

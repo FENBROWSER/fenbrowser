@@ -41,7 +41,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             string dbgTag = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?";
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenLogger.Info($"[BFC-ENTRY] <{dbgTag}> AvailH={state.AvailableSize.Height} ViewH={state.ViewportHeight}", LogCategory.Layout);
+                EngineLogCompat.Info($"[BFC-ENTRY] <{dbgTag}> AvailH={state.AvailableSize.Height} ViewH={state.ViewportHeight}", LogCategory.Layout);
             }
 
             // 1. Resolve Width
@@ -493,7 +493,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else
                     {
-                        FenBrowser.Core.FenLogger.Warn(
+                        FenBrowser.Core.EngineLogCompat.Warn(
                             $"[BFC] Shrink-to-fit depth {_shrinkToFitDepth} exceeded for <{(blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName}>. Skipping relayout to break infinite-loop.",
                             FenBrowser.Core.Logging.LogCategory.Layout);
                     }
@@ -765,7 +765,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenLogger.Info(
+                EngineLogCompat.Info(
                     $"[BFC-RESOLVE-START] Avail={rawAvailable} Resolved={available} Source={widthResolution.Source} CB={state.ContainingBlockWidth} VP={state.ViewportWidth}",
                     LogCategory.Layout);
             }
@@ -804,7 +804,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenLogger.Info($"[BFC-RESOLVE] <{tag}> W={style?.Width} WP={style?.WidthPercent} MW={style?.MaxWidth} MWP={style?.MaxWidthPercent} Avail={available}", LogCategory.Layout);
+                EngineLogCompat.Info($"[BFC-RESOLVE] <{tag}> W={style?.Width} WP={style?.WidthPercent} MW={style?.MaxWidth} MWP={style?.MaxWidthPercent} Avail={available}", LogCategory.Layout);
             }
 
             // 4. Calculate content width before margins
@@ -858,13 +858,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 
                 if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                 {
-                    FenLogger.Info($"[BFC-WIDTH] <{tag}#{id}> Centered: ML={marginLeft} MR={marginRight} Cont={resolvedContentWidth} Avail={available}", LogCategory.Layout);
+                    EngineLogCompat.Info($"[BFC-WIDTH] <{tag}#{id}> Centered: ML={marginLeft} MR={marginRight} Cont={resolvedContentWidth} Avail={available}", LogCategory.Layout);
                 }
             }
 
             if (float.IsNaN(resolvedContentWidth) || float.IsInfinity(resolvedContentWidth))
             {
-                 FenLogger.Error($"[BFC-RESOLVE-ERROR] ResolvedWidth is {resolvedContentWidth}. Forcing 0.", LogCategory.Layout);
+                 EngineLogCompat.Error($"[BFC-RESOLVE-ERROR] ResolvedWidth is {resolvedContentWidth}. Forcing 0.", LogCategory.Layout);
                  resolvedContentWidth = 0;
             }
 

@@ -84,7 +84,7 @@ namespace FenBrowser.FenEngine.Layout
             _runs.Add(metrics);
 
             // Console log for immediate debugging
-            global::FenBrowser.Core.FenLogger.Debug(
+            global::FenBrowser.Core.EngineLogCompat.Debug(
                 $"[InlineRun] \"{metrics.Text}\" | Glyphs:{glyphCount} | Advance:{totalAdvance:F2}px | " +
                 $"Font:{fontFamily}/{fontSize:F1}px | X:{actualX:F2} (expected:{expectedX:F2})",
                 LogCategory.Text
@@ -129,7 +129,7 @@ namespace FenBrowser.FenEngine.Layout
                     float overlap = expectedNextX - actualNextX;
                     overlaps.Add((current, next, overlap));
 
-                    global::FenBrowser.Core.FenLogger.Warn(
+                    global::FenBrowser.Core.EngineLogCompat.Warn(
                         $"[InlineRun] OVERLAP DETECTED: \"{current.Text}\" → \"{next.Text}\" | " +
                         $"Overlap: {overlap:F2}px | Expected X: {expectedNextX:F2}, Actual: {actualNextX:F2}",
                         LogCategory.Text
@@ -174,11 +174,11 @@ namespace FenBrowser.FenEngine.Layout
                 }
 
                 File.WriteAllText(path, sb.ToString());
-                global::FenBrowser.Core.FenLogger.Log($"[InlineRun] Exported {_runs.Count} runs to: {path}", LogCategory.Text);
+                global::FenBrowser.Core.EngineLogCompat.Log($"[InlineRun] Exported {_runs.Count} runs to: {path}", LogCategory.Text);
             }
             catch (Exception ex)
             {
-                global::FenBrowser.Core.FenLogger.Error($"[InlineRun] CSV export failed: {ex.Message}", LogCategory.Text);
+                global::FenBrowser.Core.EngineLogCompat.Error($"[InlineRun] CSV export failed: {ex.Message}", LogCategory.Text);
             }
         }
 
@@ -225,7 +225,7 @@ namespace FenBrowser.FenEngine.Layout
         public static void Clear()
         {
             _runs.Clear();
-            global::FenBrowser.Core.FenLogger.Debug("[InlineRun] Cleared run history", LogCategory.Text);
+            global::FenBrowser.Core.EngineLogCompat.Debug("[InlineRun] Cleared run history", LogCategory.Text);
         }
 
         /// <summary>

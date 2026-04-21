@@ -93,7 +93,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_hoveredElement == element)
                 return;
                 
-            FenLogger.Debug($"[ElementState] Hover changed: {_hoveredElement?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
+            EngineLogCompat.Debug($"[ElementState] Hover changed: {_hoveredElement?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
             
             // Build list of elements that need style update
             var toUpdate = new List<Element>();
@@ -161,7 +161,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Update keyboard focus state
             _focusFromKeyboard = fromKeyboard;
 
-            FenLogger.Debug($"[ElementState] Focus changed: {_focusedElement?.TagName ?? "null"} -> {element?.TagName ?? "null"} (keyboard={fromKeyboard})", LogCategory.Layout);
+            EngineLogCompat.Debug($"[ElementState] Focus changed: {_focusedElement?.TagName ?? "null"} -> {element?.TagName ?? "null"} (keyboard={fromKeyboard})", LogCategory.Layout);
             
             // Build list of elements that need style update
             var toUpdate = new List<Element>();
@@ -311,7 +311,7 @@ namespace FenBrowser.FenEngine.Rendering
             var oldActive = _activeElement;
             _activeElement = element;
             
-            FenLogger.Debug($"[ElementState] Active changed: {oldActive?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
+            EngineLogCompat.Debug($"[ElementState] Active changed: {oldActive?.TagName ?? "null"} -> {element?.TagName ?? "null"}", LogCategory.Layout);
             
             // Notify about both old and new
             RequestFullRepaint();
@@ -527,7 +527,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
                 
             _targetFragment = fragment;
-            FenLogger.Debug($"[ElementState] Target fragment set: #{fragment}", LogCategory.Layout);
+            EngineLogCompat.Debug($"[ElementState] Target fragment set: #{fragment}", LogCategory.Layout);
         }
         
         /// <summary>
@@ -611,7 +611,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (!string.IsNullOrEmpty(value) && !regex.IsMatch(value))
                             return false;
                     }
-                    catch (Exception ex) { FenLogger.Warn($"[ElementStateManager] Pattern validation failed: {ex.Message}", LogCategory.Rendering); }
+                    catch (Exception ex) { EngineLogCompat.Warn($"[ElementStateManager] Pattern validation failed: {ex.Message}", LogCategory.Rendering); }
                 }
                 
                 // Min/max for number types

@@ -15,13 +15,13 @@ namespace FenBrowser.FenEngine.Scripting
     {
         private static void TryLogDomDebug(string message, LogCategory category = LogCategory.DOM)
         {
-            try { FenLogger.Debug(message, category); }
+            try { EngineLogCompat.Debug(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[JavaScriptEngine.Dom] Debug log failed: {ex.Message}"); }
         }
 
         private static void TryLogDomWarn(string message, LogCategory category = LogCategory.DOM)
         {
-            try { FenLogger.Warn(message, category); }
+            try { EngineLogCompat.Warn(message, category); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[JavaScriptEngine.Dom] Warn log failed: {ex.Message}"); }
         }
 
@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object getElementById(string id)
             {
-                FenLogger.Debug($"[JsDocument] getElementById('{id}') Root={(Root as Element)?.TagName ?? "null"}", LogCategory.DOM);
+                EngineLogCompat.Debug($"[JsDocument] getElementById('{id}') Root={(Root as Element)?.TagName ?? "null"}", LogCategory.DOM);
                 if (string.IsNullOrEmpty(id) || Root == null) return null;
                 
                 // CRITICAL FIX: Use the DOM's native FindById which is much more robust
@@ -51,12 +51,12 @@ namespace FenBrowser.FenEngine.Scripting
                 
                 if (element != null)
                 {
-                     FenLogger.Debug($"[JsDocument] MATCH FOUND for '{id}' on {element.NodeName}! Returning wrapper.", LogCategory.DOM);
+                     EngineLogCompat.Debug($"[JsDocument] MATCH FOUND for '{id}' on {element.NodeName}! Returning wrapper.", LogCategory.DOM);
                      return new JsDomElement(_e, element);
                 }
                 else
                 {
-                     FenLogger.Debug($"[JsDocument] '{id}' NOT FOUND via FindById.", LogCategory.DOM);
+                     EngineLogCompat.Debug($"[JsDocument] '{id}' NOT FOUND via FindById.", LogCategory.DOM);
                      return null;
                 }
             }
@@ -1282,7 +1282,7 @@ namespace FenBrowser.FenEngine.Scripting
             public string getPropertyValue(string name)
             {
                 if (string.IsNullOrWhiteSpace(name)) return "";
-                FenLogger.Debug($"[JsCssDeclaration] getPropertyValue name='{name}'", LogCategory.DOM);
+                EngineLogCompat.Debug($"[JsCssDeclaration] getPropertyValue name='{name}'", LogCategory.DOM);
                 var current = cssText;
                 var styles = ParseStyles(current);
                 var normalizedName = NormalizeGapPropertyName(name);

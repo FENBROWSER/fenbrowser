@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -14,7 +14,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 {
     /// <summary>
     /// Helper that creates a synchronously-resolved thenable FenObject.
-    /// Works without an IExecutionContext Ã¢â‚¬" suitable for static API factories.
+    /// Works without an IExecutionContext â€" suitable for static API factories.
     /// JS code can do .then(cb) and cb fires synchronously on the first .then() call.
     /// </summary>
     public static class ResolvedThenable
@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[ResolvedThenable] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[ResolvedThenable] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -143,7 +143,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[GeolocationAPI] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[GeolocationAPI] {operation} callback failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -588,7 +588,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NotificationsAPI] Failed to dispatch show event: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[NotificationsAPI] Failed to dispatch show event: {ex.Message}", LogCategory.JavaScript);
             }
 
             return notification;
@@ -722,7 +722,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NotificationsAPI] {operation} handler failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[NotificationsAPI] {operation} handler failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -878,7 +878,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 _isFullscreen = false;
                 _onFullscreenChange?.Invoke(false);
-                // Spec: returns Promise<void> â€” Fullscreen API Â§4.9
+                // Spec: returns Promise<void> — Fullscreen API §4.9
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
 
@@ -894,7 +894,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 _isFullscreen = true;
                 _onFullscreenChange?.Invoke(true);
-                // Spec: returns Promise<void> â€” Fullscreen API Â§4.9
+                // Spec: returns Promise<void> — Fullscreen API §4.9
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
 
@@ -912,14 +912,14 @@ namespace FenBrowser.FenEngine.WebAPIs
             var clipboard = new FenObject();
 
             // Spec: all clipboard methods return Promise<void|string|ClipboardItem[]>
-            // Clipboard API Â§2.2-2.5
+            // Clipboard API §2.2-2.5
             clipboard.Set("writeText", FenValue.FromFunction(new FenFunction("writeText",
                 (args, thisVal) =>
             {
                 if (args.Length >= 1)
                 {
                     string text = args[0].ToString();
-                    FenLogger.Debug($"[Clipboard] writeText: {text?.Substring(0, Math.Min(50, text?.Length ?? 0))}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[Clipboard] writeText: {text?.Substring(0, Math.Min(50, text?.Length ?? 0))}", LogCategory.JavaScript);
                 }
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, context));
             })));
@@ -927,7 +927,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             clipboard.Set("readText", FenValue.FromFunction(new FenFunction("readText",
                 (args, thisVal) =>
             {
-                // Returns Promise<string> â€” empty for privacy
+                // Returns Promise<string> — empty for privacy
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(""), context));
             })));
 
@@ -941,7 +941,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             clipboard.Set("read", FenValue.FromFunction(new FenFunction("read",
                 (args, thisVal) =>
             {
-                // Returns Promise<ClipboardItem[]> â€” empty for privacy
+                // Returns Promise<ClipboardItem[]> — empty for privacy
                 var arr = new FenObject();
                 arr.Set("length", FenValue.FromNumber(0));
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(arr), context));
@@ -980,19 +980,19 @@ namespace FenBrowser.FenEngine.WebAPIs
                 estimate.Set("quota", FenValue.FromNumber((StorageApi.QuotaBytes * 2) + IndexedDbQuotaBytes));
                 estimate.Set("usageDetails", FenValue.FromObject(usageDetails));
 
-                // Storage API Â§4.2 â€” returns Promise<StorageEstimate>
+                // Storage API §4.2 — returns Promise<StorageEstimate>
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(estimate), context));
             })));
 
             storage.Set("persisted", FenValue.FromFunction(new FenFunction("persisted", (args, thisVal) =>
             {
-                // Storage API Â§4.3 â€” returns Promise<boolean>
+                // Storage API §4.3 — returns Promise<boolean>
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), context));
             })));
 
             storage.Set("persist", FenValue.FromFunction(new FenFunction("persist", (args, thisVal) =>
             {
-                // Storage API Â§4.4 â€” returns Promise<boolean>
+                // Storage API §4.4 — returns Promise<boolean>
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), context));
             })));
 
@@ -1036,7 +1036,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     return FenValue.FromObject(ResolvedThenable.Rejected(error ?? "TypeError: Invalid share data", execContext));
                 }
 
-                FenLogger.Debug(
+                EngineLogCompat.Debug(
                     $"[WebShare] share title='{payload.Title}' textLen={payload.Text.Length} url='{payload.Url}'",
                     LogCategory.JavaScript);
 

@@ -38,6 +38,8 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly float _viewportHeight;
         private readonly string _baseUri;
         private int _frameId;
+        private int _normalizedBoxRectCount;
+        private int _normalizedClipRectCount;
         
         // CSS Counters state - tracks counter values during tree traversal
         private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -78,7 +80,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             DiagnosticPaths.AppendRootText("debug_paint_start.txt", $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n");
             
-            FenBrowser.Core.FenLogger.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
+            FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
             if (root == null || boxes == null || boxes.Count == 0)
             {
                 return ImmutablePaintTree.Empty;
@@ -134,6 +136,20 @@ namespace FenBrowser.FenEngine.Rendering
                 builder._renderingTopLayer = false;
             }
 
+            EngineLog.Write(
+                LogSubsystem.Paint,
+                LogSeverity.Info,
+                "Paint tree build completed",
+                LogMarker.None,
+                default,
+                new Dictionary<string, object?>
+                {
+                    ["frameId"] = frameId,
+                    ["rootCount"] = rootNodes?.Count ?? 0,
+                    ["normalizedBoxRects"] = builder._normalizedBoxRectCount,
+                    ["normalizedClipRects"] = builder._normalizedClipRectCount
+                });
+
             return new ImmutablePaintTree(rootNodes, frameId);
         }
         
@@ -154,7 +170,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (node is Text traceTextNode && ShouldTraceWhatIsMyBrowserText(traceTextNode.Data))
             {
-                global::FenBrowser.Core.FenLogger.Info(
+                global::FenBrowser.Core.EngineLogCompat.Info(
                     $"[WIMB-TEXT-VISIT] Text='{traceTextNode.Data}' Parent=<{traceTextNode.ParentElement?.TagName ?? "null"}>",
                     LogCategory.Rendering);
             }
@@ -187,7 +203,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (node is Text missingTextNode && ShouldTraceWhatIsMyBrowserText(missingTextNode.Data))
                 {
-                    global::FenBrowser.Core.FenLogger.Info(
+                    global::FenBrowser.Core.EngineLogCompat.Info(
                         $"[WIMB-TEXT-MISS] Text='{missingTextNode.Data}' Parent=<{missingTextNode.ParentElement?.TagName ?? "null"}> HasStyle={(style != null)}",
                         LogCategory.Rendering);
                 }
@@ -201,6 +217,8 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
+            SanitizeBoxForPaint(box);
+
             // ABSOLUTE POSITION ESCAPE LOGIC
             // If this node is absolute, and we have a valid escape context (from a static parent), use it.
             if (escapeContext != null && style != null && string.Equals(style.Position, "absolute", StringComparison.OrdinalIgnoreCase))
@@ -212,7 +230,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Skip hidden elements (display: none)
             if (ShouldHide(node, style)) {
                  if (FenBrowser.Core.Logging.DebugConfig.LogPaintCommands && depth < 20)
-                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-SKIP] {(node as Element)?.TagName} Reason=ShouldHide", FenBrowser.Core.Logging.LogCategory.Paint);
+                     global::FenBrowser.Core.EngineLogCompat.Log($"[PAINT-SKIP] {(node as Element)?.TagName} Reason=ShouldHide", FenBrowser.Core.Logging.LogCategory.Paint);
                  return;
             }
             
@@ -233,7 +251,7 @@ namespace FenBrowser.FenEngine.Rendering
                      string scInfo = createsStackingContext ? $" SC=True Z={zIndex}" : "";
                      string clipInfo = (style?.Overflow == "hidden" || style?.OverflowX == "hidden") ? " Clipped=True" : "";
                      string visInfo = (style?.Visibility == "hidden") ? " Vis=Hidden" : "";
-                     global::FenBrowser.Core.FenLogger.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo}{visInfo} Rect={box.BorderBox}", LogCategory.Paint);
+                     global::FenBrowser.Core.EngineLogCompat.Log($"[PAINT-NODE] {new string(' ', depth)}{(node as Element)?.TagName} {scInfo}{clipInfo}{visInfo} Rect={box.BorderBox}", LogCategory.Paint);
                  }
             }
             */
@@ -491,7 +509,12 @@ namespace FenBrowser.FenEngine.Rendering
                 if (isClipped)
                 {
                     // Create Clip Node for children
-                    var paddingBox = box.PaddingBox;
+                    var paddingBox = NormalizeRectForPaint(box.PaddingBox, box.BorderBox, clampToContainer: true);
+                    if (!RectsEqual(box.PaddingBox, paddingBox))
+                    {
+                        _normalizedClipRectCount++;
+                    }
+
                     var radius = ExtractBorderRadius(box, style);
                     SKPath clipPath = null;
                     SKRect clipRect = paddingBox;
@@ -534,6 +557,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     if (clippedChildren.Count > 0)
                     {
+                        clipRect = NormalizeRectForPaint(clipRect, paddingBox, clampToContainer: true);
                         var clipNode = new ClipPaintNode
                         {
                             Bounds = paddingBox,
@@ -725,6 +749,44 @@ namespace FenBrowser.FenEngine.Rendering
 
             box = Layout.BoxModel.FromContentBox(left, top, width, height);
             return true;
+        }
+
+        private static SKRect NormalizeRectForPaint(SKRect rect, SKRect? container = null, bool clampToContainer = false)
+        {
+            return LayoutHelper.NormalizeRect(rect, container, clampToContainer);
+        }
+
+        private void SanitizeBoxForPaint(Layout.BoxModel box)
+        {
+            if (box == null) return;
+
+            var originalMargin = box.MarginBox;
+            var originalBorder = box.BorderBox;
+            var originalPadding = box.PaddingBox;
+            var originalContent = box.ContentBox;
+
+            var margin = NormalizeRectForPaint(originalMargin);
+            var border = NormalizeRectForPaint(originalBorder);
+            var padding = NormalizeRectForPaint(originalPadding, border, clampToContainer: true);
+            var content = NormalizeRectForPaint(originalContent, padding, clampToContainer: true);
+
+            box.MarginBox = margin;
+            box.BorderBox = border;
+            box.PaddingBox = padding;
+            box.ContentBox = content;
+
+            if (!RectsEqual(originalMargin, margin)) _normalizedBoxRectCount++;
+            if (!RectsEqual(originalBorder, border)) _normalizedBoxRectCount++;
+            if (!RectsEqual(originalPadding, padding)) _normalizedBoxRectCount++;
+            if (!RectsEqual(originalContent, content)) _normalizedBoxRectCount++;
+        }
+
+        private static bool RectsEqual(SKRect left, SKRect right, float epsilon = 0.01f)
+        {
+            return Math.Abs(left.Left - right.Left) <= epsilon &&
+                   Math.Abs(left.Top - right.Top) <= epsilon &&
+                   Math.Abs(left.Right - right.Right) <= epsilon &&
+                   Math.Abs(left.Bottom - right.Bottom) <= epsilon;
         }
 
         private static bool ShouldTraceWhatIsMyBrowserText(string text)
@@ -994,7 +1056,7 @@ namespace FenBrowser.FenEngine.Rendering
         private List<PaintNodeBase> BuildPaintNodesForElement(Node node, Layout.BoxModel box, CssComputed style)
         {
             var nodes = new List<PaintNodeBase>();
-            SKRect bounds = box.BorderBox;
+            SKRect bounds = NormalizeRectForPaint(box.BorderBox);
             
             // Poll interactive state
             Element elemNode = node as Element;
@@ -1061,11 +1123,11 @@ namespace FenBrowser.FenEngine.Rendering
                 string tagUpper = elem.TagName?.ToUpperInvariant();
                 if (tagUpper == "IMG")
                 {
-                    global::FenBrowser.Core.FenLogger.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
+                    global::FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
                 }
                 if (tagUpper.Contains("SVG"))
                 {
-                     global::FenBrowser.Core.FenLogger.Debug($"[SVG-CANDIDATE] <{elem.TagName}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                     global::FenBrowser.Core.EngineLogCompat.Debug($"[SVG-CANDIDATE] <{elem.TagName}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 }
                 if (IsImageElement(elem) || tagUpper == "SVG" || tagUpper.EndsWith(":SVG")) // Handle namespace?
                 {
@@ -2045,11 +2107,11 @@ namespace FenBrowser.FenEngine.Rendering
                     var uri = new Uri(new Uri(_baseUri), url);
                     url = uri.ToString();
                 }
-                catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed resolving image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+                catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed resolving image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
             }
 
             var bitmap = ImageLoader.GetImage(url);
-            global::FenBrowser.Core.FenLogger.Debug($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
+            global::FenBrowser.Core.EngineLogCompat.Debug($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
             
             if (bitmap == null) return null;
 
@@ -2380,12 +2442,12 @@ namespace FenBrowser.FenEngine.Rendering
                 // DEBUG: Log geometry for alignment test nodes
                 if (textNode.NodeName == "#text" && (box.Lines.Count < 5 || box.Lines.Count > 50))
                 {
-                    FenBrowser.Core.FenLogger.Debug($"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
+                    FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
                     foreach(var l in box.Lines)
                     {
                          var finalX = box.ContentBox.Left + l.Origin.X;
                          var finalY = box.ContentBox.Top + l.Origin.Y;
-                         FenBrowser.Core.FenLogger.Debug($"   - Line: '{l.Text}' Origin=({l.Origin.X}, {l.Origin.Y}) Final=({finalX}, {finalY})");
+                         FenBrowser.Core.EngineLogCompat.Debug($"   - Line: '{l.Text}' Origin=({l.Origin.X}, {l.Origin.Y}) Final=({finalX}, {finalY})");
                     }
                 }
 
@@ -2424,7 +2486,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Show full text to debug whitespace
                 if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints)
                 {
-                    FenBrowser.Core.FenLogger.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Info($"[ML-TEXT-POS] '{sampleText}' (Len={sampleText.Length}) TextTop={box.ContentBox.Top:F1} ParentTop={parentContentBox.Top:F1} ContainerH={mlContainerHeight:F1} TotalLH={totalLineHeight:F1} Lines={box.Lines.Count} Offset={verticalCenterOffset:F1}", FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 
                 // Check if parent element requires text-overflow ellipsis
@@ -2517,7 +2579,7 @@ namespace FenBrowser.FenEngine.Rendering
                             parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
                         }
 
-                        global::FenBrowser.Core.FenLogger.Info(
+                        global::FenBrowser.Core.EngineLogCompat.Info(
                             $"[WIMB-TEXT-BUILD] Text='{lineDisplayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} LineOrigin=({line.Origin.X:F1},{line.Origin.Y:F1}) LineSize=({resolvedLineWidth:F1}x{line.Height:F1}) Baseline={line.Baseline:F1} DrawOrigin=({textOrigin.X:F1},{textOrigin.Y:F1})",
                             LogCategory.Rendering);
                     }
@@ -2633,7 +2695,7 @@ namespace FenBrowser.FenEngine.Rendering
             // DEBUG: Log positioning values to understand the issue
             if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints)
             {
-                FenBrowser.Core.FenLogger.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
+                FenBrowser.Core.EngineLogCompat.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
             }
 
             if (ShouldTraceWhatIsMyBrowserText(displayText))
@@ -2647,7 +2709,7 @@ namespace FenBrowser.FenEngine.Rendering
                     parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
                 }
 
-                global::FenBrowser.Core.FenLogger.Info(
+                global::FenBrowser.Core.EngineLogCompat.Info(
                     $"[WIMB-TEXT-FALLBACK] Text='{displayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} DrawBounds=({drawBounds.Left:F1},{drawBounds.Top:F1},{drawBounds.Width:F1}x{drawBounds.Height:F1}) BaselineY={baselineY:F1}",
                     LogCategory.Rendering);
             }
@@ -2744,10 +2806,10 @@ namespace FenBrowser.FenEngine.Rendering
                             url = $"{uri.Scheme}://{uri.Host}/{url}";
                         }
                     }
-                    catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed normalizing image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+                    catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed normalizing image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                 }
 
-                global::FenBrowser.Core.FenLogger.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
+                global::FenBrowser.Core.EngineLogCompat.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
                 var bitmap = ImageLoader.GetImage(url);
                 
                 return new ImagePaintNode
@@ -2851,7 +2913,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     }
                                 }
                             }
-                            catch (Exception ex) { global::FenBrowser.Core.FenLogger.Warn($"[IMG-BUILD] Failed parsing ancestor style while resolving image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+                            catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed parsing ancestor style while resolving image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                             ancestor = ancestor.ParentElement;
                         }
                     }
@@ -3895,7 +3957,7 @@ namespace FenBrowser.FenEngine.Rendering
             string id = elem.GetAttribute("id") ?? "";
             string type = style?.ListStyleType ?? "disc";
 
-            global::FenBrowser.Core.FenLogger.Info($"[MARKER-BUILD] <{tag}#{id}> Type={type} Display={style?.Display}", global::FenBrowser.Core.Logging.LogCategory.Rendering);
+            global::FenBrowser.Core.EngineLogCompat.Info($"[MARKER-BUILD] <{tag}#{id}> Type={type} Display={style?.Display}", global::FenBrowser.Core.Logging.LogCategory.Rendering);
 
             string listStyleType = ResolveEffectiveListStyleType(elem, style) ?? "disc"; // Default to disc
             string listStylePosition = style?.ListStylePosition ?? "outside";
@@ -4495,9 +4557,10 @@ namespace FenBrowser.FenEngine.Rendering
                 // Apply Scroll
                 if (ScrollOffset.HasValue && (ScrollOffset.Value.X != 0 || ScrollOffset.Value.Y != 0))
                 {
+                    var scrollBounds = LayoutHelper.NormalizeRect(ClipBounds ?? new SKRect(0, 0, 10000, 10000));
                     var scrollNode = new ScrollPaintNode
                     {
-                        Bounds = ClipBounds ?? new SKRect(0,0,10000,10000), 
+                        Bounds = scrollBounds,
                         ScrollX = ScrollOffset.Value.X,
                         ScrollY = ScrollOffset.Value.Y,
                         Children = contentNodes
@@ -4508,10 +4571,11 @@ namespace FenBrowser.FenEngine.Rendering
                 // Apply Clip
                 if (ClipBounds.HasValue)
                 {
+                    var normalizedClipBounds = LayoutHelper.NormalizeRect(ClipBounds.Value);
                     var clipNode = new ClipPaintNode
                     {
-                        Bounds = ClipBounds.Value,
-                        ClipRect = ClipBounds.Value,
+                        Bounds = normalizedClipBounds,
+                        ClipRect = normalizedClipBounds,
                         Children = contentNodes
                     };
                     contentNodes = new List<PaintNodeBase> { clipNode };
@@ -4597,6 +4661,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         var bounds = node.Bounds;
+                        bounds = LayoutHelper.NormalizeRect(bounds);
                         if (bounds.Width <= 0 || bounds.Height <= 0)
                         {
                             continue;
@@ -4616,7 +4681,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!hasBounds && fallback.HasValue)
                 {
-                    aggregate = fallback.Value;
+                    aggregate = LayoutHelper.NormalizeRect(fallback.Value);
                     hasBounds = aggregate.Width > 0 && aggregate.Height > 0;
                 }
 

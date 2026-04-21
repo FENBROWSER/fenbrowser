@@ -255,7 +255,7 @@ namespace FenBrowser.FenEngine.Rendering
                 LoadStarted = false
             };
             
-            FenLogger.Debug($"[ImageLoader] Registered lazy image: {url.Substring(0, Math.Min(50, url.Length))}...", 
+            EngineLogCompat.Debug($"[ImageLoader] Registered lazy image: {url.Substring(0, Math.Min(50, url.Length))}...", 
                            LogCategory.Rendering);
         }
 
@@ -382,7 +382,7 @@ namespace FenBrowser.FenEngine.Rendering
             _animatedGifs.Clear();
             StopGifAnimationTimer();
             
-            FenLogger.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
+            EngineLogCompat.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
         }
 
         /// <summary>
@@ -437,7 +437,7 @@ namespace FenBrowser.FenEngine.Rendering
                             _cacheEvictionCount++;
                         }
 
-                        FenLogger.Debug($"[ImageLoader] Evicted animated image: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                        EngineLogCompat.Debug($"[ImageLoader] Evicted animated image: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
                             LogCategory.Rendering);
                     }
 
@@ -455,7 +455,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     ScheduleBitmapDispose(entry.Bitmap);
-                    FenLogger.Debug($"[ImageLoader] Evicted: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                    EngineLogCompat.Debug($"[ImageLoader] Evicted: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
                         LogCategory.Rendering);
                 }
             }
@@ -484,7 +484,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[ImageLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -516,7 +516,7 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                             catch (Exception ex)
                             {
-                                FenLogger.Warn($"[ImageLoader] Deferred bitmap dispose failed: {ex.Message}", LogCategory.Rendering);
+                                EngineLogCompat.Warn($"[ImageLoader] Deferred bitmap dispose failed: {ex.Message}", LogCategory.Rendering);
                             }
                         }
                     }
@@ -595,7 +595,7 @@ namespace FenBrowser.FenEngine.Rendering
             // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)
             if (!result.Success)
             {
-                FenLogger.Debug($"[ImageLoader] SVG render failed: {result.ErrorMessage}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] SVG render failed: {result.ErrorMessage}", LogCategory.Rendering);
                 return null;
             }
             
@@ -621,11 +621,11 @@ namespace FenBrowser.FenEngine.Rendering
                                 FileAccess.Write,
                                 FileShare.Read);
                             result.Bitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
-                            FenLogger.Debug($"[ImageLoader] Saved SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
+                            EngineLogCompat.Debug($"[ImageLoader] Saved SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Debug($"[ImageLoader] Failed to save SVG bitmap: {ex.Message}", LogCategory.Rendering);
+                            EngineLogCompat.Debug($"[ImageLoader] Failed to save SVG bitmap: {ex.Message}", LogCategory.Rendering);
                         }
                     }
 #endif
@@ -679,9 +679,9 @@ namespace FenBrowser.FenEngine.Rendering
                             FileAccess.Write,
                             FileShare.Read);
                         scaledBitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
-                        FenLogger.Debug($"[ImageLoader] Saved SCALED SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
+                        EngineLogCompat.Debug($"[ImageLoader] Saved SCALED SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
                     }
-                    catch (Exception ex) { FenLogger.Warn($"[ImageLoader] Failed writing svg_debug_bitmap.png: {ex.Message}", LogCategory.Rendering); }
+                    catch (Exception ex) { EngineLogCompat.Warn($"[ImageLoader] Failed writing svg_debug_bitmap.png: {ex.Message}", LogCategory.Rendering); }
                 }
 #endif
                 
@@ -691,7 +691,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Fallback to old Picture-based rendering (may produce empty bitmap due to SKSvg disposal)
             if (result.Picture == null)
             {
-                FenLogger.Debug("[ImageLoader] SVG render failed: No bitmap or picture available", LogCategory.Rendering);
+                EngineLogCompat.Debug("[ImageLoader] SVG render failed: No bitmap or picture available", LogCategory.Rendering);
                 return null;
             }
             
@@ -874,7 +874,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <param name="elementBounds">Element bounds for lazy loading registration</param>
         public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
         {
-            FenLogger.Debug($"[ImageLoader] GetImage called for {url}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[ImageLoader] GetImage called for {url}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(url)) return null;
 
             // Animated GIF: return the current frame based on elapsed time
@@ -887,7 +887,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Check new cache first
             if (_memoryCache.TryGetValue(url, out var entry))
             {
-                FenLogger.Debug($"[ImageLoader] Found in memory cache: {url}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] Found in memory cache: {url}", LogCategory.Rendering);
                 entry.LastAccessed = DateTime.UtcNow;
                 RegisterCacheHit();
                 return entry.Bitmap;
@@ -896,7 +896,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Check legacy cache
             if (_legacyCache.TryGetValue(url, out var bitmap))
             {
-                FenLogger.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
                 RegisterCacheHit();
                 return bitmap;
             }
@@ -918,7 +918,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (!expandedViewport.IsEmpty && !expandedViewport.IntersectsWith(elementBounds.Value))
                 {
-                    FenLogger.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
                     CapturePendingLoadContext(url);
                     RegisterLazyImage(url, elementBounds.Value);
@@ -929,7 +929,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle Data URIs synchronously to prevent recursion
             if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
-                 FenLogger.Debug($"[ImageLoader] Decoding Data URI: {url.Substring(0, Math.Min(20, url.Length))}...", LogCategory.Rendering);
+                 EngineLogCompat.Debug($"[ImageLoader] Decoding Data URI: {url.Substring(0, Math.Min(20, url.Length))}...", LogCategory.Rendering);
                 var dataBitmap = DecodeDataUri(url, targetWidth, targetHeight);
                 if (dataBitmap != null)
                 {
@@ -951,15 +951,15 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Either not lazy, or in viewport - load immediately
-            FenLogger.Debug($"[ImageLoader] Queueing load for: {url}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[ImageLoader] Queueing load for: {url}", LogCategory.Rendering);
             CapturePendingLoadContext(url);
             if (!TryRegisterPendingLoad(url))
             {
-                FenLogger.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
                 return null; // Already loading
             }
             
-            FenLogger.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
             _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight, GetPendingLoadContext(url));
             return null;
         }
@@ -1072,7 +1072,7 @@ namespace FenBrowser.FenEngine.Rendering
              }
              catch (Exception ex)
              {
-                 FenLogger.Error($"[ImageLoader] Data URI Decode Error: {ex.Message}", LogCategory.Rendering);
+                 EngineLogCompat.Error($"[ImageLoader] Data URI Decode Error: {ex.Message}", LogCategory.Rendering);
                  return null;
              }
         }
@@ -1100,11 +1100,11 @@ namespace FenBrowser.FenEngine.Rendering
                 // Only allow http/https for now
                 if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) 
                 {
-                     // FenLogger.Warn($"[ImageLoader] Skipped URL (Not HTTP): {url}", LogCategory.Rendering);
+                     // EngineLogCompat.Warn($"[ImageLoader] Skipped URL (Not HTTP): {url}", LogCategory.Rendering);
                      return;
                 }
 
-                FenLogger.Debug($"[ImageLoader] Fetching: {url}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] Fetching: {url}", LogCategory.Rendering);
 
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
                 {
@@ -1114,14 +1114,14 @@ namespace FenBrowser.FenEngine.Rendering
                 var fetcher = context?.FetchBytesAsync ?? _ambientContext.Value?.FetchBytesAsync ?? FetchBytesAsync;
                 if (fetcher == null)
                 {
-                    FenLogger.Warn("[ImageLoader] FetchBytesAsync delegate is not configured; skipping image load", LogCategory.Rendering);
+                    EngineLogCompat.Warn("[ImageLoader] FetchBytesAsync delegate is not configured; skipping image load", LogCategory.Rendering);
                     return;
                 }
 
                 var data = await fetcher(absoluteUri).ConfigureAwait(false);
                 if (data == null || data.Length == 0)
                 {
-                    FenLogger.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
                     return;
                 }
                 var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
@@ -1149,12 +1149,12 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    FenLogger.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
                 }
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
             }
             finally
             {
@@ -1184,7 +1184,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering);
                 }
             }
 
@@ -1195,7 +1195,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (bitmap == null)
                 {
-                    FenLogger.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
                 }
             }
 
@@ -1220,7 +1220,7 @@ namespace FenBrowser.FenEngine.Rendering
                             bitmap = animated.Frames[0];
                             EvictIfNeeded();
                             EnsureGifAnimationTimer();
-                            FenLogger.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
+                            EngineLogCompat.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
                         }
                         else
                         {
@@ -1230,7 +1230,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
                 }
 
                 if (!isAnimatedGif && bitmap == null)
@@ -1282,7 +1282,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             EvictIfNeeded();
             _lazyRegistry.TryRemove(url, out _);
-            FenLogger.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
             return true;
         }
 
@@ -1429,7 +1429,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (result != SKCodecResult.Success && result != SKCodecResult.IncompleteInput)
                 {
-                    FenLogger.Warn($"[ImageLoader] GIF frame {i} decode failed: {result}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] GIF frame {i} decode failed: {result}", LogCategory.Rendering);
                     bitmap.Dispose();
                     continue;
                 }

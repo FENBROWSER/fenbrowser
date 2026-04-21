@@ -105,7 +105,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (!string.IsNullOrEmpty(descriptor.Source))
             {
-                FenLogger.Debug($"[FontRegistry] Registering font: {descriptor.Family}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[FontRegistry] Registering font: {descriptor.Family}", LogCategory.Rendering);
                 // Start loading immediately so LoadPendingFontsAsync sees deterministic state.
                 // Network operations remain async inside LoadFontFaceAsync.
                 _ = LoadFontFaceAsync(descriptor);
@@ -127,7 +127,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[FontRegistry] Error awaiting pending fonts: {ex.Message}", LogCategory.Rendering);
+                    EngineLogCompat.Error($"[FontRegistry] Error awaiting pending fonts: {ex.Message}", LogCategory.Rendering);
                 }
             }
         }
@@ -214,12 +214,12 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                             catch
                             {
-                                FenLogger.Debug($"[FontRegistry] Cannot load font from file path: {uri.LocalPath}", LogCategory.Rendering);
+                                EngineLogCompat.Debug($"[FontRegistry] Cannot load font from file path: {uri.LocalPath}", LogCategory.Rendering);
                             }
                         }
                         else
                         {
-                            FenLogger.Debug($"[FontRegistry] Unsupported scheme '{uri.Scheme}' for font: {descriptor.Family}", LogCategory.Rendering);
+                            EngineLogCompat.Debug($"[FontRegistry] Unsupported scheme '{uri.Scheme}' for font: {descriptor.Family}", LogCategory.Rendering);
                         }
 
                         if (typeface != null)
@@ -238,15 +238,15 @@ namespace FenBrowser.FenEngine.Rendering
                         if (!_loadedFonts.ContainsKey(descriptor.Family))
                             _loadedFonts[descriptor.Family] = typeface;
                     }
-                    FenLogger.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
                     tcs.SetResult(typeface);
-                    try { FontLoaded?.Invoke(descriptor.Family); } catch (Exception ex) { FenLogger.Warn($"[FontRegistry] FontLoaded callback failed: {ex.Message}", LogCategory.Rendering); }
+                    try { FontLoaded?.Invoke(descriptor.Family); } catch (Exception ex) { EngineLogCompat.Warn($"[FontRegistry] FontLoaded callback failed: {ex.Message}", LogCategory.Rendering); }
                     return typeface;
                 }
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
+                EngineLogCompat.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
             }
             finally
             {
@@ -334,7 +334,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[FontRegistry] Styled local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Warn($"[FontRegistry] Styled local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
             }
 
             try
@@ -343,7 +343,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[FontRegistry] Local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Warn($"[FontRegistry] Local typeface load failed for '{localName}': {ex.Message}", LogCategory.Rendering);
                 return null;
             }
         }
@@ -462,7 +462,7 @@ namespace FenBrowser.FenEngine.Rendering
                              return skTypeface;
                          }
                      }
-                     catch (Exception ex) { FenLogger.Warn($"[FontRegistry] Fallback font resolve failed for '{fallbackName}': {ex.Message}", LogCategory.Rendering); }
+                     catch (Exception ex) { EngineLogCompat.Warn($"[FontRegistry] Fallback font resolve failed for '{fallbackName}': {ex.Message}", LogCategory.Rendering); }
                 }
 
                 // If registered but not loaded, it might be loading or failed. 

@@ -228,7 +228,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // [FIX] Clamp colSpan to available columns to prevent infinite search
                 if (numCols > 0 && colSpan > numCols)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[GRID-GUARD] Item colSpan {colSpan} > numCols {numCols}. Clamping to fit.", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[GRID-GUARD] Item colSpan {colSpan} > numCols {numCols}. Clamping to fit.", FenBrowser.Core.Logging.LogCategory.Layout);
                     colSpan = numCols;
                 }
 
@@ -238,7 +238,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // [FIX] Circuit breaker for infinite loops
                     if (++iterations > 20000)
                     {
-                         FenBrowser.Core.FenLogger.Error($"[GRID-GUARD] Auto-placement loop limit hit for item. Aborting placement.", FenBrowser.Core.Logging.LogCategory.Layout);
+                         FenBrowser.Core.EngineLogCompat.Error($"[GRID-GUARD] Auto-placement loop limit hit for item. Aborting placement.", FenBrowser.Core.Logging.LogCategory.Layout);
                          break;
                     }
 

@@ -118,7 +118,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[XMLHttpRequest] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[XMLHttpRequest] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -200,7 +200,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Warn($"[XMLHttpRequest] {propertyName} callback failed: {ex.Message}", LogCategory.JavaScript);
+                        EngineLogCompat.Warn($"[XMLHttpRequest] {propertyName} callback failed: {ex.Message}", LogCategory.JavaScript);
                     }
                 }, 0);
 
@@ -213,7 +213,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[XMLHttpRequest] {propertyName} callback failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[XMLHttpRequest] {propertyName} callback failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -404,7 +404,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[XMLHttpRequest] Request failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[XMLHttpRequest] Request failed: {ex.Message}", LogCategory.JavaScript);
                 HandleTerminalFailure(requestId, "onerror", ex.Message, scheduleCallbacks);
             }
         }

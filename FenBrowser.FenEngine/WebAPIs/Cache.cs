@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Debug($"[Cache] Init: {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Debug($"[Cache] Init: {ex.Message}", LogCategory.Storage);
             }
         }
 
@@ -532,7 +532,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn($"[Cache] Detached async operation failed: {ex.Message}", LogCategory.Storage);
+                    FenBrowser.Core.EngineLogCompat.Warn($"[Cache] Detached async operation failed: {ex.Message}", LogCategory.Storage);
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -711,7 +711,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
             catch (Exception ex)
             {
-                FenBrowser.Core.FenLogger.Warn($"[Cache] Promise callback failed: {ex.Message}", LogCategory.Storage);
+                FenBrowser.Core.EngineLogCompat.Warn($"[Cache] Promise callback failed: {ex.Message}", LogCategory.Storage);
             }
         }
 

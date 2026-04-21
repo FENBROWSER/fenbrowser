@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             lock (_lock)
             {
                 _microtasks.Enqueue(microtask);
-                FenLogger.Debug($"[MicrotaskQueue] Enqueued microtask (Count: {_microtasks.Count})", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[MicrotaskQueue] Enqueued microtask (Count: {_microtasks.Count})", LogCategory.JavaScript);
             }
         }
 
@@ -46,7 +46,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             {
                 if (_isDraining)
                 {
-                    FenLogger.Debug("[MicrotaskQueue] Already draining, skipping", LogCategory.JavaScript);
+                    EngineLogCompat.Debug("[MicrotaskQueue] Already draining, skipping", LogCategory.JavaScript);
                     return;
                 }
                 _isDraining = true;
@@ -66,7 +66,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
                         if (_drainDepth >= MaxDrainDepth)
                         {
-                            FenLogger.Debug($"[MicrotaskQueue] Max drain depth ({MaxDrainDepth}) exceeded, clearing queue", LogCategory.Errors);
+                            EngineLogCompat.Debug($"[MicrotaskQueue] Max drain depth ({MaxDrainDepth}) exceeded, clearing queue", LogCategory.Errors);
                             _microtasks.Clear();
                             break;
                         }
@@ -82,7 +82,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     }
                     catch (Exception ex)
                     {
-                        FenLogger.Debug($"[MicrotaskQueue] Microtask error: {ex.Message}", LogCategory.Errors);
+                        EngineLogCompat.Debug($"[MicrotaskQueue] Microtask error: {ex.Message}", LogCategory.Errors);
                     }
                 }
             }
@@ -98,7 +98,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
             }
 
-            FenLogger.Debug($"[MicrotaskQueue] Drain complete (processed: {processed})", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[MicrotaskQueue] Drain complete (processed: {processed})", LogCategory.JavaScript);
         }
 
         /// <summary>
@@ -151,7 +151,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             lock (_lock)
             {
                 _microtasks.Clear();
-                FenLogger.Debug("[MicrotaskQueue] Cleared all microtasks", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[MicrotaskQueue] Cleared all microtasks", LogCategory.JavaScript);
             }
         }
     }

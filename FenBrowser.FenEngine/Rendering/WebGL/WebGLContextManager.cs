@@ -46,7 +46,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
             }
             
             _contexts[key] = context;
-            FenLogger.Debug($"[WebGLContextManager] Created {(webgl2 ? "WebGL2" : "WebGL")} context for canvas '{canvasId}' ({width}x{height})", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[WebGLContextManager] Created {(webgl2 ? "WebGL2" : "WebGL")} context for canvas '{canvasId}' ({width}x{height})", LogCategory.Rendering);
             
             return context;
         }
@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
             {
                 context.Dispose();
                 _contexts.Remove(key);
-                FenLogger.Debug($"[WebGLContextManager] Destroyed context for canvas '{canvasId}'", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[WebGLContextManager] Destroyed context for canvas '{canvasId}'", LogCategory.Rendering);
             }
         }
         
@@ -88,7 +88,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
         {
             foreach (var context in _contexts.Values)
             {
-                try { context.Dispose(); } catch (Exception ex) { FenLogger.Warn($"[WebGLContextManager] Context dispose failed: {ex.Message}", LogCategory.Rendering); }
+                try { context.Dispose(); } catch (Exception ex) { EngineLogCompat.Warn($"[WebGLContextManager] Context dispose failed: {ex.Message}", LogCategory.Rendering); }
             }
             _contexts.Clear();
             _canvasBitmaps.Clear();

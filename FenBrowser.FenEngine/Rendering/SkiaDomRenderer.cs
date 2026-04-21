@@ -144,7 +144,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Re-entrancy Guard
             if (_isRendering)
             {
-                // FenLogger.Warn("Skipping re-entrant Render call.");
+                // EngineLogCompat.Warn("Skipping re-entrant Render call.");
                 return;
             }
             
@@ -366,7 +366,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var rootBox = _boxes[root];
                         bool almostFullCheck = Math.Abs(rootBox.PaddingBox.Height - _viewportHeight) < 1.0f;
-                        // FenLogger.Debug($"[L-04 CHECK-LATE] RootHeight={rootBox.PaddingBox.Height} Viewport={_viewportHeight} Match={almostFullCheck}");
+                        // EngineLogCompat.Debug($"[L-04 CHECK-LATE] RootHeight={rootBox.PaddingBox.Height} Viewport={_viewportHeight} Match={almostFullCheck}");
                     }
 
                     // PERF: Throttle DOM dumping to stay within frame budget during animations
@@ -385,16 +385,16 @@ namespace FenBrowser.FenEngine.Rendering
 
                             if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
                             {
-                                FenLogger.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
+                                EngineLogCompat.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
                             }
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
+                            EngineLogCompat.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
                         }
                     }
                     
-                    FenLogger.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
                     Console.WriteLine($"[DBG-RENDER] Layout boxes: {boxCount}, Root={root?.GetType().Name}/{(root as Element)?.TagName}");
                     
                     // Clear Layout Dirty Flags
@@ -402,7 +402,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    // FenLogger.Debug("[SkiaDomRenderer] Skipping Layout (Clean/Cached)");
+                    // EngineLogCompat.Debug("[SkiaDomRenderer] Skipping Layout (Clean/Cached)");
 
                 }
                 RenderPipeline.EndLayout(); // State -> LayoutFrozen
@@ -447,7 +447,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (isPaintDirty)
                 {
                     pipelineContext.DirtyFlags.InvalidatePaint();
-                    FenLogger.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
                     var previousPaintTree = _lastPaintTree;
                     var paintTree = NewPaintTreeBuilder.Build(
                         root,
@@ -488,14 +488,14 @@ namespace FenBrowser.FenEngine.Rendering
                     if (interactionFullRepaintRequested)
                     {
                         _lastDamageRegions = new[] { currentViewport };
-                        FenLogger.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
+                        EngineLogCompat.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
                     }
                     else if (rebuiltPaintTree &&
                              paintInvalidationSignal &&
                              (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
                     {
                         _lastDamageRegions = new[] { currentViewport };
-                        FenLogger.Warn(
+                        EngineLogCompat.Warn(
                             "[SkiaDomRenderer] Paint tree rebuilt without localized damage; upgrading to full-viewport damage to avoid presenting a stale base frame.",
                             LogCategory.Rendering);
                     }
@@ -506,7 +506,7 @@ namespace FenBrowser.FenEngine.Rendering
                 else
                 {
                      _lastDamageRegions = Array.Empty<SKRect>();
-                     // FenLogger.Debug("[SkiaDomRenderer] Skipping Paint Tree Build (Clean)");
+                     // EngineLogCompat.Debug("[SkiaDomRenderer] Skipping Paint Tree Build (Clean)");
                 }
                 _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
                 pipelineContext.SetPaintSnapshot(_lastPaintTree);
@@ -519,7 +519,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         LastFrameWatchdogTriggered = true;
                         LastFrameWatchdogReason = $"Paint stage exceeded budget ({paintMs:F2}ms > {SafetyPolicy.MaxPaintStageMs:F2}ms)";
-                        FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
                         if (SafetyPolicy.SkipRasterWhenOverBudget)
                         {
                             watchdogAbortBeforeRaster = true;
@@ -531,7 +531,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         LastFrameWatchdogTriggered = true;
                         LastFrameWatchdogReason = $"Frame exceeded budget before raster ({frameMsAfterPaint:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
-                        FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                        EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
                         if (SafetyPolicy.SkipRasterWhenOverBudget)
                         {
                             watchdogAbortBeforeRaster = true;
@@ -569,14 +569,14 @@ namespace FenBrowser.FenEngine.Rendering
                         if (preserveBaseFrame)
                         {
                             // Preserve the caller-seeded base frame instead of presenting a blank fallback.
-                            FenLogger.Warn(
+                            EngineLogCompat.Warn(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster; preserving the caller-supplied base frame.",
                                 LogCategory.Performance);
                         }
                         else
                         {
                             // DOM/layout/paint changes must present a fresh frame even under budget pressure.
-                            FenLogger.Warn(
+                            EngineLogCompat.Warn(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster on a fresh paint tree; forcing full raster to avoid presenting stale content.",
                                 LogCategory.Performance);
                             _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
@@ -606,7 +606,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Raster stage exceeded budget ({rasterMs:F2}ms > {SafetyPolicy.MaxRasterStageMs:F2}ms)";
-                            FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
                         }
 
                         var frameMs = frameWatchdog.Elapsed.TotalMilliseconds;
@@ -614,7 +614,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Frame exceeded budget during raster ({frameMs:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
-                            FenLogger.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
                         }
                     }
                 }
@@ -656,7 +656,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 RenderPipeline.Reset();
                 // Log error but don't crash
-                FenLogger.Error($"[SkiaDomRenderer] Render error: {ex}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[SkiaDomRenderer] Render error: {ex}", LogCategory.Rendering);
                 
                 // CRITICAL FIX: Clear stale state to prevent "Ghost UI" where old page features remain interactive
                 _lastPaintTree = null;
@@ -717,7 +717,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (styles == null)
                 {
-                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason} (styles unavailable)", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason} (styles unavailable)", LogCategory.Rendering);
                     return SKColors.White;
                 }
 
@@ -725,22 +725,22 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (TryResolveOpaqueBackground(styles, html, out var htmlColor))
                 {
-                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background resolved from HTML: {htmlColor}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background resolved from HTML: {htmlColor}", LogCategory.Rendering);
                     return htmlColor;
                 }
 
                 if (TryResolveOpaqueBackground(styles, body, out var bodyColor))
                 {
-                    FenLogger.Debug($"[SkiaDomRenderer] Canvas background resolved from BODY: {bodyColor}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background resolved from BODY: {bodyColor}", LogCategory.Rendering);
                     return bodyColor;
                 }
 
-                FenLogger.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason}", LogCategory.Rendering);
                 return SKColors.White;
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Warn($"[SkiaDomRenderer] Background color resolution failed: {ex.Message}", LogCategory.Rendering);
                 return SKColors.White;
             }
         }

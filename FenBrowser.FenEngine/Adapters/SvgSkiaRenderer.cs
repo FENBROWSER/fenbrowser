@@ -85,12 +85,12 @@ namespace FenBrowser.FenEngine.Adapters
                 var cullRect = picture.CullRect;
                 
                 // DEBUG: Log picture details to diagnose fill rendering issue
-                FenBrowser.Core.FenLogger.Debug($"[SvgSkiaRenderer] SVG parsed. CullRect={cullRect.Width}x{cullRect.Height}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                FenBrowser.Core.EngineLogCompat.Debug($"[SvgSkiaRenderer] SVG parsed. CullRect={cullRect.Width}x{cullRect.Height}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 
                 // Check if CullRect is valid
                 if (cullRect.Width <= 0 || cullRect.Height <= 0)
                 {
-                    FenBrowser.Core.FenLogger.Debug($"[SvgSkiaRenderer] WARNING: Invalid CullRect! SVG content first 200 chars: {svgContent.Substring(0, Math.Min(200, svgContent.Length))}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                    FenBrowser.Core.EngineLogCompat.Debug($"[SvgSkiaRenderer] WARNING: Invalid CullRect! SVG content first 200 chars: {svgContent.Substring(0, Math.Min(200, svgContent.Length))}", FenBrowser.Core.Logging.LogCategory.Rendering);
                 }
                 
                 // CRITICAL FIX: Render to bitmap INSIDE the using scope BEFORE SKSvg is disposed

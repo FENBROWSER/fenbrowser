@@ -76,7 +76,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Warn(
+                    FenBrowser.Core.EngineLogCompat.Warn(
                         $"[{ownerName}] Detached async operation failed: {ex.Message}",
                         LogCategory.ServiceWorker);
                 }

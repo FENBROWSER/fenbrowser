@@ -86,7 +86,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     _activeSources.Enqueue(task.Source);
                 }
 
-                FenLogger.Debug(
+                EngineLogCompat.Debug(
                     $"[TaskQueue] Enqueued: {task.Description} (Source: {task.Source}, Priority: {ClassifyPriority(task.Source)}, SourceCount: {queue.Count}, TotalCount: {_count})",
                     LogCategory.JavaScript);
             }
@@ -237,7 +237,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _activeSources.Clear();
                 _activeSourceSet.Clear();
                 _count = 0;
-                FenLogger.Debug("[TaskQueue] Cleared all tasks", LogCategory.JavaScript);
+                EngineLogCompat.Debug("[TaskQueue] Cleared all tasks", LogCategory.JavaScript);
             }
         }
 
@@ -299,7 +299,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     _activeSources.Enqueue(skippedSources.Dequeue());
                 }
 
-                FenLogger.Debug(
+                EngineLogCompat.Debug(
                     $"[TaskQueue] Dequeued: {task.Description} (Source: {task.Source}, Priority: {priorityGroup}, RemainingSourceCount: {queue.Count}, RemainingTotal: {_count})",
                     LogCategory.JavaScript);
                 return task;

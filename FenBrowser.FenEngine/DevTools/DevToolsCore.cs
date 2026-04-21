@@ -152,7 +152,7 @@ namespace FenBrowser.FenEngine.DevTools
                 ScriptId = existingScriptId
             };
             _sources[url] = sourceFile;
-            FenLogger.Debug($"[DevTools] Registered source: {url} ({sourceFile.Lines.Length} lines)", LogCategory.General);
+            EngineLogCompat.Debug($"[DevTools] Registered source: {url} ({sourceFile.Lines.Length} lines)", LogCategory.General);
         }
 
         /// <summary>
@@ -173,7 +173,7 @@ namespace FenBrowser.FenEngine.DevTools
                 HitCount = 0
             };
             _breakpoints[url].Add(bp);
-            FenLogger.Debug($"[DevTools] Breakpoint set: {url}:{lineNumber}", LogCategory.General);
+            EngineLogCompat.Debug($"[DevTools] Breakpoint set: {url}:{lineNumber}", LogCategory.General);
             return bp;
         }
 
@@ -514,7 +514,7 @@ namespace FenBrowser.FenEngine.DevTools
             _frameTimings.Clear();
             _frameCount = 0;
             RecordPerformanceEntry("profiling", "Recording started", 0);
-            FenLogger.Debug("[DevTools] Performance profiling started", LogCategory.General);
+            EngineLogCompat.Debug("[DevTools] Performance profiling started", LogCategory.General);
         }
 
         /// <summary>
@@ -533,7 +533,7 @@ namespace FenBrowser.FenEngine.DevTools
                 AverageFPS = _frameCount > 0 ? _frameCount / (_performanceTimer.ElapsedMilliseconds / 1000.0) : 0
             };
             
-            FenLogger.Debug($"[DevTools] Performance profiling stopped. {_performanceEntries.Count} entries", LogCategory.General);
+            EngineLogCompat.Debug($"[DevTools] Performance profiling stopped. {_performanceEntries.Count} entries", LogCategory.General);
             return report;
         }
 
@@ -643,7 +643,7 @@ namespace FenBrowser.FenEngine.DevTools
             
             _memorySnapshots.Add(snapshot);
             OnMemorySnapshot?.Invoke(snapshot);
-            FenLogger.Debug($"[DevTools] Heap snapshot taken: {snapshot.TotalMemoryMB:F2} MB", LogCategory.General);
+            EngineLogCompat.Debug($"[DevTools] Heap snapshot taken: {snapshot.TotalMemoryMB:F2} MB", LogCategory.General);
             return snapshot;
         }
 
@@ -675,7 +675,7 @@ namespace FenBrowser.FenEngine.DevTools
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
-            FenLogger.Debug("[DevTools] Forced garbage collection", LogCategory.General);
+            EngineLogCompat.Debug("[DevTools] Forced garbage collection", LogCategory.General);
         }
 
         /// <summary>

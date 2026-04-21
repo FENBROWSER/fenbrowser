@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.Layout
 
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
             {
-                FenBrowser.Core.FenLogger.Info($"[INLINE-DEBUG] Compute Start. Node={container.GetHashCode()} Avail={availableSize.Width} MaxW={maxWidth} Container={container.TagName} TextAlign={textAlign}", FenBrowser.Core.Logging.LogCategory.Layout);
+                FenBrowser.Core.EngineLogCompat.Info($"[INLINE-DEBUG] Compute Start. Node={container.GetHashCode()} Avail={availableSize.Width} MaxW={maxWidth} Container={container.TagName} TextAlign={textAlign}", FenBrowser.Core.Logging.LogCategory.Layout);
             }
 
             // RULE 2: Calculate the "strut" (the zero-width baseline-aligned box of the container)
@@ -270,7 +270,7 @@ namespace FenBrowser.FenEngine.Layout
                 
                 if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                 {
-                    FenBrowser.Core.FenLogger.Info($"[INLINE-FLUSH] Node={container.GetHashCode()} Line {lineCountGuard} Y={currentY} ContentW={contentWidth} Avail={availableWidthInBand} Rem={remainingSpace} Offset={xOffset} Align={textAlign} CurX={currentX} Start={currentXStart}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Info($"[INLINE-FLUSH] Node={container.GetHashCode()} Line {lineCountGuard} Y={currentY} ContentW={contentWidth} Avail={availableWidthInBand} Rem={remainingSpace} Offset={xOffset} Align={textAlign} CurX={currentX} Start={currentXStart}", FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 
                 // Align relative to the band start
@@ -294,7 +294,7 @@ namespace FenBrowser.FenEngine.Layout
                 
                 if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                 {
-                    FenBrowser.Core.FenLogger.Info($"[INLINE-STRUT] Line {lineCountGuard} StrutAsc={strutAscent} MaxAsc={maxAscent} ContentWidth={contentWidth} Items={currentLineItems.Count}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Info($"[INLINE-STRUT] Line {lineCountGuard} StrutAsc={strutAscent} MaxAsc={maxAscent} ContentWidth={contentWidth} Items={currentLineItems.Count}", FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 // 2. Commit Items to Result
                 // COALESCING LOGIC: Merge adjacent text items into single runs to reduce PaintNode count
@@ -873,14 +873,14 @@ namespace FenBrowser.FenEngine.Layout
                         baselineOffset = halfLeading + rawAscent;
                         if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                         {
-                            FenBrowser.Core.FenLogger.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t ? t.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} ContentH={rawContentHeight} Ascent={rawAscent} Leading={leading} Half={halfLeading} Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
+                            FenBrowser.Core.EngineLogCompat.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t ? t.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} ContentH={rawContentHeight} Ascent={rawAscent} Leading={leading} Half={halfLeading} Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
                         }
                     }
                     else
                     {
                         if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                         {
-                            FenBrowser.Core.FenLogger.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t2 ? t2.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} <= ContentH={rawContentHeight} (No Leading) Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
+                            FenBrowser.Core.EngineLogCompat.Info($"[TEXT-ALIGN-DEBUG] '{(node is Text t2 ? t2.Data.Trim() : node.NodeType.ToString())}' LH={lineHeight} <= ContentH={rawContentHeight} (No Leading) Offset={baselineOffset}", FenBrowser.Core.Logging.LogCategory.Layout);
                         }
                     }
                     
@@ -943,7 +943,7 @@ namespace FenBrowser.FenEngine.Layout
                             {
                                 if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                                 {
-                                    FenBrowser.Core.FenLogger.Info($"[INLINE-WRAP] Node={node.ParentNode?.GetHashCode()} Wrapping word '{word}' W={wordW} CurX={currentX} Max={currentXMax}", FenBrowser.Core.Logging.LogCategory.Layout);
+                                    FenBrowser.Core.EngineLogCompat.Info($"[INLINE-WRAP] Node={node.ParentNode?.GetHashCode()} Wrapping word '{word}' W={wordW} CurX={currentX} Max={currentXMax}", FenBrowser.Core.Logging.LogCategory.Layout);
                                 }
                                 FlushLine();
                             }
@@ -968,7 +968,7 @@ namespace FenBrowser.FenEngine.Layout
                             
                             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                             {
-                                FenBrowser.Core.FenLogger.Info($"[INLINE-WORD] word='{word}' W={wordW:F2} X={currentX:F2} LineH={lineHeight}", FenBrowser.Core.Logging.LogCategory.Layout);
+                                FenBrowser.Core.EngineLogCompat.Info($"[INLINE-WORD] word='{word}' W={wordW:F2} X={currentX:F2} LineH={lineHeight}", FenBrowser.Core.Logging.LogCategory.Layout);
                             }
 
                             currentX += wordW;

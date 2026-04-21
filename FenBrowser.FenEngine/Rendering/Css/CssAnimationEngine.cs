@@ -321,7 +321,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var keyframes = CssLoader.GetKeyframes(currentName);
                 if (keyframes == null)
                 {
-                    FenLogger.Debug($"[Animation] Keyframes not found: {currentName}", LogCategory.Layout);
+                    EngineLogCompat.Debug($"[Animation] Keyframes not found: {currentName}", LogCategory.Layout);
                     continue;
                 }
 
@@ -341,7 +341,7 @@ namespace FenBrowser.FenEngine.Rendering
                     StartTime = DateTime.UtcNow
                 };
 
-                FenLogger.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
+                EngineLogCompat.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
 
                 // Add to active animations
                 lock (_activeAnimations)
@@ -376,7 +376,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (!startedAny && names.Count > 1)
             {
-                FenLogger.Debug($"[Animation] No keyframes resolved from animation-name list: {animationName}", LogCategory.Layout);
+                EngineLogCompat.Debug($"[Animation] No keyframes resolved from animation-name list: {animationName}", LogCategory.Layout);
             }
             
             // Start engine if not running
@@ -536,7 +536,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_isRunning) return;
             _isRunning = true;
             _timer = new System.Threading.Timer(Tick, null, 0, FrameIntervalMs);
-            FenLogger.Debug("[Animation] Engine started", LogCategory.Layout);
+            EngineLogCompat.Debug("[Animation] Engine started", LogCategory.Layout);
         }
         
         public void Stop()
@@ -544,7 +544,7 @@ namespace FenBrowser.FenEngine.Rendering
             _isRunning = false;
             _timer?.Dispose();
             _timer = null;
-            FenLogger.Debug("[Animation] Engine stopped", LogCategory.Layout);
+            EngineLogCompat.Debug("[Animation] Engine stopped", LogCategory.Layout);
         }
         
         private void Tick(object state)

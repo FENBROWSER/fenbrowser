@@ -106,7 +106,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
             }
         }
 
@@ -118,7 +118,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[JsZeroRuntime] {operation} failed: {ex.Message}", LogCategory.JavaScript);
                 return fallback;
             }
         }

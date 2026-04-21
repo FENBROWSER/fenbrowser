@@ -27,7 +27,7 @@ namespace FenBrowser.FenEngine.Layout
             // DEBUG: Trace text input - FORCE VISIBILITY
             if (textNode.Data != null && textNode.Data.IndexOf("Item", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                FenBrowser.Core.FenLogger.Info($"[TEXT-LAYOUT] Measuring '{textNode.Data.Replace("\n","\\n")}' AvailW={availableSize.Width} WS={style?.WhiteSpace} Font={style?.FontFamilyName}", FenBrowser.Core.Logging.LogCategory.Layout);
+                FenBrowser.Core.EngineLogCompat.Info($"[TEXT-LAYOUT] Measuring '{textNode.Data.Replace("\n","\\n")}' AvailW={availableSize.Width} WS={style?.WhiteSpace} Font={style?.FontFamilyName}", FenBrowser.Core.Logging.LogCategory.Layout);
             }
 
             // 1. Setup Paint

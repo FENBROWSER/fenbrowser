@@ -221,7 +221,7 @@ namespace FenBrowser.FenEngine.Layout
                      else if (prop.PropertyType == typeof(string))
                         prop.SetValue(style, $"#{color:X8}");
                 }
-            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed applying text color style: {ex.Message}", LogCategory.Layout); }
+            } catch (Exception ex) { EngineLogCompat.Warn($"[MinimalLayoutComputer] Failed applying text color style: {ex.Message}", LogCategory.Layout); }
         }
 
         internal IEnumerable<Node> GetChildrenWithPseudosInternal(Element element, Node fallbackNode) => GetChildrenWithPseudos(element, fallbackNode);
@@ -393,7 +393,7 @@ namespace FenBrowser.FenEngine.Layout
              try {
                 var prop = style.GetType().GetProperty(name);
                 if (prop != null && prop.CanWrite) prop.SetValue(style, val);
-            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed applying style property '{name}': {ex.Message}", LogCategory.Layout); }
+            } catch (Exception ex) { EngineLogCompat.Warn($"[MinimalLayoutComputer] Failed applying style property '{name}': {ex.Message}", LogCategory.Layout); }
         }
         
         public BoxModel GetBox(Node node) => (node != null && _boxes.TryGetValue(node, out var box)) ? box : null;
@@ -417,7 +417,7 @@ namespace FenBrowser.FenEngine.Layout
                         "debug_layout_dims.txt",
                         $"[LAYOUT] Node={e.TagName} W={metrics.MaxChildWidth} H={metrics.ContentHeight}\r\n");
                 }
-            } catch (Exception ex) { FenLogger.Warn($"[MinimalLayoutComputer] Failed writing debug layout dims: {ex.Message}", LogCategory.Layout); }
+            } catch (Exception ex) { EngineLogCompat.Warn($"[MinimalLayoutComputer] Failed writing debug layout dims: {ex.Message}", LogCategory.Layout); }
 
             return metrics; 
         }
@@ -425,14 +425,14 @@ namespace FenBrowser.FenEngine.Layout
         public void Arrange(Node node, SKRect finalRect)
         {
             if (node == null) return;
-            FenLogger.Debug($"[MinimalLayoutComputer] Arrange node={node.NodeName ?? "#text"} rect={finalRect}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[MinimalLayoutComputer] Arrange node={node.NodeName ?? "#text"} rect={finalRect}", LogCategory.Rendering);
             
             _traversedCount = 0;
             _ancestorRects.Clear();
             ArrangeNode(node, finalRect, 0); // Start at 0
             
             // [DEBUG] Dump layout tree for root (Unconditional)
-            FenLogger.Error($"TRIGGERING LAYOUT DUMP FOR {node.GetType().Name}", LogCategory.Rendering);
+            EngineLogCompat.Error($"TRIGGERING LAYOUT DUMP FOR {node.GetType().Name}", LogCategory.Rendering);
             DumpLayoutTree(node);
         }
 
@@ -473,13 +473,13 @@ namespace FenBrowser.FenEngine.Layout
             // Diagnostic: Log root element detection
             if (depth <= 1)
             {
-                FenLogger.Log($"[ICB-DIAG] depth={depth} tag={tag} isRoot={isRootElement} viewport={_viewportHeight}", LogCategory.Layout);
+                EngineLogCompat.Log($"[ICB-DIAG] depth={depth} tag={tag} isRoot={isRootElement} viewport={_viewportHeight}", LogCategory.Layout);
             }
             
             // For root elements, ensure availableSize always includes viewport height
             if (isRootElement)
             {
-                FenLogger.Log($"[ICB] Root element detected. Forcing availableSize to viewport: {_viewportWidth}x{_viewportHeight}", LogCategory.Layout);
+                EngineLogCompat.Log($"[ICB] Root element detected. Forcing availableSize to viewport: {_viewportWidth}x{_viewportHeight}", LogCategory.Layout);
                 availableSize = new SKSize(
                     availableSize.Width > 0 ? availableSize.Width : _viewportWidth,
                     _viewportHeight // Root ALWAYS gets viewport height as its available height
@@ -550,7 +550,7 @@ namespace FenBrowser.FenEngine.Layout
                     // html.height is auto -> html.height = ICB.height (viewport)
                     h = _viewportHeight;
                     isExplicitHeight = true;
-                    FenLogger.Log($"[ICB] HTML height auto -> forced to viewport: {_viewportHeight}px", LogCategory.Layout);
+                    EngineLogCompat.Log($"[ICB] HTML height auto -> forced to viewport: {_viewportHeight}px", LogCategory.Layout);
                 }
                 // FIXED: BODY height auto also needs to fill viewport if it's the effective root for background/flex
                 // Especially for New Tab Page where body is flex container
@@ -730,7 +730,7 @@ namespace FenBrowser.FenEngine.Layout
             if (tag == "IMG" || tag == "SVG" || tag.EndsWith(":SVG")) {
                    var s = GetStyle(node as Element);
                    var p = node.ParentNode as Element;
-                   FenLogger.Debug($"[IMG-TRACE] Tag={tag} id={id} Opacity={s?.Opacity} Vis={s?.Visibility} Parent={p?.TagName} ParentClass={p?.GetAttribute("class")}");
+                   EngineLogCompat.Debug($"[IMG-TRACE] Tag={tag} id={id} Opacity={s?.Opacity} Vis={s?.Visibility} Parent={p?.TagName} ParentClass={p?.GetAttribute("class")}");
                 }
             // REMOVED: isNewTab hack - flexbox now works generically
             string display = style?.Display?.ToLowerInvariant();
@@ -773,7 +773,7 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (display == "flex" || display == "inline-flex") 
             {
-                FenLogger.Debug($"[MEASURE-FLEX] Node={elem.TagName} Class={elem.GetAttribute("class")} is being measured as FLEX. Avail={availableSize}", LogCategory.Layout);
+                EngineLogCompat.Debug($"[MEASURE-FLEX] Node={elem.TagName} Class={elem.GetAttribute("class")} is being measured as FLEX. Avail={availableSize}", LogCategory.Layout);
                 m = MeasureFlexInternal(elem, childConstraint, (display == "flex" && elem.TagName == "BODY"), depth + 1, node);
                 
                 // Fix: display:flex (block-level) should default to available width if not explicit, just like display:block
@@ -825,7 +825,7 @@ namespace FenBrowser.FenEngine.Layout
                         Exclusions = _activeBfcFloats.Count > 0 ? _activeBfcFloats.Peek() : null,
                         Deadline = this.Deadline
                     };
-                    FenLogger.Error($"[DEBUG-DELEGATE] Delegating MEASURE for {elem.TagName} (ID={elem.GetAttribute("id")}) to BlockLayoutAlgorithm. Avail={childConstraint}");
+                    EngineLogCompat.Error($"[DEBUG-DELEGATE] Delegating MEASURE for {elem.TagName} (ID={elem.GetAttribute("id")}) to BlockLayoutAlgorithm. Avail={childConstraint}");
                     m = new FenBrowser.FenEngine.Layout.Algorithms.BlockLayoutAlgorithm().Measure(context);
                 }
                 finally
@@ -852,7 +852,7 @@ namespace FenBrowser.FenEngine.Layout
             
             if (isReplaced)
             {
-                FenLogger.Debug($"[IMG-DEBUG-NODE] {tag} Entry: explicitH={isExplicitHeight} h={h} m.h={m.ContentHeight} explicitW={isExplicitWidth} w={w} m.w={m.MaxChildWidth}");
+                EngineLogCompat.Debug($"[IMG-DEBUG-NODE] {tag} Entry: explicitH={isExplicitHeight} h={h} m.h={m.ContentHeight} explicitW={isExplicitWidth} w={w} m.w={m.MaxChildWidth}");
             }
 
             if (isReplaced && h <= 1 && m.ContentHeight > 1)
@@ -867,7 +867,7 @@ namespace FenBrowser.FenEngine.Layout
                      // Also fix width if needed
                      if (w <= 1 && m.MaxChildWidth > 1) w = m.MaxChildWidth;
                      
-                     FenLogger.Debug($"[REPLACED-FIX] Restored {tag} size to {w}x{h} (was 0 due to failed percent)");
+                     EngineLogCompat.Debug($"[REPLACED-FIX] Restored {tag} size to {w}x{h} (was 0 due to failed percent)");
                 }
             }
 
@@ -875,7 +875,7 @@ namespace FenBrowser.FenEngine.Layout
             if (h <= 0 && !isExplicitHeight) h = m.ContentHeight;
             
             if (tag == "BODY" || tag == "HTML" || depth < 8) 
-                FenLogger.Debug($"[MEASURE-TRACE] depth={depth} tag={tag} m.h={m.ContentHeight} res.w={w} res.h={h}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[MEASURE-TRACE] depth={depth} tag={tag} m.h={m.ContentHeight} res.w={w} res.h={h}", LogCategory.Rendering);
 
             // Add Padding/Border
             float pt = 0, pb = 0, bl = 0, br = 0, bt_top = 0, bb = 0;
@@ -1013,14 +1013,14 @@ namespace FenBrowser.FenEngine.Layout
                              
                              if (isDebugTarget)
                              {
-                                 FenLogger.Debug($"[WIDTH-TRACE] {dbgTag} class='{dbgClass}' style='{dbgStyle}' Available={availableSize.Width} Margins={ml}+{mr} Padding={p.Left}+{p.Right} Border={b.Left}+{b.Right}");
+                                 EngineLogCompat.Debug($"[WIDTH-TRACE] {dbgTag} class='{dbgClass}' style='{dbgStyle}' Available={availableSize.Width} Margins={ml}+{mr} Padding={p.Left}+{p.Right} Border={b.Left}+{b.Right}");
                              }
                              
                              usedWidth -= (float)(p.Left + p.Right + b.Left + b.Right);
                              
                              if (isDebugTarget)
                              {
-                                 FenLogger.Debug($"[WIDTH-TRACE] FinalUsedWidth={usedWidth} (Rendered={usedWidth + p.Left + p.Right + b.Left + b.Right})");
+                                 EngineLogCompat.Debug($"[WIDTH-TRACE] FinalUsedWidth={usedWidth} (Rendered={usedWidth + p.Left + p.Right + b.Left + b.Right})");
                              }
                          }
                          w = float.IsInfinity(usedWidth) ? m.MaxChildWidth : Math.Max(0, usedWidth);
@@ -1070,7 +1070,7 @@ namespace FenBrowser.FenEngine.Layout
             }
             else
             {
-                 if (tag == "H1") FenLogger.Error($"[H1-DEBUG] SKIPPED borders. isExplicitWidth={isExplicitWidth} BoxSizing={style?.BoxSizing}");
+                 if (tag == "H1") EngineLogCompat.Error($"[H1-DEBUG] SKIPPED borders. isExplicitWidth={isExplicitWidth} BoxSizing={style?.BoxSizing}");
             }
             
             // ============================================================
@@ -1123,7 +1123,7 @@ namespace FenBrowser.FenEngine.Layout
             }
             catch (Exception ex)
             {
-                 FenLogger.Error($"[CRASH-GUARD] MeasureNode crashed for {(node as Element)?.TagName ?? node?.NodeName ?? "null"}: {ex.Message}", LogCategory.General);
+                 EngineLogCompat.Error($"[CRASH-GUARD] MeasureNode crashed for {(node as Element)?.TagName ?? node?.NodeName ?? "null"}: {ex.Message}", LogCategory.General);
                  return new LayoutMetrics();
             }
         }
@@ -1141,7 +1141,7 @@ namespace FenBrowser.FenEngine.Layout
                  // Filter spam
                  if (tag != "Text" && (string.IsNullOrEmpty(cls) || FenBrowser.Core.Logging.DebugConfig.ShouldLog(cls)))
                  {
-                     global::FenBrowser.Core.FenLogger.Log($"[LAYOUT-BOX] {new string(' ', depth)}{tag} Rect={finalRect} {(cls != null ? "."+cls : "")}", LogCategory.Layout);
+                     global::FenBrowser.Core.EngineLogCompat.Log($"[LAYOUT-BOX] {new string(' ', depth)}{tag} Rect={finalRect} {(cls != null ? "."+cls : "")}", LogCategory.Layout);
                  }
             }
             
@@ -1222,7 +1222,7 @@ namespace FenBrowser.FenEngine.Layout
             loopCount++;
             if (loopCount > 1000)
             {
-                FenLogger.Error($"[LAYOUT-LOOP] ResolveContainingBlock hit iteration limit for node {(node as Element)?.TagName}", LogCategory.Layout);
+                EngineLogCompat.Error($"[LAYOUT-LOOP] ResolveContainingBlock hit iteration limit for node {(node as Element)?.TagName}", LogCategory.Layout);
                 break;
             }
         }
@@ -1245,7 +1245,7 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     if (eDebug.TagName == "IMG" || eDebug.TagName == "SVG" || eDebug.TagName.EndsWith(":SVG"))
                     {
-                        FenLogger.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
+                        EngineLogCompat.Debug($"[ARRANGE-CORE] Tag={eDebug.TagName} Id={eDebug.GetAttribute("id")} ShouldHide={ShouldHide(node, style)} Rect={finalRect} StyleDisp={style?.Display}");
                     }
                 }
 
@@ -1274,13 +1274,13 @@ namespace FenBrowser.FenEngine.Layout
                     // DEBUG: Log CSS position values
                     // Guard against null style properties
                     if (style == null) return; 
-                    FenLogger.Debug($"[ABS-POS] node={node.NodeName} left={style.Left} right={style.Right} top={style.Top} bottom={style.Bottom} cb=({containingBlock.Width}x{containingBlock.Height})", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[ABS-POS] node={node.NodeName} left={style.Left} right={style.Right} top={style.Top} bottom={style.Bottom} cb=({containingBlock.Width}x{containingBlock.Height})", LogCategory.Rendering);
                     
                     // Solve the 7-variable equation
                     var result = AbsolutePositionSolver.Solve(style, containingBlock, intrinsicWidth, intrinsicHeight);
                     
                     // DEBUG: Log solver result
-                    FenLogger.Debug($"[ABS-POS] result: X={result.X} Y={result.Y} W={result.Width} H={result.Height}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[ABS-POS] result: X={result.X} Y={result.Y} W={result.Width} H={result.Height}", LogCategory.Rendering);
                     
                     finalRect = new SKRect(
                         containingBlock.X + result.X - (float)(style?.Padding.Left ?? 0) - (float)(style?.BorderThickness.Left ?? 0),
@@ -1355,7 +1355,7 @@ namespace FenBrowser.FenEngine.Layout
                 // AGGRESSIVE DEBUG: Trace Dispatch (General Category)
                 if (tag == "BODY" || tag == "HTML")
                 {
-                     FenLogger.Debug($"[ARRANGE-DISPATCH] Tag={tag} Display={display} Box={box.ContentBox} ViewportH={_viewportHeight}");
+                     EngineLogCompat.Debug($"[ARRANGE-DISPATCH] Tag={tag} Display={display} Box={box.ContentBox} ViewportH={_viewportHeight}");
                 }
 
                 if ((display == "flex" || display == "inline-flex") && elem != null) 
@@ -1390,7 +1390,7 @@ namespace FenBrowser.FenEngine.Layout
             catch (Exception ex)
             {
                 var tag = (node as Element)?.TagName ?? node?.NodeType.ToString() ?? "NULL";
-                FenLogger.Error($"[ArrangeNodeCore] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
+                EngineLogCompat.Error($"[ArrangeNodeCore] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
                 // Don't rethrow to avoid crashing the whole renderer, but maybe we should?
                 // Re-throwing helps find the root cause if the catch above this handles it.
                 throw; 
@@ -1405,13 +1405,13 @@ namespace FenBrowser.FenEngine.Layout
 
             if (element != null && (element.TagName == "A" || element.GetAttribute("class") == "o3j99"))
             {
-                // FenLogger.Debug($"[MEASURE-BLOCK-ENTRY] {element.TagName} id={element.GetAttribute("id")} class={element.GetAttribute("class")}");
+                // EngineLogCompat.Debug($"[MEASURE-BLOCK-ENTRY] {element.TagName} id={element.GetAttribute("id")} class={element.GetAttribute("class")}");
             }
 
             // IFC CHECK
             if (depth < 6 && element != null)
             {
-                 FenLogger.Debug($"[MEASURE-BLOCK-ENTRY] Tag={element.TagName} Class={element.GetAttribute("class")} Children={childrenSource.Count()}");
+                 EngineLogCompat.Debug($"[MEASURE-BLOCK-ENTRY] Tag={element.TagName} Class={element.GetAttribute("class")} Children={childrenSource.Count()}");
             }
 
             bool useIFC = false;
@@ -1422,7 +1422,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                  if (element != null && element.GetAttribute("class") == "container")
                  {
-                      FenLogger.Debug($"[MEASURE-BLOCK-PRE-CHECK] Container Child: {c.NodeType} {(c as Element)?.TagName}");
+                      EngineLogCompat.Debug($"[MEASURE-BLOCK-PRE-CHECK] Container Child: {c.NodeType} {(c as Element)?.TagName}");
                  }
 
                  if (c is Text t && string.IsNullOrWhiteSpace(t.Data)) continue;
@@ -1438,7 +1438,7 @@ namespace FenBrowser.FenEngine.Layout
 
             if (useIFC && element != null)
             {
-                FenLogger.Debug($"[IFC-DECISION] Using Inline Layout for {element.TagName}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[IFC-DECISION] Using Inline Layout for {element.TagName}", LogCategory.Rendering);
                 return MeasureInlineContext(element, availableSize, depth);
             }
 
@@ -1650,7 +1650,7 @@ namespace FenBrowser.FenEngine.Layout
                     // Log layout progression
                     if (depth < 6 && element != null)
                     {
-                         FenLogger.Debug($"[MEASURE-BLOCK-LOOP] Tag={element.TagName} Child={child.NodeType} H={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}->{logicalCurBlock+spacing+childLogSize.Block}");
+                         EngineLogCompat.Debug($"[MEASURE-BLOCK-LOOP] Tag={element.TagName} Child={child.NodeType} H={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}->{logicalCurBlock+spacing+childLogSize.Block}");
                     }
                     
                     logicalCurBlock += spacing;
@@ -1770,12 +1770,12 @@ namespace FenBrowser.FenEngine.Layout
                 else
                 {
                      // Trace miss
-                     // FenLogger.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
+                     // EngineLogCompat.Debug($"[IFC-CACHE-MISS] Element={element.TagName} Hash={element.GetHashCode()} CacheCount={_inlineCache.Count}", LogCategory.Rendering);
                 }    
             }    else
                 {
                     // Debug why it missed if we expected it
-                   // FenLogger.Debug($"[IFC-CACHE-MISS] {element.TagName} falling back to Block Layout", LogCategory.Rendering);
+                   // EngineLogCompat.Debug($"[IFC-CACHE-MISS] {element.TagName} falling back to Block Layout", LogCategory.Rendering);
                 }
             
 
@@ -1914,7 +1914,7 @@ namespace FenBrowser.FenEngine.Layout
 
                         if (element?.GetAttribute("class") == "container")
                         {
-                             FenLogger.Debug($"[ARRANGE-BLOCK-LOOP] Child={childStyle?.Display} BoxH={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}");
+                             EngineLogCompat.Debug($"[ARRANGE-BLOCK-LOOP] Child={childStyle?.Display} BoxH={childLogSize.Block} Spacing={spacing} CurBlock={logicalCurBlock}");
                         }
                         
 
@@ -1925,7 +1925,7 @@ namespace FenBrowser.FenEngine.Layout
                         {
                              if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                              {
-                                 FenLogger.Info($"[BLOCK-LOOP] Child={(child is Element ? "Element" : "Text")} CurBlock={logicalCurBlock} Spacing={spacing} MarginTop={mt}", LogCategory.Layout);
+                                 EngineLogCompat.Info($"[BLOCK-LOOP] Child={(child is Element ? "Element" : "Text")} CurBlock={logicalCurBlock} Spacing={spacing} MarginTop={mt}", LogCategory.Layout);
                              }
                         }
 
@@ -1972,7 +1972,7 @@ namespace FenBrowser.FenEngine.Layout
                         
                         if (element?.GetAttribute("class") == "container")
                         {
-                             FenLogger.Debug($"[ARRANGE-BLOCK-LOOP-END] CurBlock={logicalCurBlock}->{logicalCurBlock+childLogSize.Block} ChildH={childLogSize.Block}");
+                             EngineLogCompat.Debug($"[ARRANGE-BLOCK-LOOP-END] CurBlock={logicalCurBlock}->{logicalCurBlock+childLogSize.Block} ChildH={childLogSize.Block}");
                         }
                         logicalCurBlock += childLogSize.Block;
                     }
@@ -1981,7 +1981,7 @@ namespace FenBrowser.FenEngine.Layout
                 catch (Exception ex)
                 {
                      var tag = (child as Element)?.TagName ?? child?.NodeType.ToString() ?? "NULL";
-                     FenLogger.Error($"[ArrangeBlockInternal-LOOP] CRASH processing child {tag}: {ex.Message}", LogCategory.Layout);
+                     EngineLogCompat.Error($"[ArrangeBlockInternal-LOOP] CRASH processing child {tag}: {ex.Message}", LogCategory.Layout);
                 }
             }
             // End
@@ -2006,7 +2006,7 @@ namespace FenBrowser.FenEngine.Layout
             catch (Exception ex)
             {
                 var tag = (element)?.TagName ?? fallbackNode?.NodeType.ToString() ?? "NULL";
-                FenLogger.Error($"[ArrangeBlockInternal] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
+                EngineLogCompat.Error($"[ArrangeBlockInternal] CRASH processing node {tag}: {ex.Message}\n{ex.StackTrace}", LogCategory.Layout);
                 throw;
             }
         }
@@ -2436,7 +2436,7 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (container.TagName == "A" || container.GetAttribute("class") == "o3j99")
             {
-               // FenLogger.Debug($"[MEASURE-INLINE-ENTRY] {container.TagName}");
+               // EngineLogCompat.Debug($"[MEASURE-INLINE-ENTRY] {container.TagName}");
             }
 
             var style = GetStyle(container);
@@ -2458,7 +2458,7 @@ namespace FenBrowser.FenEngine.Layout
                 (elem, sz, d) => {
                     var m = MeasureNode(elem, sz, d);
                     _desiredSizes[elem] = new SKSize(m.MaxChildWidth, m.ContentHeight);
-                    // FenLogger.Debug($"[FLEX-CACHE] Stored {elem.TagName} Size={m.MaxChildWidth}x{m.ContentHeight}");
+                    // EngineLogCompat.Debug($"[FLEX-CACHE] Stored {elem.TagName} Size={m.MaxChildWidth}x{m.ContentHeight}");
                     return m;
                 },
                 depth,
@@ -2468,13 +2468,13 @@ namespace FenBrowser.FenEngine.Layout
             
             if (container.TagName == "A" || container.GetAttribute("class") == "o3j99")
             {
-               // FenLogger.Debug($"[MEASURE-INLINE-DONE] {container.TagName} TextNodes={result.TextLines.Count} Height={result.Metrics.ContentHeight}");
+               // EngineLogCompat.Debug($"[MEASURE-INLINE-DONE] {container.TagName} TextNodes={result.TextLines.Count} Height={result.Metrics.ContentHeight}");
             }
 
             // Cache everything!
             _inlineCache[container] = result;
              // /* [PERF-REMOVED] */
-            FenLogger.Debug($"[IFC-CACHE-SET] Container={container.TagName} Id={container.GetAttribute("id")} Class={container.GetAttribute("class")} Lines={result.TextLines.Count} Rects={result.ElementRects.Count}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[IFC-CACHE-SET] Container={container.TagName} Id={container.GetAttribute("id")} Class={container.GetAttribute("class")} Lines={result.TextLines.Count} Rects={result.ElementRects.Count}", LogCategory.Rendering);
             
             // Merge text lines into global text cache locally so we don't need to pass InlineLayoutResult around
             foreach (var kvp in result.TextLines)
@@ -2584,6 +2584,64 @@ namespace FenBrowser.FenEngine.Layout
                 inlineResult.TextLines = shiftedTextLines;
             }
 
+            bool TryGetSubtreeInlineRect(Node rootNode, out SKRect relativeRect)
+            {
+                relativeRect = SKRect.Empty;
+                if (rootNode == null) return false;
+
+                bool hasBounds = false;
+                float minLeft = float.MaxValue;
+                float minTop = float.MaxValue;
+                float maxRight = float.MinValue;
+                float maxBottom = float.MinValue;
+
+                var queue = new Queue<Node>();
+                queue.Enqueue(rootNode);
+
+                while (queue.Count > 0)
+                {
+                    var current = queue.Dequeue();
+                    if (current == null) continue;
+
+                    if (result.ElementRects.TryGetValue(current, out var elementRect))
+                    {
+                        minLeft = Math.Min(minLeft, elementRect.Left);
+                        minTop = Math.Min(minTop, elementRect.Top);
+                        maxRight = Math.Max(maxRight, elementRect.Right);
+                        maxBottom = Math.Max(maxBottom, elementRect.Bottom);
+                        hasBounds = true;
+                    }
+
+                    if (result.TextLines.TryGetValue(current, out var lines))
+                    {
+                        foreach (var line in lines)
+                        {
+                            minLeft = Math.Min(minLeft, line.Origin.X);
+                            minTop = Math.Min(minTop, line.Origin.Y);
+                            maxRight = Math.Max(maxRight, line.Origin.X + line.Width);
+                            maxBottom = Math.Max(maxBottom, line.Origin.Y + line.Height);
+                            hasBounds = true;
+                        }
+                    }
+
+                    if (current is Element currentElement)
+                    {
+                        foreach (var child in GetChildrenWithPseudos(currentElement, currentElement))
+                        {
+                            if (child != null) queue.Enqueue(child);
+                        }
+                    }
+                }
+
+                if (!hasBounds)
+                {
+                    return false;
+                }
+
+                relativeRect = new SKRect(minLeft, minTop, maxRight, maxBottom);
+                return true;
+            }
+
             // CRITICAL FIX: If finalRect.Width differs from what was used during Measure,
             // re-run inline layout with the actual width to get correct text-align positioning.
             // This is especially important for table cells measured with infinity width.
@@ -2615,7 +2673,7 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                     {
-                        FenLogger.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
+                        EngineLogCompat.Info($"[TEXT-ALIGN-DEBUG] Container={container.TagName} Class={container.GetAttribute("class")} ArrangeWidth={arrangeWidth}", FenBrowser.Core.Logging.LogCategory.Layout);
                     }
                     foreach(var kvp in result.TextLines)
                     {
@@ -2623,7 +2681,7 @@ namespace FenBrowser.FenEngine.Layout
                         {
                             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
                             {
-                                FenLogger.Info($"[TEXT-ALIGN-DEBUG] TextLine Origin=({line.Origin.X}, {line.Origin.Y}) Text={line.Text.Substring(0, Math.Min(20, line.Text.Length))}", FenBrowser.Core.Logging.LogCategory.Layout);
+                                EngineLogCompat.Info($"[TEXT-ALIGN-DEBUG] TextLine Origin=({line.Origin.X}, {line.Origin.Y}) Text={line.Text.Substring(0, Math.Min(20, line.Text.Length))}", FenBrowser.Core.Logging.LogCategory.Layout);
                             }
                         }
                     }
@@ -2661,37 +2719,6 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            // Arrange Atomic Elements
-            foreach (var kvp in result.ElementRects)
-            {
-                var child = kvp.Key;
-                var relativeRect = kvp.Value;
-                
-                // Offset by container position
-                var finalChildRect = new SKRect(
-                    finalRect.Left + relativeRect.Left,
-                    finalRect.Top + relativeRect.Top,
-                    finalRect.Left + relativeRect.Right,
-                    finalRect.Top + relativeRect.Bottom
-                );
-                
-                if ((child as Element)?.TagName == "IMG") 
-                {
-                     FenLogger.Debug($"[ARRANGE-INLINE-IMG] Container={container.TagName} Child=IMG Rect={finalChildRect}");
-                }
-
-                ArrangeNode(child, finalChildRect, depth + 1); // Recursively arrange content of inline-blocks
-            }
-            // Text lines are already in _textLines, which ArrangeNode(Text) will pick up automatically
-            // But wait, ArrangeNode is called for CHILDREN.
-            // We need to iterate children and call ArrangeNode on them.
-            
-            // The issue: InlineLayoutComputer recurses logical children.
-            // We need to ensure ArrangeNode is called for all those children so they get their Boxes created.
-            
-            // Simple approach: Iterate children of container. If found in ElementRects, arrange. 
-            // If Text, call ArrangeText (which does nothing but is good for consistency).
-            
             void ProcessChildren(Node n, int currentDepth)
             {
                 if (currentDepth > 80 || n is not Element e)
@@ -2714,9 +2741,20 @@ namespace FenBrowser.FenEngine.Layout
                     }
                     else if (c is Text)
                     {
-                        // Text paint node uses box.ContentBox.Left/Top plus line origins stored in _textLines.
-                        // Give direct text children the inline container box so those relative origins resolve correctly.
-                        ArrangeNode(c, finalRect, currentDepth + 1);
+                        if (TryGetSubtreeInlineRect(c, out var textRect))
+                        {
+                            var absTextRect = new SKRect(
+                                finalRect.Left + textRect.Left,
+                                finalRect.Top + textRect.Top,
+                                finalRect.Left + textRect.Right,
+                                finalRect.Top + textRect.Bottom);
+                            ArrangeNode(c, absTextRect, currentDepth + 1);
+                        }
+                        else
+                        {
+                            // Keep text logically attached to the inline container even when no explicit glyph bounds were produced.
+                            ArrangeNode(c, new SKRect(finalRect.Left, finalRect.Top, finalRect.Left, finalRect.Top), currentDepth + 1);
+                        }
                     }
                     else if (c.NodeName == "BR")
                     {
@@ -2726,8 +2764,20 @@ namespace FenBrowser.FenEngine.Layout
                     }
                     else
                     {
-                        // Nested inline container: ensure it participates in the tree, then recurse into its children.
-                        ArrangeNode(c, finalRect, currentDepth + 1);
+                        // Nested inline container: prefer its computed IFC bounds; avoid forcing it to occupy the full parent rect.
+                        if (TryGetSubtreeInlineRect(c, out var nestedRect))
+                        {
+                            var absNestedRect = new SKRect(
+                                finalRect.Left + nestedRect.Left,
+                                finalRect.Top + nestedRect.Top,
+                                finalRect.Left + nestedRect.Right,
+                                finalRect.Top + nestedRect.Bottom);
+                            ArrangeNode(c, absNestedRect, currentDepth + 1);
+                        }
+                        else
+                        {
+                            ArrangeNode(c, new SKRect(finalRect.Left, finalRect.Top, finalRect.Left, finalRect.Top), currentDepth + 1);
+                        }
                         ProcessChildren(c, currentDepth + 1);
                     }
                 }
@@ -2772,7 +2822,7 @@ namespace FenBrowser.FenEngine.Layout
             }
             if (element != null && element.GetAttribute("class") == "center-text")
             {
-                FenLogger.Debug($"[IFC-DECISION] Element {element.TagName} .center-text -> UseIFC: {useIFC}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[IFC-DECISION] Element {element.TagName} .center-text -> UseIFC: {useIFC}", LogCategory.Rendering);
             }
             if (useIFC) {
                 /* [PERF-REMOVED] */
@@ -2858,7 +2908,7 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     intrinsicW = svgW;
                     intrinsicH = svgH;
-                    FenLogger.Debug($"[SVG-INTRINSIC] Resolved SVG intrinsic => {intrinsicW}x{intrinsicH}");
+                    EngineLogCompat.Debug($"[SVG-INTRINSIC] Resolved SVG intrinsic => {intrinsicW}x{intrinsicH}");
                 }
             }
             else if (tag == "IMG" && TryResolveImageIntrinsicSize(elem, out float bmpW, out float bmpH))
@@ -2882,7 +2932,7 @@ namespace FenBrowser.FenEngine.Layout
 
             if (elem.TagName == "IMG")
             {
-                FenLogger.Debug($"[IMG-DEBUG-MEASURE] res={w}x{h} int={intrinsicW}x{intrinsicH} avail={availableSize.Width}x{availableSize.Height} attrW={elem.GetAttribute("width")} attrH={elem.GetAttribute("height")}");
+                EngineLogCompat.Debug($"[IMG-DEBUG-MEASURE] res={w}x{h} int={intrinsicW}x{intrinsicH} avail={availableSize.Width}x{availableSize.Height} attrW={elem.GetAttribute("width")} attrH={elem.GetAttribute("height")}");
             }
 
             return new LayoutMetrics { ContentHeight = h, ActualHeight = h, MaxChildWidth = w };
@@ -3221,9 +3271,9 @@ namespace FenBrowser.FenEngine.Layout
         }
         public void DumpLayoutTree(Node root)
         {
-            FenLogger.Error("[MinimalLayoutComputer] --- Layout Tree Dump ---", LogCategory.Rendering);
+            EngineLogCompat.Error("[MinimalLayoutComputer] --- Layout Tree Dump ---", LogCategory.Rendering);
             DumpNode(root, 0);
-            FenLogger.Error("[MinimalLayoutComputer] --- End Layout Tree Dump ---", LogCategory.Rendering);
+            EngineLogCompat.Error("[MinimalLayoutComputer] --- End Layout Tree Dump ---", LogCategory.Rendering);
         }
 
         private void DumpNode(Node node, int depth)
@@ -3233,7 +3283,7 @@ namespace FenBrowser.FenEngine.Layout
             var box = GetBox(node);
             string boxInfo = box != null ? $" [{box.BorderBox.Left:F1},{box.BorderBox.Top:F1} {box.BorderBox.Width:F1}x{box.BorderBox.Height:F1}]" : " [No Box]";
             
-            FenLogger.Error($"{indent}{(node is Element el ? el.TagName : node.NodeName)}{boxInfo}", LogCategory.Rendering);
+            EngineLogCompat.Error($"{indent}{(node is Element el ? el.TagName : node.NodeName)}{boxInfo}", LogCategory.Rendering);
 
             if (node is Element element && element.Children != null)
             {

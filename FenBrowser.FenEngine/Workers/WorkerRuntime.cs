@@ -103,7 +103,7 @@ namespace FenBrowser.FenEngine.Workers
             };
             _workerThread.Start();
 
-            FenLogger.Debug($"[WorkerRuntime] Created worker for {scriptUrl} (origin: {origin})", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[WorkerRuntime] Created worker for {scriptUrl} (origin: {origin})", LogCategory.JavaScript);
         }
 
         private async Task ObserveBootstrapCompletionAsync()
@@ -158,7 +158,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[WorkerRuntime] PostMessage error: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Debug($"[WorkerRuntime] PostMessage error: {ex.Message}", LogCategory.Errors);
                     OnError?.Invoke(ex);
                 }
             }, TaskSource.Messaging, "Worker.postMessage");
@@ -172,7 +172,7 @@ namespace FenBrowser.FenEngine.Workers
         {
             if (_isDisposed) return;
 
-            FenLogger.Debug("[WorkerRuntime] Terminating worker", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[WorkerRuntime] Terminating worker", LogCategory.JavaScript);
             _isRunning = false;
             _cts.Cancel();
             _taskQueue.Clear();
@@ -185,7 +185,7 @@ namespace FenBrowser.FenEngine.Workers
         /// </summary>
         private void WorkerThreadProc()
         {
-            FenLogger.Debug("[WorkerRuntime] Worker thread started", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[WorkerRuntime] Worker thread started", LogCategory.JavaScript);
 
             try
             {
@@ -220,7 +220,7 @@ namespace FenBrowser.FenEngine.Workers
                         }
                         catch (Exception ex)
                         {
-                            FenLogger.Debug($"[WorkerRuntime] Task error: {ex.Message}", LogCategory.Errors);
+                            EngineLogCompat.Debug($"[WorkerRuntime] Task error: {ex.Message}", LogCategory.Errors);
                             OnError?.Invoke(ex);
                         }
 
@@ -236,11 +236,11 @@ namespace FenBrowser.FenEngine.Workers
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[WorkerRuntime] Worker thread crashed: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[WorkerRuntime] Worker thread crashed: {ex.Message}", LogCategory.Errors);
                 OnError?.Invoke(ex);
             }
 
-            FenLogger.Debug("[WorkerRuntime] Worker thread stopped", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[WorkerRuntime] Worker thread stopped", LogCategory.JavaScript);
         }
 
         private bool TryCompleteBootstrap()
@@ -274,12 +274,12 @@ namespace FenBrowser.FenEngine.Workers
                 if (!string.IsNullOrEmpty(scriptContent))
                 {
                     _runtime.ExecuteSimple(scriptContent);
-                    FenLogger.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
+                    EngineLogCompat.Debug($"[WorkerRuntime] Executed script: {_scriptUrl}", LogCategory.JavaScript);
                 }
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[WorkerRuntime] Script fetch/execute error: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Error($"[WorkerRuntime] Script fetch/execute error: {ex.Message}", LogCategory.Errors);
                 OnError?.Invoke(ex);
             }
 
@@ -304,7 +304,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Error($"[WorkerRuntime] Fetch event dispatch error: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Error($"[WorkerRuntime] Fetch event dispatch error: {ex.Message}", LogCategory.Errors);
                     OnError?.Invoke(ex);
                     dispatchDone.TrySetResult(false);
                 }
@@ -430,7 +430,7 @@ namespace FenBrowser.FenEngine.Workers
                     continue;
 
                 _runtime.ExecuteSimple(content);
-                FenLogger.Debug($"[WorkerRuntime] importScripts executed: {target}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[WorkerRuntime] importScripts executed: {target}", LogCategory.JavaScript);
             }
         }
 
@@ -516,7 +516,7 @@ namespace FenBrowser.FenEngine.Workers
             _cts.Dispose();
             _taskSignal.Dispose();
             
-            FenLogger.Debug("[WorkerRuntime] Worker disposed", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[WorkerRuntime] Worker disposed", LogCategory.JavaScript);
         }
     }
 

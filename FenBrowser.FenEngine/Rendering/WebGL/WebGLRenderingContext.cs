@@ -97,7 +97,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
                 _genericAttribs[i] = new float[] { 0, 0, 0, 1 };
             }
             
-            FenLogger.Debug($"[WebGL] Created context {_width}x{_height}", LogCategory.Rendering);
+            EngineLogCompat.Debug($"[WebGL] Created context {_width}x{_height}", LogCategory.Rendering);
         }
         
         // ========== Context State ==========
@@ -253,7 +253,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
             {
                 shader.Compiled = true;
                 shader.InfoLog = "";
-                FenLogger.Debug($"[WebGL] Shader {shader.Id} compiled successfully", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[WebGL] Shader {shader.Id} compiled successfully", LogCategory.Rendering);
             }
             else
             {
@@ -351,7 +351,7 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
                 // Extract attribute locations from vertex shader
                 ParseAttributeLocations(program);
                 
-                FenLogger.Debug($"[WebGL] Program {program.Id} linked successfully", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[WebGL] Program {program.Id} linked successfully", LogCategory.Rendering);
             }
             else
             {

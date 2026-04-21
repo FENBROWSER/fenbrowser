@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -63,7 +63,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
             var elapsedPart = elapsedMs >= 0 ? $" elapsed={elapsedMs}ms" : string.Empty;
             var funcName = func?.Name ?? "<anonymous>";
-            FenBrowser.Core.FenLogger.Warn(
+            FenBrowser.Core.EngineLogCompat.Warn(
                 $"[VM-NATIVECALL] {phase} name={funcName} args={argCount} thisType={thisValue.Type}{elapsedPart}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
@@ -867,7 +867,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private const int CANCEL_CHECK_INTERVAL = 4096;
         private int _instructionsSinceCancelCheck;
 
-        // Resource limits â€” instruction count and memory cap (checked in the amortized interval, zero per-instruction overhead)
+        // Resource limits — instruction count and memory cap (checked in the amortized interval, zero per-instruction overhead)
         private long _totalInstructionCount;
         private Security.IResourceLimits _limits;
 
@@ -944,7 +944,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         /// <summary>
         /// Converts a FenValue.Error (returned by native functions) into a real thrown JS exception.
-        /// ECMA-262: native built-ins must throw â€” returning an Error-typed value is a legacy
+        /// ECMA-262: native built-ins must throw — returning an Error-typed value is a legacy
         /// internal convention that we normalize at every native call-site boundary.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1150,9 +1150,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
             }
 
-            // ECMA-262 Annex B Â§B.3.3.1: Pre-initialize block-scoped function names in the enclosing
+            // ECMA-262 Annex B §B.3.3.1: Pre-initialize block-scoped function names in the enclosing
             // variable-declaration environment (outer scope) before the eval code runs.
-            // This handles cases like: eval("if (true) { function f() {} }") â€” 'f' must exist in the
+            // This handles cases like: eval("if (true) { function f() {} }") — 'f' must exist in the
             // outer var scope as undefined before eval executes, and be updated to the function value after.
             var annexBNames = compiledBlock.AnnexBBlockFunctionNames;
             if (annexBNames != null && annexBNames.Count > 0 && !inheritStrict)
@@ -1171,7 +1171,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             var evalNewTarget = forceUndefinedNewTarget ? FenValue.Undefined : frame.NewTarget;
             var evalResult = nestedVm.Execute(compiledBlock, evalEnvironment, evalNewTarget);
 
-            // ECMA-262 Annex B Â§B.3.3.1: After eval execution, propagate the final values of
+            // ECMA-262 Annex B §B.3.3.1: After eval execution, propagate the final values of
             // block-scoped function bindings up to the outer variable-declaration scope.
             if (annexBNames != null && annexBNames.Count > 0 && !inheritStrict)
             {
@@ -1858,7 +1858,7 @@ run_loop_restart:
                             longRunTrace.ElapsedMilliseconds >= nextLongRunTraceMs)
                         {
                             nextLongRunTraceMs += LongRunTraceIntervalMs;
-                            FenBrowser.Core.FenLogger.Warn(
+                            FenBrowser.Core.EngineLogCompat.Warn(
                                 $"[VM-LONGRUN] elapsed={longRunTrace.ElapsedMilliseconds}ms ip={instructionOffset}/{instructions.Length} op={op} frames={_frameCount} sp={_sp} pendingTasks={EventLoopCoordinator.Instance.TaskCount} pendingMicrotasks={EventLoopCoordinator.Instance.MicrotaskCount}",
                                 FenBrowser.Core.Logging.LogCategory.JavaScript);
                         }
@@ -2895,7 +2895,7 @@ run_loop_restart:
                                                         }
                                                         else if (!descriptor.IsAccessor && descriptor.Writable == false && storePropStrict)
                                                         {
-                                                            // ECMA-262 Â§9.1.9.1 step 4.a: strict-mode TypeError for non-writable
+                                                            // ECMA-262 §9.1.9.1 step 4.a: strict-mode TypeError for non-writable
                                                             throw new FenTypeError($"TypeError: Cannot assign to read only property '{key}'");
                                                         }
                                                     }
@@ -3116,7 +3116,7 @@ run_loop_restart:
                                 {
                                     var obj = objVal.AsObject();
                                     // for...in must enumerate all enumerable properties in the prototype chain
-                                    // per ECMA-262 Â§14.7.5.9, not just own properties.
+                                    // per ECMA-262 §14.7.5.9, not just own properties.
                                     iterObj.NativeObject = obj != null
                                         ? (obj is FenObject fenObj
                                             ? new KeyIteratorEnumerator(fenObj.EnumerableKeys().GetEnumerator())
@@ -3727,7 +3727,7 @@ run_loop_restart:
                 argumentsObj.Set("length", FenValue.FromNumber(effectiveArgs.Length));
                 argumentsObj.Set("callee", FenValue.FromFunction(func));
 
-                // arguments[@@iterator] = Array.prototype.values (ECMA-262 Â§10.4.4.7)
+                // arguments[@@iterator] = Array.prototype.values (ECMA-262 §10.4.4.7)
                 var arrayProtoValues = FenObject.DefaultArrayPrototype?.Get("values");
                 if (arrayProtoValues.HasValue && arrayProtoValues.Value.IsFunction)
                 {

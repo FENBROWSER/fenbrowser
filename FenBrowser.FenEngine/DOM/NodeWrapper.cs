@@ -304,7 +304,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Error($"Append failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    FenBrowser.Core.EngineLogCompat.Error($"Append failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                     throw;
                 }
             }
@@ -326,7 +326,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
                 catch (Exception ex)
                 {
-                    FenBrowser.Core.FenLogger.Error($"AppendChild failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    FenBrowser.Core.EngineLogCompat.Error($"AppendChild failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
                     throw;
                 }
             }

@@ -101,7 +101,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[EventLoop] MutationObserver callback error: {ex.Message}", LogCategory.DOM);
+                    EngineLogCompat.Warn($"[EventLoop] MutationObserver callback error: {ex.Message}", LogCategory.DOM);
                 }
             }
 
@@ -171,12 +171,12 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
             try
             {
-                FenLogger.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
+                EngineLogCompat.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
                 task.Callback.Invoke();
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
             }
             finally
             {
@@ -223,12 +223,12 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 EngineContext.Current.BeginPhase(EnginePhase.Layout);
                 try
                 {
-                    FenLogger.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
+                    EngineLogCompat.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
                     _renderCallback.Invoke();
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
                 }
                 finally
                 {
@@ -246,7 +246,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
                 }
                 finally
                 {
@@ -292,7 +292,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Debug($"[EventLoop] RAF Exception: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Debug($"[EventLoop] RAF Exception: {ex.Message}", LogCategory.Errors);
                 }
                 finally
                 {
@@ -307,7 +307,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             if (EngineContext.Current.CurrentPhase != EnginePhase.Idle)
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[EventLoop] Phase leak detected: {EngineContext.Current.CurrentPhase}. Forcing Idle recovery.",
                     LogCategory.Errors);
                 EngineContext.Current.EndPhase();
@@ -348,7 +348,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
             _layoutDirty = false;
             _lastRenderTime = 0;
-            FenLogger.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
+            EngineLogCompat.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
         }
 
         public static void ResetInstance()

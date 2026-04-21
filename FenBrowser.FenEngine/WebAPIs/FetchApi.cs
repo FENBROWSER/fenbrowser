@@ -44,7 +44,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[FetchApi] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
+                    EngineLogCompat.Warn($"[FetchApi] Detached async operation failed: {ex.Message}", LogCategory.JavaScript);
                 }
             }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
@@ -196,7 +196,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                                 }
                                 catch (Exception ex)
                                 {
-                                    FenLogger.Warn($"[Fetch] Invalid content-type header '{ct}': {ex.Message}", LogCategory.JavaScript);
+                                    EngineLogCompat.Warn($"[Fetch] Invalid content-type header '{ct}': {ex.Message}", LogCategory.JavaScript);
                                 }
                             }
                         }

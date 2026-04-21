@@ -489,7 +489,7 @@ namespace FenBrowser.FenEngine.DOM
             if (_readyState == state) return;
             _readyState = state;
             
-            FenLogger.Debug($"[DocumentWrapper] readyState -> {state}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[DocumentWrapper] readyState -> {state}", FenBrowser.Core.Logging.LogCategory.JavaScript);
             
             // Dispatch readystatechange
             DispatchEventInternal(new DomEvent("readystatechange", false, false, false, _context));
@@ -1272,7 +1272,7 @@ namespace FenBrowser.FenEngine.DOM
             if (string.IsNullOrEmpty(type) || !callbackIsValid || callback.IsUndefined || callback.IsNull)
                 return FenValue.Undefined;
 
-            FenLogger.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[DocumentWrapper] addEventListener called for '{type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
             AddToDocumentListenerStore(type, callback, capture, once, passive);
             return FenValue.Undefined;
@@ -1321,7 +1321,7 @@ namespace FenBrowser.FenEngine.DOM
                 eventObj = new DomEvent(type);
             }
 
-            FenLogger.Debug($"[DocumentWrapper] dispatchEvent '{eventObj.Type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[DocumentWrapper] dispatchEvent '{eventObj.Type}'", FenBrowser.Core.Logging.LogCategory.JavaScript);
 
             var notPrevented = false;
             var rootElement = GetDocumentEventTargetElement();
@@ -1512,7 +1512,7 @@ namespace FenBrowser.FenEngine.DOM
                     var bridged = CookieReadBridge(_baseUri);
                     if (bridged != null) return bridged;
                 }
-                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[DocumentWrapper] Cookie read bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
+                catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[DocumentWrapper] Cookie read bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
             }
 
             // fromScript: true â€” HttpOnly cookies must not be exposed to JavaScript
@@ -1526,11 +1526,11 @@ namespace FenBrowser.FenEngine.DOM
             if (_baseUri != null && CookieWriteBridge != null)
             {
                 try { CookieWriteBridge(_baseUri, cookieStr); return; }
-                catch (Exception ex) { FenBrowser.Core.FenLogger.Warn($"[DocumentWrapper] Cookie write bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
+                catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[DocumentWrapper] Cookie write bridge failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript); }
             }
 
             _cookieStore.SetCookie(cookieStr, _baseUri);
-            FenLogger.Debug($"[DocumentWrapper] Cookie set: {cookieStr.Split(';')[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[DocumentWrapper] Cookie set: {cookieStr.Split(';')[0]}", FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
         public bool DefineOwnProperty(string key, PropertyDescriptor desc)
         {

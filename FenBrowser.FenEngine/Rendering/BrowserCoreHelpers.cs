@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
@@ -32,7 +32,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[BrowserCoreHelpers] Failed parsing js query override: {ex.Message}", LogCategory.Navigation);
+                EngineLogCompat.Warn($"[BrowserCoreHelpers] Failed parsing js query override: {ex.Message}", LogCategory.Navigation);
             }
             return null;
         }

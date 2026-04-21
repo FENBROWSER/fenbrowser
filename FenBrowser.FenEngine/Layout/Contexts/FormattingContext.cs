@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             if (_layoutDepth >= MaxLayoutDepth)
             {
-                FenBrowser.Core.FenLogger.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);
+                FenBrowser.Core.EngineLogCompat.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);
                 return;
             }
             _layoutDepth++;

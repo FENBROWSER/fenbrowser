@@ -45,7 +45,7 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             if (canvas == null || root == null || boxes == null)
                 return;
 
-            global::FenBrowser.Core.FenLogger.Debug("[PaintDebug] Rendering overlay", LogCategory.Rendering);
+            global::FenBrowser.Core.EngineLogCompat.Debug("[PaintDebug] Rendering overlay", LogCategory.Rendering);
 
             // Traverse tree and draw boxes
             RenderNode(canvas, root, boxes, styles, showLabels);

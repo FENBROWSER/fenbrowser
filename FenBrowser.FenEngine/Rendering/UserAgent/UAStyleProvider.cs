@@ -144,7 +144,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 
                 // DEBUG LOG
                 bool isDefault = !style.FontSize.HasValue || Math.Abs(style.FontSize.Value - 16.0) < 0.1;
-                FenLogger.Debug($"[UA-DEBUG] Tag={tag} FontSize={(style.FontSize.HasValue ? style.FontSize.Value.ToString() : "null")} IsDefault={isDefault}", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[UA-DEBUG] Tag={tag} FontSize={(style.FontSize.HasValue ? style.FontSize.Value.ToString() : "null")} IsDefault={isDefault}", LogCategory.Rendering);
 
                 // FIX: Force apply if it's default 16px to override weak inheritance
                 if (isDefault)
