@@ -148,6 +148,25 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private void MarkStyleSnapshotUnstable()
+        {
+            lock (_renderStateLock)
+            {
+                _hasStableStyles = false;
+                _renderSnapshotVersion++;
+            }
+        }
+
+        private bool HasStableComputedStyleSnapshot()
+        {
+            lock (_renderStateLock)
+            {
+                return _hasStableStyles &&
+                       LastComputedStyles != null &&
+                       LastComputedStyles.Count > 0;
+            }
+        }
+
         private void UpdateRenderState(Node dom, Dictionary<Node, CssComputed> styles)
         {
             lock (_renderStateLock)
@@ -2187,6 +2206,7 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 EngineLogCompat.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
+                MarkStyleSnapshotUnstable();
 
                 var preferFallbackDom = ShouldPreferFallbackDom(html, baseUri);
                 if (preferFallbackDom)
@@ -2533,6 +2553,11 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
+            if (!HasStableComputedStyleSnapshot())
+            {
+                return false;
+            }
+
             if (!ShouldEmitStreamingPreparseRepaint(checkpointOrdinal, repaintCount))
             {
                 return false;
@@ -2570,6 +2595,11 @@ namespace FenBrowser.FenEngine.Rendering
                 document?.DocumentElement == null ||
                 checkpoint == null ||
                 checkpoint.Phase != HtmlParseBuildPhase.Parsing)
+            {
+                return;
+            }
+
+            if (!HasStableComputedStyleSnapshot())
             {
                 return;
             }

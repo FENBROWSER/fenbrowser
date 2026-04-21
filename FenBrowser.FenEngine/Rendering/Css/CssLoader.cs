@@ -863,11 +863,42 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         if (isRootRule && propName.Equals("font-size", StringComparison.OrdinalIgnoreCase))
                         {
+                            var rawFontSize = decl.Value?.Trim();
+                            if (string.IsNullOrEmpty(rawFontSize))
+                            {
+                                continue;
+                            }
+
+                            // Resolve root-level var() references before converting to px.
+                            // Without this guard, unresolved var() can evaluate to 0 and poison rem basis.
+                            var fontSizeForParse = rawFontSize;
+                            if (fontSizeForParse.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                var resolvedRootFontSize = ResolveCustomPropertyReferences(
+                                    fontSizeForParse,
+                                    new CssComputed(),
+                                    _customProperties,
+                                    new HashSet<string>(StringComparer.Ordinal));
+
+                                if (!string.IsNullOrWhiteSpace(resolvedRootFontSize))
+                                {
+                                    fontSizeForParse = resolvedRootFontSize;
+                                }
+                            }
+
                             double fs;
-                            if (TryPx(decl.Value, out fs, percentBase: 16.0))
+                            if (TryPx(fontSizeForParse, out fs, percentBase: 16.0) &&
+                                double.IsFinite(fs) &&
+                                fs > 0)
                             {
                                 _rootFontSize = fs;
-                                DebugLog(@"debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{decl.Value}'\r\n");
+                                DebugLog(@"debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{rawFontSize}'\r\n");
+                            }
+                            else
+                            {
+                                DebugLog(
+                                    @"debug_log.txt",
+                                    $"[CSS-VAR] Ignored root font-size '{rawFontSize}' (resolved='{fontSizeForParse}') to preserve rem basis={_rootFontSize}px\r\n");
                             }
                         }
                     }

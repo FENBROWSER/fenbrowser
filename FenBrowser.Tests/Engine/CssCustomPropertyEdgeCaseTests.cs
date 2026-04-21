@@ -63,5 +63,33 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("red", style.Map["color"]);
             Assert.Contains("data:image/svg+xml;utf8", style.Map["background-image"], StringComparison.Ordinal);
         }
+
+        [Fact]
+        public async Task ComputeAsync_RootFontSizeFromVar_PreservesRemBasis()
+        {
+            CssLoader.ClearCaches();
+
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    :root { --base-size: 12px; }
+    html { font-size: var(--base-size); }
+    .box { width: 2rem; }
+  </style>
+</head>
+<body><div class='box'>X</div></body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
+
+            Assert.InRange(computed[root].FontSize ?? 0d, 11.999d, 12.001d);
+            Assert.InRange(computed[box].Width ?? 0d, 23.999d, 24.001d);
+        }
     }
 }
