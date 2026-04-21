@@ -145,7 +145,7 @@ public class DomInstrumenter : IDisposable
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[DomInstrumenter] Error flushing mutation: {ex.Message}", LogCategory.General);
+                EngineLogCompat.Error($"[DomInstrumenter] Error flushing mutation: {ex.Message}", LogCategory.General);
             }
         }
     }

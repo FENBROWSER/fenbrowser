@@ -97,14 +97,14 @@ public class RemoteDebugServer : IDisposable
         {
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
-            FenLogger.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.DevTools);
+            EngineLogCompat.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.DevTools);
             if (_usesEphemeralAuthToken)
             {
-                FenLogger.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.Security);
+                EngineLogCompat.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.Security);
             }
             else
             {
-                FenLogger.Info("[RemoteDebug] Using configured auth token from FEN_REMOTE_DEBUG_TOKEN.", LogCategory.Security);
+                EngineLogCompat.Info("[RemoteDebug] Using configured auth token from FEN_REMOTE_DEBUG_TOKEN.", LogCategory.Security);
             }
             
             // Start heartbeat timer (10/10)
@@ -114,7 +114,7 @@ public class RemoteDebugServer : IDisposable
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[RemoteDebug] Failed to start TCP listener: {ex.Message}", LogCategory.DevTools);
+            EngineLogCompat.Error($"[RemoteDebug] Failed to start TCP listener: {ex.Message}", LogCategory.DevTools);
         }
     }
     
@@ -168,14 +168,14 @@ public class RemoteDebugServer : IDisposable
             try
             {
                 var client = await _listener.AcceptSocketAsync();
-                FenLogger.Info($"[RemoteDebug] Connection accepted from {client.RemoteEndPoint}", LogCategory.DevTools);
+                EngineLogCompat.Info($"[RemoteDebug] Connection accepted from {client.RemoteEndPoint}", LogCategory.DevTools);
                 _ = HandleClient(client);
             }
             catch (Exception ex)
             {
                 if (!_cts.IsCancellationRequested)
                 {
-                    FenLogger.Error($"[RemoteDebug] Accept error: {ex.Message}", LogCategory.DevTools);
+                    EngineLogCompat.Error($"[RemoteDebug] Accept error: {ex.Message}", LogCategory.DevTools);
                 }
                 break;
             }
@@ -184,7 +184,7 @@ public class RemoteDebugServer : IDisposable
 
     private async Task HandleClient(Socket client)
     {
-        using var scope = FenLogger.BeginScope(
+        using var scope = EngineLogCompat.BeginScope(
             component: "RemoteDebug",
             data: new Dictionary<string, object>
             {
@@ -205,7 +205,7 @@ public class RemoteDebugServer : IDisposable
 
             if (!IsAuthorizedRequest(request))
             {
-                FenLogger.Warn("[RemoteDebug] Unauthorized request rejected", LogCategory.Security);
+                EngineLogCompat.Warn("[RemoteDebug] Unauthorized request rejected", LogCategory.Security);
                 await SendUnauthorizedAsync(stream);
                 return;
             }
@@ -214,7 +214,7 @@ public class RemoteDebugServer : IDisposable
             {
                 if (request.Contains("Upgrade: websocket", StringComparison.OrdinalIgnoreCase))
                 {
-                    FenLogger.Info("[RemoteDebug] WebSocket Upgrade detected", LogCategory.DevTools);
+                    EngineLogCompat.Info("[RemoteDebug] WebSocket Upgrade detected", LogCategory.DevTools);
                     // Handle WebSocket Upgrade
                     if (DoHandshake(stream, request))
                     {
@@ -233,11 +233,11 @@ public class RemoteDebugServer : IDisposable
         catch (OperationCanceledException)
         {
              // Timeout - client connected but sent nothing (e.g. HTTPS handshake attempt)
-             FenLogger.Warn("[RemoteDebug] Client timed out (possible HTTPS handshake attempt?)", LogCategory.DevTools);
+             EngineLogCompat.Warn("[RemoteDebug] Client timed out (possible HTTPS handshake attempt?)", LogCategory.DevTools);
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[RemoteDebug] Client error: {ex.Message}", LogCategory.DevTools);
+            EngineLogCompat.Error($"[RemoteDebug] Client error: {ex.Message}", LogCategory.DevTools);
         }
         finally
         {
@@ -462,7 +462,7 @@ public class RemoteDebugServer : IDisposable
                 int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                 if (bytesRead == 0) 
                 {
-                    FenLogger.Info("[RemoteDebug] Client sent FIN (0 bytes)", LogCategory.General);
+                    EngineLogCompat.Info("[RemoteDebug] Client sent FIN (0 bytes)", LogCategory.General);
                     break;
                 }
                 
@@ -490,7 +490,7 @@ public class RemoteDebugServer : IDisposable
                     // Safety check: don't accept frames larger than 10MB
                     if (payloadLen > 10 * 1024 * 1024)
                     {
-                        FenLogger.Warn($"[RemoteDebug] Frame too large: {payloadLen} bytes, dropping", LogCategory.General);
+                        EngineLogCompat.Warn($"[RemoteDebug] Frame too large: {payloadLen} bytes, dropping", LogCategory.General);
                         continue;
                     }
                 }
@@ -500,7 +500,7 @@ public class RemoteDebugServer : IDisposable
                 {
                     // If we read less than the frame size, we are in trouble with this simple parser.
                     // Ideally we should loop and read more.
-                    FenLogger.Warn($"[RemoteDebug] Partial Frame Read: {bytesRead} < {offset + payloadLen}. This might cause disconnection.", LogCategory.General);
+                    EngineLogCompat.Warn($"[RemoteDebug] Partial Frame Read: {bytesRead} < {offset + payloadLen}. This might cause disconnection.", LogCategory.General);
                     
                     // Attempt to read the rest
                     int targetTotal = offset + (int)payloadLen;
@@ -516,7 +516,7 @@ public class RemoteDebugServer : IDisposable
                 
                 if (opcode == 8) // Close
                 {
-                    FenLogger.Info("[RemoteDebug] Client requested Close (Opcode 8)", LogCategory.General);
+                    EngineLogCompat.Info("[RemoteDebug] Client requested Close (Opcode 8)", LogCategory.General);
                     break;
                 }
                 else if (opcode == 9) // Ping
@@ -562,7 +562,7 @@ public class RemoteDebugServer : IDisposable
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[RemoteDebug] WS Cycle Error: {ex}", LogCategory.General);
+            EngineLogCompat.Error($"[RemoteDebug] WS Cycle Error: {ex}", LogCategory.General);
         }
     }
     

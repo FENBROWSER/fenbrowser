@@ -23,6 +23,7 @@ public class DevToolsServer
     private NetworkDomain? _networkDomain;
     private DebuggerDomain? _debuggerDomain;
     private CSSDomain? _cssDomain;
+    private LogDomain? _logDomain;
     
     public NodeRegistry Registry => _registry;
     public MessageRouter Router => _router;
@@ -68,6 +69,12 @@ public class DevToolsServer
     {
         _debuggerDomain = new DebuggerDomain(host, BroadcastEvent);
         _router.RegisterHandler(_debuggerDomain);
+    }
+
+    public void InitializeLog()
+    {
+        _logDomain = new LogDomain(BroadcastEvent);
+        _router.RegisterHandler(_logDomain);
     }
     
     public void InitializeCss(
@@ -169,5 +176,6 @@ public class DevToolsServer
         _networkDomain = null;
         _debuggerDomain = null;
         _cssDomain = null;
+        _logDomain = null;
     }
 }

@@ -262,7 +262,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] Protocol error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] Protocol error: {ex.Message}", LogCategory.General);
         }
         
         RefreshFlattenedTree();
@@ -300,7 +300,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] RequestChildNodes error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] RequestChildNodes error: {ex.Message}", LogCategory.General);
         }
     }
     
@@ -378,7 +378,7 @@ public class ElementsPanel : DevToolsPanelBase
         
         if (node.NodeType == 3 && node.NodeValue == "g")
         {
-            FenBrowser.Core.FenLogger.Debug($"[ElementsPanel] Spotted 'g' node! Parent: {node.ParentId}, Id: {node.NodeId}");
+            FenBrowser.Core.EngineLogCompat.Debug($"[ElementsPanel] Spotted 'g' node! Parent: {node.ParentId}, Id: {node.NodeId}");
         }
         
         if (isExpanded && node.Children != null)
@@ -771,7 +771,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[ElementsPanel] FetchStylesAsync error: {ex.Message}", LogCategory.General);
+            EngineLogCompat.Error($"[ElementsPanel] FetchStylesAsync error: {ex.Message}", LogCategory.General);
         }
     }
 
@@ -1264,7 +1264,7 @@ public class ElementsPanel : DevToolsPanelBase
         // 2. Always use default cursor when not dragging
         Host?.RequestCursorChange(CursorType.Default);
 
-        // FenBrowser.Core.FenLogger.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
+        // FenBrowser.Core.EngineLogCompat.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
 
         // 3. Handle Tree hover
         if (x < _splitterX)
@@ -1702,7 +1702,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] Attribute change error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] Attribute change error: {ex.Message}", LogCategory.General);
         }
     }
 
@@ -1729,7 +1729,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] Node value change error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] Node value change error: {ex.Message}", LogCategory.General);
         }
     }
     
@@ -1764,7 +1764,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] CSS property change error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] CSS property change error: {ex.Message}", LogCategory.General);
         }
     }
     
@@ -2048,7 +2048,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenLogger.Error($"[ElementsPanel] getOuterHTML error: {ex.Message}", LogCategory.General);
+            EngineLogCompat.Error($"[ElementsPanel] getOuterHTML error: {ex.Message}", LogCategory.General);
         }
     }
     
@@ -2143,7 +2143,7 @@ public class ElementsPanel : DevToolsPanelBase
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.FenLogger.Error($"[ElementsPanel] setOuterHTML error: {ex.Message}", LogCategory.General);
+            FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] setOuterHTML error: {ex.Message}", LogCategory.General);
         }
     }
 

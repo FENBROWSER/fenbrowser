@@ -3,7 +3,6 @@ using System.Text.Json;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
-using FenBrowser.Core.Logging;
 
 namespace FenBrowser.DevTools.Panels;
 
@@ -35,7 +34,6 @@ public class ConsolePanel : DevToolsPanelBase
             previousHost.ProtocolEventReceived -= OnProtocolEvent;
         }
 
-        LogManager.LogEntryAdded -= OnLogEntryAdded;
         _entries.Clear();
         ScrollY = 0;
         MaxScrollY = 0;
@@ -53,6 +51,11 @@ public class ConsolePanel : DevToolsPanelBase
                 Method = "Runtime.enable",
                 Params = new { }
             }, ProtocolJson.Options));
+            _ = Host.SendProtocolCommandAsync(JsonSerializer.Serialize(new ProtocolRequest<object>
+            {
+                Method = "Log.enable",
+                Params = new { }
+            }, ProtocolJson.Options));
             
             // Load existing messages (Legacy fallback for phase D4 transition)
             foreach (var msg in Host.GetConsoleMessages())
@@ -60,34 +63,7 @@ public class ConsolePanel : DevToolsPanelBase
                 AddEntry(msg);
             }
             
-            // Subscribe to FenLogger for browser internal logs
-            LogManager.LogEntryAdded += OnLogEntryAdded;
         }
-    }
-    
-    private void OnLogEntryAdded(LogEntry entry)
-    {
-        if (!_showBrowserLogs) return;
-        
-        var level = entry.Level switch
-        {
-            LogLevel.Error => ConsoleLevel.Error,
-            LogLevel.Warn => ConsoleLevel.Warn,
-            LogLevel.Info => ConsoleLevel.Info,
-            LogLevel.Debug => ConsoleLevel.Debug,
-            _ => ConsoleLevel.Log
-        };
-        
-        // Format: [Category] Message
-        string msg = $"[{entry.Category}] {entry.Message}";
-        
-        _entries.Add(new ConsoleEntry(msg, level, entry.Timestamp, null, null));
-        
-        // Update scroll
-        MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
-        ScrollY = MaxScrollY; // Auto-scroll to bottom
-        
-        Invalidate();
     }
 
     private void OnProtocolEvent(string json)
@@ -107,8 +83,46 @@ public class ConsolePanel : DevToolsPanelBase
                     Invalidate();
                 }
             }
+            else if (method == "Log.entryAdded")
+            {
+                var evt = JsonSerializer.Deserialize<ProtocolEvent<LogEntryAddedEvent>>(json, ProtocolJson.Options);
+                if (evt?.Params?.Entry != null && _showBrowserLogs)
+                {
+                    AppendEngineLogEntry(evt.Params.Entry);
+                }
+            }
         }
         catch { }
+    }
+
+    private void AppendEngineLogEntry(LogEntryPayload entry)
+    {
+        var level = entry.Severity?.ToLowerInvariant() switch
+        {
+            "fatal" => ConsoleLevel.Error,
+            "error" => ConsoleLevel.Error,
+            "warn" => ConsoleLevel.Warn,
+            "info" => ConsoleLevel.Info,
+            "debug" => ConsoleLevel.Debug,
+            "trace" => ConsoleLevel.Debug,
+            _ => ConsoleLevel.Log
+        };
+
+        DateTime timestamp;
+        if (!DateTime.TryParse(entry.TimestampUtc, out timestamp))
+        {
+            timestamp = DateTime.Now;
+        }
+
+        var markerText = string.IsNullOrWhiteSpace(entry.Marker) || string.Equals(entry.Marker, "None", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : $"[{entry.Marker}]";
+        var message = $"[{entry.Subsystem}][{entry.Severity}]{markerText} {entry.Message}".TrimEnd();
+
+        _entries.Add(new ConsoleEntry(message, level, timestamp.ToLocalTime(), entry.SourceFile, entry.SourceLine > 0 ? entry.SourceLine : null));
+        MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
+        ScrollY = MaxScrollY;
+        Invalidate();
     }
     
     private void AddEntry(ConsoleMessageInfo msg)
