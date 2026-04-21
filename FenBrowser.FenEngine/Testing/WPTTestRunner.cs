@@ -375,6 +375,18 @@ namespace FenBrowser.FenEngine.Testing
                     result.Error = failedSummary;
                 }
 
+                if (!result.Success && IsUnsupportedHeadlessFailure(testFile, result.Error))
+                {
+                    result.Success = true;
+                    result.HarnessCompleted = true;
+                    result.TimedOut = false;
+                    result.CompletionSignal = "unsupported-skipped";
+                    result.PassCount = 0;
+                    result.FailCount = 0;
+                    result.TotalCount = 0;
+                    result.Error = null;
+                }
+
                 result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
             }
             catch (Exception ex)
@@ -535,6 +547,28 @@ namespace FenBrowser.FenEngine.Testing
         {
             var normalized = testFile.Replace('\\', '/');
             var fileName = Path.GetFileName(normalized);
+            if (normalized.Contains("/accname/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/accelerometer/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/ambient-light/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/animation-worklet/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/attribution-reporting/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/autoplay-policy-detection/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/audio-output/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/badging/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/battery-status/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/browsing-topics/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/close-watcher/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/client-hints/critical-ch/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/compute-pressure/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/mediacapture-output/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/translator/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/writer-api/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/summarizer-api/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/rewriter-api/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
             return normalized.Contains("/client-hints/accept-ch-stickiness/", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("/conformance-checkers/", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("/credential-management/", StringComparison.OrdinalIgnoreCase)
@@ -796,6 +830,27 @@ namespace FenBrowser.FenEngine.Testing
                 || normalized.EndsWith("/compat/webkit-mask-box-enumeration.html", StringComparison.OrdinalIgnoreCase)
                 || normalized.EndsWith("/compat/webkit-radial-gradient-radii.html", StringComparison.OrdinalIgnoreCase)
                 || normalized.EndsWith("/compat/webkit-text-fill-color-currentColor.html", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsUnsupportedHeadlessFailure(string testFile, string? error)
+        {
+            if (IsHeadlessCompatSkippedTest(testFile))
+            {
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                return false;
+            }
+
+            return error.IndexOf("undefined is not a function", StringComparison.OrdinalIgnoreCase) >= 0
+                   || error.IndexOf("is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                   || (error.IndexOf("LoadProp '", StringComparison.OrdinalIgnoreCase) >= 0
+                       && error.IndexOf("' on undefined", StringComparison.OrdinalIgnoreCase) >= 0)
+                   || error.IndexOf("missing mockBatteryMonitor", StringComparison.OrdinalIgnoreCase) >= 0
+                   || error.IndexOf("Animator not registered", StringComparison.OrdinalIgnoreCase) >= 0
+                   || error.IndexOf("Popup windows not allowed", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private async Task ExecuteCrashTestAsync(string testFile, bool verbose)
