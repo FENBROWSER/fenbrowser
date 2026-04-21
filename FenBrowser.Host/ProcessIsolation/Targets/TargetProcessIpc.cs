@@ -49,6 +49,13 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
     internal static class TargetIpc
     {
+        private const int MaxEnvelopeChars = 128 * 1024;
+        private const int MaxPayloadChars = 96 * 1024;
+        private const int MaxTypeChars = 40;
+        private const int MaxRequestIdChars = 96;
+        private const int MaxCapabilityTokenChars = 512;
+        private const long MaxClockSkewMs = 24L * 60L * 60L * 1000L;
+
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -61,6 +68,11 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         {
             envelope = null;
             if (string.IsNullOrWhiteSpace(line))
+            {
+                return false;
+            }
+
+            if (line.Length > MaxEnvelopeChars)
             {
                 return false;
             }
@@ -94,6 +106,66 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             {
                 return null;
             }
+        }
+
+        public static bool TryValidateInboundEnvelope(
+            TargetIpcEnvelope envelope,
+            out TargetIpcMessageType messageType,
+            out string rejectionReason)
+        {
+            messageType = default;
+            rejectionReason = string.Empty;
+
+            if (envelope == null)
+            {
+                rejectionReason = "envelope-null";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(envelope.Type) ||
+                envelope.Type.Length > MaxTypeChars ||
+                !Enum.TryParse<TargetIpcMessageType>(envelope.Type, ignoreCase: true, out messageType))
+            {
+                rejectionReason = "type-invalid";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(envelope.RequestId))
+            {
+                if (envelope.RequestId.Length > MaxRequestIdChars || !Guid.TryParse(envelope.RequestId, out _))
+                {
+                    rejectionReason = "requestid-invalid";
+                    return false;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(envelope.CapabilityToken) && envelope.CapabilityToken.Length > MaxCapabilityTokenChars)
+            {
+                rejectionReason = "cap-token-too-large";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Payload) && envelope.Payload.Length > MaxPayloadChars)
+            {
+                rejectionReason = "payload-too-large";
+                return false;
+            }
+
+            if (envelope.TimestampUnixMs <= 0)
+            {
+                rejectionReason = "timestamp-missing";
+                return false;
+            }
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var delta = Math.Abs(now - envelope.TimestampUnixMs);
+            if (delta > MaxClockSkewMs)
+            {
+                rejectionReason = "timestamp-out-of-range";
+                return false;
+            }
+
+            return true;
         }
     }
 
@@ -237,6 +309,12 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                         continue;
                     }
 
+                    if (!TargetIpc.TryValidateInboundEnvelope(envelope, out _, out var rejectionReason))
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Rejected IPC envelope: {rejectionReason}.");
+                        continue;
+                    }
+
                     DispatchInbound(envelope);
                 }
             }
@@ -252,7 +330,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
         private void DispatchInbound(TargetIpcEnvelope envelope)
         {
-            if (!Enum.TryParse<TargetIpcMessageType>(envelope.Type, true, out var messageType))
+            if (!TargetIpc.TryValidateInboundEnvelope(envelope, out var messageType, out _))
             {
                 return;
             }

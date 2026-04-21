@@ -2237,3 +2237,14 @@ _End of Volume VI_
 - Focused verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ParserHardeningGuardTests|FullyQualifiedName~ResourceManagerFetchBytesTests|FullyQualifiedName~BrowserSettingsTests" -v minimal`
   - Expected result for this tranche: pass with deterministic reason-code/status assertions for limit-triggered outcomes.
+
+## 6.73 IPC Envelope Validation Contract Tests (2026-04-21)
+
+- Added coverage:
+  - `FenBrowser.Tests/Architecture/IpcEnvelopeValidationTests.cs` (new)
+    - renderer envelope acceptance/rejection for tab binding and correlation-id shape
+    - network envelope request-id validation
+    - target envelope payload-size rejection
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~IpcEnvelopeValidationTests" -v minimal`
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -v minimal --no-restore`

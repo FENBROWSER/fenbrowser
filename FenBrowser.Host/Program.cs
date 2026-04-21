@@ -350,10 +350,28 @@ namespace FenBrowser.Host
                     continue;
                 }
 
+                if (!RendererIpc.TryValidateInboundEnvelope(envelope, tabId, out var rendererMessageType, out var rendererRejectionReason))
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[RendererChild] Rejected inbound envelope: {rendererRejectionReason}.");
+                    continue;
+                }
+
                 try
                 {
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (rendererMessageType == RendererIpcMessageType.Hello)
                     {
+                        if (handshakeComplete)
+                        {
+                            SendRendererEnvelope(writer, new RendererIpcEnvelope
+                            {
+                                Type = RendererIpcMessageType.Error.ToString(),
+                                TabId = tabId,
+                                CorrelationId = envelope.CorrelationId,
+                                Payload = "duplicate_handshake"
+                            });
+                            continue;
+                        }
+
                         if (!string.Equals(envelope.Token, authToken, StringComparison.Ordinal))
                         {
                             SendRendererEnvelope(writer, new RendererIpcEnvelope
@@ -381,7 +399,19 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Navigate.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrWhiteSpace(envelope.Token))
+                    {
+                        SendRendererEnvelope(writer, new RendererIpcEnvelope
+                        {
+                            Type = RendererIpcMessageType.Error.ToString(),
+                            TabId = tabId,
+                            CorrelationId = envelope.CorrelationId,
+                            Payload = "token_not_allowed"
+                        });
+                        continue;
+                    }
+
+                    if (rendererMessageType == RendererIpcMessageType.Navigate)
                     {
                         var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
                         var url = payload?.Url ?? string.Empty;
@@ -402,7 +432,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Input.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (rendererMessageType == RendererIpcMessageType.Input)
                     {
                         var input = RendererIpc.DeserializePayload<RendererInputEvent>(envelope);
                         if (input != null && input.IsMeaningful)
@@ -449,7 +479,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.FrameRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (rendererMessageType == RendererIpcMessageType.FrameRequest)
                     {
                         var frameRequest = RendererIpc.DeserializePayload<RendererFrameRequestPayload>(envelope);
                         float vpWidth = frameRequest?.ViewportWidth ?? 1280f;
@@ -559,14 +589,14 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(envelope.Type, RendererIpcMessageType.TabClosed.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (rendererMessageType == RendererIpcMessageType.Shutdown ||
+                        rendererMessageType == RendererIpcMessageType.TabClosed)
                     {
                         running = false;
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (rendererMessageType == RendererIpcMessageType.Ping)
                     {
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
                         {
@@ -672,10 +702,27 @@ namespace FenBrowser.Host
                     continue;
                 }
 
+                if (!NetworkIpc.TryValidateInboundEnvelope(envelope, out var networkMessageType, out var networkRejectionReason))
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkChild] Rejected inbound envelope: {networkRejectionReason}.");
+                    continue;
+                }
+
                 try
                 {
-                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (networkMessageType == NetworkIpcMessageType.Hello)
                     {
+                        if (handshakeComplete)
+                        {
+                            SendNetworkEnvelope(writer, new NetworkIpcEnvelope
+                            {
+                                Type = NetworkIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "duplicate_handshake"
+                            });
+                            continue;
+                        }
+
                         if (!string.Equals(envelope.CapabilityToken, authToken, StringComparison.Ordinal))
                         {
                             SendNetworkEnvelope(writer, new NetworkIpcEnvelope
@@ -701,7 +748,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, NetworkIpcMessageType.FetchRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (networkMessageType == NetworkIpcMessageType.FetchRequest)
                     {
                         var payload = NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(envelope);
                         if (payload == null || string.IsNullOrWhiteSpace(payload.Url))
@@ -815,7 +862,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, NetworkIpcMessageType.CancelRequest.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (networkMessageType == NetworkIpcMessageType.CancelRequest)
                     {
                         if (activeRequests.TryRemove(envelope.RequestId, out var cts))
                         {
@@ -825,7 +872,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (networkMessageType == NetworkIpcMessageType.Ping)
                     {
                         SendNetworkEnvelope(writer, new NetworkIpcEnvelope
                         {
@@ -835,7 +882,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, NetworkIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (networkMessageType == NetworkIpcMessageType.Shutdown)
                     {
                         running = false;
                         continue;
@@ -945,10 +992,27 @@ namespace FenBrowser.Host
                     continue;
                 }
 
+                if (!TargetIpc.TryValidateInboundEnvelope(envelope, out var targetMessageType, out var targetRejectionReason))
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{expectedKind}Child] Rejected inbound envelope: {targetRejectionReason}.");
+                    continue;
+                }
+
                 try
                 {
-                    if (string.Equals(envelope.Type, TargetIpcMessageType.Hello.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (targetMessageType == TargetIpcMessageType.Hello)
                     {
+                        if (handshakeComplete)
+                        {
+                            SendTargetEnvelope(writer, new TargetIpcEnvelope
+                            {
+                                Type = TargetIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "duplicate_handshake"
+                            });
+                            continue;
+                        }
+
                         if (!string.Equals(envelope.CapabilityToken, authToken, StringComparison.Ordinal))
                         {
                             SendTargetEnvelope(writer, new TargetIpcEnvelope
@@ -981,7 +1045,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, TargetIpcMessageType.Ping.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (targetMessageType == TargetIpcMessageType.Ping)
                     {
                         SendTargetEnvelope(writer, new TargetIpcEnvelope
                         {
@@ -991,7 +1055,7 @@ namespace FenBrowser.Host
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, TargetIpcMessageType.Shutdown.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (targetMessageType == TargetIpcMessageType.Shutdown)
                     {
                         running = false;
                         continue;

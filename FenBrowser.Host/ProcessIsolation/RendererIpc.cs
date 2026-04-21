@@ -91,6 +91,13 @@ namespace FenBrowser.Host.ProcessIsolation
 
     internal static class RendererIpc
     {
+        private const int MaxEnvelopeChars = 256 * 1024;
+        private const int MaxPayloadChars = 192 * 1024;
+        private const int MaxTypeChars = 32;
+        private const int MaxCorrelationIdChars = 64;
+        private const int MaxTokenChars = 512;
+        private const long MaxClockSkewMs = 24L * 60L * 60L * 1000L;
+
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -109,6 +116,11 @@ namespace FenBrowser.Host.ProcessIsolation
                 return false;
             }
 
+            if (line.Length > MaxEnvelopeChars)
+            {
+                return false;
+            }
+
             try
             {
                 envelope = JsonSerializer.Deserialize<RendererIpcEnvelope>(line, JsonOptions);
@@ -118,6 +130,72 @@ namespace FenBrowser.Host.ProcessIsolation
             {
                 return false;
             }
+        }
+
+        public static bool TryValidateInboundEnvelope(
+            RendererIpcEnvelope envelope,
+            int expectedTabId,
+            out RendererIpcMessageType messageType,
+            out string rejectionReason)
+        {
+            messageType = default;
+            rejectionReason = string.Empty;
+
+            if (envelope == null)
+            {
+                rejectionReason = "envelope-null";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(envelope.Type) ||
+                envelope.Type.Length > MaxTypeChars ||
+                !Enum.TryParse<RendererIpcMessageType>(envelope.Type, ignoreCase: true, out messageType))
+            {
+                rejectionReason = "type-invalid";
+                return false;
+            }
+
+            if (envelope.TabId != expectedTabId)
+            {
+                rejectionReason = "tab-mismatch";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(envelope.CorrelationId) ||
+                envelope.CorrelationId.Length > MaxCorrelationIdChars ||
+                !Guid.TryParse(envelope.CorrelationId, out _))
+            {
+                rejectionReason = "correlation-invalid";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Token) && envelope.Token.Length > MaxTokenChars)
+            {
+                rejectionReason = "token-too-large";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Payload) && envelope.Payload.Length > MaxPayloadChars)
+            {
+                rejectionReason = "payload-too-large";
+                return false;
+            }
+
+            if (envelope.TimestampUnixMs <= 0)
+            {
+                rejectionReason = "timestamp-missing";
+                return false;
+            }
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var delta = Math.Abs(now - envelope.TimestampUnixMs);
+            if (delta > MaxClockSkewMs)
+            {
+                rejectionReason = "timestamp-out-of-range";
+                return false;
+            }
+
+            return true;
         }
 
         public static string SerializePayload<T>(T payload)
@@ -345,12 +423,24 @@ namespace FenBrowser.Host.ProcessIsolation
                         continue;
                     }
 
-                    if (string.Equals(envelope.Type, RendererIpcMessageType.Ready.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (!RendererIpc.TryValidateInboundEnvelope(envelope, TabId, out var messageType, out var rejectionReason))
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Rejected renderer IPC envelope tab={TabId}: {rejectionReason}.");
+                        continue;
+                    }
+
+                    if (messageType == RendererIpcMessageType.Hello)
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Rejected unexpected renderer Hello envelope for tab {TabId}.");
+                        continue;
+                    }
+
+                    if (messageType == RendererIpcMessageType.Ready)
                     {
                         _readyTcs.TrySetResult(true);
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[ProcessIsolation] Renderer child ready for tab {TabId}.");
                     }
-                    else if (string.Equals(envelope.Type, RendererIpcMessageType.FrameReady.ToString(), StringComparison.OrdinalIgnoreCase))
+                    else if (messageType == RendererIpcMessageType.FrameReady)
                     {
                         var payload = RendererIpc.DeserializePayload<RendererFrameReadyPayload>(envelope);
                         var url = payload?.Url ?? "<unknown>";
@@ -397,11 +487,11 @@ namespace FenBrowser.Host.ProcessIsolation
                             FrameReceived?.Invoke(TabId, payload);
                         }
                     }
-                    else if (string.Equals(envelope.Type, RendererIpcMessageType.Error.ToString(), StringComparison.OrdinalIgnoreCase))
+                    else if (messageType == RendererIpcMessageType.Error)
                     {
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Renderer child error tab={TabId}: {envelope.Payload}");
                     }
-                    else if (string.Equals(envelope.Type, RendererIpcMessageType.LogBatch.ToString(), StringComparison.OrdinalIgnoreCase))
+                    else if (messageType == RendererIpcMessageType.LogBatch)
                     {
                         var batch = RendererIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                         ProcessIsolationLogCollector.PublishBatch(batch);

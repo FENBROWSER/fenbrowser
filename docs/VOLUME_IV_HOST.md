@@ -1004,3 +1004,19 @@ _End of Volume IV_
   - Crash handlers now emit marker-tagged structured events (`Invariant`/`EngineBug`) and best-effort bundle-export diagnostics.
 - Runtime effect:
   - Crash incidents now automatically persist a `Results/<timestamp>/` bundle via `EngineLog.ExportFailureBundle(...)` without manual operator capture.
+
+### 6.47 Strict Inbound IPC Envelope Validation (2026-04-21)
+
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Network/NetworkProcessIpc.cs`
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetProcessIpc.cs`
+- `FenBrowser.Host/Program.cs`
+  - Added strict inbound envelope gates for renderer/network/target channels:
+    - typed message enum validation
+    - bounded identifier/token/payload sizes
+    - timestamp sanity window checks
+    - renderer tab-id binding on inbound messages
+  - Child command loops now reject duplicate handshake attempts and reject token-bearing non-handshake messages.
+  - Invalid envelopes are rejected with explicit reason logging and do not enter command dispatch.
+- Runtime effect:
+  - IPC channels now fail closed at envelope boundary and preserve deterministic startup/runtime behavior when malformed input is received.

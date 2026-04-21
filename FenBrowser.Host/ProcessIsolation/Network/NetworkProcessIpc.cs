@@ -134,6 +134,13 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
     internal static class NetworkIpc
     {
+        private const int MaxEnvelopeChars = 256 * 1024;
+        private const int MaxPayloadChars = 224 * 1024;
+        private const int MaxTypeChars = 40;
+        private const int MaxRequestIdChars = 96;
+        private const int MaxCapabilityTokenChars = 512;
+        private const long MaxClockSkewMs = 24L * 60L * 60L * 1000L;
+
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -146,6 +153,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             e = null;
             if (string.IsNullOrWhiteSpace(line)) return false;
+            if (line.Length > MaxEnvelopeChars) return false;
             try { e = JsonSerializer.Deserialize<NetworkIpcEnvelope>(line, JsonOpts); return e != null; }
             catch { return false; }
         }
@@ -158,6 +166,66 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             if (e == null || string.IsNullOrWhiteSpace(e.Payload)) return null;
             try { return JsonSerializer.Deserialize<T>(e.Payload, JsonOpts); }
             catch { return null; }
+        }
+
+        public static bool TryValidateInboundEnvelope(
+            NetworkIpcEnvelope envelope,
+            out NetworkIpcMessageType messageType,
+            out string rejectionReason)
+        {
+            messageType = default;
+            rejectionReason = string.Empty;
+
+            if (envelope == null)
+            {
+                rejectionReason = "envelope-null";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(envelope.Type) ||
+                envelope.Type.Length > MaxTypeChars ||
+                !Enum.TryParse<NetworkIpcMessageType>(envelope.Type, ignoreCase: true, out messageType))
+            {
+                rejectionReason = "type-invalid";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(envelope.RequestId))
+            {
+                if (envelope.RequestId.Length > MaxRequestIdChars || !Guid.TryParse(envelope.RequestId, out _))
+                {
+                    rejectionReason = "requestid-invalid";
+                    return false;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(envelope.CapabilityToken) && envelope.CapabilityToken.Length > MaxCapabilityTokenChars)
+            {
+                rejectionReason = "cap-token-too-large";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Payload) && envelope.Payload.Length > MaxPayloadChars)
+            {
+                rejectionReason = "payload-too-large";
+                return false;
+            }
+
+            if (envelope.TimestampUnixMs <= 0)
+            {
+                rejectionReason = "timestamp-missing";
+                return false;
+            }
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var delta = Math.Abs(now - envelope.TimestampUnixMs);
+            if (delta > MaxClockSkewMs)
+            {
+                rejectionReason = "timestamp-out-of-range";
+                return false;
+            }
+
+            return true;
         }
     }
 
@@ -280,6 +348,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     var line = await _reader.ReadLineAsync().ConfigureAwait(false);
                     if (line == null) break;
                     if (!NetworkIpc.TryDeserialize(line, out var env)) continue;
+                    if (!NetworkIpc.TryValidateInboundEnvelope(env, out _, out var rejectionReason))
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Rejected IPC envelope: {rejectionReason}.");
+                        continue;
+                    }
                     DispatchInbound(env);
                 }
             }
@@ -293,7 +366,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         private void DispatchInbound(NetworkIpcEnvelope env)
         {
-            if (!Enum.TryParse<NetworkIpcMessageType>(env.Type, ignoreCase: true, out var msgType)) return;
+            if (!NetworkIpc.TryValidateInboundEnvelope(env, out var msgType, out _)) return;
 
             switch (msgType)
             {
