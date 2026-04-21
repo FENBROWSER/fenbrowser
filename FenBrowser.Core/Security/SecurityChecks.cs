@@ -51,7 +51,7 @@ namespace FenBrowser.Core.Security
 
             if (!accessor.Origin.IsSameOrigin(target.Origin))
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[Security] Blocked cross-origin access: {accessor.Origin} → {target.Origin} ({operation})",
                     LogCategory.Errors);
                 throw new DomException(

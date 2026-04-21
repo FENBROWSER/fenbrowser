@@ -141,7 +141,7 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[ResourcePrefetcher] Error parsing DOM hints: {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing DOM hints: {ex.Message}", LogCategory.Network);
             }
         }
 
@@ -169,7 +169,7 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[ResourcePrefetcher] Error parsing Link headers: {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing Link headers: {ex.Message}", LogCategory.Network);
             }
 
             await Task.CompletedTask;
@@ -210,7 +210,7 @@ namespace FenBrowser.Core.Network
             _pending.TryAdd(key, request);
             _queue.Enqueue(request);
 
-            FenLogger.Debug($"[ResourcePrefetcher] Queued {hint}: {url}", LogCategory.Network);
+            EngineLogCompat.Debug($"[ResourcePrefetcher] Queued {hint}: {url}", LogCategory.Network);
 
             await Task.CompletedTask;
         }
@@ -235,11 +235,11 @@ namespace FenBrowser.Core.Network
                 // Trigger connection by making a HEAD request
                 var headUri = new Uri($"{url.Scheme}://{url.Host}");
                 // The actual connection warming happens in HttpClient's connection pool
-                FenLogger.Debug($"[ResourcePrefetcher] Preconnect: {host}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect: {host}", LogCategory.Network);
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[ResourcePrefetcher] Preconnect failed: {host} - {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect failed: {host} - {ex.Message}", LogCategory.Network);
             }
 
             await Task.CompletedTask;
@@ -319,11 +319,11 @@ namespace FenBrowser.Core.Network
                         break;
                 }
 
-                FenLogger.Debug($"[ResourcePrefetcher] Completed {request.Hint}: {request.Url}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Completed {request.Hint}: {request.Url}", LogCategory.Network);
             }
             catch (Exception ex)
             {
-                FenLogger.Debug($"[ResourcePrefetcher] Failed {request.Hint}: {request.Url} - {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Failed {request.Hint}: {request.Url} - {ex.Message}", LogCategory.Network);
             }
             finally
             {

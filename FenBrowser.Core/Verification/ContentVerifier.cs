@@ -79,7 +79,7 @@ namespace FenBrowser.Core.Verification
 
             if (DebugConfig.LogVerification)
             {
-                FenLogger.Log($"[Source] URL: {url}, Size: {Math.Max(0, length)} bytes, Hash: {hash:X}", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[Source] URL: {url}, Size: {Math.Max(0, length)} bytes, Hash: {hash:X}", LogCategory.Verification, LogLevel.Info);
             }
         }
 
@@ -124,7 +124,7 @@ namespace FenBrowser.Core.Verification
 
             if (DebugConfig.LogVerification)
             {
-                FenLogger.Log($"[Rendered] URL: {url}, Nodes: {nodeCount}, Text Length: {textLength} chars", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[Rendered] URL: {url}, Nodes: {nodeCount}, Text Length: {textLength} chars", LogCategory.Verification, LogLevel.Info);
             }
         }
 
@@ -164,7 +164,7 @@ namespace FenBrowser.Core.Verification
             {
                 _screenshotPath = path;
                 _screenshotSaved = File.Exists(path);
-                FenLogger.Log($"[Visual] Screenshot saved to: {path} (Exists: {_screenshotSaved})", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[Visual] Screenshot saved to: {path} (Exists: {_screenshotSaved})", LogCategory.Verification, LogLevel.Info);
             }
         }
 
@@ -175,7 +175,7 @@ namespace FenBrowser.Core.Verification
             
             if (DebugConfig.LogVerification && timedOut)
             {
-                FenLogger.Log("[CSS] WARNING: CSS loading timed out. Page may be visually broken.", LogCategory.Verification, LogLevel.Warn);
+                EngineLogCompat.Log("[CSS] WARNING: CSS loading timed out. Page may be visually broken.", LogCategory.Verification, LogLevel.Warn);
             }
         }
 
@@ -187,32 +187,32 @@ namespace FenBrowser.Core.Verification
         {
             if (!DebugConfig.LogVerification) return;
 
-            FenLogger.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
-            FenLogger.Log("              CONTENT VERIFICATION REPORT         ", LogCategory.Verification, LogLevel.Info);
-            FenLogger.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
+            EngineLogCompat.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
+            EngineLogCompat.Log("              CONTENT VERIFICATION REPORT         ", LogCategory.Verification, LogLevel.Info);
+            EngineLogCompat.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
 
             // 1. Network Source Check
             if (_sourceLengthBytes > 0)
             {
-                FenLogger.Log($"[1] CURL/Fetch (Network): PASS ({_sourceLengthBytes} bytes)", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[1] CURL/Fetch (Network): PASS ({_sourceLengthBytes} bytes)", LogCategory.Verification, LogLevel.Info);
                 if (!string.IsNullOrEmpty(_sourceDumpPath))
-                    FenLogger.Log($"    - Raw Path:    {Path.GetFileName(_sourceDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"    - Raw Path:    {Path.GetFileName(_sourceDumpPath)}", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
-                FenLogger.Log("[1] CURL/Fetch (Network): FAIL (No data)", LogCategory.Verification, LogLevel.Warn);
+                EngineLogCompat.Log("[1] CURL/Fetch (Network): FAIL (No data)", LogCategory.Verification, LogLevel.Warn);
             }
 
             // 2. Engine Source Check
             if (_domNodeCount > 0)
             {
-                FenLogger.Log($"[2] Fen Engine (Source):  PASS ({_domNodeCount} DOM nodes)", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[2] Fen Engine (Source):  PASS ({_domNodeCount} DOM nodes)", LogCategory.Verification, LogLevel.Info);
                 if (!string.IsNullOrEmpty(_engineDumpPath))
-                    FenLogger.Log($"    - Engine Path: {Path.GetFileName(_engineDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"    - Engine Path: {Path.GetFileName(_engineDumpPath)}", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
-                 FenLogger.Log("[2] Fen Engine (Source):  FAIL (Empty DOM)", LogCategory.Verification, LogLevel.Warn);
+                 EngineLogCompat.Log("[2] Fen Engine (Source):  FAIL (Empty DOM)", LogCategory.Verification, LogLevel.Warn);
             }
 
             // 3. Rendered Result Check
@@ -236,9 +236,9 @@ namespace FenBrowser.Core.Verification
 
             if (_renderedTextLength > 0)
             {
-                FenLogger.Log($"[3] Visual Text Result:   PASS ({_renderedTextLength} characters)", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[3] Visual Text Result:   PASS ({_renderedTextLength} characters)", LogCategory.Verification, LogLevel.Info);
                 if (!string.IsNullOrEmpty(_renderedDumpPath))
-                    FenLogger.Log($"    - Text Path:   {Path.GetFileName(_renderedDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"    - Text Path:   {Path.GetFileName(_renderedDumpPath)}", LogCategory.Verification, LogLevel.Info);
                 
                 if (_sourceLengthBytes > 0)
                 {
@@ -247,52 +247,52 @@ namespace FenBrowser.Core.Verification
                         : 0;
                     var healthDisposition = AssessContentHealth(_sourceLengthBytes, _renderedTextLength, _domNodeCount, _screenshotSaved, _cssRuleCount);
 
-                    FenLogger.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
                     if (_domNodeCount > 0)
                     {
-                        FenLogger.Log($"    - Text Density: {charsPerNode:F2} chars/node", LogCategory.Verification, LogLevel.Info);
+                        EngineLogCompat.Log($"    - Text Density: {charsPerNode:F2} chars/node", LogCategory.Verification, LogLevel.Info);
                     }
 
                     if (healthDisposition == ContentHealthDisposition.ToleratedLowRatio)
                     {
-                        FenLogger.Log("    - Note: low text-to-source ratio tolerated for a script-heavy page because DOM, CSS, and screenshot evidence are present.", LogCategory.Verification, LogLevel.Info);
+                        EngineLogCompat.Log("    - Note: low text-to-source ratio tolerated for a script-heavy page because DOM, CSS, and screenshot evidence are present.", LogCategory.Verification, LogLevel.Info);
                     }
                     else if (healthDisposition == ContentHealthDisposition.SuspiciousLowRatio)
                     {
-                        FenLogger.Log("    - WARNING: Low text-to-source ratio without enough corroborating render evidence. Investigate parsing, visibility, or layout.", LogCategory.Verification, LogLevel.Warn);
+                        EngineLogCompat.Log("    - WARNING: Low text-to-source ratio without enough corroborating render evidence. Investigate parsing, visibility, or layout.", LogCategory.Verification, LogLevel.Warn);
                     }
                 }
                 else
                 {
-                    FenLogger.Log("    - Content Health: N/A (No network source captured)", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log("    - Content Health: N/A (No network source captured)", LogCategory.Verification, LogLevel.Info);
                 }
             }
             else
             {
                 if (string.IsNullOrEmpty(_renderedDumpPath))
                 {
-                    FenLogger.Log("[3] Visual Text Result:   PENDING (rendered text snapshot not produced yet)", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log("[3] Visual Text Result:   PENDING (rendered text snapshot not produced yet)", LogCategory.Verification, LogLevel.Info);
                 }
                 else
                 {
-                    FenLogger.Log("[3] Visual Text Result:   FAIL (No text content)", LogCategory.Verification, LogLevel.Warn);
+                    EngineLogCompat.Log("[3] Visual Text Result:   FAIL (No text content)", LogCategory.Verification, LogLevel.Warn);
                 }
             }
 
             // 4. Visual Check
             if (_screenshotSaved)
             {
-                FenLogger.Log($"[4] Visual Artifact:     PASS ({Path.GetFileName(_screenshotPath)})", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[4] Visual Artifact:     PASS ({Path.GetFileName(_screenshotPath)})", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
-                FenLogger.Log("[4] Visual Artifact:     FAIL (No screenshot)", LogCategory.Verification, LogLevel.Warn);
+                EngineLogCompat.Log("[4] Visual Artifact:     FAIL (No screenshot)", LogCategory.Verification, LogLevel.Warn);
             }
 
             // 4. Quality Check (CSS/Performance/Layout)
             if (_cssTimedOut)
             {
-                FenLogger.Log("[4] Rendering Quality: FAIL (CSS Loading Timeout - 10s limit)", LogCategory.Verification, LogLevel.Warn);
+                EngineLogCompat.Log("[4] Rendering Quality: FAIL (CSS Loading Timeout - 10s limit)", LogCategory.Verification, LogLevel.Warn);
             }
             else 
             {
@@ -300,23 +300,23 @@ namespace FenBrowser.Core.Verification
                 int zeroCount = _lastZeroSizedCount;
                 if (_domNodeCount > 10 && (zeroCount > _domNodeCount * 0.2 || zeroCount > 50))
                 {
-                    FenLogger.Log($"[4] Rendering Quality: WARN ({zeroCount} zero-sized elements detected - possible FLEX-ZERO issue)", LogCategory.Verification, LogLevel.Warn);
+                    EngineLogCompat.Log($"[4] Rendering Quality: WARN ({zeroCount} zero-sized elements detected - possible FLEX-ZERO issue)", LogCategory.Verification, LogLevel.Warn);
                 }
                 else if (_domNodeCount > 10 && _cssRuleCount < 5)
                 {
-                    FenLogger.Log($"[4] Rendering Quality: WARN (Few rules matched: {_cssRuleCount} rules for {_domNodeCount} nodes)", LogCategory.Verification, LogLevel.Warn);
+                    EngineLogCompat.Log($"[4] Rendering Quality: WARN (Few rules matched: {_cssRuleCount} rules for {_domNodeCount} nodes)", LogCategory.Verification, LogLevel.Warn);
                 }
                 else if (_cssRuleCount > 0)
                 {
-                    FenLogger.Log($"[4] Rendering Quality: PASS ({_cssRuleCount} rules matched)", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"[4] Rendering Quality: PASS ({_cssRuleCount} rules matched)", LogCategory.Verification, LogLevel.Info);
                 }
                 else
                 {
-                    FenLogger.Log("[4] Rendering Quality: FAIL (No CSS rules matched)", LogCategory.Verification, LogLevel.Warn);
+                    EngineLogCompat.Log("[4] Rendering Quality: FAIL (No CSS rules matched)", LogCategory.Verification, LogLevel.Warn);
                 }
             }
 
-            FenLogger.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
+            EngineLogCompat.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
         }
 
         private static int _lastZeroSizedCount = 0;

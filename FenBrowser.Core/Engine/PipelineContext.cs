@@ -115,7 +115,7 @@ namespace FenBrowser.Core.Engine
             _currentStageStartTime = DateTime.UtcNow;
 
 #if TRACE_PIPELINE
-            FenBrowser.Core.FenLogger.Debug(
+            FenBrowser.Core.EngineLogCompat.Debug(
                 $"[Pipeline] Stage: {stage.GetDescription()}", 
                 Logging.LogCategory.Rendering);
 #endif

@@ -657,7 +657,7 @@ namespace FenBrowser.Core.Dom.V2
         private static void ReportError(Exception ex, EventTarget target, Event evt)
         {
             // Route to FenLogger so it surfaces in DevTools console rather than silently to Debug output
-            FenLogger.Error(
+            EngineLogCompat.Error(
                 $"[EventDispatcher] Error in listener for '{evt.Type}' on {target}: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.Events);
         }

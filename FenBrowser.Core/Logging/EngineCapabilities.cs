@@ -262,10 +262,22 @@ namespace FenBrowser.Core.Logging
                 if (!string.IsNullOrEmpty(reason)) message += $" | {reason}";
                 if (!string.IsNullOrEmpty(suggestion)) message += $" | Suggestion: {suggestion}";
 
-                LogManager.Log(category, LogLevel.Warn, message);
+                var marker = status switch
+                {
+                    FeatureStatus.Unsupported => LogMarker.Unimplemented,
+                    FeatureStatus.Partial => LogMarker.Partial,
+                    _ => LogMarker.None
+                };
+
+                EngineLog.Write(
+                    EngineLogCompatibility.FromLegacyCategory(category),
+                    LogSeverity.Warn,
+                    message,
+                    marker);
             }
         }
 
         #endregion
     }
 }
+

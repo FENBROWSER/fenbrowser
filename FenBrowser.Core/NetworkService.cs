@@ -37,13 +37,13 @@ public class NetworkService : INetworkService
         var mime = contentType?.MediaType ?? "unknown";
         var contentEncoding = string.Join(", ", response.Content.Headers.ContentEncoding);
         
-        FenLogger.Log($"[Loader] {response.RequestMessage.Method} {response.RequestMessage.RequestUri}", LogCategory.Network);
-        FenLogger.Log($"[Loader] Status: {(int)response.StatusCode} {response.ReasonPhrase}", LogCategory.Network);
-        FenLogger.Log($"[Loader] MIME: {mime}", LogCategory.Network);
-        FenLogger.Log($"[Loader] Encoding: {encoding}", LogCategory.Network);
+        EngineLogCompat.Log($"[Loader] {response.RequestMessage.Method} {response.RequestMessage.RequestUri}", LogCategory.Network);
+        EngineLogCompat.Log($"[Loader] Status: {(int)response.StatusCode} {response.ReasonPhrase}", LogCategory.Network);
+        EngineLogCompat.Log($"[Loader] MIME: {mime}", LogCategory.Network);
+        EngineLogCompat.Log($"[Loader] Encoding: {encoding}", LogCategory.Network);
         
         if (!string.IsNullOrEmpty(contentEncoding))
-            FenLogger.Log($"[Loader] Compression: {contentEncoding}", LogCategory.Network);
+            EngineLogCompat.Log($"[Loader] Compression: {contentEncoding}", LogCategory.Network);
     }
 
     public Task<Stream> GetStreamAsync(string url)
@@ -77,7 +77,7 @@ public class NetworkService : INetworkService
         configuration.ValidateOrThrow();
         EnforceSecurityPolicy(uri);
 
-        using var logScope = FenLogger.BeginScope(
+        using var logScope = EngineLogCompat.BeginScope(
             component: "NetworkService",
             data: new System.Collections.Generic.Dictionary<string, object>
             {
@@ -90,7 +90,7 @@ public class NetworkService : INetworkService
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.ResourceTimeoutSeconds));
 
         if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+            EngineLogCompat.Log($"[Loader] GET {uri}", LogCategory.Network);
 
         var response = await _httpClient.SendAsync(
             request,
@@ -113,7 +113,7 @@ public class NetworkService : INetworkService
         configuration.ValidateOrThrow();
         EnforceSecurityPolicy(uri);
 
-        using var logScope = FenLogger.BeginScope(
+        using var logScope = EngineLogCompat.BeginScope(
             component: "NetworkService",
             data: new System.Collections.Generic.Dictionary<string, object>
             {
@@ -126,7 +126,7 @@ public class NetworkService : INetworkService
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.DocumentTimeoutSeconds));
 
         if (DebugConfig.LogResourceLoader)
-            FenLogger.Log($"[Loader] GET {uri}", LogCategory.Network);
+            EngineLogCompat.Log($"[Loader] GET {uri}", LogCategory.Network);
 
         using var response = await _httpClient.SendAsync(
             request,

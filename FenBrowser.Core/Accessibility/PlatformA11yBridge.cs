@@ -144,7 +144,7 @@ namespace FenBrowser.Core.Accessibility
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn($"[UIA] Failed to register root provider: {ex.Message}", LogCategory.General);
+                    EngineLogCompat.Warn($"[UIA] Failed to register root provider: {ex.Message}", LogCategory.General);
                 }
             }
         }
@@ -163,7 +163,7 @@ namespace FenBrowser.Core.Accessibility
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[UIA] FireEvent failed: {ex.Message}", LogCategory.General);
+                EngineLogCompat.Warn($"[UIA] FireEvent failed: {ex.Message}", LogCategory.General);
             }
         }
 
@@ -183,7 +183,7 @@ namespace FenBrowser.Core.Accessibility
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[UIA] PropertyChanged failed: {ex.Message}", LogCategory.General);
+                EngineLogCompat.Warn($"[UIA] PropertyChanged failed: {ex.Message}", LogCategory.General);
             }
         }
 
@@ -357,7 +357,7 @@ namespace FenBrowser.Core.Accessibility
 
             if (!_available)
             {
-                FenLogger.Info("[AT-SPI] AT-SPI2 bus not found (AT_SPI_BUS_ADDRESS unset). " +
+                EngineLogCompat.Info("[AT-SPI] AT-SPI2 bus not found (AT_SPI_BUS_ADDRESS unset). " +
                     "Accessibility events will not reach assistive technologies.", LogCategory.Accessibility);
                 return;
             }
@@ -366,7 +366,7 @@ namespace FenBrowser.Core.Accessibility
             if (!LinuxAtSpiEventBroker.TryCreate(out _eventBroker, out var failureReason))
             {
                 _available = false;
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[AT-SPI] Failed to initialize event broker: {failureReason}",
                     LogCategory.Accessibility);
                 return;
@@ -375,7 +375,7 @@ namespace FenBrowser.Core.Accessibility
             if (tree != null)
                 tree.TreeInvalidated += OnTreeInvalidated;
 
-            FenLogger.Info(
+            EngineLogCompat.Info(
                 "[AT-SPI] Accessibility bridge initialized with bounded event queue and DBus signal emission.",
                 LogCategory.Accessibility);
         }
@@ -391,7 +391,7 @@ namespace FenBrowser.Core.Accessibility
 
             if (!_eventBroker.TryPost(signal, out var failureReason))
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[AT-SPI] Dropped event '{signal.Member}' for node '{node.Name}': {failureReason}",
                     LogCategory.Accessibility);
             }
@@ -408,7 +408,7 @@ namespace FenBrowser.Core.Accessibility
 
             if (!_eventBroker.TryPost(signal, out var failureReason))
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[AT-SPI] Dropped property change '{propertyName}' for node '{node.Name}': {failureReason}",
                     LogCategory.Accessibility);
             }
@@ -594,14 +594,14 @@ namespace FenBrowser.Core.Accessibility
 
             if (!_available)
             {
-                FenLogger.Info("[NSAccessibility] Not available on this system.", LogCategory.General);
+                EngineLogCompat.Info("[NSAccessibility] Not available on this system.", LogCategory.General);
                 return;
             }
 
             if (tree != null)
                 tree.TreeInvalidated += OnTreeInvalidated;
 
-            FenLogger.Info("[NSAccessibility] Accessibility bridge initialized.", LogCategory.General);
+            EngineLogCompat.Info("[NSAccessibility] Accessibility bridge initialized.", LogCategory.General);
         }
 
         public void FireEvent(AccessibilityNode node, A11yEvent eventType)
@@ -619,7 +619,7 @@ namespace FenBrowser.Core.Accessibility
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NSAccessibility] PostNotification failed: {ex.Message}", LogCategory.General);
+                EngineLogCompat.Warn($"[NSAccessibility] PostNotification failed: {ex.Message}", LogCategory.General);
             }
         }
 
@@ -734,7 +734,7 @@ namespace FenBrowser.Core.Accessibility
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[NSAccessibility] PostNotification('{notification}') failed: {ex.Message}", LogCategory.General);
+                EngineLogCompat.Warn($"[NSAccessibility] PostNotification('{notification}') failed: {ex.Message}", LogCategory.General);
             }
         }
     }

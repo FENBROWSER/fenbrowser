@@ -106,7 +106,7 @@ namespace FenBrowser.Core.Network
             // Log configuration if debugging enabled
             if (config.LogHttp2Details)
             {
-                FenLogger.Info($"[HttpClientFactory] Created client: HTTP/{config.GetPreferredHttpVersion()}, " +
+                EngineLogCompat.Info($"[HttpClientFactory] Created client: HTTP/{config.GetPreferredHttpVersion()}, " +
                               $"Compression={config.GetDecompressionMethods()}, " +
                               $"MaxConnections={config.MaxConnectionsPerServer}", 
                               Logging.LogCategory.Network);
@@ -205,7 +205,7 @@ namespace FenBrowser.Core.Network
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[SecureDNS] Direct connect via DoH-resolved IP failed for {endPoint.Host}:{endPoint.Port}: {ex.Message}. Falling back to system resolver.",
                         Logging.LogCategory.Network);
                 }

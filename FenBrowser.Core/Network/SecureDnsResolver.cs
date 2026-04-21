@@ -80,7 +80,7 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
-                FenLogger.Warn($"[SecureDNS] DoH resolution failed for '{host}': {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Warn($"[SecureDNS] DoH resolution failed for '{host}': {ex.Message}", LogCategory.Network);
                 return null;
             }
         }

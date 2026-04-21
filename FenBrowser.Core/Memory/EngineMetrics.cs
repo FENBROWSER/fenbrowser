@@ -186,7 +186,7 @@ namespace FenBrowser.Core.Memory
             if (ms > 50.0)
             {
                 EngineMetrics.Instance.Increment(MetricCounter.LongTaskCount);
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[LongTask] '{ev.Name}' took {ms:F1} ms (thread={ev.ThreadId})",
                     LogCategory.General);
             }
@@ -250,7 +250,7 @@ namespace FenBrowser.Core.Memory
             {
                 Interlocked.Increment(ref _jankFrames);
                 EngineMetrics.Instance.Increment(MetricCounter.JankFrameCount);
-                FenLogger.Debug(
+                EngineLogCompat.Debug(
                     $"[FrameJank] {ms:F1} ms > budget {BudgetMs:F1} ms",
                     LogCategory.Rendering);
             }
@@ -294,7 +294,7 @@ namespace FenBrowser.Core.Memory
             if (ms >= _thresholdMs)
             {
                 EngineMetrics.Instance.Increment(MetricCounter.LongTaskCount);
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[JankDetector] Long task '{_currentTaskName ?? "unknown"}': {ms:F1} ms",
                     LogCategory.General);
             }
@@ -307,7 +307,7 @@ namespace FenBrowser.Core.Memory
             var ms = (Stopwatch.GetTimestamp() - _taskStartTicks) * 1000.0 / Stopwatch.Frequency;
             if (ms > _thresholdMs * 10) // 500 ms default: force log
             {
-                FenLogger.Warn(
+                EngineLogCompat.Warn(
                     $"[JankDetector] STUCK task '{_currentTaskName ?? "unknown"}': {ms:F0} ms elapsed",
                     LogCategory.General);
             }

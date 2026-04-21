@@ -95,7 +95,7 @@ namespace FenBrowser.Core.Accessibility
                 }
                 catch (Exception ex)
                 {
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[AT-SPI] Failed to emit {signal.InterfaceName}.{signal.Member}: {ex.Message}",
                         LogCategory.Accessibility);
                 }

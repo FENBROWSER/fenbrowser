@@ -78,7 +78,7 @@ namespace FenBrowser.Core
             {
                 var bytes = partition.Clear();
                 Interlocked.Add(ref _totalMemoryBytes, -bytes);
-                FenLogger.Debug($"[CacheManager] Destroyed partition for tab {tabId}, freed {bytes / 1024}KB", 
+                EngineLogCompat.Debug($"[CacheManager] Destroyed partition for tab {tabId}, freed {bytes / 1024}KB", 
                                LogCategory.General);
             }
         }
@@ -92,7 +92,7 @@ namespace FenBrowser.Core
             {
                 var freedBytes = partition.Suspend();
                 Interlocked.Add(ref _totalMemoryBytes, -freedBytes);
-                FenLogger.Info($"[CacheManager] Suspended tab {tabId}, freed {freedBytes / 1024}KB", 
+                EngineLogCompat.Info($"[CacheManager] Suspended tab {tabId}, freed {freedBytes / 1024}KB", 
                               LogCategory.General);
             }
         }
@@ -105,7 +105,7 @@ namespace FenBrowser.Core
             if (_tabPartitions.TryGetValue(tabId, out var partition))
             {
                 partition.Resume();
-                FenLogger.Debug($"[CacheManager] Resumed tab {tabId}", LogCategory.General);
+                EngineLogCompat.Debug($"[CacheManager] Resumed tab {tabId}", LogCategory.General);
             }
         }
 
@@ -145,7 +145,7 @@ namespace FenBrowser.Core
             _tabPartitions.Clear();
             Interlocked.Exchange(ref _totalMemoryBytes, 0);
             
-            FenLogger.Info("[CacheManager] All caches cleared", LogCategory.General);
+            EngineLogCompat.Info("[CacheManager] All caches cleared", LogCategory.General);
         }
 
         /// <summary>
@@ -175,7 +175,7 @@ namespace FenBrowser.Core
             Interlocked.Add(ref _evictedBytesTotal, freedTotal);
             _lastEviction = DateTime.UtcNow;
 
-            FenLogger.Info($"[CacheManager] Trimmed {freedTotal / 1024}KB", LogCategory.General);
+            EngineLogCompat.Info($"[CacheManager] Trimmed {freedTotal / 1024}KB", LogCategory.General);
         }
 
         /// <summary>

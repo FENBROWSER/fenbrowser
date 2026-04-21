@@ -104,16 +104,16 @@ namespace FenBrowser.Core
                 
                 OnDocumentComplete?.Invoke(doc);
                 
-                FenLogger.Debug($"[StreamingHtmlParser] Parsed document with {CountElements(doc)} elements", LogCategory.HtmlParsing);
+                EngineLogCompat.Debug($"[StreamingHtmlParser] Parsed document with {CountElements(doc)} elements", LogCategory.HtmlParsing);
             }
             catch (OperationCanceledException)
             {
-                FenLogger.Debug("[StreamingHtmlParser] Parsing cancelled", LogCategory.HtmlParsing);
+                EngineLogCompat.Debug("[StreamingHtmlParser] Parsing cancelled", LogCategory.HtmlParsing);
                 throw;
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[StreamingHtmlParser] Error during parsing: {ex.Message}", LogCategory.HtmlParsing);
+                EngineLogCompat.Error($"[StreamingHtmlParser] Error during parsing: {ex.Message}", LogCategory.HtmlParsing);
 
                 // Return partial document on error
             }
@@ -449,7 +449,7 @@ namespace FenBrowser.Core
                 // FIX: Force SVG shapes to be self-closing to prevent incorrect nesting in streaming parser
                 if (!selfClosing && (tagName == "path" || tagName == "rect" || tagName == "circle" || tagName == "line" || tagName == "polyline" || tagName == "polygon" || tagName == "ellipse" || tagName == "stop" || tagName == "image"))
                 {
-                     FenLogger.Info($"[StreamingHtmlParser] Force-closing SVG tag: '{tagName}'", LogCategory.General);
+                     EngineLogCompat.Info($"[StreamingHtmlParser] Force-closing SVG tag: '{tagName}'", LogCategory.General);
                      selfClosing = true;
                 }
                 

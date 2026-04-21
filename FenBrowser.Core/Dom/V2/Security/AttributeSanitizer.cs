@@ -189,7 +189,7 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (name.StartsWith("aria-", StringComparison.OrdinalIgnoreCase))
             {
                 if (!AriaSpec.IsValidPropertyValue(name, value) && LogBlocked)
-                    FenLogger.Warn(
+                    EngineLogCompat.Warn(
                         $"[AttributeSanitizer] Invalid ARIA value treated as missing. name={name}, value={value}",
                         LogCategory.Accessibility);
                 // Do NOT block or sanitize — ARIA spec requires graceful degradation
@@ -356,7 +356,7 @@ namespace FenBrowser.Core.Dom.V2.Security
 
         private static void LogBlockedDecision(string attributeName, string value, string reason)
         {
-            FenLogger.Warn(
+            EngineLogCompat.Warn(
                 $"[AttributeSanitizer] Blocked or sanitized attribute content. reason={reason}, attribute={attributeName ?? "(n/a)"}, value={value ?? string.Empty}",
                 LogCategory.Security);
         }

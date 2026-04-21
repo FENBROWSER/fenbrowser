@@ -30,7 +30,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[UiThreadHelper] Error executing action: {ex.Message}", LogCategory.General, ex);
+                EngineLogCompat.Error($"[UiThreadHelper] Error executing action: {ex.Message}", LogCategory.General, ex);
             }
             await Task.CompletedTask;
         }
@@ -43,7 +43,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                FenLogger.Error($"[UiThreadHelper] Error executing func: {ex.Message}", LogCategory.General, ex);
+                EngineLogCompat.Error($"[UiThreadHelper] Error executing func: {ex.Message}", LogCategory.General, ex);
                 return default;
             }
         }
