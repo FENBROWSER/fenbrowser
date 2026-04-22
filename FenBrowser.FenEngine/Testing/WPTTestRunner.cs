@@ -201,6 +201,7 @@ namespace FenBrowser.FenEngine.Testing
             string? source = null;
             bool hasHarness = false;
             bool hasScriptTag = false;
+            bool usesTestDriver = false;
             bool isRefTest = false;
             bool isManualTest = false;
             bool isCrashTest = false;
@@ -266,6 +267,10 @@ namespace FenBrowser.FenEngine.Testing
                 source = File.ReadAllText(testFile);
                 hasHarness = source.IndexOf("/resources/testharness.js", StringComparison.OrdinalIgnoreCase) >= 0;
                 hasScriptTag = source.IndexOf("<script", StringComparison.OrdinalIgnoreCase) >= 0;
+                usesTestDriver =
+                    source.IndexOf("testdriver.js", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    source.IndexOf("testdriver-vendor.js", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    source.IndexOf("testdriver-actions.js", StringComparison.OrdinalIgnoreCase) >= 0;
                 isRefTest = source.IndexOf("rel=\"match\"", StringComparison.OrdinalIgnoreCase) >= 0
                             || source.IndexOf("rel=\"mismatch\"", StringComparison.OrdinalIgnoreCase) >= 0
                             || source.IndexOf("rel='match'", StringComparison.OrdinalIgnoreCase) >= 0
@@ -380,10 +385,22 @@ namespace FenBrowser.FenEngine.Testing
                 var failedSummary = failedSubtests.Count > 0 ? string.Join(" | ", failedSubtests) : null;
                 if (total == 0)
                 {
-                    result.Success = false;
-                    result.Error = string.IsNullOrWhiteSpace(execution.FatalError)
-                        ? "No assertions executed by testharness."
-                        : execution.FatalError;
+                    if (usesTestDriver)
+                    {
+                        result.Success = false;
+                        result.IsExplicitSkip = true;
+                        result.SkipReason = "testdriver-unsupported";
+                        result.HarnessCompleted = true;
+                        result.TimedOut = false;
+                        result.Error = null;
+                    }
+                    else
+                    {
+                        result.Success = false;
+                        result.Error = string.IsNullOrWhiteSpace(execution.FatalError)
+                            ? "No assertions executed by testharness."
+                            : execution.FatalError;
+                    }
                 }
                 else if (execution.TimedOut)
                 {

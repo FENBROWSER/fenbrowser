@@ -35,12 +35,19 @@ namespace FenBrowser.Tooling.Host
                             }
 
                             function installFallbackHarnessIfNeeded() {
+                                try {
+                                    if (window.location && String(window.location.protocol || '').toLowerCase() === 'about:') {
+                                        return false;
+                                    }
+                                } catch (_) {}
+
                                 if (typeof window.promise_test === 'function') {
                                     return false;
                                 }
 
                                 var pendingAsync = 0;
                                 var completed = false;
+                                var hasResults = false;
 
                                 function failMessage(err) {
                                     if (!err) return '';
@@ -50,6 +57,7 @@ namespace FenBrowser.Tooling.Host
                                 }
 
                                 function record(name, pass, message) {
+                                    hasResults = true;
                                     emit('__FEN_WPT_RESULT__', {
                                         name: name || '',
                                         status: pass ? 0 : 1,
@@ -58,7 +66,7 @@ namespace FenBrowser.Tooling.Host
                                 }
 
                                 function maybeComplete() {
-                                    if (completed || pendingAsync > 0) {
+                                    if (completed || pendingAsync > 0 || !hasResults) {
                                         return;
                                     }
                                     completed = true;
@@ -123,6 +131,7 @@ namespace FenBrowser.Tooling.Host
                                     } catch (err) {
                                         record(name || 'test', false, failMessage(err));
                                     }
+                                    maybeComplete();
                                 };
 
                                 window.promise_test = function (fn, name) {
@@ -173,7 +182,6 @@ namespace FenBrowser.Tooling.Host
                                 };
 
                                 emit('__FEN_WPT_FALLBACK__', { installed: true });
-                                window.setTimeout(maybeComplete, 0);
                                 return true;
                             }
 
