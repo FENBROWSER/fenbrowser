@@ -35,6 +35,7 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
 - `POST /session/{id}/url` now waits for navigation URL commit before returning for `pageLoadStrategy` values other than `none`.
 - Wait budget is derived from session `timeouts.pageLoad` and bounded to a hardened upper limit to avoid indefinite hangs.
 - If URL never commits (for example, browser remains `about:blank`), WebDriver now returns a deterministic `timeout` error instead of reporting stale URL state as success.
+- Tooling-host `GET /session/{id}/title` now reads the active DOM title via browser host APIs before fallback to tab label state, preventing stale `about:blank` title reports after successful navigation.
 
 ---
 

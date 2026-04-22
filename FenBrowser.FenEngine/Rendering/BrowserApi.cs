@@ -2451,6 +2451,7 @@ pre {{
 
         private Element FindElementByStrategy(Node root, string strategy, string value)
         {
+            value = value?.Trim() ?? string.Empty;
             if (strategy == "css selector")
             {
                 if (value.StartsWith("#"))
@@ -2461,17 +2462,25 @@ pre {{
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n =>
+                        n.Attr != null &&
+                        n.Attr.TryGetValue("class", out var classAttr) &&
+                        classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                            .Any(token => string.Equals(token, cls, StringComparison.Ordinal)));
                 }
                 else
                 {
-                    return root.Descendants().OfType<Element>().FirstOrDefault(n => n.TagName == value);
+                    return root.Descendants().OfType<Element>().FirstOrDefault(n =>
+                        string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
                 }
             }
             else if (strategy == "xpath" && value.StartsWith("//"))
             {
                 var tag = value.Substring(2);
-                return root.Descendants().OfType<Element>().FirstOrDefault(n => n.TagName == tag);
+                return root.Descendants().OfType<Element>().FirstOrDefault(n =>
+                    string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(n.NodeName, tag, StringComparison.OrdinalIgnoreCase));
             }
             else if (strategy == "tag name")
             {
@@ -2490,6 +2499,7 @@ pre {{
 
         private IEnumerable<Element> FindElementsByStrategy(Node root, string strategy, string value)
         {
+            value = value?.Trim() ?? string.Empty;
             if (strategy == "css selector")
             {
                 if (value.StartsWith("#"))
@@ -2500,16 +2510,24 @@ pre {{
                 else if (value.StartsWith("."))
                 {
                     var cls = value.Substring(1);
-                    return root.Descendants().OfType<Element>().Where(n => n.Attr != null && n.Attr.ContainsKey("class") && n.Attr["class"].Contains(cls));
+                    return root.Descendants().OfType<Element>().Where(n =>
+                        n.Attr != null &&
+                        n.Attr.TryGetValue("class", out var classAttr) &&
+                        classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                            .Any(token => string.Equals(token, cls, StringComparison.Ordinal)));
                 }
                 else
                 {
-                    return root.Descendants().OfType<Element>().Where(n => n.TagName == value);
+                    return root.Descendants().OfType<Element>().Where(n =>
+                        string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
                 }
             }
             else if (strategy == "tag name")
             {
-                return root.Descendants().OfType<Element>().Where(n => n.TagName == value);
+                return root.Descendants().OfType<Element>().Where(n =>
+                    string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
             }
             return Enumerable.Empty<Element>();
         }

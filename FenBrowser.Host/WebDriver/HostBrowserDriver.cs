@@ -39,7 +39,20 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> GetTitleAsync()
         {
-            return await RunOnMainThread(() => _tabs.ActiveTab?.Title ?? "");
+            return await RunOnMainThread(async () =>
+            {
+                var activeTab = _tabs.ActiveTab;
+                if (activeTab?.Browser?.Host != null)
+                {
+                    var domTitle = await activeTab.Browser.Host.GetTitleAsync().ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(domTitle))
+                    {
+                        return domTitle;
+                    }
+                }
+
+                return activeTab?.Title ?? string.Empty;
+            });
         }
 
         public async Task<string> GetWindowHandleAsync()

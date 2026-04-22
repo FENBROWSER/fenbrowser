@@ -54,6 +54,31 @@ namespace FenBrowser.Tests.Rendering
             Assert.Null(await host.FindElementAsync("css selector", "#light-child", shadowId));
         }
 
+        [Fact]
+        public async Task FindElementAsync_CssTagSelector_IsCaseInsensitive()
+        {
+            using var host = new BrowserHost();
+            var document = Document.CreateHtmlDocument();
+            var shadowHost = document.CreateElement("div");
+            document.Body.AppendChild(shadowHost);
+
+            var shadowRoot = shadowHost.AttachShadow(new ShadowRootInit { Mode = ShadowRootMode.Open });
+            var heading = document.CreateElement("h1");
+            heading.TextContent = "Example Domain";
+            shadowRoot.AppendChild(heading);
+
+            RegisterNode(host, "host-1", shadowHost);
+            var shadowId = await host.GetShadowRootAsync("host-1");
+
+            var foundLower = await host.FindElementAsync("css selector", "h1", shadowId);
+            var foundUpper = await host.FindElementAsync("css selector", "H1", shadowId);
+
+            Assert.False(string.IsNullOrWhiteSpace(foundLower));
+            Assert.False(string.IsNullOrWhiteSpace(foundUpper));
+            Assert.Same(heading, GetElementMap(host)[foundLower]);
+            Assert.Same(heading, GetElementMap(host)[foundUpper]);
+        }
+
         private static void RegisterNode(BrowserHost host, string nodeId, Element node)
         {
             GetElementMap(host)[nodeId] = node;
