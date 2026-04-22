@@ -9,11 +9,9 @@ This volume details the infrastructure used to extend the browser and verify its
 
 ### 1.1 WPT Harness Policy (2026-04-22)
 
-- In-repo `FenBrowser.WPT` has been retired and removed from the solution graph.
 - Official WPT verification now uses the upstream harness only:
   - start servers with `python wpt serve` (or run via `python wpt run ...`) from an upstream WPT checkout.
   - execute FenBrowser against `web-platform.test` endpoints provided by that harness.
-- Historical references in this volume to `FenBrowser.WPT` commands/files are archival context for prior work, not active workflow.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
@@ -197,7 +195,6 @@ The Web Platform Tests (WPT) runner for DOM/CSS compliance.
   - Every test file entering the runner is normalized to an absolute filesystem path before `File.ReadAllText(...)` or `new Uri(...)`.
   - This prevents relative-`--root` category runs from collapsing into harness-side `UriFormatException` failures.
   - Verified repro/fix path on 2026-04-06 with:
-    - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 80 --format json -o Results/dom_probe_80.json`
   - Post-fix relative-root baselines recorded on 2026-04-06:
     - `Results/dom_full_relative_fixed.json`: `135/534` tests passed, `2599/4798` assertions passed
     - `Results/dom_probe_100_after_surface_fix.json`: `51/100` tests passed, `479` assertions passed, `105` failed assertions
@@ -650,7 +647,6 @@ To implement a new command (e.g., `GET /session/{id}/print`):
 
 ### 4.16 WPT Harness Execution Reliability (2026-02-27)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added deterministic external-script resolution for WPT runs:
     - root-absolute (`/resources/...`),
     - test-relative,
@@ -670,9 +666,7 @@ To implement a new command (e.g., `GET /session/{id}/print`):
     - `() => { ... }` bodies now parse with `consumeTerminator: false`, preserving outer call delimiters and eliminating false `expected ... RParen` parser failures in callback-heavy WPT scripts.
 
 - Verification snapshot
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --timeout 8000 --verbose`
     - now emits harness completion (`testRunner.notifyDone`) with assertion counts (no longer zero-assertion bootstrap failure).
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --max 50 --timeout 8000 --format json -o wpt_dom50_after_fix.json`
     - completed with assertion accounting (`Assertions: 126`).
   - `dotnet run --project FenBrowser.Conformance -- run wpt dom --max 50 -o conformance_wpt50.md`
     - completed using the same harness path as WPT CLI.
@@ -1036,11 +1030,9 @@ _End of Volume VI_
   - The repository now has enforceable, artifact-driven conformance gates that can fail CI/release workflows on regressions, missing evidence, or below-threshold milestone results.
 ## 4.12 DOM regression-pack artifact workflow (2026-03-07)
 
-- `FenBrowser.WPT` now supports cluster-scoped DOM regression execution:
   - `run_pack <pack>`
   - `extract_pack <pack> [Results/wpt_results_latest.json]`
   - `list_packs`
-- Built-in pack manifests live in `FenBrowser.WPT/RegressionPacks/` and currently cover the historical Milestone `C` buckets:
   - no-assertion harness failures
   - event-runtime `undefined is not a function` failures
   - named-collection / property-descriptor failures
@@ -1112,9 +1104,7 @@ _End of Volume VI_
 - This specifically targets the bounded CSS parsing pack failures around default `normal` values and canonical `0px` serialization.
 ## 6.20 WPT Multi-Worker Isolated Chunk Execution (2026-03-08)
 
-- `FenBrowser.WPT/WPTConfig.cs`
   - Added `WorkerCount` and `IsolateProcess` so WPT batch runs can opt into isolated child-process execution.
-- `FenBrowser.WPT/Program.cs`
   - Added CLI flags:
     - `--workers <N>`
     - `--isolate-process`
@@ -1124,11 +1114,9 @@ _End of Volume VI_
 - `run_wpt_chunks.sh`
   - Added a third positional argument for worker count and defaulted it to `10`.
 - Verification command:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 1 --chunk-size 10 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk1_workers10_smoke.json`
 
 ## 6.21 WPT Chunk-1 False-Red Recovery (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Switched headless WPT document construction onto the production `FenBrowser.Core.Parsing.HtmlTreeBuilder` instead of the legacy FenEngine-only tree builder, removing malformed-document false failures in accessibility crash tests.
   - Added explicit headless secure-context projection (`isSecureContext`) onto global/window/self so WPT API exposure can follow secure-vs-insecure expectations.
   - Headless generic-sensor exposure is now gated by secure-context state; insecure-context tests no longer see `Accelerometer`, `GravitySensor`, or `LinearAccelerationSensor` on `self`.
@@ -1137,11 +1125,8 @@ _End of Volume VI_
   - Crash-only WPT files (`/crashtests/`, `-crash.html`) now treat uncaught page-script exceptions as diagnostic output instead of automatic test failure, while still failing on navigation exceptions/timeouts.
   - Runner exception reporting now preserves `ex.ToString()` for non-crashtest navigation failures, improving triage quality for future chunk work.
 - Verified artifacts:
-  - `dotnet run --project FenBrowser.WPT -- run_single accelerometer/Accelerometer_insecure_context.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single accessibility/crashtests/slot-assignment-lockup.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 1 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk1_100_workers10_after_crashtest_policy_fix.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.22 WPT Chunk-3 Recovery: Animation Worklet + Runner Hygiene (2026-03-08)
@@ -1149,7 +1134,6 @@ _End of Volume VI_
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
   - `.https` crash pages now classify correctly as crash-only tests.
   - Generic WPT discovery now excludes `/acid/`, keeping Acid2/Acid3 under the dedicated `AcidTestRunner` instead of mixing that suite into chunked WPT automation.
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added headless animation-worklet support for:
     - module registration through `CSS.animationWorklet.addModule`
     - document and scroll timeline current-time calculation
@@ -1166,9 +1150,7 @@ _End of Volume VI_
 - Verified artifacts:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "BytecodeExecutionTests.Bytecode_AsyncFunctionDeclaration_IsHoistedLikeFunctionDeclaration|WptTestRunnerTests"`
     - result: `4/4` passed
-  - `dotnet run --project FenBrowser.WPT -- run_single animation-worklet/worklet-animation-with-effects-from-different-frames.https.html`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 3 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk3_100_workers10_clean.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.23 WPT Chunk-4 Recovery: Manual/Ref Filtering + Audio Output (2026-03-08)
@@ -1176,7 +1158,6 @@ _End of Volume VI_
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
   - Added manual filename recognition for `.sub`, `.tentative`, and versioned manual pages.
   - Excluded `-ref`/`.ref` pages from generic WPT discovery.
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added headless audio-output support for:
     - `sinkId`
     - `setSinkId()`
@@ -1185,39 +1166,28 @@ _End of Volume VI_
     - `navigator.mediaDevices.getUserMedia()`
   - Added testdriver helpers for transient activation and direct permission setting, plus a bounded permissions-policy matrix shim used by speaker-selection tests.
 - Verified artifacts:
-  - `dotnet run --project FenBrowser.WPT -- run_single audio-output/setSinkId.https.html`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single audio-output/selectAudioOutput-permissions-policy.https.sub.html`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 4 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk4_100_workers10_clean.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.24 WPT Chunk-5 Recovery: Runtime Surface Fill + Headless Compat Boundary (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Verified battery WPT recovery:
-    - `dotnet run --project FenBrowser.WPT -- run_single battery-status/battery-promise.https.html`
       - result: `PASS`
   - Verified autoplay-policy recovery:
-    - `dotnet run --project FenBrowser.WPT -- run_single autoplay-policy-detection/autoplaypolicy.html`
       - result: `PASS`
   - Verified captured-mouse-events recovery:
-    - `dotnet run --project FenBrowser.WPT -- run_single captured-mouse-events/captured-mouse-event-constructor.html`
       - result: `PASS`
   - Verified beacon and clear-site-data compat paths:
-    - `dotnet run --project FenBrowser.WPT -- run_single beacon/headers/header-origin-same-origin.html`
       - result: `PASS`
-    - `dotnet run --project FenBrowser.WPT -- run_single clear-site-data/clear-cache.https.html`
       - result: `PASS`
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
   - `client-hints/accept-ch-stickiness/` is now treated as a deliberate headless-compat skip zone, preventing false-red chunk failures from a browsing-context matrix the current headless harness does not model faithfully.
 - Verified artifact:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 5 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk5_100_workers10_headless_acceptch_skipped.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.25 WPT Chunk-6 Recovery: Clipboard + Client-Hints Boundary (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added bounded clipboard runtime modeling for chunk-6 coverage:
     - `navigator.clipboard`
     - `Clipboard`
@@ -1230,12 +1200,10 @@ _End of Volume VI_
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
   - Added exact headless-compat skips for the remaining chunk-6 clipboard/client-hints files whose browsing-context or image-header semantics are not faithfully represented by the current headless harness.
 - Verified artifact:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 6 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk6_100_workers10_clean_final.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.26 WPT Chunk-7/8 Recovery: DataTransfer + CloseWatcher + Compat Boundary (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Extended the headless clipboard/runtime surface with:
     - `File`
     - `DataTransfer`
@@ -1255,9 +1223,7 @@ _End of Volume VI_
     - `close-watcher/abortsignal.html`
     - `compute-pressure/permissions-policy/compute-pressure-supported-by-permissions-policy.html`
 - Verified artifacts:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 7 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk7_100_workers10_clean.json`
     - result: `100/100` passed, `0` failed, `0` timed out
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 8 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk8_100_workers10_clean.json`
     - result: `100/100` passed, `0` failed, `0` timed out
 
 ## 6.27 WPT Auto-Advance Verification: Chunks 9-12 (2026-03-08)
@@ -1314,7 +1280,6 @@ _End of Volume VI_
 - Focused verification runs used during recovery:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "WptTestRunnerTests"`
     - result: `5/5` passed after each compat-boundary update
-  - `dotnet run --project FenBrowser.WPT -- run_single contenteditable/plaintext-only.html --timeout 8000 --verbose`
     - result: `PASS`
 - Current sweep status:
   - clean through chunk 81
@@ -1346,7 +1311,6 @@ _End of Volume VI_
   - `Results/wpt_chunk88_100_workers10_auto.json`
   - result: each chunk completed `100/100`, `0` failed, `0` timed out
 - Focused verification runs used during recovery:
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-break/empty-multicol-at-scrollport-edge.html --timeout 8000 --verbose`
     - result: `PASS`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "WptTestRunnerTests"`
     - result: `5/5` passed after each compat-boundary update in this sweep segment
@@ -1377,13 +1341,9 @@ _End of Volume VI_
   - `Results/wpt_chunk108_100_workers10_auto.json`
   - result for each artifact above: `100/100` passed, `0` failed, `0` timed out
 - Focused verification runs used during recovery:
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-color/light-dark-basic.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-contain/contain-paint-049.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-contain/container-type-important.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-contain/content-visibility/content-visibility-026.html --timeout 8000 --verbose`
     - result: `PASS`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "WptTestRunnerTests"`
     - result: `5/5` passed after each compat-boundary update in this segment
@@ -1403,11 +1363,8 @@ _End of Volume VI_
 - Focused verification runs used during recovery:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "HighlightApiTests|RunSingleTestAsync_SynchronousHarnessTests_RunAtRegistrationTime|RunSingleTestAsync_MismatchReftestWithScript_IsSkipped"`
     - result: focused Highlight API and runner regressions passed after the chunk-153/154 fixes
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-highlight-api/Highlight-setlike.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-highlight-api/highlight-pseudo-computed.html --timeout 8000 --verbose`
     - result: `PASS`
-  - `dotnet run --project FenBrowser.WPT -- run_single css/css-highlight-api/highlight-pseudo-from-font-computed.html --timeout 8000 --verbose`
     - result: `PASS`
 - Verification notes:
   - `rel="mismatch"` pages now classify as `reftest-skipped` in chunk mode instead of surfacing as fatal-script failures.
@@ -1664,7 +1621,6 @@ _End of Volume VI_
   - `FenBrowser.FenEngine/WebAPIs/TestConsoleCapture.cs`
   - `FenBrowser.FenEngine/TestFenEngine.cs`
 - Solution graph migration:
-  - `FenBrowser.WPT`, `FenBrowser.Test262`, `FenBrowser.Conformance`, and `FenBrowser.Tests` now reference `FenBrowser.Tooling` instead of depending on runtime-owned harness compilation.
 - Parser-ownership follow-through:
   - html5lib/conformance/test callers that previously imported `FenBrowser.FenEngine.HTML` were moved to `FenBrowser.Core.Parsing`, aligning verification with the canonical parser stack.
 - Host/runtime posture:
@@ -1672,7 +1628,6 @@ _End of Volume VI_
 - Verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -nologo`
   - `dotnet build FenBrowser.Conformance/FenBrowser.Conformance.csproj -nologo`
-  - `dotnet build FenBrowser.WPT/FenBrowser.WPT.csproj -nologo`
   - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -nologo`
   - `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -nologo`
   - `dotnet build FenBrowser.sln -nologo`
@@ -2247,8 +2202,6 @@ _End of Volume VI_
 
 ## 6.71 WPT/Test262 Failure-Bundle Automation + Test-Run Preset Wiring (2026-04-20)
 
-- `FenBrowser.WPT/WPTConfig.cs`
-- `FenBrowser.WPT/Program.cs`
 - `FenBrowser.Test262/Test262Config.cs`
 - `FenBrowser.Test262/Program.cs`
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
@@ -2264,7 +2217,6 @@ _End of Volume VI_
     - `--max-failure-bundles <N>`
   - Test runner execution scopes now push structured `testId` + `url` context so emitted logs and exported bundles correlate to exact failing test artifacts.
 - Focused verification:
-  - `dotnet build FenBrowser.WPT/FenBrowser.WPT.csproj -v minimal --no-restore /nodeReuse:false`: pass.
   - `dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -v minimal --no-restore /nodeReuse:false`: pass.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WptTestRunnerTests|FullyQualifiedName~Test262RunnerTests" -v minimal /nodeReuse:false`: pass (`24/24`).
 

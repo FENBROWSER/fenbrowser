@@ -2302,7 +2302,6 @@ So you want to add `border-radius`? Follow these steps:
     - `ParseGroupedExpression` now calls `ParseBlockStatement(consumeTerminator: false)` for empty-params arrow bodies.
   - removed false `expected ... RParen` parse failures around callback patterns such as `setTimeout(() => { ... }, 0)` and `test(() => { ... }, "name")`.
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - added robust external-script resolution for:
     - root-absolute WPT paths (`/resources/...`),
     - test-relative paths,
@@ -2321,9 +2320,7 @@ So you want to add `border-radius`? Follow these steps:
   - WPT suite execution now passes a non-null headless navigator delegate into `WPTTestRunner` (removes prior `no-navigator` failure mode).
 
 - Verification
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --timeout 8000 --verbose`
     - now reports structured completion and assertions (`Signal=testRunner.notifyDone`, `Asserts=4`) instead of zero-assertion/no-navigator failure.
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --max 50 --timeout 8000 --format json -o wpt_dom50_after_fix.json`
     - completed with assertion accounting (`Assertions=126`) and no harness-bootstrap failure.
   - `dotnet run --project FenBrowser.Conformance -- run wpt dom --max 50 -o conformance_wpt50.md`
     - completed with same assertion accounting path as WPT CLI.
@@ -2377,7 +2374,6 @@ eturnValue, cancelBubble, srcElement, and synchronized JS-visible state updates 
 - Added baseline DOM constructor globals in runtime: UIEvent, MouseEvent, KeyboardEvent, GamepadEvent, and HTMLElement exposure on window interfaces.
 - Added window.event baseline property initialization and dispatch-path updates; hardened dispatchEvent(...) type errors for element/document wrappers.
 - WPT harness helper coverage expanded (ssert_own_property, ssert_not_own_property, ssert_greater_than_equal, ormat_value) to unblock event/constructor subtests relying on these utilities.
-- Current measured result (dotnet run --project FenBrowser.WPT -- run_category dom --max 100 --timeout 8000 --format json): Tests=100, Assertions=273 (204 passed, 69 failed).
 
 
 - 2026-03-03 (WPT event plumbing hardening): Added native listener-object support in JavaScriptEngine (ddEventListener/dispatch for handleEvent objects with per-dispatch getter fallback), introduced native 
@@ -2391,7 +2387,6 @@ emoveEventListener with capture-aware matching, expanded minimal WPT harness wit
 
 ### 2026-03-03 WPT Foundation Pass (Harness + Global Semantics + Event Initialization)
 
-- Reworked the FenBrowser minimal WPT harness callback invocation semantics in `FenBrowser.WPT/HeadlessNavigator.cs`:
   - `test(...)`, `promise_test(...)`, and `async_test(...)` callbacks now execute with `this === test_object` (`fn.call(t, t)`) to align with WPT expectations.
   - This removed a broad class of false negatives caused by `this.step_func(...)` and similar harness callback patterns.
 
@@ -2411,7 +2406,6 @@ emoveEventListener with capture-aware matching, expanded minimal WPT harness wit
   - Broadened listener callback acceptance (`function` or `{handleEvent}` object) in EventTarget-style paths.
 
 - Measured outcome (fresh rerun):
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --max 100 --timeout 8000 --format json`
   - Improved from `243 passed / 60 failed` to `246 passed / 55 failed` assertions in this chunk.
 
 - Remaining dominant failure clusters after this pass:
@@ -2425,8 +2419,6 @@ emoveEventListener with capture-aware matching, expanded minimal WPT harness wit
 - Hardened `Object.defineProperty` interop for non-`FenObject` host wrappers in `FenRuntime` by using generic `IObject` targets in the ES5 `objectConstructor.defineProperty` path.
   - This unblocks property descriptor define/get/delete behavior on `HTMLCollectionWrapper` expandos (including non-configurable shadowing cases).
 - Verification:
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/collections/_probe_htmlcollection_failpoint.html --timeout 8000 --verbose` => PASS
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/collections/HTMLCollection-supported-property-names.html --timeout 8000 --verbose` => PASS
 
 ### 2026-03-03 (Iframe contentWindow AbortSignal.timeout + click API baseline)
 
@@ -2505,7 +2497,6 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
 - `FenBrowser.FenEngine/DOM/EventTarget.cs`
 - `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
-- `FenBrowser.WPT/HeadlessNavigator.cs`
 - `FenBrowser.Tests/DOM/InputEventTests.cs`
 - `FenBrowser.Tests/Engine/WptDomEventRegressionTests.cs`
 - `FenRuntime` default construction now uses `PermissionManager(JsPermissions.StandardWeb)` instead of the narrower baseline that rejected ordinary page-script DOM writes (`elem.onclick = ...`, `input.type = 'checkbox'`) during WPT/headless execution.
@@ -2519,7 +2510,6 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - WPT-path `window.onerror` firing for a shadow-tree `ErrorEvent`.
 - Verified:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~InputEventTests.TestDriverClick_Delegates_To_ElementClick_RuntimeSemantics|FullyQualifiedName~InputEventTests.ShadowRootHosted_Checkable_Click_Dispatches_Input_And_Change|FullyQualifiedName~InputEventTests.DispatchEvent_WindowOnError_Receives_ActualThrownErrorObject|FullyQualifiedName~WptDomEventRegressionTests.WindowOnError_Fires_For_ShadowTree_ErrorEvent_On_Wpt_Path"` -> passing targeted coverage.
-  - `FenBrowser.WPT run_pack dom_event_api --root test_assets\wpt` improved from `15/17` to `16/17`.
 - Remaining blocker:
   - `dom/events/event-global.html` still has one failing subcase in the full WPT page-loader path (`window.event is undefined inside window.onerror if the target is in a shadow tree`), even though the equivalent engine-level regression now passes. The unresolved gap is isolated to the headless/WPT execution path, not the already-fixed permission/click/shadow-connectivity regressions.
 
@@ -3915,7 +3905,6 @@ Verification snapshot (2026-03-06):
 
 ### 2.81 WPT no-assertion fatal-script recovery (2026-03-07, Milestone C1 tranche)
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
-- `FenBrowser.WPT/HeadlessNavigator.cs`
 - Added a fatal page-script bridge that reports `error` / `unhandledrejection` into `testRunner.reportResult(...)` and completes the harness instead of leaving the run at `completionSignal: none`.
 - The WPT runner now also detects fatal console-side `[WPT-NAV]` / global-script errors and synthesizes a structured failing harness result when no assertions were otherwise emitted.
 - This converts a class of opaque no-assertion failures into explicit structured failures, tightening Milestone `C1` recovery without claiming the DOM/event WPT gate is complete.
@@ -3974,9 +3963,7 @@ Verification snapshot (2026-03-06):
 ### 2.87a WPT runner absolute-path normalization (2026-04-06)
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
 - `RunSingleTestAsync(...)` now normalizes incoming test paths through `Path.GetFullPath(...)` before any file IO or navigation.
-- `ExecuteTestAsync(...)` and `ExecuteCrashTestAsync(...)` now build navigation URIs from normalized absolute paths, preventing `UriFormatException` when `FenBrowser.WPT` is invoked with a relative `--root` such as `test_assets\wpt`.
 - Reproduced impact before fix:
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 80 --format json -o Results/dom_probe_80.json`
   - pre-fix result: `1/80` test successes, dominated by harness-side `Invalid URI: The format of the URI could not be determined.`
 - Post-fix baseline using the same relative root now reaches real DOM execution instead of harness aborts; remaining failures are engine-side DOM/event gaps rather than path-construction failures.
 
@@ -4002,9 +3989,6 @@ Verification snapshot (2026-03-06):
   - `FenRuntime` converts raw `DomException` into thrown JS objects instead of collapsing them into generic `TypeError`
   - `VirtualMachine.CreateHostExceptionValue(...)` maps native `DomException` to JS objects with `name`, `message`, `code`, and `DOMException` branding so script-level `catch (e)` observes `e.name === "HierarchyRequestError"` and related values.
 - Focused verification after the fix:
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/attributes-are-nodes.html --root test_assets\wpt --timeout 8000`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/nodes/CharacterData-appendData.html --root test_assets\wpt --timeout 8000`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/lists/DOMTokenList-coverage-for-attributes.html --root test_assets\wpt --timeout 8000`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomSurfaceRegressionTests --no-restore`
 - These fixes remove one concrete early DOM failure cluster; remaining `dom` gaps are now dominated by event semantics, legacy/global surface holes, and parser/runtime incompatibilities rather than these wrapper omissions.
 
@@ -4025,11 +4009,7 @@ Verification snapshot (2026-03-06):
 - The bytecode VM now skips inline property caches for dynamic `DomEvent` state on both write and read paths, which fixes cross-dispatch stale reads such as `eventPhase === 0` after a previous bubble-phase listener warmed the cache.
 - Listener option parsing now uses JS truthiness for non-boolean capture values and object `{ capture: ... }` options on both `addEventListener(...)` and `removeEventListener(...)`, including getter side effects for capture-option probing.
 - Focused verification after the fix:
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-cancelBubble.html --timeout 8000`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-returnValue.html --timeout 8000`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/EventListenerOptions-capture.html --timeout 8000`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --format json -o Results/dom_probe_100_after_event_fix.json`
 - Updated probe artifact:
   - `Results/dom_probe_100_after_event_fix.json`: `60/100` tests passed, `497/584` assertions passed
 - Compared with the prior `Results/dom_probe_100_after_surface_fix.json` baseline, the same 100-test DOM slice moved from `51/100` to `60/100`, confirming that the event bucket was a real score limiter rather than just a narrow focused failure.
@@ -4054,10 +4034,7 @@ Verification snapshot (2026-03-06):
   - added constructor exposure for placeholder legacy interfaces used by WPT alias/prototype checks, including `DeviceMotionEvent`, `DeviceOrientationEvent`, `DragEvent`, `HashChangeEvent`, `MessageEvent`, `StorageEvent`, and `TextEvent`
   - constructor-created `UIEvent` / `MouseEvent` / `KeyboardEvent` / `CompositionEvent` instances now use the legacy event objects that actually expose their `init*Event(...)` methods
 - Focused verification after the fix:
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-defaultPrevented.html --root test_assets\wpt`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/EventTarget-dispatchEvent.html --root test_assets\wpt`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter WptDomEventRegressionTests --no-restore`
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --format json -o Results/dom_probe_100_after_dispatch_init_fix.json`
 - Updated probe artifact:
   - `Results/dom_probe_100_after_dispatch_init_fix.json`: `62/100` tests passed, `509/584` assertions passed
 - Known residual after this tranche:
@@ -4076,9 +4053,6 @@ Verification snapshot (2026-03-06):
 - FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs
   - External DOM event invocation now binds native targets through cached DOM wrappers instead of ad hoc wrappers, preserving expando-backed handler state during dispatch.
 - Focused verification:
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-dispatch-bubbles-false.html --root test_assets\wpt --verbose`
-  - `dotnet run --project FenBrowser.WPT -- run_single dom/events/Event-dispatch-bubbles-true.html --root test_assets\wpt --verbose`
-  - `dotnet run --project FenBrowser.WPT -- run_category dom --root test_assets\wpt --max 100 --timeout 8000 --format json -o Results/dom_probe_100_after_event_path_fix.json`
 - Updated probe artifact:
   - `Results/dom_probe_100_after_event_path_fix.json`: `67/100` tests passed, `546/584` assertions passed
 - Remaining dominant blockers in the same 100-test slice:
@@ -4100,7 +4074,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Hardened `UIEvent`-family constructor handling so `view` defaults to `null` and invalid non-object/non-null `view` values are rejected instead of being accepted as loose data.
 ### 2.89 DOM regression-pack artifact hardening (2026-03-07, Milestone C3 tranche)
 
-- Added first-class WPT regression-pack support in `FenBrowser.WPT` via:
   - `run_pack <pack>` for repeatable execution of historical failure clusters
   - `extract_pack <pack> [artifact]` for carving versioned cluster artifacts out of an existing aggregate WPT JSON run
   - `list_packs` for built-in pack discovery
@@ -4265,12 +4238,9 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - `CSS.supports(...)`
   - `CSS.escape(...)`
 - This removes the direct `ReferenceError: CSS is not defined` failure mode from chunk-driven WPT runs and shifts CSS-support tests onto deeper runtime behavior instead of missing-global failure.
-- Added a minimal global `on_event(...)` helper to the WPT headless mini-harness in `FenBrowser.WPT/HeadlessNavigator.cs`.
 - Verified the helper path with:
-  - `dotnet run --project FenBrowser.WPT -- run_single html/browsers/browsing-the-web/scroll-to-fragid/scroll-position.html --verbose`
   - result: `PASS`
 - Recorded large-sample triage evidence from:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 1 --chunk-size 1000 --timeout 8000 --format json`
   - result: `460/1000` passed, `540` failed, `0` timed out
 - This establishes the correct next-step strategy for WPT recovery: fix repeated missing primitives and harness/platform globals first, then rerun bounded chunks, instead of treating all 540 failures as unrelated.
 
@@ -4296,7 +4266,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - Verified with:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName=FenBrowser.Tests.Engine.JsParserReproTests.Parse_ConstObjectDestructuringDeclaration_WithInitializer_NoErrors|FullyQualifiedName=FenBrowser.Tests.Engine.JsParserReproTests.Parse_DestructuringParameter_WithOuterDefault_NoErrors|FullyQualifiedName=FenBrowser.Tests.Engine.Bytecode.BytecodeExecutionTests.Bytecode_DestructuringParameter_WithOuterDefault_ShouldBindObjectPattern|FullyQualifiedName=FenBrowser.Tests.Engine.JsEngineImprovementsTests.NavigatorSerial_GetPorts_ShouldResolveEmptyArray"`
     - result: `4/4` passed
-  - `dotnet run --project FenBrowser.WPT -- run_single serial/serial-default-permissions-policy.https.sub.html --verbose`
     - result: `PASS`
 - Outcome:
   - The permissions-policy helper bootstrap is no longer blocked by parser failure.
@@ -4304,7 +4273,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.103 WPT Headless Chunk-1 Stabilization (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Headless WPT navigation now builds DOMs with the production Core HTML tree builder, which hardens malformed-markup recovery for crash-test content and keeps headless parsing aligned with the main engine pipeline.
   - The runtime now projects `isSecureContext` into global/window/self and only exposes headless generic-sensor constructors in secure contexts.
   - Added crash-test-only compatibility shims for minimal animation completion, command-editing no-ops, iframe accessibility placeholders, and bounded custom-elements registration so crash-only WPT pages can exercise the no-crash path without requiring full feature semantics.
@@ -4312,14 +4280,12 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Crash tests now classify uncaught page-script exceptions as diagnostic noise rather than verdict failures; the fail conditions remain navigation exceptions, harness timeouts, or runner-level aborts.
   - Navigation-failure reporting now keeps the full exception string, improving future chunk triage quality.
 - Measured verification:
-  - `dotnet run --project FenBrowser.WPT -- run_chunk 1 --chunk-size 100 --workers 10 --timeout 8000 --format json -o Results/wpt_chunk1_100_workers10_after_crashtest_policy_fix.json`
   - result: `100/100` pass in chunk 1 after the secure-context and crash-test recovery pass.
 
 ## 2.104 WPT Headless Chunk-3 Animation Worklet Stabilization (2026-03-08)
 
 - `FenBrowser.FenEngine/Core/Parser.cs`
   - Async function declarations are now emitted as hoistable function declarations instead of `let`-bound async expressions, which restores browser-correct declaration visibility for classic-script WPT bootstrap patterns such as `setup(setupAndRegisterTests)` followed by `async function setupAndRegisterTests()`.
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added a bounded headless animation-worklet runtime for WPT:
     - `CSS.animationWorklet.addModule(...)` now loads blob-backed worklet modules through the native WPT fetch path.
     - `KeyframeEffect`, `ScrollTimeline`, and `WorkletAnimation` are projected into headless runs with enough timing, playback-rate, grouped-effect, and local-time semantics to satisfy the current chunk-3 coverage.
@@ -4335,7 +4301,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
   - Manual-test detection now catches filename variants such as `-manual.sub.html`, `-manual.tentative.html`, and versioned `-manual-v1.html` pages instead of only plain `-manual.html`.
   - WPT discovery now excludes `-ref`/`.ref` reference pages so standalone visual reference artifacts do not enter harness chunks as false reds.
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added headless audio-output support for the chunk-4 `audio-output/` WPT set:
     - secure-context gating for `sinkId` / `setSinkId`
     - `Audio()` / `<audio>` sink switching semantics for default and synthetic output devices
@@ -4347,7 +4312,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.106 WPT Chunk-5 Recovery: Battery/Beacon/Clear-Site-Data Headless Compat (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added bounded headless runtime surfaces for chunk-5 gaps:
     - `navigator.getBattery()` with stable promise identity and `BatteryManager` class branding
     - `navigator.getAutoplayPolicy(...)` plus `AudioContext`
@@ -4361,7 +4325,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.107 WPT Chunk-6 Recovery: Clipboard Surface + Client-Hints Headless Boundary (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added bounded clipboard headless modeling for the chunk-6 `clipboard-apis/` set:
     - `navigator.clipboard`
     - `Clipboard`
@@ -4378,7 +4341,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.108 WPT Chunk-7/8 Recovery: DataTransfer + CloseWatcher + Harness Boundaries (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Extended the clipboard headless surface with:
     - `File`
     - `DataTransfer`
@@ -4400,7 +4362,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.109 WPT Chunk-48 Through Chunk-81 Sweep: Container Timing + ContentEditable + Headless Compat Boundaries (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - Added a bounded container-timing shim for the headless WPT harness:
     - exposes `PerformanceContainerTiming`
     - wraps `PerformanceObserver` for `container` entries
@@ -4490,7 +4451,6 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 
 ## 2.112 WPT Chunk-153 Through Chunk-155 Sweep: Highlight API Surface + Reftest Classification + CSS Images Compat Boundaries (2026-03-08)
 
-- `FenBrowser.WPT/HeadlessNavigator.cs`
   - The minimal headless `test()` path now executes synchronous harness bodies at registration time instead of deferring them through the async queue, which fixes WPT files that depend on loop-variable capture semantics inside `test(...)`.
   - Added delayed completion checks so eager sync tests still coexist with queued `promise_test(...)` / `async_test(...)` work without premature `notifyDone()`.
 - `FenBrowser.FenEngine/DOM/HighlightApiBindings.cs`
