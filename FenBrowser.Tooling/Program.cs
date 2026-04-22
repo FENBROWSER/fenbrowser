@@ -215,9 +215,16 @@ namespace FenBrowser.Tooling
                         if (File.Exists(input))
                         {
                             var result = await runner.RunSingleTestAsync(input).ConfigureAwait(false);
-                            Console.WriteLine($"Result: {(result.Success ? "PASS" : "FAIL")}");
+                            var resultLabel = result.IsExplicitSkip
+                                ? "SKIP"
+                                : (result.Success ? "PASS" : "FAIL");
+                            Console.WriteLine($"Result: {resultLabel}");
                             Console.WriteLine($"Stats: {result.PassCount} passed, {result.FailCount} failed");
                             Console.WriteLine($"Completion: {result.CompletionSignal}");
+                            if (result.IsExplicitSkip)
+                            {
+                                Console.WriteLine($"SkipReason: {result.SkipReason}");
+                            }
                             if (!string.IsNullOrWhiteSpace(result.Error))
                             {
                                 Console.WriteLine(result.Error);

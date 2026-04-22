@@ -34,6 +34,8 @@ namespace FenBrowser.FenEngine.Testing
         {
             public string TestFile { get; set; }
             public bool Success { get; set; }
+            public bool IsExplicitSkip { get; set; }
+            public string SkipReason { get; set; }
             public bool HarnessCompleted { get; set; }
             public bool TimedOut { get; set; }
             public string CompletionSignal { get; set; }
@@ -128,7 +130,7 @@ namespace FenBrowser.FenEngine.Testing
                 var result = await RunSingleTestAsync(testFile, options.Verbose);
                 _results.Add(result);
                 
-                if (options.StopOnFirstFailure && !result.Success)
+                if (options.StopOnFirstFailure && !result.Success && !result.IsExplicitSkip)
                     break;
             }
             
@@ -225,7 +227,9 @@ namespace FenBrowser.FenEngine.Testing
 
             if (IsHeadlessCompatSkippedTest(testFile))
             {
-                result.Success = true;
+                result.Success = false;
+                result.IsExplicitSkip = true;
+                result.SkipReason = "headless-compat-skipped";
                 result.HarnessCompleted = true;
                 result.TimedOut = false;
                 result.CompletionSignal = "headless-compat-skipped";
@@ -240,7 +244,9 @@ namespace FenBrowser.FenEngine.Testing
 
             if (KnownFailingSkipTests.Value.Contains(testId))
             {
-                result.Success = true;
+                result.Success = false;
+                result.IsExplicitSkip = true;
+                result.SkipReason = "known-failing-skipped";
                 result.HarnessCompleted = true;
                 result.TimedOut = false;
                 result.CompletionSignal = "known-failing-skipped";
@@ -271,7 +277,9 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (isManualTest)
                 {
-                    result.Success = true;
+                    result.Success = false;
+                    result.IsExplicitSkip = true;
+                    result.SkipReason = "manual-skipped";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "manual-skipped";
@@ -286,7 +294,9 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (!hasHarness && (isRefTest || !hasScriptTag))
                 {
-                    result.Success = true;
+                    result.Success = false;
+                    result.IsExplicitSkip = true;
+                    result.SkipReason = "reftest-skipped";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "reftest-skipped";
@@ -301,7 +311,9 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (IsHeadlessCompatSkippedTest(testFile))
                 {
-                    result.Success = true;
+                    result.Success = false;
+                    result.IsExplicitSkip = true;
+                    result.SkipReason = "headless-compat-skipped";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "headless-compat-skipped";
@@ -328,7 +340,9 @@ namespace FenBrowser.FenEngine.Testing
                 if (!hasHarness && isCrashTest)
                 {
                     await ExecuteCrashTestAsync(testFile, verbose);
-                    result.Success = true;
+                    result.Success = false;
+                    result.IsExplicitSkip = true;
+                    result.SkipReason = "crashtest-executed";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "crashtest-executed";
@@ -389,18 +403,6 @@ namespace FenBrowser.FenEngine.Testing
                 if (!result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(failedSummary))
                 {
                     result.Error = failedSummary;
-                }
-
-                if (!result.Success && IsUnsupportedHeadlessFailure(testFile, result.Error))
-                {
-                    result.Success = true;
-                    result.HarnessCompleted = true;
-                    result.TimedOut = false;
-                    result.CompletionSignal = "unsupported-skipped";
-                    result.PassCount = 0;
-                    result.FailCount = 0;
-                    result.TotalCount = 0;
-                    result.Error = null;
                 }
 
                 result.Output = WebAPIs.TestConsoleCapture.GetFullOutput();
@@ -1084,19 +1086,26 @@ namespace FenBrowser.FenEngine.Testing
             
             int totalPass = 0, totalFail = 0, totalTests = 0;
             var failures = new List<TestExecutionResult>();
+            var skips = new List<TestExecutionResult>();
             
             foreach (var r in _results)
             {
                 totalPass += r.PassCount;
                 totalFail += r.FailCount;
                 totalTests += r.TotalCount;
-                
-                if (!r.Success)
+                if (r.IsExplicitSkip)
+                {
+                    skips.Add(r);
+                }
+                else if (!r.Success)
+                {
                     failures.Add(r);
+                }
             }
             
             sb.AppendLine($"Tests run: {_results.Count}");
             sb.AppendLine($"Assertions: {totalTests} ({totalPass} passed, {totalFail} failed)");
+            sb.AppendLine($"Outcomes: pass={_results.Count(r => r.Success && !r.IsExplicitSkip)} fail={failures.Count} skip={skips.Count}");
             sb.AppendLine();
             
             if (failures.Count > 0)
@@ -1117,6 +1126,17 @@ namespace FenBrowser.FenEngine.Testing
             {
                 sb.AppendLine("All tests passed!");
             }
+
+            if (skips.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Explicit skips:");
+                foreach (var s in skips)
+                {
+                    var reason = string.IsNullOrWhiteSpace(s.SkipReason) ? "unspecified-skip" : s.SkipReason;
+                    sb.AppendLine($"  - {s.TestFile} ({reason})");
+                }
+            }
             
             return sb.ToString();
         }
@@ -1133,6 +1153,13 @@ namespace FenBrowser.FenEngine.Testing
             for (int i = 0; i < _results.Count; i++)
             {
                 var r = _results[i];
+                if (r.IsExplicitSkip)
+                {
+                    var reason = string.IsNullOrWhiteSpace(r.SkipReason) ? "explicit skip" : r.SkipReason;
+                    sb.AppendLine($"ok {i + 1} - {Path.GetFileName(r.TestFile)} # SKIP {reason}");
+                    continue;
+                }
+
                 var status = r.Success ? "ok" : "not ok";
                 sb.AppendLine($"{status} {i + 1} - {Path.GetFileName(r.TestFile)}");
                 

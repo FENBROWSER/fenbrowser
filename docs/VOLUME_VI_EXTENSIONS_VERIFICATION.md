@@ -16,6 +16,8 @@ This volume details the infrastructure used to extend the browser and verify its
   - `FenBrowser.Tooling wpt` now prefers navigating tests via `http://web-platform.test:8000/<relative-test-path>` instead of local `file://` execution when the test is under the configured WPT root.
   - base URL can be overridden with `FEN_WPT_BASE_URL`.
   - timeout can be tuned with `FEN_WPT_TIMEOUT_MS` (default `60000`, bounded).
+  - Runner outcomes are now explicit and deterministic: unsupported/manual/reftest/crashtest boundary cases are emitted as `SKIP` with a structured reason, and are no longer rewritten into `PASS`.
+  - TAP export mirrors this policy using `ok ... # SKIP <reason>` entries for explicit skips.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
