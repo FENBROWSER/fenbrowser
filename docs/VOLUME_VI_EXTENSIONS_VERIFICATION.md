@@ -30,6 +30,12 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
 - Element Interaction (Find Element, Click, Send Keys).
 - Script Execution (Execute Async/Sync).
 
+### 2.3 Navigation Hardening (2026-04-22)
+
+- `POST /session/{id}/url` now waits for navigation URL commit before returning for `pageLoadStrategy` values other than `none`.
+- Wait budget is derived from session `timeouts.pageLoad` and bounded to a hardened upper limit to avoid indefinite hangs.
+- If URL never commits (for example, browser remains `about:blank`), WebDriver now returns a deterministic `timeout` error instead of reporting stale URL state as success.
+
 ---
 
 ## 3. Verification Ecosystem (`FenBrowser.Tests`, `FenBrowser.FenEngine.Testing`)

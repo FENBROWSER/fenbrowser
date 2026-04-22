@@ -83,6 +83,65 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Same(cachedElement, session.GetElement(serializedElement));
         }
 
+        [Fact]
+        public async Task NavigateTo_WaitsForNavigationCommitBeforeReturning()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities
+            {
+                Timeouts = new Timeouts
+                {
+                    PageLoad = 500
+                }
+            });
+
+            var browser = new ScriptStubBrowserDriver();
+            browser.ConfigureDeferredNavigationCommit("https://example.com/", readsBeforeCommit: 2);
+
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+
+            var router = new CommandRouter();
+            var navigateMatch = router.Match("POST", $"/session/{session.Id}/url");
+            var navigateBody = """{"url":"https://example.com/"}""";
+
+            await handler.ExecuteAsync(navigateMatch, navigateBody);
+
+            Assert.Equal(1, browser.NavigateCallCount);
+            Assert.Equal("https://example.com/", await browser.GetCurrentUrlAsync());
+        }
+
+        [Fact]
+        public async Task NavigateTo_ThrowsTimeout_WhenNavigationNeverCommits()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities
+            {
+                Timeouts = new Timeouts
+                {
+                    PageLoad = 100
+                }
+            });
+
+            var browser = new ScriptStubBrowserDriver();
+            browser.ConfigureDeferredNavigationCommit("https://example.com/", readsBeforeCommit: int.MaxValue);
+
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+
+            var router = new CommandRouter();
+            var navigateMatch = router.Match("POST", $"/session/{session.Id}/url");
+            var navigateBody = """{"url":"https://example.com/"}""";
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(navigateMatch, navigateBody));
+
+            Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
+        }
+
         private sealed class StubElement
         {
         }
@@ -90,9 +149,45 @@ namespace FenBrowser.Tests.WebDriver
         private sealed class ScriptStubBrowserDriver : IBrowserDriver
         {
             public object[] LastArgs { get; private set; } = Array.Empty<object>();
+            public int NavigateCallCount { get; private set; }
+            private string _currentUrl = "about:blank";
+            private string _deferredCommittedUrl;
+            private int _remainingReadsBeforeCommit;
 
-            public Task NavigateAsync(string url) => Task.CompletedTask;
-            public Task<string> GetCurrentUrlAsync() => Task.FromResult("about:blank");
+            public void ConfigureDeferredNavigationCommit(string committedUrl, int readsBeforeCommit)
+            {
+                _deferredCommittedUrl = committedUrl;
+                _remainingReadsBeforeCommit = Math.Max(0, readsBeforeCommit);
+            }
+
+            public Task NavigateAsync(string url)
+            {
+                NavigateCallCount++;
+                if (string.IsNullOrWhiteSpace(_deferredCommittedUrl))
+                {
+                    _currentUrl = url;
+                }
+
+                return Task.CompletedTask;
+            }
+
+            public Task<string> GetCurrentUrlAsync()
+            {
+                if (!string.IsNullOrWhiteSpace(_deferredCommittedUrl))
+                {
+                    if (_remainingReadsBeforeCommit <= 0)
+                    {
+                        _currentUrl = _deferredCommittedUrl;
+                        _deferredCommittedUrl = null;
+                    }
+                    else
+                    {
+                        _remainingReadsBeforeCommit--;
+                    }
+                }
+
+                return Task.FromResult(_currentUrl);
+            }
             public Task<string> GetTitleAsync() => Task.FromResult(string.Empty);
             public Task<string> GetWindowHandleAsync() => Task.FromResult("window-1");
             public Task<IReadOnlyList<string>> GetWindowHandlesAsync() => Task.FromResult((IReadOnlyList<string>)new[] { "window-1" });
