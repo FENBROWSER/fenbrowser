@@ -461,7 +461,17 @@ namespace FenBrowser.FenEngine.Testing
             
             // 1. Navigate
             if (verbose) Console.WriteLine($"[WPT] Navigating to {uri}");
-            await _navigator(uri);
+            var navigateTask = _navigator(uri);
+            var navigationCompleted = await Task.WhenAny(navigateTask, Task.Delay(_timeoutMs));
+            if (navigationCompleted != navigateTask)
+            {
+                state.TimedOut = true;
+                state.CompletionSignal = "navigation-timeout";
+                return state;
+            }
+
+            // Observe navigation exceptions deterministically at this stage.
+            await navigateTask;
 
             // 2. Wait for structured completion signals from testharness / testRunner bridge.
             var timeoutAt = DateTime.UtcNow.AddMilliseconds(_timeoutMs);

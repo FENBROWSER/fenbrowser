@@ -179,7 +179,37 @@ namespace FenBrowser.Tooling
             }
 
             var input = args[1];
-            var rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "wpt");
+            int argIndex = 2;
+            var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "wpt");
+            if (args.Length > 2 && !args[2].StartsWith("-", StringComparison.Ordinal))
+            {
+                rootPath = args[2];
+                argIndex = 3;
+            }
+
+            int maxTests = int.MaxValue;
+            int skipTests = 0;
+            for (int i = argIndex; i < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--max", StringComparison.OrdinalIgnoreCase) &&
+                    i + 1 < args.Length &&
+                    int.TryParse(args[i + 1], out var parsedMax) &&
+                    parsedMax > 0)
+                {
+                    maxTests = parsedMax;
+                    i++;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--skip", StringComparison.OrdinalIgnoreCase) &&
+                    i + 1 < args.Length &&
+                    int.TryParse(args[i + 1], out var parsedSkip) &&
+                    parsedSkip >= 0)
+                {
+                    skipTests = parsedSkip;
+                    i++;
+                }
+            }
 
             BrowserIntegrationRuntime.BrowserHostOptionsFactory = () => ToolingBrowserHostOptions.CreateForWpt(rootPath);
 
@@ -232,13 +262,39 @@ namespace FenBrowser.Tooling
                         }
                         else
                         {
-                            var results = await runner.RunCategoryAsync(input, (_, count) =>
+                            IReadOnlyList<WPTTestRunner.TestExecutionResult> results;
+                            if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(input, "*", StringComparison.Ordinal))
                             {
-                                if (count % 10 == 0)
+                                var discovered = runner.DiscoverAllTests();
+                                var selected = discovered.Skip(skipTests);
+                                if (maxTests != int.MaxValue)
                                 {
-                                    Console.Write($"\rProcessed: {count}");
+                                    selected = selected.Take(maxTests);
                                 }
-                            }).ConfigureAwait(false);
+                                var tests = selected.ToList();
+
+                                Console.WriteLine(
+                                    $"Running WPT slice from full discovery: total={discovered.Count}, skip={skipTests}, take={tests.Count}");
+                                results = await runner.RunSpecificTestsAsync(tests, (_, count) =>
+                                {
+                                    if (count % 10 == 0)
+                                    {
+                                        Console.Write($"\rProcessed: {count}/{tests.Count}");
+                                    }
+                                }).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                var categoryMax = maxTests == int.MaxValue ? int.MaxValue : maxTests;
+                                results = await runner.RunCategoryAsync(input, (_, count) =>
+                                {
+                                    if (count % 10 == 0)
+                                    {
+                                        Console.Write($"\rProcessed: {count}");
+                                    }
+                                }, categoryMax).ConfigureAwait(false);
+                            }
 
                             Console.WriteLine($"\rProcessed: {results.Count}");
                             Console.WriteLine(runner.GenerateSummary());
@@ -566,6 +622,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  test262-suite [category] [root]");
             Console.WriteLine("  test262-range <skip> <take> [category] [root]");
             Console.WriteLine("  wpt <test_file_or_category> [root]");
+            Console.WriteLine("      optional flags: --max <N> --skip <N>");
             Console.WriteLine("  acid2");
             Console.WriteLine("  acid2-compare");
             Console.WriteLine("  acid2-layout-html [output_html]");
