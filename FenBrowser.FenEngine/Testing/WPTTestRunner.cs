@@ -1056,14 +1056,10 @@ namespace FenBrowser.FenEngine.Testing
             for (int i = entries.Count - 1; i >= 0; i--)
             {
                 var entry = entries[i];
-                if (!string.Equals(entry.Level, "error", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
                 var message = entry.Message ?? string.Empty;
                 if (message.IndexOf("[WPT-NAV]", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     message.IndexOf("GLOBAL JS ERROR:", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("[VM Uncaught Exception]", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     message.IndexOf("Unhandled", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     var trimmed = message.Trim();
