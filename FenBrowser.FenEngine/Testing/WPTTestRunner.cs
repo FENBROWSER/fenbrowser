@@ -912,9 +912,19 @@ namespace FenBrowser.FenEngine.Testing
                 var probe = AppContext.BaseDirectory;
                 for (int i = 0; i < 10 && !string.IsNullOrWhiteSpace(probe); i++)
                 {
-                    var candidate = Path.Combine(probe, "FenBrowser.WPT", "Compat", "known-failing-tests.txt");
-                    if (File.Exists(candidate))
+                    var candidates = new[]
                     {
+                        Path.Combine(probe, "FenBrowser.Conformance", "Compat", "known-failing-tests.txt"),
+                        Path.Combine(probe, "Compat", "known-failing-tests.txt")
+                    };
+
+                    foreach (var candidate in candidates)
+                    {
+                        if (!File.Exists(candidate))
+                        {
+                            continue;
+                        }
+
                         return File.ReadAllLines(candidate)
                             .Select(line => line.Trim().Replace('\\', '/'))
                             .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#", StringComparison.Ordinal))

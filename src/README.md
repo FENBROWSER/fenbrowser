@@ -26,7 +26,7 @@ canonical source files that implement that layer.
 | `Storage/` | Storage | `FenBrowser.Core` | Cookies, localStorage, HTTP cache (partitioned) |
 | `Security/` | Security Hardening | `FenBrowser.Core` | CORB, OOPIF, storage partitioning, CSP |
 | `WebIDL/` | WebIDL Bindings | `FenBrowser.Core`, `FenBrowser.WebIdlGen` | IDL source files, generator, generated C# stubs |
-| `Tests/` | Conformance | `FenBrowser.Tests`, `FenBrowser.Test262`, `FenBrowser.WPT` | Test suites, conformance runners |
+| `Tests/` | Conformance | `FenBrowser.Tests`, `FenBrowser.Test262`, `FenBrowser.Conformance` | Test suites, conformance runners |
 
 ## Architectural Rules
 

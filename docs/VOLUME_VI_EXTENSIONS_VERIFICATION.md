@@ -7,6 +7,14 @@
 
 This volume details the infrastructure used to extend the browser and verify its correctness. FenBrowser emphasizes **Spec Compliance** over ad-hoc features, relying heavily on standard test suites (WPT, Test262, Acid2).
 
+### 1.1 WPT Harness Policy (2026-04-22)
+
+- In-repo `FenBrowser.WPT` has been retired and removed from the solution graph.
+- Official WPT verification now uses the upstream harness only:
+  - start servers with `python wpt serve` (or run via `python wpt run ...`) from an upstream WPT checkout.
+  - execute FenBrowser against `web-platform.test` endpoints provided by that harness.
+- Historical references in this volume to `FenBrowser.WPT` commands/files are archival context for prior work, not active workflow.
+
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
 FenBrowser includes a compliant W3C WebDriver server, allowing it to be controlled by automation tools like Selenium.

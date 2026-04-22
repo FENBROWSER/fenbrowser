@@ -3,7 +3,7 @@ using System.Linq;
 using System.IO;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Testing;
-using FenBrowser.WPT;
+using FenBrowser.Conformance;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine

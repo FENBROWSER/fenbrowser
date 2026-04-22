@@ -24,10 +24,10 @@
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
+    <ProjectReference Include="..\FenBrowser.Conformance\FenBrowser.Conformance.csproj" />
     <ProjectReference Include="..\FenBrowser.DevTools\FenBrowser.DevTools.csproj" />
     <ProjectReference Include="..\FenBrowser.Host\FenBrowser.Host.csproj" />
     <ProjectReference Include="..\FenBrowser.Tooling\FenBrowser.Tooling.csproj" />
-    <ProjectReference Include="..\FenBrowser.WPT\FenBrowser.WPT.csproj" />
   </ItemGroup>
 
 </Project>

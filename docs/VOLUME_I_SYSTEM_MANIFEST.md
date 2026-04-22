@@ -243,7 +243,8 @@ The executable wrapper.
 - Accessibility ownership:
   - Linux AT-SPI now emits through a bounded broker (`LinuxAtSpiEventBroker.cs`) with explicit failure logging instead of remaining a placeholder bridge.
 - Solution-graph impact:
-  - `FenBrowser.Tooling` is now the assembly owner for linked harness sources (`FenBrowser.FenEngine/Testing/*`, `TestHarnessAPI.cs`, `TestConsoleCapture.cs`, `TestFenEngine.cs`), while `FenBrowser.WPT`, `FenBrowser.Test262`, `FenBrowser.Conformance`, and `FenBrowser.Tests` reference that tooling assembly instead of runtime-owned harness compilation.
+  - `FenBrowser.Tooling` is the assembly owner for linked harness sources (`FenBrowser.FenEngine/Testing/*`, `TestHarnessAPI.cs`, `TestConsoleCapture.cs`, `TestFenEngine.cs`), while `FenBrowser.Test262`, `FenBrowser.Conformance`, and `FenBrowser.Tests` reference that tooling assembly instead of runtime-owned harness compilation.
+  - `FenBrowser.WPT` has been retired; WPT execution is performed with the upstream WPT Python harness (`python wpt ...`) against a live FenBrowser instance.
 - Verification:
   - `dotnet build FenBrowser.sln -nologo` completed successfully on `2026-03-29`.
 
