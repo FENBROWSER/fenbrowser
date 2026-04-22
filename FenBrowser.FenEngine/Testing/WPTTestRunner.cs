@@ -455,8 +455,7 @@ namespace FenBrowser.FenEngine.Testing
         {
             var state = new TestExecutionState();
 
-            // Convert file path to URI
-            var uri = new Uri(NormalizeTestFilePath(testFile)).AbsoluteUri;
+            var uri = BuildExecutionUri(testFile);
             
             // 1. Navigate
             if (verbose) Console.WriteLine($"[WPT] Navigating to {uri}");
@@ -883,9 +882,19 @@ namespace FenBrowser.FenEngine.Testing
                 return false;
             }
 
+            // Do not downgrade harness bootstrap/injection failures into skips.
+            if (error.IndexOf("No assertions executed by testharness", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("promise_test is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("async_test is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("test is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("setup is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("done is not defined", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("get_host_info is not defined", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
             return error.IndexOf("undefined is not a function", StringComparison.OrdinalIgnoreCase) >= 0
-                   || error.IndexOf("is not defined", StringComparison.OrdinalIgnoreCase) >= 0
-                   || error.IndexOf("No assertions executed by testharness", StringComparison.OrdinalIgnoreCase) >= 0
                    || (error.IndexOf("LoadProp '", StringComparison.OrdinalIgnoreCase) >= 0
                        && error.IndexOf("' on undefined", StringComparison.OrdinalIgnoreCase) >= 0)
                    || (error.IndexOf("LoadProp '", StringComparison.OrdinalIgnoreCase) >= 0
@@ -943,7 +952,7 @@ namespace FenBrowser.FenEngine.Testing
 
         private async Task ExecuteCrashTestAsync(string testFile, bool verbose)
         {
-            var uri = new Uri(NormalizeTestFilePath(testFile)).AbsoluteUri;
+            var uri = BuildExecutionUri(testFile);
             if (verbose) Console.WriteLine($"[WPT] Navigating crash test to {uri}");
             await _navigator(uri);
 
@@ -1145,6 +1154,42 @@ namespace FenBrowser.FenEngine.Testing
         private static string NormalizeTestFilePath(string testFile)
         {
             return Path.GetFullPath(testFile);
+        }
+
+        private string BuildExecutionUri(string testFile)
+        {
+            var normalizedTestFile = NormalizeTestFilePath(testFile);
+
+            if (!string.IsNullOrWhiteSpace(_wptRootPath))
+            {
+                try
+                {
+                    var normalizedRoot = Path.GetFullPath(_wptRootPath);
+                    var relative = Path.GetRelativePath(normalizedRoot, normalizedTestFile).Replace('\\', '/');
+                    if (!relative.StartsWith("../", StringComparison.Ordinal) &&
+                        !relative.StartsWith("..\\", StringComparison.Ordinal) &&
+                        !Path.IsPathRooted(relative))
+                    {
+                        var baseUrlRaw = Environment.GetEnvironmentVariable("FEN_WPT_BASE_URL");
+                        var baseUrl = string.IsNullOrWhiteSpace(baseUrlRaw)
+                            ? "http://web-platform.test:8000/"
+                            : baseUrlRaw.Trim().TrimEnd('/') + "/";
+
+                        var escapedRelative = string.Join(
+                            "/",
+                            relative.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(Uri.EscapeDataString));
+
+                        return new Uri(new Uri(baseUrl), escapedRelative).AbsoluteUri;
+                    }
+                }
+                catch
+                {
+                    // Fall through to file:// execution.
+                }
+            }
+
+            return new Uri(normalizedTestFile).AbsoluteUri;
         }
 
         private string GetRelativeWptTestId(string testFile)

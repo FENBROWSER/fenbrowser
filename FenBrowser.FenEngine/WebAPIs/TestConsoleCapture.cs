@@ -115,21 +115,24 @@ namespace FenBrowser.FenEngine.WebAPIs
             foreach (var line in lines)
             {
                 var trimmed = line.Trim();
+                var normalized = NormalizeHarnessLine(trimmed);
 
-                if (trimmed.StartsWith(StructuredResultMarker, StringComparison.Ordinal))
+                var structuredResultIndex = normalized.IndexOf(StructuredResultMarker, StringComparison.Ordinal);
+                if (structuredResultIndex >= 0)
                 {
-                    ParseStructuredResult(trimmed[StructuredResultMarker.Length..]);
+                    ParseStructuredResult(normalized[(structuredResultIndex + StructuredResultMarker.Length)..]);
                     continue;
                 }
 
-                if (trimmed.StartsWith(StructuredCompletionMarker, StringComparison.Ordinal))
+                var structuredCompletionIndex = normalized.IndexOf(StructuredCompletionMarker, StringComparison.Ordinal);
+                if (structuredCompletionIndex >= 0)
                 {
-                    ParseStructuredCompletion(trimmed[StructuredCompletionMarker.Length..]);
+                    ParseStructuredCompletion(normalized[(structuredCompletionIndex + StructuredCompletionMarker.Length)..]);
                     continue;
                 }
                 
                 // Check for PASS
-                var passMatch = TestPassPattern.Match(trimmed);
+                var passMatch = TestPassPattern.Match(normalized);
                 if (passMatch.Success)
                 {
                     TestHarnessAPI.AddResult(passMatch.Groups[2].Value, TestHarnessAPI.TestStatus.Pass);
@@ -137,7 +140,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 
                 // Check for FAIL
-                var failMatch = TestFailPattern.Match(trimmed);
+                var failMatch = TestFailPattern.Match(normalized);
                 if (failMatch.Success)
                 {
                     TestHarnessAPI.AddResult(failMatch.Groups[2].Value, TestHarnessAPI.TestStatus.Fail);
@@ -145,7 +148,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 
                 // Check for TIMEOUT
-                var timeoutMatch = TestTimeoutPattern.Match(trimmed);
+                var timeoutMatch = TestTimeoutPattern.Match(normalized);
                 if (timeoutMatch.Success)
                 {
                     TestHarnessAPI.AddResult(timeoutMatch.Groups[1].Value, TestHarnessAPI.TestStatus.Timeout);
@@ -153,7 +156,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 }
                 
                 // Check for Result: format
-                var resultMatch = TestResultPattern.Match(trimmed);
+                var resultMatch = TestResultPattern.Match(normalized);
                 if (resultMatch.Success)
                 {
                     var status = resultMatch.Groups[1].Value.ToUpperInvariant() == "PASS" 
@@ -162,6 +165,31 @@ namespace FenBrowser.FenEngine.WebAPIs
                     TestHarnessAPI.AddResult(resultMatch.Groups[2].Value, status);
                 }
             }
+        }
+
+        private static string NormalizeHarnessLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                return string.Empty;
+            }
+
+            // Console bridge often prefixes messages as "[INFO] ...", "[WARN] ...", etc.
+            // Strip exactly one leading bracketed level token for harness parsing.
+            if (line.StartsWith("[", StringComparison.Ordinal))
+            {
+                var closing = line.IndexOf(']');
+                if (closing > 0 && closing < line.Length - 1)
+                {
+                    var level = line.Substring(1, closing - 1);
+                    if (Regex.IsMatch(level, "^[A-Za-z]+$"))
+                    {
+                        return line[(closing + 1)..].TrimStart();
+                    }
+                }
+            }
+
+            return line;
         }
 
         private static void ParseStructuredResult(string payloadJson)

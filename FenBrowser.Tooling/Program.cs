@@ -209,13 +209,15 @@ namespace FenBrowser.Tooling
 
                                 await TabManager.Instance.ActiveTab.NavigateAsync(url).ConfigureAwait(false);
                             }).ConfigureAwait(false);
-                        });
+                        },
+                        timeoutMs: ResolveWptTimeoutMs());
 
                         if (File.Exists(input))
                         {
                             var result = await runner.RunSingleTestAsync(input).ConfigureAwait(false);
                             Console.WriteLine($"Result: {(result.Success ? "PASS" : "FAIL")}");
                             Console.WriteLine($"Stats: {result.PassCount} passed, {result.FailCount} failed");
+                            Console.WriteLine($"Completion: {result.CompletionSignal}");
                             if (!string.IsNullOrWhiteSpace(result.Error))
                             {
                                 Console.WriteLine(result.Error);
@@ -564,6 +566,23 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  render-perf");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
+        }
+
+        private static int ResolveWptTimeoutMs()
+        {
+            const int defaultTimeoutMs = 60000;
+            const int minTimeoutMs = 5000;
+            const int maxTimeoutMs = 300000;
+
+            var raw = Environment.GetEnvironmentVariable("FEN_WPT_TIMEOUT_MS");
+            if (!int.TryParse(raw, out var parsed))
+            {
+                return defaultTimeoutMs;
+            }
+
+            if (parsed < minTimeoutMs) return minTimeoutMs;
+            if (parsed > maxTimeoutMs) return maxTimeoutMs;
+            return parsed;
         }
 
         private static async Task<SKBitmap> CaptureWindowScreenshotAsync(string url, int settleMs = 3500)

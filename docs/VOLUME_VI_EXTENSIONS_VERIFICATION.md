@@ -12,6 +12,10 @@ This volume details the infrastructure used to extend the browser and verify its
 - Official WPT verification now uses the upstream harness only:
   - start servers with `python wpt serve` (or run via `python wpt run ...`) from an upstream WPT checkout.
   - execute FenBrowser against `web-platform.test` endpoints provided by that harness.
+- Tooling WPT runner hardening (2026-04-22):
+  - `FenBrowser.Tooling wpt` now prefers navigating tests via `http://web-platform.test:8000/<relative-test-path>` instead of local `file://` execution when the test is under the configured WPT root.
+  - base URL can be overridden with `FEN_WPT_BASE_URL`.
+  - timeout can be tuned with `FEN_WPT_TIMEOUT_MS` (default `60000`, bounded).
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 

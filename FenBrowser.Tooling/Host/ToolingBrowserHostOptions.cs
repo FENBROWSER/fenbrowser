@@ -34,28 +34,55 @@ namespace FenBrowser.Tooling.Host
                                 }
                             }
 
-                            window.result_callback = function (test) {
+                            function onResult(test) {
                                 emit('__FEN_WPT_RESULT__', {
                                     name: test && test.name ? test.name : '',
                                     status: test && typeof test.status !== 'undefined' ? test.status : -1,
                                     message: test && test.message ? String(test.message) : ''
                                 });
-                            };
+                            }
 
-                            window.completion_callback = function (tests, status) {
+                            function onComplete(tests, status) {
                                 emit('__FEN_WPT_COMPLETE__', {
                                     status: status && typeof status.status !== 'undefined' ? String(status.status) : '',
                                     message: status && status.message ? String(status.message) : '',
                                     total: Array.isArray(tests) ? tests.length : 0
                                 });
-                            };
-
-                            if (window.add_result_callback) {
-                                window.add_result_callback(window.result_callback);
                             }
 
-                            if (window.add_completion_callback) {
-                                window.add_completion_callback(window.completion_callback);
+                            var attached = false;
+                            function tryAttach() {
+                                if (attached) {
+                                    return;
+                                }
+
+                                if (typeof window.add_result_callback === 'function') {
+                                    window.add_result_callback(onResult);
+                                } else {
+                                    return false;
+                                }
+
+                                if (typeof window.add_completion_callback === 'function') {
+                                    window.add_completion_callback(onComplete);
+                                }
+
+                                attached = true;
+                                emit('__FEN_WPT_HOOKED__', { ok: true });
+                                return true;
+                            }
+
+                            if (!tryAttach()) {
+                                var retries = 0;
+                                var maxRetries = 200;
+                                var timer = window.setInterval(function () {
+                                    retries++;
+                                    if (tryAttach() || retries >= maxRetries) {
+                                        window.clearInterval(timer);
+                                        if (!attached) {
+                                            emit('__FEN_WPT_HOOKED__', { ok: false, reason: 'callbacks_unavailable' });
+                                        }
+                                    }
+                                }, 10);
                             }
                         })();
                         """;
@@ -75,7 +102,33 @@ namespace FenBrowser.Tooling.Host
                 return requestUri;
             }
 
+            if (File.Exists(requestUri.LocalPath))
+            {
+                return requestUri;
+            }
+
             var normalizedPath = requestUri.LocalPath.Replace('\\', '/');
+
+            // WPT tests commonly reference harness assets as absolute-from-root paths
+            // (e.g. "/resources/testharness.js") even when the page itself is loaded
+            // from file://. Map those into the configured WPT checkout root.
+            var rootSupportMappings = new[] { "/resources/", "/common/", "/fonts/", "/infrastructure/" };
+            foreach (var marker in rootSupportMappings)
+            {
+                var markerIndex = normalizedPath.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (markerIndex < 0)
+                {
+                    continue;
+                }
+
+                var supportRelativePath = normalizedPath[(markerIndex + 1)..];
+                var mappedSupportPath = Path.Combine(wptRootPath, supportRelativePath.Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(mappedSupportPath))
+                {
+                    return new Uri(mappedSupportPath);
+                }
+            }
+
             if (!normalizedPath.Contains("/wpt/", StringComparison.OrdinalIgnoreCase) &&
                 !normalizedPath.Contains("/tests/", StringComparison.OrdinalIgnoreCase))
             {
