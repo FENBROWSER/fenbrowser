@@ -73,7 +73,7 @@ namespace FenBrowser.WebDriver.Commands
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(Array.Empty<ElementReference>());
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             var elements = await _handler.Browser.FindElementsAsync(strategy, selector);
@@ -117,7 +117,7 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(Array.Empty<ElementReference>());
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var elements = await _handler.Browser.FindElementsAsync(strategy, selector, parent);
@@ -180,7 +180,7 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(Array.Empty<ElementReference>());
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var elements = await _handler.Browser.FindElementsAsync(strategy, selector, shadowRoot);
@@ -223,7 +223,7 @@ namespace FenBrowser.WebDriver.Commands
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success("");
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             var text = await _handler.Browser.GetElementTextAsync(element);
@@ -238,6 +238,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
+            Console.WriteLine($"[WD-ElementClick] ref={elementId} type={element?.GetType().Name ?? "null"} value={element?.ToString() ?? "<null>"}");
             
             if (_handler.Browser == null)
             {
@@ -289,7 +290,7 @@ namespace FenBrowser.WebDriver.Commands
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(null);
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             var value = await _handler.Browser.GetElementAttributeAsync(element, name);
@@ -300,7 +301,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
-            if (_handler.Browser == null) return WebDriverResponse.Success(false);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var selected = await _handler.Browser.IsElementSelectedAsync(element);
             return WebDriverResponse.Success(selected);
         }
@@ -313,7 +314,7 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Property name is required");
             }
-            if (_handler.Browser == null) return WebDriverResponse.Success(null);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var value = await _handler.Browser.GetElementPropertyAsync(element, name);
             return WebDriverResponse.Success(value);
         }
@@ -326,7 +327,7 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "CSS property name is required");
             }
-            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var value = await _handler.Browser.GetElementCssValueAsync(element, propertyName);
             return WebDriverResponse.Success(value ?? string.Empty);
         }
@@ -335,7 +336,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
-            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var tag = await _handler.Browser.GetElementTagNameAsync(element);
             return WebDriverResponse.Success(tag ?? string.Empty);
         }
@@ -346,7 +347,7 @@ namespace FenBrowser.WebDriver.Commands
             var element = session.GetElement(elementId);
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(new WdElementRect());
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var rect = await _handler.Browser.GetElementRectAsync(element);
@@ -357,7 +358,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
-            if (_handler.Browser == null) return WebDriverResponse.Success(false);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var enabled = await _handler.Browser.IsElementEnabledAsync(element);
             return WebDriverResponse.Success(enabled);
         }
@@ -366,7 +367,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
-            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var role = await _handler.Browser.GetElementComputedRoleAsync(element);
             return WebDriverResponse.Success(role ?? string.Empty);
         }
@@ -375,7 +376,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId);
-            if (_handler.Browser == null) return WebDriverResponse.Success(string.Empty);
+            if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var label = await _handler.Browser.GetElementComputedLabelAsync(element);
             return WebDriverResponse.Success(label ?? string.Empty);
         }

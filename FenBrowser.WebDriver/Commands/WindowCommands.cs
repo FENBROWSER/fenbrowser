@@ -96,6 +96,11 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             await SynchronizeWindowStateAsync(session);
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
+
             if (string.IsNullOrWhiteSpace(session.CurrentWindowHandle))
             {
                 throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
@@ -135,13 +140,7 @@ namespace FenBrowser.WebDriver.Commands
             }
             else
             {
-                if (session.WindowHandles.Count > 0)
-                {
-                    session.WindowHandles.Remove(session.CurrentWindowHandle);
-                }
-
-                session.CurrentWindowHandle = closedHandle;
-                session.WindowStateInitialized = true;
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             return WebDriverResponse.Success(session.WindowHandles);
@@ -155,6 +154,11 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             await SynchronizeWindowStateAsync(session);
+            if (_handler.Browser == null)
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
+
             return WebDriverResponse.Success(session.WindowHandles);
         }
         
@@ -168,10 +172,7 @@ namespace FenBrowser.WebDriver.Commands
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success(new WindowRect
-                {
-                    X = 0, Y = 0, Width = 1920, Height = 1080
-                });
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             var (x, y, width, height) = _handler.Browser.GetWindowRect();
@@ -206,6 +207,10 @@ namespace FenBrowser.WebDriver.Commands
             if (_handler.Browser != null)
             {
                 _handler.Browser.SetWindowRect(x, y, width, height);
+            }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             return await GetWindowRectAsync(sessionId);
@@ -256,14 +261,16 @@ namespace FenBrowser.WebDriver.Commands
                 }
             }
 
-            var handle = Guid.NewGuid().ToString("N");
-            if (_handler.Browser != null)
+            if (_handler.Browser == null)
             {
-                var created = await _handler.Browser.NewWindowAsync(windowType);
-                if (!string.IsNullOrWhiteSpace(created))
-                {
-                    handle = created;
-                }
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
+
+            var handle = Guid.NewGuid().ToString("N");
+            var created = await _handler.Browser.NewWindowAsync(windowType);
+            if (!string.IsNullOrWhiteSpace(created))
+            {
+                handle = created;
             }
 
             if (!session.WindowHandles.Contains(handle))
@@ -276,7 +283,7 @@ namespace FenBrowser.WebDriver.Commands
             if (!string.IsNullOrWhiteSpace(previousHandle))
             {
                 session.CurrentWindowHandle = previousHandle;
-                if (_handler.Browser != null && session.WindowHandles.Contains(previousHandle))
+                if (session.WindowHandles.Contains(previousHandle))
                 {
                     await _handler.Browser.SwitchToWindowAsync(previousHandle);
                 }
@@ -285,10 +292,7 @@ namespace FenBrowser.WebDriver.Commands
             {
                 // If current context is already invalid, select the newly created one.
                 session.CurrentWindowHandle = handle;
-                if (_handler.Browser != null)
-                {
-                    await _handler.Browser.SwitchToWindowAsync(handle);
-                }
+                await _handler.Browser.SwitchToWindowAsync(handle);
             }
 
             await SynchronizeWindowStateAsync(session);
@@ -322,6 +326,10 @@ namespace FenBrowser.WebDriver.Commands
             {
                 await _handler.Browser.SwitchToFrameAsync(frameReference);
             }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
             return WebDriverResponse.Success(null);
         }
 
@@ -332,6 +340,10 @@ namespace FenBrowser.WebDriver.Commands
             {
                 await _handler.Browser.SwitchToParentFrameAsync();
             }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
+            }
             return WebDriverResponse.Success(null);
         }
 
@@ -340,7 +352,7 @@ namespace FenBrowser.WebDriver.Commands
             _handler.GetSession(sessionId);
             if (_handler.Browser == null)
             {
-                return await GetWindowRectAsync(sessionId);
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var (x, y, width, height) = _handler.Browser.MaximizeWindow();
@@ -352,7 +364,7 @@ namespace FenBrowser.WebDriver.Commands
             _handler.GetSession(sessionId);
             if (_handler.Browser == null)
             {
-                return await GetWindowRectAsync(sessionId);
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var (x, y, width, height) = _handler.Browser.MinimizeWindow();
@@ -364,7 +376,7 @@ namespace FenBrowser.WebDriver.Commands
             _handler.GetSession(sessionId);
             if (_handler.Browser == null)
             {
-                return await GetWindowRectAsync(sessionId);
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             var (x, y, width, height) = _handler.Browser.FullscreenWindow();

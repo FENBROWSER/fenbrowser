@@ -7,6 +7,7 @@
 // =============================================================================
 
 using System;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +37,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> NavigateToAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
 
             if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object || !body.Value.TryGetProperty("url", out var urlElement))
             {
@@ -48,10 +50,7 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "URL cannot be empty");
             }
 
-            if (!_handler.IsNavigationAllowed(sessionId, url))
-            {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, $"Navigation blocked by security policy: {url}");
-            }
+            _handler.EnsureNavigationAllowed(sessionId, url);
             
             if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
             {
@@ -76,7 +75,7 @@ namespace FenBrowser.WebDriver.Commands
 
             var timeoutMs = ResolvePageLoadTimeoutMs(session.Timeouts?.PageLoad);
             var settledUrl = await WaitForNavigationCommitAsync(startingUrl, absoluteUri.AbsoluteUri, timeoutMs);
-            if (IsAboutBlank(settledUrl))
+            if (IsAboutBlank(settledUrl) && !IsAboutBlank(absoluteUri.AbsoluteUri))
             {
                 throw new WebDriverException(
                     ErrorCodes.Timeout,
@@ -92,14 +91,24 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> GetCurrentUrlAsync(string sessionId)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success("about:blank");
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
-            
-            var url = await _handler.Browser.GetCurrentUrlAsync();
+
+            string url;
+            try
+            {
+                url = await _handler.Browser.GetCurrentUrlAsync();
+            }
+            catch (InvalidOperationException ex) when (ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
+
             if (string.IsNullOrWhiteSpace(url))
             {
                 url = "about:blank";
@@ -114,11 +123,16 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> BackAsync(string sessionId)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
             
             if (_handler.Browser != null)
             {
                 await _handler.Browser.GoBackAsync();
+            }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             return WebDriverResponse.Success(null);
@@ -130,11 +144,16 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> ForwardAsync(string sessionId)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
             
             if (_handler.Browser != null)
             {
                 await _handler.Browser.GoForwardAsync();
+            }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             return WebDriverResponse.Success(null);
@@ -146,11 +165,16 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> RefreshAsync(string sessionId)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
             
             if (_handler.Browser != null)
             {
                 await _handler.Browser.RefreshAsync();
+            }
+            else
+            {
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
             return WebDriverResponse.Success(null);
@@ -162,14 +186,24 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> GetTitleAsync(string sessionId)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(session);
             
             if (_handler.Browser == null)
             {
-                return WebDriverResponse.Success("");
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
-            
-            var title = await _handler.Browser.GetTitleAsync();
+
+            string title;
+            try
+            {
+                title = await _handler.Browser.GetTitleAsync();
+            }
+            catch (InvalidOperationException ex) when (ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
+
             return WebDriverResponse.Success(title ?? "");
         }
 
@@ -263,6 +297,24 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             return Math.Min(value, MaxPageLoadTimeoutMs);
+        }
+
+        private static void EnsureTopLevelBrowsingContext(Session session)
+        {
+            if (session == null)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidSessionId, "Session is required");
+            }
+
+            if (string.IsNullOrWhiteSpace(session.CurrentWindowHandle))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
+            }
+
+            if (!session.WindowHandles.Any(handle => string.Equals(handle, session.CurrentWindowHandle, StringComparison.Ordinal)))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, $"Current top-level browsing context is not open: {session.CurrentWindowHandle}");
+            }
         }
     }
 }

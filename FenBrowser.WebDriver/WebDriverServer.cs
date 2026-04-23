@@ -19,6 +19,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.WebDriver.BiDi;
 using FenBrowser.WebDriver.Protocol;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Security;
@@ -36,6 +37,7 @@ namespace FenBrowser.WebDriver
         private readonly CommandHandler _handler;
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
+        private readonly IBiDiTransportBootstrap _biDiBootstrap;
         private readonly int _port;
         private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
         private static readonly string[] AllowedCorsHeaders = { "content-type" };
@@ -44,7 +46,7 @@ namespace FenBrowser.WebDriver
         
         public event Action<string> OnLog;
         
-        public WebDriverServer(int port = 4444)
+        public WebDriverServer(int port = 4444, IBiDiTransportBootstrap biDiBootstrap = null)
         {
             _port = port;
             _listener = new HttpListener();
@@ -55,6 +57,7 @@ namespace FenBrowser.WebDriver
             _handler = new CommandHandler(_sessionManager);
             _originValidator = new OriginValidator(allowLocalhostOnly: true);
             _cts = new CancellationTokenSource();
+            _biDiBootstrap = biDiBootstrap ?? new NoOpBiDiTransportBootstrap();
         }
         
         /// <summary>
@@ -75,6 +78,7 @@ namespace FenBrowser.WebDriver
             
             _listener.Start();
             Log($"WebDriver server started on port {_port}");
+            _biDiBootstrap.Register(new BiDiBootstrapContext(_port));
             
             _listenerTask = Task.Run(ListenAsync);
         }
@@ -132,11 +136,19 @@ namespace FenBrowser.WebDriver
                 var origin = request.Headers["Origin"];
                 if (!_originValidator.ValidateOrigin(request.RemoteEndPoint) || !_originValidator.ValidateOriginHeader(origin))
                 {
+                    const string reasonCode = SecurityBlockReasons.OriginNotAllowed;
+                    const string detail = "Request endpoint or Origin header is not authorized";
+                    SecurityAudit.LogBlocked(reasonCode, detail);
                     EngineLogCompat.Warn(
                         $"[WebDriver] Unauthorized request blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
                         LogCategory.Security);
                     Log($"Security Alert: Blocked request from unauthorized origin or endpoint. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
-                    await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
+                    await SendErrorAsync(
+                        response,
+                        ErrorCodes.UnknownCommand,
+                        SecurityAudit.BuildBlockedMessage(reasonCode),
+                        403,
+                        SecurityAudit.CreateFailureData(reasonCode, detail));
                     return;
                 }
 
@@ -153,11 +165,19 @@ namespace FenBrowser.WebDriver
                 {
                     if (!ValidatePreflightRequest(request, response))
                     {
+                        const string reasonCode = SecurityBlockReasons.PreflightRejected;
+                        const string detail = "Preflight method or headers are not allowed";
+                        SecurityAudit.LogBlocked(reasonCode, detail);
                         EngineLogCompat.Warn(
                             $"[WebDriver] Invalid preflight blocked. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}",
                             LogCategory.Security);
                         Log($"Security Alert: Blocked invalid WebDriver preflight. Origin={origin ?? "(none)"} Remote={request.RemoteEndPoint}");
-                        await SendErrorAsync(response, ErrorCodes.UnknownCommand, "Unauthorized Origin", 403);
+                        await SendErrorAsync(
+                            response,
+                            ErrorCodes.UnknownCommand,
+                            SecurityAudit.BuildBlockedMessage(reasonCode),
+                            403,
+                            SecurityAudit.CreateFailureData(reasonCode, detail));
                         return;
                     }
 
@@ -196,7 +216,7 @@ namespace FenBrowser.WebDriver
             }
             catch (WebDriverException wdEx)
             {
-                await SendErrorAsync(response, wdEx.ErrorCode, wdEx.Message, wdEx.HttpStatus);
+                await SendErrorAsync(response, wdEx.ErrorCode, wdEx.Message, wdEx.HttpStatus, wdEx.ErrorData);
             }
             catch (JsonException)
             {
@@ -214,6 +234,7 @@ namespace FenBrowser.WebDriver
         {
             response.ContentType = "application/json; charset=utf-8";
             response.StatusCode = 200;
+            response.Headers["Cache-Control"] = "no-cache";
             
             var json = result.ToJson();
             var bytes = Encoding.UTF8.GetBytes(json);
@@ -223,12 +244,13 @@ namespace FenBrowser.WebDriver
             response.Close();
         }
         
-        private async Task SendErrorAsync(HttpListenerResponse response, string error, string message, int status)
+        private async Task SendErrorAsync(HttpListenerResponse response, string error, string message, int status, object data = null)
         {
             response.ContentType = "application/json; charset=utf-8";
             response.StatusCode = status;
+            response.Headers["Cache-Control"] = "no-cache";
             
-            var result = WebDriverResponse.Error(error, message);
+            var result = WebDriverResponse.Error(error, message, data: data);
             var json = result.ToJson();
             var bytes = Encoding.UTF8.GetBytes(json);
             

@@ -11,6 +11,8 @@ namespace FenBrowser.Host.WebDriver
 {
     public class HostBrowserDriver : IBrowserDriver
     {
+        private const int ElementLookupTimeoutMs = 2000;
+        private static readonly TimeSpan ElementLookupPollInterval = TimeSpan.FromMilliseconds(50);
         private TabManager _tabs => TabManager.Instance;
 
         public async Task NavigateAsync(string url)
@@ -20,35 +22,54 @@ namespace FenBrowser.Host.WebDriver
                 if (_tabs.ActiveTab == null)
                 {
                     _tabs.CreateTab();
-                    if (_tabs.ActiveTab != null)
-                    {
-                        await _tabs.ActiveTab.NavigateProgrammaticAsync(url);
-                    }
                 }
-                else
-                {
-                    await _tabs.ActiveTab.NavigateProgrammaticAsync(url);
-                }
+
+                var activeTab = _tabs.ActiveTab ?? throw new InvalidOperationException("Current browsing context is no longer open");
+                await activeTab.NavigateProgrammaticAsync(url);
             });
+        }
+
+        private BrowserTab GetActiveTabOrThrow()
+        {
+            return _tabs.ActiveTab ?? throw new InvalidOperationException("Current browsing context is no longer open");
+        }
+
+        private BrowserHost GetActiveHostOrThrow(bool requireValidContext = true)
+        {
+            var host = GetActiveTabOrThrow().Browser?.Host;
+            if (host == null)
+            {
+                throw new InvalidOperationException("Current browsing context is no longer open");
+            }
+
+            if (requireValidContext && !host.HasValidCurrentBrowsingContext())
+            {
+                throw new InvalidOperationException("Current browsing context is no longer open");
+            }
+
+            return host;
         }
 
         public async Task<string> GetCurrentUrlAsync()
         {
-            return await RunOnMainThread(() => _tabs.ActiveTab?.Url ?? "about:blank");
+            return await RunOnMainThread(async () =>
+            {
+                var host = GetActiveHostOrThrow();
+                var currentUrl = await host.GetCurrentUrlAsync().ConfigureAwait(false);
+                return string.IsNullOrWhiteSpace(currentUrl) ? "about:blank" : currentUrl;
+            });
         }
 
         public async Task<string> GetTitleAsync()
         {
             return await RunOnMainThread(async () =>
             {
-                var activeTab = _tabs.ActiveTab;
-                if (activeTab?.Browser?.Host != null)
+                var activeTab = GetActiveTabOrThrow();
+                var host = GetActiveHostOrThrow(requireValidContext: false);
+                var domTitle = await host.GetTitleAsync().ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(domTitle))
                 {
-                    var domTitle = await activeTab.Browser.Host.GetTitleAsync().ConfigureAwait(false);
-                    if (!string.IsNullOrWhiteSpace(domTitle))
-                    {
-                        return domTitle;
-                    }
+                    return domTitle;
                 }
 
                 return activeTab?.Title ?? string.Empty;
@@ -57,22 +78,30 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> GetWindowHandleAsync()
         {
-            return await RunOnMainThread(() => _tabs.ActiveTab?.Id.ToString() ?? string.Empty);
+            return await RunOnMainThread(() =>
+            {
+                return GetActiveTabOrThrow().Id.ToString();
+            });
         }
 
         public async Task<IReadOnlyList<string>> GetWindowHandlesAsync()
         {
-            return await RunOnMainThread(() => (IReadOnlyList<string>)_tabs.Tabs.Select(tab => tab.Id.ToString()).ToList());
+            return await RunOnMainThread(() =>
+            {
+                var handles = _tabs.Tabs.Select(tab => tab.Id.ToString()).ToList();
+                Console.WriteLine($"[WD-Tab] GetWindowHandles active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} handles=[{string.Join(",", handles)}]");
+                return (IReadOnlyList<string>)handles;
+            });
         }
 
         public async Task CloseWindowAsync()
         {
             await RunOnMainThread(() =>
             {
-                if (_tabs.ActiveTab != null)
-                {
-                    _tabs.CloseActiveTab();
-                }
+                Console.WriteLine($"[WD-Tab] CloseWindow before active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} count={_tabs.Tabs.Count}");
+                _ = GetActiveTabOrThrow();
+                _tabs.CloseActiveTab();
+                Console.WriteLine($"[WD-Tab] CloseWindow after active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} count={_tabs.Tabs.Count}");
             });
         }
 
@@ -111,26 +140,71 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<object> FindElementAsync(string strategy, string selector, object parentElement = null)
         {
-            return await RunOnMainThread(async () =>
+            var parentId = parentElement as string;
+            var deadlineUtc = DateTime.UtcNow.AddMilliseconds(ElementLookupTimeoutMs);
+
+            while (true)
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return null;
-                var parentId = parentElement as string;
-                var id = await host.FindElementAsync(strategy, selector, parentId);
-                return (object)id;
-            });
+                var (id, isLoading) = await RunOnMainThread(async () =>
+                {
+                    var activeTab = _tabs.ActiveTab;
+                    var host = activeTab?.Browser?.Host;
+                    if (host == null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    var elementId = await host.FindElementAsync(strategy, selector, parentId);
+                    return (Id: elementId, IsLoading: activeTab.IsLoading);
+                });
+
+                if (!string.IsNullOrEmpty(id))
+                {
+                    return id;
+                }
+
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    return null;
+                }
+
+                // During navigation and immediate post-load settling, polling avoids flaky no-such-element races.
+                await Task.Delay(isLoading ? ElementLookupPollInterval : TimeSpan.FromMilliseconds(25));
+            }
         }
 
         public async Task<object[]> FindElementsAsync(string strategy, string selector, object parentElement = null)
         {
-            return await RunOnMainThread(async () =>
+            var parentId = parentElement as string;
+            var deadlineUtc = DateTime.UtcNow.AddMilliseconds(ElementLookupTimeoutMs);
+
+            while (true)
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return Array.Empty<object>();
-                var parentId = parentElement as string;
-                var ids = await host.FindElementsAsync(strategy, selector, parentId);
-                return ids.Select(id => (object)id).ToArray();
-            });
+                var (ids, isLoading) = await RunOnMainThread(async () =>
+                {
+                    var activeTab = _tabs.ActiveTab;
+                    var host = activeTab?.Browser?.Host;
+                    if (host == null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    var elementIds = await host.FindElementsAsync(strategy, selector, parentId);
+                    return (Ids: elementIds ?? Array.Empty<string>(), IsLoading: activeTab.IsLoading);
+                });
+
+                if (ids.Length > 0)
+                {
+                    return ids.Select(id => (object)id).ToArray();
+                }
+
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    return Array.Empty<object>();
+                }
+
+                await Task.Delay(isLoading ? ElementLookupPollInterval : TimeSpan.FromMilliseconds(25));
+            }
         }
 
         public async Task<object> GetActiveElementAsync()
@@ -250,8 +324,12 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return;
+                var host = GetActiveHostOrThrow();
+                if (element is not string id)
+                {
+                    throw new InvalidOperationException("Element reference is invalid for current browsing context");
+                }
+
                 await host.ClickElementAsync(id);
             });
         }
@@ -260,8 +338,12 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return;
+                var host = GetActiveHostOrThrow();
+                if (element is not string id)
+                {
+                    throw new InvalidOperationException("Element reference is invalid for current browsing context");
+                }
+
                 await host.ClearElementAsync(id);
             });
         }
@@ -270,8 +352,12 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return;
+                var host = GetActiveHostOrThrow();
+                if (element is not string id)
+                {
+                    throw new InvalidOperationException("Element reference is invalid for current browsing context");
+                }
+
                 await host.SendKeysToElementAsync(id, text ?? string.Empty);
             });
         }
@@ -357,38 +443,34 @@ namespace FenBrowser.Host.WebDriver
 
         public (int x, int y, int width, int height) GetWindowRect()
         {
-            var host = _tabs.ActiveTab?.Browser?.Host;
-            if (host == null) return (0, 0, 800, 600);
+            var host = GetActiveHostOrThrow();
             var rect = host.GetWindowRect();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public void SetWindowRect(int? x, int? y, int? width, int? height)
         {
-            var host = _tabs.ActiveTab?.Browser?.Host;
-            host?.SetWindowRect(x, y, width, height);
+            var host = GetActiveHostOrThrow();
+            host.SetWindowRect(x, y, width, height);
         }
 
         public (int x, int y, int width, int height) MaximizeWindow()
         {
-            var host = _tabs.ActiveTab?.Browser?.Host;
-            if (host == null) return (0, 0, 800, 600);
+            var host = GetActiveHostOrThrow();
             var rect = host.MaximizeWindow();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public (int x, int y, int width, int height) MinimizeWindow()
         {
-            var host = _tabs.ActiveTab?.Browser?.Host;
-            if (host == null) return (0, 0, 800, 600);
+            var host = GetActiveHostOrThrow();
             var rect = host.MinimizeWindow();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public (int x, int y, int width, int height) FullscreenWindow()
         {
-            var host = _tabs.ActiveTab?.Browser?.Host;
-            if (host == null) return (0, 0, 800, 600);
+            var host = GetActiveHostOrThrow();
             var rect = host.FullscreenWindow();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
@@ -398,12 +480,11 @@ namespace FenBrowser.Host.WebDriver
             return await RunOnMainThread(async () =>
             {
                 var beforeActiveTabId = _tabs.ActiveTab?.Id;
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host != null)
-                {
-                    await host.CreateNewTabAsync();
-                }
-                else
+                var beforeCount = _tabs.Tabs.Count;
+                _tabs.CreateTab();
+
+                // Fallback guard if tab creation was ignored by host state.
+                if (_tabs.Tabs.Count <= beforeCount || _tabs.ActiveTab?.Id == beforeActiveTabId)
                 {
                     _tabs.CreateTab();
                 }
@@ -426,15 +507,24 @@ namespace FenBrowser.Host.WebDriver
                 if (int.TryParse(windowHandle, out var tabId))
                 {
                     var tabs = _tabs.Tabs;
+                    var switched = false;
                     for (int i = 0; i < tabs.Count; i++)
                     {
                         if (tabs[i].Id == tabId)
                         {
                             _tabs.SwitchToTab(i);
+                            switched = true;
                             break;
                         }
                     }
+                    if (!switched)
+                    {
+                        throw new InvalidOperationException($"No such window handle in tab manager: {windowHandle}");
+                    }
+                    return;
                 }
+
+                throw new InvalidOperationException($"Invalid window handle format: {windowHandle}");
             });
         }
 
@@ -518,8 +608,7 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return;
+                var host = GetActiveHostOrThrow();
                 var mapped = (actions ?? Array.Empty<WdActionSequence>()).Select(ToEngineActionChain).ToList();
                 await host.PerformActionsAsync(mapped);
             });
@@ -529,8 +618,7 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return;
+                var host = GetActiveHostOrThrow();
                 await host.ReleaseActionsAsync();
             });
         }
@@ -583,6 +671,12 @@ namespace FenBrowser.Host.WebDriver
                 if (host == null) return;
                 await host.SendAlertTextAsync(text ?? string.Empty);
             });
+        }
+
+        public bool HasValidCurrentBrowsingContext()
+        {
+            var host = _tabs.ActiveTab?.Browser?.Host;
+            return host != null && host.HasValidCurrentBrowsingContext();
         }
 
         private static WdCookie ToWdCookie(FenBrowser.FenEngine.Rendering.WebDriverCookie cookie)

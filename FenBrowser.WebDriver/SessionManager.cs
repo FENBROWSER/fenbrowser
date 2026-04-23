@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
@@ -154,10 +155,15 @@ namespace FenBrowser.WebDriver
         // Browser state
         public string CurrentWindowHandle { get; set; }
         public List<string> WindowHandles { get; } = new();
+        public bool WindowStateInitialized { get; set; }
         
         // Element cache for references
         private readonly ConcurrentDictionary<string, WeakReference<object>> _elementCache = new();
+        private readonly ConditionalWeakTable<object, ElementReferenceToken> _elementIdsByObject = new();
+        private readonly ConcurrentDictionary<string, string> _elementRefsByNativeString = new(StringComparer.Ordinal);
+        private readonly object _elementRegistrationLock = new();
         private int _elementCounter;
+        private readonly string _elementIdPrefix;
         
         public Session(string id, Capabilities capabilities)
         {
@@ -169,6 +175,8 @@ namespace FenBrowser.WebDriver
             // Initialize with default window
             CurrentWindowHandle = Guid.NewGuid().ToString("N");
             WindowHandles.Add(CurrentWindowHandle);
+            WindowStateInitialized = false;
+            _elementIdPrefix = Id.Length >= 8 ? Id[..8] : Id;
         }
         
         /// <summary>
@@ -181,9 +189,61 @@ namespace FenBrowser.WebDriver
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cannot register a null element reference");
             }
 
-            var id = $"e{Interlocked.Increment(ref _elementCounter)}";
-            _elementCache[id] = new WeakReference<object>(element);
-            return id;
+            lock (_elementRegistrationLock)
+            {
+                if (_elementIdsByObject.TryGetValue(element, out var existingToken))
+                {
+                    return existingToken.Id;
+                }
+
+                var id = $"{_elementIdPrefix}-e{Interlocked.Increment(ref _elementCounter)}";
+                _elementCache[id] = new WeakReference<object>(element);
+                _elementIdsByObject.Add(element, new ElementReferenceToken(id));
+                if (element is string nativeString && !string.IsNullOrEmpty(nativeString))
+                {
+                    _elementRefsByNativeString[nativeString] = id;
+                }
+                return id;
+            }
+        }
+
+        public bool TryGetElementReferenceId(object element, out string elementReferenceId)
+        {
+            elementReferenceId = null;
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (_elementIdsByObject.TryGetValue(element, out var knownToken))
+            {
+                elementReferenceId = knownToken.Id;
+                return true;
+            }
+
+            if (element is string nativeString &&
+                !string.IsNullOrEmpty(nativeString) &&
+                _elementRefsByNativeString.TryGetValue(nativeString, out var knownByString))
+            {
+                elementReferenceId = knownByString;
+                return true;
+            }
+
+            foreach (var entry in _elementCache)
+            {
+                if (!entry.Value.TryGetTarget(out var target) || target == null)
+                {
+                    continue;
+                }
+
+                if (ReferenceEquals(target, element) || Equals(target, element))
+                {
+                    elementReferenceId = entry.Key;
+                    return true;
+                }
+            }
+
+            return false;
         }
         
         /// <summary>
@@ -191,6 +251,18 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public object GetElement(string elementId)
         {
+            if (string.IsNullOrWhiteSpace(elementId))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Element reference is required");
+            }
+
+            if (!elementId.StartsWith($"{_elementIdPrefix}-e", StringComparison.Ordinal))
+            {
+                throw new WebDriverException(
+                    ErrorCodes.NoSuchElement,
+                    "Element reference does not belong to current session");
+            }
+
             if (_elementCache.TryGetValue(elementId, out var weakRef))
             {
                 if (weakRef.TryGetTarget(out var element))
@@ -211,7 +283,18 @@ namespace FenBrowser.WebDriver
         public void Dispose()
         {
             _elementCache.Clear();
+            _elementRefsByNativeString.Clear();
             WindowHandles.Clear();
+        }
+
+        private sealed class ElementReferenceToken
+        {
+            public ElementReferenceToken(string id)
+            {
+                Id = id;
+            }
+
+            public string Id { get; }
         }
     }
     
@@ -221,11 +304,13 @@ namespace FenBrowser.WebDriver
     public class WebDriverException : Exception
     {
         public string ErrorCode { get; }
+        public object ErrorData { get; }
         
-        public WebDriverException(string errorCode, string message)
+        public WebDriverException(string errorCode, string message, object errorData = null)
             : base(message)
         {
             ErrorCode = errorCode;
+            ErrorData = errorData;
         }
         
         public int HttpStatus => ErrorCodes.GetHttpStatus(ErrorCode);

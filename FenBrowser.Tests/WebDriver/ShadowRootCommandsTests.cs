@@ -145,6 +145,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task AcceptAlertAsync() => Task.CompletedTask;
             public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
+            public bool HasValidCurrentBrowsingContext() => true;
         }
     }
 }

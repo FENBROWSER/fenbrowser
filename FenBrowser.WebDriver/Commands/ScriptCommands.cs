@@ -13,6 +13,7 @@ namespace FenBrowser.WebDriver.Commands
     /// </summary>
     public class ScriptCommands
     {
+        private const string WebDriverElementTokenPrefix = "__fen_wd_el__:";
         private readonly CommandHandler _handler;
 
         public ScriptCommands(CommandHandler handler)
@@ -29,10 +30,7 @@ namespace FenBrowser.WebDriver.Commands
             var session = _handler.GetSession(sessionId);
             var (script, args) = ParseScriptRequest(body, session);
 
-            if (!_handler.IsScriptAllowed(sessionId, script))
-            {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
-            }
+            _handler.EnsureScriptAllowed(sessionId, script);
 
             if (_handler.Browser == null)
             {
@@ -59,10 +57,7 @@ namespace FenBrowser.WebDriver.Commands
             var session = _handler.GetSession(sessionId);
             var (script, args) = ParseScriptRequest(body, session);
 
-            if (!_handler.IsScriptAllowed(sessionId, script))
-            {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, "Script blocked by security policy");
-            }
+            _handler.EnsureScriptAllowed(sessionId, script);
 
             if (_handler.Browser == null)
             {
@@ -176,6 +171,23 @@ namespace FenBrowser.WebDriver.Commands
             if (result == null)
                 return null;
 
+            if (result is string token &&
+                token.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeElementId = token.Substring(WebDriverElementTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeElementId, out var existingFromToken))
+                {
+                    return new ElementReference(existingFromToken);
+                }
+
+                return new ElementReference(session.RegisterElement(nativeElementId));
+            }
+
+            if (session.TryGetElementReferenceId(result, out var existingReference))
+            {
+                return new ElementReference(existingReference);
+            }
+
             if (IsElement(result))
             {
                 return new ElementReference(session.RegisterElement(result));
@@ -206,13 +218,56 @@ namespace FenBrowser.WebDriver.Commands
                 return items;
             }
 
-            return result;
+            if (IsJsonPrimitive(result))
+            {
+                return result;
+            }
+
+            // Never leak raw runtime wrapper objects into JSON serialization.
+            // Unknown objects are returned as string form unless recognized as element references.
+            return result.ToString();
+        }
+
+        private static bool IsJsonPrimitive(object value)
+        {
+            return value is string
+                   or bool
+                   or byte
+                   or sbyte
+                   or short
+                   or ushort
+                   or int
+                   or uint
+                   or long
+                   or ulong
+                   or float
+                   or double
+                   or decimal;
+        }
+
+        private static bool LooksLikeDomWrapper(Type type)
+        {
+            var name = type.Name;
+            if (name.IndexOf("Element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("NodeWrapper", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("ElementWrapper", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            var ns = type.Namespace ?? string.Empty;
+            return ns.IndexOf(".DOM", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                   name.EndsWith("Wrapper", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsElement(object obj)
         {
-            var typeName = obj.GetType().Name;
-            return typeName == "Element" || typeName.EndsWith("Element", StringComparison.Ordinal);
+            var type = obj.GetType();
+            var typeName = type.Name;
+            return typeName == "Element" ||
+                   typeName.EndsWith("Element", StringComparison.Ordinal) ||
+                   LooksLikeDomWrapper(type);
         }
+
     }
 }

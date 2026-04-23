@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.Json;
 using FenBrowser.WebDriver.Protocol;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver.Commands
 {
@@ -47,6 +48,16 @@ namespace FenBrowser.WebDriver.Commands
                 {
                     requestedCaps = request.Capabilities.FirstMatch.FirstOrDefault();
                 }
+            }
+
+            var securityDecision = CapabilityGuard.ValidateRequestedCapabilities(requestedCaps);
+            if (!securityDecision.Allowed)
+            {
+                SecurityAudit.LogBlocked(securityDecision.ReasonCode, securityDecision.Detail);
+                throw new WebDriverException(
+                    ErrorCodes.InvalidArgument,
+                    SecurityAudit.BuildBlockedMessage(securityDecision.ReasonCode),
+                    SecurityAudit.CreateFailureData(securityDecision.ReasonCode, securityDecision.Detail));
             }
 
             requestedCaps?.ValidateOrThrow();

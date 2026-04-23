@@ -18,6 +18,16 @@ This volume details the infrastructure used to extend the browser and verify its
   - timeout can be tuned with `FEN_WPT_TIMEOUT_MS` (default `60000`, bounded).
   - Runner outcomes are now explicit and deterministic: unsupported/manual/reftest/crashtest boundary cases are emitted as `SKIP` with a structured reason, and are no longer rewritten into `PASS`.
   - TAP export mirrors this policy using `ok ... # SKIP <reason>` entries for explicit skips.
+  - Headless harness dependency execution now preserves deterministic resource order for WPT dependency scripts:
+    - `testharness.js` -> `testharnessreport.js` -> `testdriver.js` -> `testdriver-vendor.js` -> `testdriver-actions.js` -> page scripts.
+  - Headless navigator now resolves served-mode WPT URLs (`http://web-platform.test:8000/...`) back to the configured local WPT root when running file-backed conformance.
+  - WPT dependency failures are now classified explicitly instead of being masked as synthetic testdriver skips:
+    - `parse-dependency-failed`
+    - `runtime-dependency-failed`
+    - `harness-no-assertions`
+    - `assertion-failures`
+    - `pass`
+  - The synthetic `testdriver-unsupported` skip path has been removed from `WPTTestRunner`; testdriver-dependent pages now report real outcomes from dependency parse/runtime/assertion state.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
@@ -42,6 +52,38 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
 - Wait budget is derived from session `timeouts.pageLoad` and bounded to a hardened upper limit to avoid indefinite hangs.
 - If URL never commits (for example, browser remains `about:blank`), WebDriver now returns a deterministic `timeout` error instead of reporting stale URL state as success.
 - Tooling-host `GET /session/{id}/title` now reads the active DOM title via browser host APIs before fallback to tab label state, preventing stale `about:blank` title reports after successful navigation.
+
+### 2.4 WebDriver Hardening: Classic Determinism + Security + BiDi Bootstrap (2026-04-23)
+
+- Command execution now enforces deterministic preconditions before dispatch:
+  - valid session for all session-scoped commands
+  - selected/open top-level browsing context for command families that require current context
+  - deterministic exception-to-protocol mapping (`invalid argument`, `no such window`, `timeout`, `unsupported operation`)
+- Session element references are now session-owned IDs (`<session-prefix>-e<n>`), which blocks cross-session element ID reuse and enforces isolation at protocol boundary.
+- Security enforcement remains blocking-by-default and now emits reason-coded, structured audit metadata:
+  - origin/header blocking (`origin-not-allowed`)
+  - preflight blocking (`preflight-rejected`)
+  - capability and script/navigation policy blocking (`capability-policy-violation`, `navigation-url-blocked`, `script-blocked`)
+  - blocked responses include deterministic `value.data.reason/detail/sessionId` payloads for contract tests and diagnostics.
+- Capability policy now requires explicit opt-in for risky launch arguments:
+  - risky args such as `--allow-file-access`, `--allow-insecure-localhost`, `--disable-web-security` require `--webdriver-allow-risky-capabilities` in `fen:options.args`.
+- Actions payload handling is strict and deterministic:
+  - validates source/action shapes and argument ranges
+  - rejects unsupported wheel source with explicit `unsupported operation` instead of silent success.
+- Host WebDriver bridge hardening:
+  - no synthetic success on missing/invalid current browsing context for click/sendKeys/actions/window geometry paths
+  - stricter context checks now raise deterministic `no such window` mapping through command layer.
+- BiDi preparation added as transport skeleton only:
+  - new `FenBrowser.WebDriver.BiDi` abstractions (`IBiDiTransportBootstrap`, context/options, no-op bootstrap)
+  - server startup includes a no-op BiDi registration point so real transport can be added without command-handler refactor.
+
+### 2.5 Focused Verification Additions (2026-04-23)
+
+- Added/updated focused contract tests in `FenBrowser.Tests/WebDriver/WebDriverContractTests.cs`:
+  - cross-session element reference rejection
+  - unsupported wheel actions deterministic failure
+  - risky capability rejection without explicit opt-in
+- Existing shadow-root and script marshalling contract slices continue passing under hardened ID/session rules.
 
 ---
 

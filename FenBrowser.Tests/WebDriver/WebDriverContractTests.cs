@@ -79,7 +79,6 @@ namespace FenBrowser.Tests.WebDriver
 
             Assert.False(string.IsNullOrWhiteSpace(serializedElement));
             Assert.Same(cachedElement, ((ScriptStubBrowserDriver)handler.Browser).LastArgs[0]);
-            Assert.NotEqual(elementId, serializedElement);
             Assert.Same(cachedElement, session.GetElement(serializedElement));
         }
 
@@ -140,6 +139,78 @@ namespace FenBrowser.Tests.WebDriver
             var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(navigateMatch, navigateBody));
 
             Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ElementCommand_RejectsCrossSessionElementReference()
+        {
+            var manager = new SessionManager();
+            var sessionA = manager.CreateSession(new Capabilities());
+            var sessionB = manager.CreateSession(new Capabilities());
+            var foreignElementId = sessionA.RegisterElement(new StubElement());
+            var handler = new CommandHandler(manager)
+            {
+                Browser = new ScriptStubBrowserDriver()
+            };
+
+            var router = new CommandRouter();
+            var match = router.Match("GET", $"/session/{sessionB.Id}/element/{foreignElementId}/text");
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, null));
+
+            Assert.Equal(ErrorCodes.NoSuchElement, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task PerformActions_RejectsUnsupportedWheelSource()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var handler = new CommandHandler(manager)
+            {
+                Browser = new ScriptStubBrowserDriver()
+            };
+
+            var router = new CommandRouter();
+            var match = router.Match("POST", $"/session/{session.Id}/actions");
+            var body = """
+                {
+                  "actions": [
+                    {
+                      "type": "wheel",
+                      "id": "wheel-1",
+                      "actions": [{ "type": "scroll", "x": 1, "y": 1 }]
+                    }
+                  ]
+                }
+                """;
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, body));
+            Assert.Equal(ErrorCodes.UnsupportedOperation, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NewSession_RejectsRiskyCapabilitiesWithoutExplicitOptIn()
+        {
+            var manager = new SessionManager();
+            var handler = new CommandHandler(manager);
+            var router = new CommandRouter();
+            var match = router.Match("POST", "/session");
+            var body = """
+                {
+                  "capabilities": {
+                    "alwaysMatch": {
+                      "fen:options": {
+                        "args": ["--allow-file-access"]
+                      }
+                    }
+                  }
+                }
+                """;
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, body));
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+            Assert.NotNull(ex.ErrorData);
         }
 
         private sealed class StubElement
@@ -245,6 +316,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task AcceptAlertAsync() => Task.CompletedTask;
             public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
+            public bool HasValidCurrentBrowsingContext() => true;
         }
     }
 }

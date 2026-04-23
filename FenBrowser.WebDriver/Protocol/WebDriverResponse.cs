@@ -17,6 +17,7 @@ namespace FenBrowser.WebDriver.Protocol
     public class WebDriverResponse
     {
         [JsonPropertyName("value")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
         public object Value { get; set; }
         
         public static WebDriverResponse Success(object value = null)
@@ -24,7 +25,7 @@ namespace FenBrowser.WebDriver.Protocol
             return new WebDriverResponse { Value = value };
         }
         
-        public static WebDriverResponse Error(string error, string message, string stacktrace = null)
+        public static WebDriverResponse Error(string error, string message, string stacktrace = null, object data = null)
         {
             return new WebDriverResponse
             {
@@ -32,7 +33,8 @@ namespace FenBrowser.WebDriver.Protocol
                 {
                     Error = error,
                     Message = message,
-                    Stacktrace = stacktrace ?? ""
+                    Stacktrace = stacktrace ?? "",
+                    Data = data
                 }
             };
         }

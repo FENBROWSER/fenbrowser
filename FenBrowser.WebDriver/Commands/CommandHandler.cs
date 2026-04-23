@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
@@ -86,6 +87,68 @@ namespace FenBrowser.WebDriver.Commands
             "TakeElementScreenshot",
             "PrintPage"
         };
+        private static readonly HashSet<string> _topLevelContextCommands = new(StringComparer.Ordinal)
+        {
+            "NavigateTo",
+            "GetCurrentUrl",
+            "Back",
+            "Forward",
+            "Refresh",
+            "GetTitle",
+            "GetWindowHandle",
+            "CloseWindow",
+            "GetWindowRect",
+            "SetWindowRect",
+            "MaximizeWindow",
+            "MinimizeWindow",
+            "FullscreenWindow",
+            "SwitchToFrame",
+            "SwitchToParentFrame",
+            "FindElement",
+            "FindElements",
+            "FindElementFromElement",
+            "FindElementsFromElement",
+            "GetShadowRoot",
+            "FindElementFromShadowRoot",
+            "FindElementsFromShadowRoot",
+            "GetActiveElement",
+            "IsElementSelected",
+            "GetElementText",
+            "GetElementProperty",
+            "GetElementCssValue",
+            "GetElementTagName",
+            "GetElementRect",
+            "IsElementEnabled",
+            "GetComputedRole",
+            "GetComputedLabel",
+            "ElementClick",
+            "ElementClear",
+            "ElementSendKeys",
+            "GetElementAttribute",
+            "GetPageSource",
+            "ExecuteScript",
+            "ExecuteAsyncScript",
+            "GetAllCookies",
+            "GetNamedCookie",
+            "AddCookie",
+            "DeleteCookie",
+            "DeleteAllCookies",
+            "PerformActions",
+            "ReleaseActions",
+            "DismissAlert",
+            "AcceptAlert",
+            "GetAlertText",
+            "SendAlertText",
+            "TakeScreenshot",
+            "TakeElementScreenshot",
+            "PrintPage"
+        };
+        private static readonly HashSet<string> _sessionScopedCommands = new(StringComparer.Ordinal)
+        {
+            "DeleteSession",
+            "GetTimeouts",
+            "SetTimeouts"
+        };
 
         private readonly SessionManager _sessionManager;
         private readonly SessionCommands _sessionCommands;
@@ -116,6 +179,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ExecuteAsync(RouteMatch match, string body)
         {
             var command = match.Command;
+            Console.WriteLine($"[WD-Cmd] {command}");
             var sessionId = match.GetSessionId();
 
             // Ensure per-session security context exists for all session-scoped commands.
@@ -132,14 +196,17 @@ namespace FenBrowser.WebDriver.Commands
             {
                 json = JsonSerializer.Deserialize<JsonElement>(body);
             }
-            
-            return command switch
+            EnsureCommandPreconditions(command, sessionId);
+
+            try
             {
+                return command switch
+                {
                 // Status
                 "GetStatus" => GetStatus(),
                  
                 // Session
-                "NewSession" => RegisterSessionSecurityContext(_sessionCommands.NewSession(json)),
+                "NewSession" => await CreateSessionAndInitializeTopLevelContextAsync(json),
                 "DeleteSession" => DeleteSessionSecure(match.GetSessionId()),
                 "GetTimeouts" => _sessionCommands.GetTimeouts(match.GetSessionId()),
                 "SetTimeouts" => _sessionCommands.SetTimeouts(match.GetSessionId(), json),
@@ -154,7 +221,7 @@ namespace FenBrowser.WebDriver.Commands
                 
                 // Window
                 "GetWindowHandle" => await _windowCommands.GetWindowHandleAsync(match.GetSessionId()),
-                "CloseWindow" => await _windowCommands.CloseWindowAsync(match.GetSessionId()),
+                "CloseWindow" => await CloseWindowWithSessionLifecycleAsync(match.GetSessionId()),
                 "SwitchToWindow" => await _windowCommands.SwitchToWindowAsync(match.GetSessionId(), json),
                 "GetWindowHandles" => await _windowCommands.GetWindowHandlesAsync(match.GetSessionId()),
                 "NewWindow" => await _windowCommands.NewWindowAsync(match.GetSessionId(), json),
@@ -222,7 +289,32 @@ namespace FenBrowser.WebDriver.Commands
                 
                 // Not implemented - return unsupported
                 _ => WebDriverResponse.Error(ErrorCodes.UnsupportedOperation, $"Command not implemented: {command}")
-            };
+                };
+            }
+            catch (WebDriverException)
+            {
+                throw;
+            }
+            catch (TimeoutException ex)
+            {
+                throw new WebDriverException(ErrorCodes.Timeout, ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, ex.Message);
+            }
+            catch (FormatException ex)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, ex.Message);
+            }
+            catch (NotSupportedException ex)
+            {
+                throw new WebDriverException(ErrorCodes.UnsupportedOperation, ex.Message);
+            }
+            catch (InvalidOperationException ex) when (LooksLikeNoSuchWindow(ex))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
         }
         
         private WebDriverResponse GetStatus()
@@ -236,7 +328,7 @@ namespace FenBrowser.WebDriver.Commands
         
         private async Task<WebDriverResponse> TakeScreenshotAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId); // Validate session
+            EnsureTopLevelBrowsingContext(sessionId);
             
             if (Browser == null)
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -247,7 +339,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> GetPageSourceAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -259,7 +351,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> GetAllCookiesAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -271,7 +363,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> GetNamedCookieAsync(string sessionId, string name)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");
@@ -293,7 +385,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> AddCookieAsync(string sessionId, JsonElement? json)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -316,7 +408,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> DeleteCookieAsync(string sessionId, string name)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");
@@ -333,7 +425,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> DeleteAllCookiesAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -345,10 +437,10 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> PerformActionsAsync(string sessionId, JsonElement? json)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
-                return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
+                throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
             if (!json.HasValue || !json.Value.TryGetProperty("actions", out var actionsEl) || actionsEl.ValueKind != JsonValueKind.Array)
@@ -361,34 +453,71 @@ namespace FenBrowser.WebDriver.Commands
             {
                 if (seqEl.ValueKind != JsonValueKind.Object) continue;
                 var sequence = new WdActionSequence();
-                if (seqEl.TryGetProperty("type", out var typeEl)) sequence.Type = typeEl.GetString() ?? string.Empty;
-                if (seqEl.TryGetProperty("id", out var idEl)) sequence.Id = idEl.GetString() ?? string.Empty;
-                if (seqEl.TryGetProperty("actions", out var itemsEl) && itemsEl.ValueKind == JsonValueKind.Array)
+                if (!seqEl.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
                 {
-                    foreach (var itemEl in itemsEl.EnumerateArray())
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence type is required");
+                }
+
+                sequence.Type = typeEl.GetString() ?? string.Empty;
+                if (!seqEl.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence id is required");
+                }
+
+                sequence.Id = idEl.GetString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(sequence.Id))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence id cannot be empty");
+                }
+
+                if (!seqEl.TryGetProperty("actions", out var itemsEl) || itemsEl.ValueKind != JsonValueKind.Array)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence actions must be an array");
+                }
+
+                foreach (var itemEl in itemsEl.EnumerateArray())
+                {
+                    if (itemEl.ValueKind != JsonValueKind.Object)
                     {
-                        if (itemEl.ValueKind != JsonValueKind.Object) continue;
-                        var item = new WdActionItem();
-                        if (itemEl.TryGetProperty("type", out var itType)) item.Type = itType.GetString() ?? string.Empty;
-                        if (itemEl.TryGetProperty("duration", out var dur) && dur.ValueKind == JsonValueKind.Number && dur.TryGetInt32(out var d)) item.Duration = d;
-                        if (itemEl.TryGetProperty("x", out var xEl) && xEl.ValueKind == JsonValueKind.Number && xEl.TryGetInt32(out var x)) item.X = x;
-                        if (itemEl.TryGetProperty("y", out var yEl) && yEl.ValueKind == JsonValueKind.Number && yEl.TryGetInt32(out var y)) item.Y = y;
-                        if (itemEl.TryGetProperty("button", out var bEl) && bEl.ValueKind == JsonValueKind.Number && bEl.TryGetInt32(out var b)) item.Button = b;
-                        if (itemEl.TryGetProperty("value", out var vEl)) item.Value = vEl.GetString() ?? string.Empty;
-                        if (itemEl.TryGetProperty("origin", out var originEl))
-                        {
-                            if (originEl.ValueKind == JsonValueKind.String)
-                            {
-                                item.Origin = originEl.GetString() ?? string.Empty;
-                            }
-                            else if (originEl.ValueKind == JsonValueKind.Object &&
-                                     originEl.TryGetProperty(ElementReference.Identifier, out var originIdEl))
-                            {
-                                item.Origin = originIdEl.GetString() ?? string.Empty;
-                            }
-                        }
-                        sequence.Actions.Add(item);
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, "Action entry must be an object");
                     }
+
+                    var item = new WdActionItem();
+                    if (!itemEl.TryGetProperty("type", out var itType) || itType.ValueKind != JsonValueKind.String)
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, "Action type is required");
+                    }
+
+                    item.Type = itType.GetString() ?? string.Empty;
+                    if (itemEl.TryGetProperty("duration", out var dur) && dur.ValueKind == JsonValueKind.Number)
+                    {
+                        if (!dur.TryGetInt32(out var d) || d < 0)
+                        {
+                            throw new WebDriverException(ErrorCodes.InvalidArgument, "Action duration must be a non-negative integer");
+                        }
+
+                        item.Duration = d;
+                    }
+
+                    if (itemEl.TryGetProperty("x", out var xEl) && xEl.ValueKind == JsonValueKind.Number && xEl.TryGetInt32(out var x)) item.X = x;
+                    if (itemEl.TryGetProperty("y", out var yEl) && yEl.ValueKind == JsonValueKind.Number && yEl.TryGetInt32(out var y)) item.Y = y;
+                    if (itemEl.TryGetProperty("button", out var bEl) && bEl.ValueKind == JsonValueKind.Number && bEl.TryGetInt32(out var b)) item.Button = b;
+                    if (itemEl.TryGetProperty("value", out var vEl) && vEl.ValueKind == JsonValueKind.String) item.Value = vEl.GetString() ?? string.Empty;
+                    if (itemEl.TryGetProperty("origin", out var originEl))
+                    {
+                        if (originEl.ValueKind == JsonValueKind.String)
+                        {
+                            item.Origin = originEl.GetString() ?? string.Empty;
+                        }
+                        else if (originEl.ValueKind == JsonValueKind.Object &&
+                                 originEl.TryGetProperty(ElementReference.Identifier, out var originIdEl))
+                        {
+                            item.Origin = originIdEl.GetString() ?? string.Empty;
+                        }
+                    }
+
+                    ValidateActionItem(sequence.Type, item);
+                    sequence.Actions.Add(item);
                 }
                 actions.Add(sequence);
             }
@@ -399,7 +528,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> ReleaseActionsAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -411,7 +540,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> DismissAlertAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -428,7 +557,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> AcceptAlertAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -445,7 +574,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> GetAlertTextAsync(string sessionId)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -462,7 +591,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> SendAlertTextAsync(string sessionId, JsonElement? json)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -484,7 +613,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> PrintPageAsync(string sessionId, JsonElement? json)
         {
-            _sessionManager.GetSession(sessionId);
+            EnsureTopLevelBrowsingContext(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -504,6 +633,84 @@ namespace FenBrowser.WebDriver.Commands
             {
                 EnsureSessionSecurityContext(ns.SessionId);
             }
+            return response;
+        }
+
+        private async Task<WebDriverResponse> CreateSessionAndInitializeTopLevelContextAsync(JsonElement? json)
+        {
+            var response = RegisterSessionSecurityContext(_sessionCommands.NewSession(json));
+            if (response?.Value is not NewSessionResponse created || string.IsNullOrWhiteSpace(created.SessionId))
+            {
+                return response;
+            }
+
+            if (Browser == null)
+            {
+                return response;
+            }
+
+            var session = _sessionManager.GetSession(created.SessionId);
+            if (session == null)
+            {
+                return response;
+            }
+
+            var handles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))?.ToList() ?? new List<string>();
+            if (handles.Count == 0)
+            {
+                var createdHandle = await Browser.NewWindowAsync("tab").ConfigureAwait(false);
+                handles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))?.ToList() ?? new List<string>();
+                if (!string.IsNullOrWhiteSpace(createdHandle) && !handles.Contains(createdHandle))
+                {
+                    handles.Add(createdHandle);
+                }
+            }
+
+            session.WindowHandles.Clear();
+            foreach (var handle in handles.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.Ordinal))
+            {
+                session.WindowHandles.Add(handle);
+            }
+
+            session.CurrentWindowHandle = session.WindowHandles.FirstOrDefault();
+            session.WindowStateInitialized = true;
+            return response;
+        }
+
+        private async Task<WebDriverResponse> CloseWindowWithSessionLifecycleAsync(string sessionId)
+        {
+            var browserWindowCountBeforeClose = 0;
+            if (Browser != null)
+            {
+                try
+                {
+                    var handles = await Browser.GetWindowHandlesAsync().ConfigureAwait(false);
+                    browserWindowCountBeforeClose = handles?.Count ?? 0;
+                }
+                catch
+                {
+                    // Fall through; lifecycle gate will use command response if needed.
+                }
+            }
+
+            var response = await _windowCommands.CloseWindowAsync(sessionId);
+            var remainingHandles = (response?.Value as System.Collections.IEnumerable)?
+                .Cast<object>()
+                .Select(v => v?.ToString())
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .ToList() ?? new List<string>();
+
+            var shouldDeleteSession = browserWindowCountBeforeClose > 0
+                ? browserWindowCountBeforeClose <= 1
+                : remainingHandles.Count == 0;
+
+            if (shouldDeleteSession)
+            {
+                _sessionCommands.DeleteSession(sessionId);
+                _capabilityGuards.TryRemove(sessionId, out _);
+                _sandboxEnforcer.DestroySandbox(sessionId);
+            }
+
             return response;
         }
 
@@ -537,18 +744,169 @@ namespace FenBrowser.WebDriver.Commands
         public bool IsNavigationAllowed(string sessionId, string url)
         {
             EnsureSessionSecurityContext(sessionId);
-            return _capabilityGuards.TryGetValue(sessionId, out var guard) && guard.IsUrlAllowed(url);
+            if (!_capabilityGuards.TryGetValue(sessionId, out var guard))
+            {
+                return false;
+            }
+
+            return guard.IsUrlAllowed(url);
         }
 
         public bool IsScriptAllowed(string sessionId, string script)
         {
             EnsureSessionSecurityContext(sessionId);
-            return _capabilityGuards.TryGetValue(sessionId, out var guard) && guard.IsScriptAllowed(script);
+            if (!_capabilityGuards.TryGetValue(sessionId, out var guard))
+            {
+                return false;
+            }
+
+            return guard.IsScriptAllowed(script);
+        }
+
+        public void EnsureNavigationAllowed(string sessionId, string url)
+        {
+            EnsureSessionSecurityContext(sessionId);
+            if (!_capabilityGuards.TryGetValue(sessionId, out var guard))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Session capability policy unavailable");
+            }
+
+            var decision = guard.EvaluateUrlPolicy(url);
+            if (decision.Allowed)
+            {
+                return;
+            }
+
+            SecurityAudit.LogBlocked(decision.ReasonCode, decision.Detail, sessionId);
+            throw new WebDriverException(
+                ErrorCodes.InvalidArgument,
+                SecurityAudit.BuildBlockedMessage(decision.ReasonCode),
+                SecurityAudit.CreateFailureData(decision.ReasonCode, decision.Detail, sessionId));
+        }
+
+        public void EnsureScriptAllowed(string sessionId, string script)
+        {
+            EnsureSessionSecurityContext(sessionId);
+            if (!_capabilityGuards.TryGetValue(sessionId, out var guard))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Session capability policy unavailable");
+            }
+
+            var decision = guard.EvaluateScriptPolicy(script);
+            if (decision.Allowed)
+            {
+                return;
+            }
+
+            SecurityAudit.LogBlocked(decision.ReasonCode, decision.Detail, sessionId);
+            throw new WebDriverException(
+                ErrorCodes.InvalidArgument,
+                SecurityAudit.BuildBlockedMessage(decision.ReasonCode),
+                SecurityAudit.CreateFailureData(decision.ReasonCode, decision.Detail, sessionId));
+        }
+
+        public void EnsureTopLevelBrowsingContext(string sessionId)
+        {
+            var session = _sessionManager.GetSession(sessionId);
+            if (session == null)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidSessionId, "Session is required");
+            }
+
+            if (string.IsNullOrWhiteSpace(session.CurrentWindowHandle))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
+            }
+
+            if (session.WindowHandles == null || !session.WindowHandles.Contains(session.CurrentWindowHandle))
+            {
+                throw new WebDriverException(
+                    ErrorCodes.NoSuchWindow,
+                    $"Current top-level browsing context is not open: {session.CurrentWindowHandle}");
+            }
+
+            if (Browser != null && !Browser.HasValidCurrentBrowsingContext())
+            {
+                throw new WebDriverException(
+                    ErrorCodes.NoSuchWindow,
+                    "Current browsing context is no longer open");
+            }
         }
 
         public static IReadOnlyCollection<string> GetImplementedCommands() => _implementedCommands;
         
         public Session GetSession(string sessionId) => _sessionManager.GetSession(sessionId);
+
+        private void EnsureCommandPreconditions(string command, string sessionId)
+        {
+            if (command is "GetStatus" or "NewSession")
+            {
+                return;
+            }
+
+            if (_sessionScopedCommands.Contains(command) || _topLevelContextCommands.Contains(command) || command is "SwitchToWindow" or "NewWindow" or "GetWindowHandles")
+            {
+                _sessionManager.GetSession(sessionId);
+            }
+
+            if (_topLevelContextCommands.Contains(command))
+            {
+                EnsureTopLevelBrowsingContext(sessionId);
+            }
+        }
+
+        private static bool LooksLikeNoSuchWindow(InvalidOperationException ex)
+        {
+            return ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   ex.Message.IndexOf("window handle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   ex.Message.IndexOf("active tab", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static void ValidateActionItem(string sequenceType, WdActionItem item)
+        {
+            var sourceType = sequenceType?.Trim().ToLowerInvariant() ?? string.Empty;
+            var actionType = item.Type?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(actionType))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Action type cannot be empty");
+            }
+
+            switch (sourceType)
+            {
+                case "pointer":
+                    if (actionType is not ("pause" or "pointermove" or "pointerdown" or "pointerup" or "pointercancel"))
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported pointer action type: {item.Type}");
+                    }
+
+                    if ((actionType == "pointerdown" || actionType == "pointerup") && (item.Button < 0 || item.Button > 4))
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Pointer button must be in [0,4], got {item.Button}");
+                    }
+                    break;
+                case "key":
+                    if (actionType is not ("pause" or "keydown" or "keyup"))
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported key action type: {item.Type}");
+                    }
+                    break;
+                case "none":
+                    if (actionType != "pause")
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Source type 'none' only supports pause actions, got {item.Type}");
+                    }
+                    break;
+                case "wheel":
+                    if (actionType != "scroll")
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported wheel action type: {item.Type}");
+                    }
+
+                    throw new WebDriverException(ErrorCodes.UnsupportedOperation, "Wheel input source is not supported yet");
+                default:
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported action source type: {sequenceType}");
+            }
+        }
     }
     
     /// <summary>
@@ -616,5 +974,6 @@ namespace FenBrowser.WebDriver.Commands
         Task AcceptAlertAsync();
         Task<string> GetAlertTextAsync();
         Task SendAlertTextAsync(string text);
+        bool HasValidCurrentBrowsingContext();
     }
 }
