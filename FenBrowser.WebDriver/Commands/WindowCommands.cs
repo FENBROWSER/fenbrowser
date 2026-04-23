@@ -7,6 +7,7 @@
 // =============================================================================
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -33,6 +34,7 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
+            var previousCurrentHandle = session.CurrentWindowHandle;
             var browserHandles = await _handler.Browser.GetWindowHandlesAsync();
             session.WindowHandles.Clear();
             if (browserHandles != null)
@@ -43,24 +45,47 @@ namespace FenBrowser.WebDriver.Commands
                 }
             }
 
-            var currentHandle = await _handler.Browser.GetWindowHandleAsync();
-            if (!string.IsNullOrWhiteSpace(currentHandle))
+            if (!session.WindowStateInitialized)
             {
-                if (!session.WindowHandles.Contains(currentHandle))
+                var bootstrapCurrent = await _handler.Browser.GetWindowHandleAsync();
+                if (!string.IsNullOrWhiteSpace(bootstrapCurrent))
                 {
-                    session.WindowHandles.Add(currentHandle);
+                    if (!session.WindowHandles.Contains(bootstrapCurrent))
+                    {
+                        session.WindowHandles.Add(bootstrapCurrent);
+                    }
+
+                    session.CurrentWindowHandle = bootstrapCurrent;
+                }
+                else
+                {
+                    session.CurrentWindowHandle = session.WindowHandles.Count > 0 ? session.WindowHandles[0] : null;
                 }
 
-                session.CurrentWindowHandle = currentHandle;
+                session.WindowStateInitialized = true;
+                return;
             }
-            else if (session.WindowHandles.Count > 0)
+
+            if (string.IsNullOrWhiteSpace(previousCurrentHandle))
             {
-                session.CurrentWindowHandle = session.WindowHandles[0];
-            }
-            else
-            {
+                // Preserve an intentionally invalid current context (e.g. after close).
                 session.CurrentWindowHandle = null;
+                session.WindowStateInitialized = true;
+                return;
             }
+
+            if (session.WindowHandles.Contains(previousCurrentHandle))
+            {
+                session.CurrentWindowHandle = previousCurrentHandle;
+                session.WindowStateInitialized = true;
+                return;
+            }
+
+            // Preserve stale selection so subsequent commands surface no such window
+            // until client explicitly switches to a valid context.
+            session.CurrentWindowHandle = previousCurrentHandle;
+            session.WindowStateInitialized = true;
+            return;
         }
         
         /// <summary>
@@ -71,6 +96,11 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             await SynchronizeWindowStateAsync(session);
+            if (string.IsNullOrWhiteSpace(session.CurrentWindowHandle))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
+            }
+
             return WebDriverResponse.Success(session.CurrentWindowHandle);
         }
         
@@ -81,11 +111,27 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> CloseWindowAsync(string sessionId)
         {
             var session = _handler.GetSession(sessionId);
+            await SynchronizeWindowStateAsync(session);
+
+            if (string.IsNullOrWhiteSpace(session.CurrentWindowHandle) ||
+                !session.WindowHandles.Contains(session.CurrentWindowHandle))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
+            }
+
+            var closedHandle = session.CurrentWindowHandle;
 
             if (_handler.Browser != null)
             {
                 await _handler.Browser.CloseWindowAsync();
                 await SynchronizeWindowStateAsync(session);
+
+                // Closing the selected context must invalidate current selection until client explicitly switches.
+                if (!string.IsNullOrWhiteSpace(closedHandle) &&
+                    !session.WindowHandles.Contains(closedHandle))
+                {
+                    session.CurrentWindowHandle = closedHandle;
+                }
             }
             else
             {
@@ -94,14 +140,8 @@ namespace FenBrowser.WebDriver.Commands
                     session.WindowHandles.Remove(session.CurrentWindowHandle);
                 }
 
-                if (session.WindowHandles.Count > 0)
-                {
-                    session.CurrentWindowHandle = session.WindowHandles[0];
-                }
-                else
-                {
-                    session.CurrentWindowHandle = null;
-                }
+                session.CurrentWindowHandle = closedHandle;
+                session.WindowStateInitialized = true;
             }
             
             return WebDriverResponse.Success(session.WindowHandles);
@@ -204,6 +244,8 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> NewWindowAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
+            await SynchronizeWindowStateAsync(session);
+            var previousHandle = session.CurrentWindowHandle;
             var windowType = "tab";
             if (body.HasValue && body.Value.TryGetProperty("type", out var typeEl))
             {
@@ -228,7 +270,27 @@ namespace FenBrowser.WebDriver.Commands
             {
                 session.WindowHandles.Add(handle);
             }
-            session.CurrentWindowHandle = handle;
+
+            // Classic WebDriver keeps the current top-level browsing context unchanged
+            // after creating a new one.
+            if (!string.IsNullOrWhiteSpace(previousHandle))
+            {
+                session.CurrentWindowHandle = previousHandle;
+                if (_handler.Browser != null && session.WindowHandles.Contains(previousHandle))
+                {
+                    await _handler.Browser.SwitchToWindowAsync(previousHandle);
+                }
+            }
+            else
+            {
+                // If current context is already invalid, select the newly created one.
+                session.CurrentWindowHandle = handle;
+                if (_handler.Browser != null)
+                {
+                    await _handler.Browser.SwitchToWindowAsync(handle);
+                }
+            }
+
             await SynchronizeWindowStateAsync(session);
 
             return WebDriverResponse.Success(new { handle, type = windowType });
@@ -236,14 +298,15 @@ namespace FenBrowser.WebDriver.Commands
 
         public async Task<WebDriverResponse> SwitchToFrameAsync(string sessionId, JsonElement? body)
         {
-            _handler.GetSession(sessionId);
+            var session = _handler.GetSession(sessionId);
             object frameReference = null;
             if (body.HasValue && body.Value.TryGetProperty("id", out var idEl) && idEl.ValueKind != JsonValueKind.Null)
             {
                 if (idEl.ValueKind == JsonValueKind.Object &&
                     idEl.TryGetProperty(ElementReference.Identifier, out var elementIdEl))
                 {
-                    frameReference = elementIdEl.GetString();
+                    var webDriverElementId = elementIdEl.GetString();
+                    frameReference = session.GetElement(webDriverElementId);
                 }
                 else if (idEl.ValueKind == JsonValueKind.String)
                 {
