@@ -60,10 +60,15 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
   - selected/open top-level browsing context for command families that require current context
   - deterministic exception-to-protocol mapping (`invalid argument`, `no such window`, `timeout`, `unsupported operation`)
 - Session element references are now session-owned IDs (`<session-prefix>-e<n>`), which blocks cross-session element ID reuse and enforces isolation at protocol boundary.
+- Window-handle ownership is now session-scoped:
+  - new sessions provision a dedicated top-level context instead of inheriting all global handles
+  - handle synchronization only keeps session-owned handles that are still open
+  - switching to a handle that exists globally but is not session-owned is blocked as `no such window` and security-audited as `session-isolation-violation`.
 - Security enforcement remains blocking-by-default and now emits reason-coded, structured audit metadata:
   - origin/header blocking (`origin-not-allowed`)
   - preflight blocking (`preflight-rejected`)
   - capability and script/navigation policy blocking (`capability-policy-violation`, `navigation-url-blocked`, `script-blocked`)
+  - multi-session storage/cookie isolation blocking when driver-level isolation is not guaranteed (`session-isolation-violation`)
   - blocked responses include deterministic `value.data.reason/detail/sessionId` payloads for contract tests and diagnostics.
 - Capability policy now requires explicit opt-in for risky launch arguments:
   - risky args such as `--allow-file-access`, `--allow-insecure-localhost`, `--disable-web-security` require `--webdriver-allow-risky-capabilities` in `fen:options.args`.
@@ -83,6 +88,9 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
   - cross-session element reference rejection
   - unsupported wheel actions deterministic failure
   - risky capability rejection without explicit opt-in
+  - cross-session window-handle switch rejection
+  - multi-session cookie-command isolation guard
+  - close-window lifecycle isolation across concurrent sessions
 - Existing shadow-root and script marshalling contract slices continue passing under hardened ID/session rules.
 
 ---

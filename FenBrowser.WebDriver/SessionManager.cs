@@ -13,6 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver
 {
@@ -117,6 +118,7 @@ namespace FenBrowser.WebDriver
         /// Check if any sessions are active.
         /// </summary>
         public bool HasActiveSessions => _sessions.Count > 0;
+        public int ActiveSessionCount => _sessions.Count;
         
         private static string GenerateSessionId()
         {
@@ -260,7 +262,11 @@ namespace FenBrowser.WebDriver
             {
                 throw new WebDriverException(
                     ErrorCodes.NoSuchElement,
-                    "Element reference does not belong to current session");
+                    "Element reference does not belong to current session",
+                    SecurityAudit.CreateFailureData(
+                        SecurityBlockReasons.SessionIsolationViolation,
+                        "Attempted to dereference an element ID owned by another session",
+                        Id));
             }
 
             if (_elementCache.TryGetValue(elementId, out var weakRef))

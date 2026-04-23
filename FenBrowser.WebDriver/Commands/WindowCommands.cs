@@ -12,6 +12,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver.Commands
 {
@@ -35,31 +36,35 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             var previousCurrentHandle = session.CurrentWindowHandle;
-            var browserHandles = await _handler.Browser.GetWindowHandlesAsync();
-            session.WindowHandles.Clear();
-            if (browserHandles != null)
-            {
-                foreach (var handle in browserHandles.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.Ordinal))
-                {
-                    session.WindowHandles.Add(handle);
-                }
-            }
+            var browserHandles = (await _handler.Browser.GetWindowHandlesAsync())
+                ?.Where(h => !string.IsNullOrWhiteSpace(h))
+                .Distinct(StringComparer.Ordinal)
+                .ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(StringComparer.Ordinal);
+
+            // Keep only handles owned by this session and still open in browser.
+            session.WindowHandles.RemoveAll(handle => !browserHandles.Contains(handle));
 
             if (!session.WindowStateInitialized)
             {
-                var bootstrapCurrent = await _handler.Browser.GetWindowHandleAsync();
-                if (!string.IsNullOrWhiteSpace(bootstrapCurrent))
+                if (!string.IsNullOrWhiteSpace(previousCurrentHandle) && browserHandles.Contains(previousCurrentHandle))
                 {
-                    if (!session.WindowHandles.Contains(bootstrapCurrent))
+                    if (!session.WindowHandles.Contains(previousCurrentHandle))
                     {
-                        session.WindowHandles.Add(bootstrapCurrent);
+                        session.WindowHandles.Add(previousCurrentHandle);
                     }
-
-                    session.CurrentWindowHandle = bootstrapCurrent;
                 }
                 else
                 {
-                    session.CurrentWindowHandle = session.WindowHandles.Count > 0 ? session.WindowHandles[0] : null;
+                    var bootstrapCurrent = await _handler.Browser.GetWindowHandleAsync();
+                    if (!string.IsNullOrWhiteSpace(bootstrapCurrent) && browserHandles.Contains(bootstrapCurrent))
+                    {
+                        if (!session.WindowHandles.Contains(bootstrapCurrent))
+                        {
+                            session.WindowHandles.Add(bootstrapCurrent);
+                        }
+
+                        session.CurrentWindowHandle = bootstrapCurrent;
+                    }
                 }
 
                 session.WindowStateInitialized = true;
@@ -233,6 +238,21 @@ namespace FenBrowser.WebDriver.Commands
 
             if (!session.WindowHandles.Contains(handle))
             {
+                if (_handler.Browser != null)
+                {
+                    var browserHandles = await _handler.Browser.GetWindowHandlesAsync();
+                    if (browserHandles != null && browserHandles.Contains(handle, StringComparer.Ordinal))
+                    {
+                        const string reasonCode = SecurityBlockReasons.SessionIsolationViolation;
+                        const string detail = "Attempted to switch to a window handle not owned by this session";
+                        SecurityAudit.LogBlocked(reasonCode, $"{detail}: handle={handle}", sessionId);
+                        throw new WebDriverException(
+                            ErrorCodes.NoSuchWindow,
+                            $"No such window: {handle}",
+                            SecurityAudit.CreateFailureData(reasonCode, detail, sessionId));
+                    }
+                }
+
                 throw new WebDriverException(ErrorCodes.NoSuchWindow, $"No such window: {handle}");
             }
 
@@ -295,7 +315,12 @@ namespace FenBrowser.WebDriver.Commands
                 await _handler.Browser.SwitchToWindowAsync(handle);
             }
 
+            // Keep explicit session ownership for the new handle.
             await SynchronizeWindowStateAsync(session);
+            if (!session.WindowHandles.Contains(handle))
+            {
+                session.WindowHandles.Add(handle);
+            }
 
             return WebDriverResponse.Success(new { handle, type = windowType });
         }

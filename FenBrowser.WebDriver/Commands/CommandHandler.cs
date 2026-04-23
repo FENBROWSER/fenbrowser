@@ -352,6 +352,7 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> GetAllCookiesAsync(string sessionId)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            EnsureSessionStorageIsolationForCookieCommands(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -364,6 +365,7 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> GetNamedCookieAsync(string sessionId, string name)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            EnsureSessionStorageIsolationForCookieCommands(sessionId);
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");
@@ -386,6 +388,7 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> AddCookieAsync(string sessionId, JsonElement? json)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            EnsureSessionStorageIsolationForCookieCommands(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -409,6 +412,7 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> DeleteCookieAsync(string sessionId, string name)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            EnsureSessionStorageIsolationForCookieCommands(sessionId);
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");
@@ -426,6 +430,7 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> DeleteAllCookiesAsync(string sessionId)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            EnsureSessionStorageIsolationForCookieCommands(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -449,6 +454,7 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             var actions = new List<WdActionSequence>();
+            var sequenceIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var seqEl in actionsEl.EnumerateArray())
             {
                 if (seqEl.ValueKind != JsonValueKind.Object) continue;
@@ -468,6 +474,10 @@ namespace FenBrowser.WebDriver.Commands
                 if (string.IsNullOrWhiteSpace(sequence.Id))
                 {
                     throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence id cannot be empty");
+                }
+                if (!sequenceIds.Add(sequence.Id))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Duplicate action sequence id: {sequence.Id}");
                 }
 
                 if (!seqEl.TryGetProperty("actions", out var itemsEl) || itemsEl.ValueKind != JsonValueKind.Array)
@@ -518,6 +528,11 @@ namespace FenBrowser.WebDriver.Commands
 
                     ValidateActionItem(sequence.Type, item);
                     sequence.Actions.Add(item);
+                }
+
+                if (sequence.Actions.Count == 0)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Action sequence '{sequence.Id}' must include at least one action");
                 }
                 actions.Add(sequence);
             }
@@ -655,44 +670,30 @@ namespace FenBrowser.WebDriver.Commands
                 return response;
             }
 
-            var handles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))?.ToList() ?? new List<string>();
-            if (handles.Count == 0)
+            // Session isolation: provision a dedicated top-level context instead of attaching to pre-existing global handles.
+            var dedicatedHandle = await Browser.NewWindowAsync("tab").ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(dedicatedHandle))
             {
-                var createdHandle = await Browser.NewWindowAsync("tab").ConfigureAwait(false);
-                handles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))?.ToList() ?? new List<string>();
-                if (!string.IsNullOrWhiteSpace(createdHandle) && !handles.Contains(createdHandle))
+                var current = await Browser.GetWindowHandleAsync().ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(current))
                 {
-                    handles.Add(createdHandle);
+                    dedicatedHandle = current;
                 }
             }
 
             session.WindowHandles.Clear();
-            foreach (var handle in handles.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.Ordinal))
+            if (!string.IsNullOrWhiteSpace(dedicatedHandle))
             {
-                session.WindowHandles.Add(handle);
+                session.WindowHandles.Add(dedicatedHandle);
+                session.CurrentWindowHandle = dedicatedHandle;
+                await Browser.SwitchToWindowAsync(dedicatedHandle).ConfigureAwait(false);
             }
-
-            session.CurrentWindowHandle = session.WindowHandles.FirstOrDefault();
             session.WindowStateInitialized = true;
             return response;
         }
 
         private async Task<WebDriverResponse> CloseWindowWithSessionLifecycleAsync(string sessionId)
         {
-            var browserWindowCountBeforeClose = 0;
-            if (Browser != null)
-            {
-                try
-                {
-                    var handles = await Browser.GetWindowHandlesAsync().ConfigureAwait(false);
-                    browserWindowCountBeforeClose = handles?.Count ?? 0;
-                }
-                catch
-                {
-                    // Fall through; lifecycle gate will use command response if needed.
-                }
-            }
-
             var response = await _windowCommands.CloseWindowAsync(sessionId);
             var remainingHandles = (response?.Value as System.Collections.IEnumerable)?
                 .Cast<object>()
@@ -700,9 +701,8 @@ namespace FenBrowser.WebDriver.Commands
                 .Where(v => !string.IsNullOrWhiteSpace(v))
                 .ToList() ?? new List<string>();
 
-            var shouldDeleteSession = browserWindowCountBeforeClose > 0
-                ? browserWindowCountBeforeClose <= 1
-                : remainingHandles.Count == 0;
+            // Session lifecycle is tied to session-owned top-level contexts.
+            var shouldDeleteSession = remainingHandles.Count == 0;
 
             if (shouldDeleteSession)
             {
@@ -862,6 +862,28 @@ namespace FenBrowser.WebDriver.Commands
                    ex.Message.IndexOf("active tab", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private void EnsureSessionStorageIsolationForCookieCommands(string sessionId)
+        {
+            // Single-session workflows are allowed with existing host behavior.
+            if (_sessionManager.ActiveSessionCount <= 1)
+            {
+                return;
+            }
+
+            if (Browser != null && Browser.SupportsSessionStorageIsolation())
+            {
+                return;
+            }
+
+            const string reasonCode = SecurityBlockReasons.SessionIsolationViolation;
+            const string detail = "Cookie commands are blocked in multi-session mode unless the browser driver guarantees per-session storage isolation";
+            SecurityAudit.LogBlocked(reasonCode, detail, sessionId);
+            throw new WebDriverException(
+                ErrorCodes.UnsupportedOperation,
+                SecurityAudit.BuildBlockedMessage(reasonCode),
+                SecurityAudit.CreateFailureData(reasonCode, detail, sessionId));
+        }
+
         private static void ValidateActionItem(string sequenceType, WdActionItem item)
         {
             var sourceType = sequenceType?.Trim().ToLowerInvariant() ?? string.Empty;
@@ -975,5 +997,6 @@ namespace FenBrowser.WebDriver.Commands
         Task<string> GetAlertTextAsync();
         Task SendAlertTextAsync(string text);
         bool HasValidCurrentBrowsingContext();
+        bool SupportsSessionStorageIsolation() => false;
     }
 }
