@@ -121,6 +121,21 @@ Based strictly on the **HTML5 Parsing Specification**.
 - `FenBrowser.Core/Dom/V2/ShadowRoot.cs`
   - `ShadowRoot.InnerHTML` now uses canonical `HtmlParser.ParseFragment(...)` with host-context fragment parsing.
 
+### 4.0.2 JS Dependency Parser Hardening (2026-04-22)
+
+- `FenBrowser.FenEngine/Core/Parser.cs` now parses assignment-expression contexts with strict delimiter boundaries in:
+  - function default-parameter initializers,
+  - object literal property values/defaults,
+  - call arguments and array/object spread elements.
+- This removes parse-state desynchronization that previously cascaded into `no prefix parse function for Comma/RBrace/RParen` on modern dependency scripts.
+- Regression coverage now includes upstream WPT dependency sources:
+  - `wpt/resources/testdriver.js`
+  - `wpt/resources/testdriver-actions.js`
+- Additional grammar regressions were added for:
+  - async object methods with default parameters,
+  - nested object literals with trailing commas/comments,
+  - optional chaining/nullish coalescing in method-rich object initializers.
+
 ### 4.1 HtmlTokenizer
 
 - Converts a stream of characters into `HtmlToken` objects (StartTag, EndTag, Character, Comment).

@@ -36,6 +36,7 @@ namespace FenBrowser.FenEngine.Testing
             public bool Success { get; set; }
             public bool IsExplicitSkip { get; set; }
             public string SkipReason { get; set; }
+            public string OutcomeCategory { get; set; }
             public bool HarnessCompleted { get; set; }
             public bool TimedOut { get; set; }
             public string CompletionSignal { get; set; }
@@ -201,7 +202,6 @@ namespace FenBrowser.FenEngine.Testing
             string? source = null;
             bool hasHarness = false;
             bool hasScriptTag = false;
-            bool usesTestDriver = false;
             bool isRefTest = false;
             bool isManualTest = false;
             bool isCrashTest = false;
@@ -226,28 +226,12 @@ namespace FenBrowser.FenEngine.Testing
                 return result;
             }
 
-            if (IsHeadlessCompatSkippedTest(testFile))
-            {
-                result.Success = false;
-                result.IsExplicitSkip = true;
-                result.SkipReason = "headless-compat-skipped";
-                result.HarnessCompleted = true;
-                result.TimedOut = false;
-                result.CompletionSignal = "headless-compat-skipped";
-                result.PassCount = 0;
-                result.FailCount = 0;
-                result.TotalCount = 0;
-                result.Error = null;
-                sw.Stop();
-                result.Duration = sw.Elapsed;
-                return result;
-            }
-
             if (KnownFailingSkipTests.Value.Contains(testId))
             {
-                result.Success = false;
+                result.Success = true;
                 result.IsExplicitSkip = true;
                 result.SkipReason = "known-failing-skipped";
+                result.OutcomeCategory = "skip";
                 result.HarnessCompleted = true;
                 result.TimedOut = false;
                 result.CompletionSignal = "known-failing-skipped";
@@ -267,10 +251,7 @@ namespace FenBrowser.FenEngine.Testing
                 source = File.ReadAllText(testFile);
                 hasHarness = source.IndexOf("/resources/testharness.js", StringComparison.OrdinalIgnoreCase) >= 0;
                 hasScriptTag = source.IndexOf("<script", StringComparison.OrdinalIgnoreCase) >= 0;
-                usesTestDriver =
-                    source.IndexOf("testdriver.js", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    source.IndexOf("testdriver-vendor.js", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    source.IndexOf("testdriver-actions.js", StringComparison.OrdinalIgnoreCase) >= 0;
+                var hasTestDriverDependency = HasTestDriverDependency(source);
                 isRefTest = source.IndexOf("rel=\"match\"", StringComparison.OrdinalIgnoreCase) >= 0
                             || source.IndexOf("rel=\"mismatch\"", StringComparison.OrdinalIgnoreCase) >= 0
                             || source.IndexOf("rel='match'", StringComparison.OrdinalIgnoreCase) >= 0
@@ -282,9 +263,10 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (isManualTest)
                 {
-                    result.Success = false;
+                    result.Success = true;
                     result.IsExplicitSkip = true;
                     result.SkipReason = "manual-skipped";
+                    result.OutcomeCategory = "skip";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "manual-skipped";
@@ -299,9 +281,10 @@ namespace FenBrowser.FenEngine.Testing
 
                 if (!hasHarness && (isRefTest || !hasScriptTag))
                 {
-                    result.Success = false;
+                    result.Success = true;
                     result.IsExplicitSkip = true;
                     result.SkipReason = "reftest-skipped";
+                    result.OutcomeCategory = "skip";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "reftest-skipped";
@@ -314,11 +297,12 @@ namespace FenBrowser.FenEngine.Testing
                     return result;
                 }
 
-                if (IsHeadlessCompatSkippedTest(testFile))
+                if (IsHeadlessCompatSkippedTest(testFile) && !hasTestDriverDependency)
                 {
-                    result.Success = false;
+                    result.Success = true;
                     result.IsExplicitSkip = true;
                     result.SkipReason = "headless-compat-skipped";
+                    result.OutcomeCategory = "skip";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "headless-compat-skipped";
@@ -345,9 +329,10 @@ namespace FenBrowser.FenEngine.Testing
                 if (!hasHarness && isCrashTest)
                 {
                     await ExecuteCrashTestAsync(testFile, verbose);
-                    result.Success = false;
+                    result.Success = true;
                     result.IsExplicitSkip = true;
                     result.SkipReason = "crashtest-executed";
+                    result.OutcomeCategory = "skip";
                     result.HarnessCompleted = true;
                     result.TimedOut = false;
                     result.CompletionSignal = "crashtest-executed";
@@ -385,18 +370,26 @@ namespace FenBrowser.FenEngine.Testing
                 var failedSummary = failedSubtests.Count > 0 ? string.Join(" | ", failedSubtests) : null;
                 if (total == 0)
                 {
-                    if (usesTestDriver)
+                    var output = WebAPIs.TestConsoleCapture.GetFullOutput();
+                    bool dependencyParseFailure =
+                        output.IndexOf("[WPT-DEP-PARSE]", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool dependencyRuntimeFailure =
+                        output.IndexOf("[WPT-DEP-RUNTIME]", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                    result.Success = false;
+                    if (dependencyParseFailure)
                     {
-                        result.Success = false;
-                        result.IsExplicitSkip = true;
-                        result.SkipReason = "testdriver-unsupported";
-                        result.HarnessCompleted = true;
-                        result.TimedOut = false;
-                        result.Error = null;
+                        result.OutcomeCategory = "parse-dependency-failed";
+                        result.Error = "Test dependency parse failure detected.";
+                    }
+                    else if (dependencyRuntimeFailure)
+                    {
+                        result.OutcomeCategory = "runtime-dependency-failed";
+                        result.Error = "Test dependency runtime failure detected.";
                     }
                     else
                     {
-                        result.Success = false;
+                        result.OutcomeCategory = "harness-no-assertions";
                         result.Error = string.IsNullOrWhiteSpace(execution.FatalError)
                             ? "No assertions executed by testharness."
                             : execution.FatalError;
@@ -405,16 +398,19 @@ namespace FenBrowser.FenEngine.Testing
                 else if (execution.TimedOut)
                 {
                     result.Success = false;
+                    result.OutcomeCategory = "harness-no-assertions";
                     result.Error = $"Test timed out waiting for completion signal ({_timeoutMs}ms).";
                 }
                 else if (!execution.HarnessCompleted)
                 {
                     result.Success = false;
+                    result.OutcomeCategory = "harness-no-assertions";
                     result.Error = "Harness did not report completion.";
                 }
                 else
                 {
                     result.Success = failed == 0;
+                    result.OutcomeCategory = result.Success ? "pass" : "assertion-failures";
                 }
 
                 if (!result.Success && string.IsNullOrWhiteSpace(result.Error) && !string.IsNullOrWhiteSpace(failedSummary))
@@ -1133,6 +1129,15 @@ namespace FenBrowser.FenEngine.Testing
             sb.AppendLine($"Tests run: {_results.Count}");
             sb.AppendLine($"Assertions: {totalTests} ({totalPass} passed, {totalFail} failed)");
             sb.AppendLine($"Outcomes: pass={_results.Count(r => r.Success && !r.IsExplicitSkip)} fail={failures.Count} skip={skips.Count}");
+            var categories = _results
+                .GroupBy(r => string.IsNullOrWhiteSpace(r.OutcomeCategory) ? "uncategorized" : r.OutcomeCategory)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => $"{g.Key}={g.Count()}")
+                .ToArray();
+            if (categories.Length > 0)
+            {
+                sb.AppendLine($"Outcome categories: {string.Join(", ", categories)}");
+            }
             sb.AppendLine();
             
             if (failures.Count > 0)
@@ -1166,6 +1171,18 @@ namespace FenBrowser.FenEngine.Testing
             }
             
             return sb.ToString();
+        }
+
+        private static bool HasTestDriverDependency(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return false;
+            }
+
+            return source.IndexOf("/resources/testdriver.js", StringComparison.OrdinalIgnoreCase) >= 0
+                   || source.IndexOf("/resources/testdriver-actions.js", StringComparison.OrdinalIgnoreCase) >= 0
+                   || source.IndexOf("test_driver.", StringComparison.OrdinalIgnoreCase) >= 0;
         }
         
         /// <summary>

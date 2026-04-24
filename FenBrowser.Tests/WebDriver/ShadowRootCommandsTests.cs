@@ -54,7 +54,7 @@ namespace FenBrowser.Tests.WebDriver
             };
 
             var session = sessionManager.CreateSession(new Capabilities());
-            var shadowSessionId = session.RegisterElement("shadow-token");
+            var shadowSessionId = session.RegisterShadowRoot("shadow-token");
             var router = new CommandRouter();
             var match = router.Match("POST", $"/session/{session.Id}/shadow/{shadowSessionId}/element");
 

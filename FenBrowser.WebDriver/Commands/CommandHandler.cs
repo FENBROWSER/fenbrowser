@@ -315,6 +315,14 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
             }
+            catch (InvalidOperationException ex) when (LooksLikeStaleElement(ex))
+            {
+                throw new WebDriverException(ErrorCodes.StaleElementReference, "Element is no longer attached to the DOM");
+            }
+            catch (InvalidOperationException ex) when (LooksLikeNoSuchElement(ex))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, ex.Message);
+            }
         }
         
         private WebDriverResponse GetStatus()
@@ -860,6 +868,19 @@ namespace FenBrowser.WebDriver.Commands
             return ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    ex.Message.IndexOf("window handle", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    ex.Message.IndexOf("active tab", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeStaleElement(InvalidOperationException ex)
+        {
+            return ex.Message.IndexOf("stale element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   ex.Message.IndexOf("detached", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeNoSuchElement(InvalidOperationException ex)
+        {
+            return ex.Message.IndexOf("no such element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   ex.Message.IndexOf("element not found", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   ex.Message.IndexOf("invalid element reference", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void EnsureSessionStorageIsolationForCookieCommands(string sessionId)

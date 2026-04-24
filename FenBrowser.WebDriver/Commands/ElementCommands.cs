@@ -19,6 +19,10 @@ namespace FenBrowser.WebDriver.Commands
     /// </summary>
     public class ElementCommands
     {
+        private const string WebDriverElementTokenPrefix = "__fen_wd_el__:";
+        private const string WebDriverShadowTokenPrefix = "__fen_wd_sr__:";
+        private const string WebDriverFrameTokenPrefix = "__fen_wd_fr__:";
+        private const string WebDriverWindowTokenPrefix = "__fen_wd_win__:";
         private readonly CommandHandler _handler;
         
         // Supported locator strategies per spec
@@ -91,7 +95,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> FindElementFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var parent = session.GetElement(parentElementId);
+            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
             var (strategy, selector) = ParseLocator(body);
 
             if (_handler.Browser == null)
@@ -112,7 +116,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> FindElementsFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var parent = session.GetElement(parentElementId);
+            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
             var (strategy, selector) = ParseLocator(body);
 
             if (_handler.Browser == null)
@@ -134,7 +138,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetShadowRootAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
 
             if (_handler.Browser == null)
             {
@@ -147,14 +151,14 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Element does not have an open shadow root");
             }
 
-            var shadowId = session.RegisterElement(shadowRoot);
+            var shadowId = session.RegisterShadowRoot(shadowRoot);
             return WebDriverResponse.Success(new ShadowRootReference(shadowId));
         }
 
         public async Task<WebDriverResponse> FindElementFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var shadowRoot = session.GetElement(shadowId);
+            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
             var (strategy, selector) = ParseLocator(body);
 
             if (_handler.Browser == null)
@@ -175,7 +179,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> FindElementsFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var shadowRoot = session.GetElement(shadowId);
+            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
             var (strategy, selector) = ParseLocator(body);
 
             if (_handler.Browser == null)
@@ -219,7 +223,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetElementTextAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             
             if (_handler.Browser == null)
             {
@@ -237,7 +241,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ClickAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             Console.WriteLine($"[WD-ElementClick] ref={elementId} type={element?.GetType().Name ?? "null"} value={element?.ToString() ?? "<null>"}");
             
             if (_handler.Browser == null)
@@ -256,7 +260,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> SendKeysAsync(string sessionId, string elementId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             
             if (!body.HasValue || !body.Value.TryGetProperty("text", out var textElement))
             {
@@ -281,7 +285,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetAttributeAsync(string sessionId, string elementId, string name)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             
             if (string.IsNullOrEmpty(name))
             {
@@ -300,7 +304,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> IsSelectedAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var selected = await _handler.Browser.IsElementSelectedAsync(element);
             return WebDriverResponse.Success(selected);
@@ -309,20 +313,108 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetPropertyAsync(string sessionId, string elementId, string name)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (string.IsNullOrWhiteSpace(name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Property name is required");
             }
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var value = await _handler.Browser.GetElementPropertyAsync(element, name);
-            return WebDriverResponse.Success(value);
+            return WebDriverResponse.Success(SerializePropertyValue(value, session));
+        }
+
+        private static object SerializePropertyValue(object value, Session session)
+        {
+            if (value == null)
+            {
+                return null;
+            }
+
+            if (value is string elementToken &&
+                elementToken.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeElementId = elementToken.Substring(WebDriverElementTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeElementId, out var existingRef))
+                {
+                    return new ElementReference(existingRef);
+                }
+
+                return new ElementReference(session.RegisterElement(nativeElementId));
+            }
+
+            if (value is string shadowToken &&
+                shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeShadowId, out var existingShadowRef))
+                {
+                    return new ShadowRootReference(existingShadowRef);
+                }
+
+                return new ShadowRootReference(session.RegisterShadowRoot(nativeShadowId));
+            }
+
+            if (value is string frameToken &&
+                frameToken.StartsWith(WebDriverFrameTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeFrameId = frameToken.Substring(WebDriverFrameTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeFrameId, out var existingFrameRef))
+                {
+                    return new FrameReference(existingFrameRef);
+                }
+
+                return new FrameReference(session.RegisterFrame(nativeFrameId));
+            }
+
+            if (value is string windowToken &&
+                windowToken.StartsWith(WebDriverWindowTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeWindowId = windowToken.Substring(WebDriverWindowTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeWindowId, out var existingWindowRef))
+                {
+                    return new WindowReference(existingWindowRef);
+                }
+
+                return new WindowReference(session.RegisterWindow(nativeWindowId));
+            }
+
+            if (value is IReadOnlyList<object> readonlyList)
+            {
+                var serializedList = new List<object>(readonlyList.Count);
+                foreach (var item in readonlyList)
+                {
+                    serializedList.Add(SerializePropertyValue(item, session));
+                }
+                return serializedList;
+            }
+
+            if (value is IEnumerable<object> objectEnumerable)
+            {
+                var serializedList = new List<object>();
+                foreach (var item in objectEnumerable)
+                {
+                    serializedList.Add(SerializePropertyValue(item, session));
+                }
+                return serializedList;
+            }
+
+            if (value is IDictionary<string, object> dict)
+            {
+                var serialized = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (var entry in dict)
+                {
+                    serialized[entry.Key] = SerializePropertyValue(entry.Value, session);
+                }
+                return serialized;
+            }
+
+            return value;
         }
 
         public async Task<WebDriverResponse> GetCssValueAsync(string sessionId, string elementId, string propertyName)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (string.IsNullOrWhiteSpace(propertyName))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "CSS property name is required");
@@ -335,7 +427,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetTagNameAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var tag = await _handler.Browser.GetElementTagNameAsync(element);
             return WebDriverResponse.Success(tag ?? string.Empty);
@@ -344,7 +436,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetRectAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
@@ -357,7 +449,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> IsEnabledAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var enabled = await _handler.Browser.IsElementEnabledAsync(element);
             return WebDriverResponse.Success(enabled);
@@ -366,7 +458,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetComputedRoleAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var role = await _handler.Browser.GetElementComputedRoleAsync(element);
             return WebDriverResponse.Success(role ?? string.Empty);
@@ -375,7 +467,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> GetComputedLabelAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null) throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             var label = await _handler.Browser.GetElementComputedLabelAsync(element);
             return WebDriverResponse.Success(label ?? string.Empty);
@@ -384,7 +476,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ClearAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.ElementNotInteractable, "Browser not connected");
@@ -397,7 +489,7 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> TakeElementScreenshotAsync(string sessionId, string elementId)
         {
             var session = _handler.GetSession(sessionId);
-            var element = session.GetElement(elementId);
+            var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
@@ -442,3 +534,4 @@ namespace FenBrowser.WebDriver.Commands
         }
     }
 }
+

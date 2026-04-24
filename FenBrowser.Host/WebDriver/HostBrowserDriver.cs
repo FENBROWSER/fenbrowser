@@ -220,71 +220,121 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<object> GetShadowRootAsync(object element)
         {
-            return await RunOnMainThread(async () =>
+            if (element is not string id)
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return null;
-                var shadowId = await host.GetShadowRootAsync(id);
-                return (object)shadowId;
-            });
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
+            var deadlineUtc = DateTime.UtcNow.AddMilliseconds(ElementLookupTimeoutMs);
+            while (true)
+            {
+                var (shadowId, isLoading) = await RunOnMainThread(async () =>
+                {
+                    var activeTab = _tabs.ActiveTab;
+                    var host = activeTab?.Browser?.Host;
+                    if (host == null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    var resolvedShadowId = await host.GetShadowRootAsync(id);
+                    return (ShadowId: resolvedShadowId, IsLoading: activeTab.IsLoading);
+                });
+
+                if (!string.IsNullOrWhiteSpace(shadowId))
+                {
+                    return shadowId;
+                }
+
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    return null;
+                }
+
+                await Task.Delay(isLoading ? ElementLookupPollInterval : TimeSpan.FromMilliseconds(25));
+            }
         }
 
         public async Task<bool> IsElementSelectedAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return false;
+                var host = GetActiveHostOrThrow();
                 return await host.IsElementSelectedAsync(id);
             });
         }
 
         public async Task<object> GetElementPropertyAsync(object element, string name)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return null;
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementPropertyAsync(id, name);
             });
         }
 
         public async Task<string> GetElementCssValueAsync(object element, string propertyName)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementCssValueAsync(id, propertyName);
             });
         }
 
         public async Task<string> GetElementTextAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementTextAsync(id);
             });
         }
 
         public async Task<string> GetElementTagNameAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementTagNameAsync(id);
             });
         }
 
         public async Task<WdElementRect> GetElementRectAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return new WdElementRect();
+                var host = GetActiveHostOrThrow();
                 var rect = await host.GetElementRectAsync(id);
                 return new WdElementRect { X = rect.X, Y = rect.Y, Width = rect.Width, Height = rect.Height };
             });
@@ -292,30 +342,42 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<bool> IsElementEnabledAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return false;
+                var host = GetActiveHostOrThrow();
                 return await host.IsElementEnabledAsync(id);
             });
         }
 
         public async Task<string> GetElementComputedRoleAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementComputedRoleAsync(id);
             });
         }
 
         public async Task<string> GetElementComputedLabelAsync(object element)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementComputedLabelAsync(id);
             });
         }
@@ -364,10 +426,14 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> GetElementAttributeAsync(object element, string name)
         {
+            if (element is not string id)
+            {
+                throw new InvalidOperationException("no such element: invalid element reference");
+            }
+
             return await RunOnMainThread(async () =>
             {
-                var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
+                var host = GetActiveHostOrThrow();
                 return await host.GetElementAttributeAsync(id, name);
             });
         }

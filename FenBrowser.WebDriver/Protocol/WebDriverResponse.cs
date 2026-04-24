@@ -111,6 +111,38 @@ namespace FenBrowser.WebDriver.Protocol
             ShadowId = id;
         }
     }
+
+    /// <summary>
+    /// Frame reference.
+    /// </summary>
+    public class FrameReference
+    {
+        public const string Identifier = "frame-075b-4da1-b6ba-e579c2d3230a";
+
+        [JsonPropertyName(Identifier)]
+        public string FrameId { get; set; }
+
+        public FrameReference(string id)
+        {
+            FrameId = id;
+        }
+    }
+
+    /// <summary>
+    /// Window reference.
+    /// </summary>
+    public class WindowReference
+    {
+        public const string Identifier = "window-fcc6-11e5-b4f8-330a88ab9d7f";
+
+        [JsonPropertyName(Identifier)]
+        public string WindowId { get; set; }
+
+        public WindowReference(string id)
+        {
+            WindowId = id;
+        }
+    }
     
     /// <summary>
     /// Window rect for position/size.

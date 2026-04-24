@@ -530,12 +530,34 @@ namespace FenBrowser.Tooling
 
         private static async Task RunWebDriverAsync(string[] args)
         {
-            var port = args
-                .FirstOrDefault(a => a.StartsWith("--port=", StringComparison.OrdinalIgnoreCase));
             var headless = args.Any(a => string.Equals(a, "--headless", StringComparison.OrdinalIgnoreCase));
-            var driverPort = port != null && int.TryParse(port.Split('=')[1], out var parsedPort)
-                ? parsedPort
-                : 4444;
+            var driverPort = 4444;
+
+            for (var i = 0; i < args.Length; i++)
+            {
+                var arg = args[i];
+                if (arg.StartsWith("--port=", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(arg.Split('=')[1], out var inlinePort))
+                    {
+                        driverPort = inlinePort;
+                    }
+
+                    continue;
+                }
+
+                if (string.Equals(arg, "--port", StringComparison.OrdinalIgnoreCase) &&
+                    i + 1 < args.Length &&
+                    int.TryParse(args[i + 1], out var spacedPort))
+                {
+                    driverPort = spacedPort;
+                    i++;
+                }
+            }
+
+            // WPT serves many fixtures on https://web-platform.test:* with local certs.
+            // Automation mode should not fail navigation on certificate trust checks.
+            NetworkConfiguration.Instance.IgnoreCertificateErrors = true;
 
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
             var windowManager = WindowManager.Instance;

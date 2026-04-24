@@ -1997,7 +1997,7 @@ namespace FenBrowser.FenEngine.Core
                     _errors.Add("SyntaxError: Rest parameter cannot have a default initializer");
                     NextToken(); // consume '='
                     NextToken(); // advance to initializer expression start
-                    ParseExpression(Precedence.Comma);
+                    ParseExpression(Precedence.Assignment);
                 }
                 return;
             }
@@ -2011,7 +2011,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     NextToken(); // =
                     NextToken(); // value
-                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                    ident.DefaultValue = ParseExpression(Precedence.Assignment);
                 }
                 identifiers.Add(ident);
                 return;
@@ -2040,7 +2040,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     NextToken(); // =
                     NextToken(); // value
-                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                    ident.DefaultValue = ParseExpression(Precedence.Assignment);
                 }
                 identifiers.Add(ident);
                 return;
@@ -2069,7 +2069,7 @@ namespace FenBrowser.FenEngine.Core
                 {
                     NextToken(); // =
                     NextToken(); // value
-                    ident.DefaultValue = ParseExpression(Precedence.Comma);
+                    ident.DefaultValue = ParseExpression(Precedence.Assignment);
                 }
                 identifiers.Add(ident);
                 return;
@@ -2658,41 +2658,10 @@ namespace FenBrowser.FenEngine.Core
                     return null;
                 }
 
-                // Nested property values can legitimately leave the parser already
-                // sitting on this object's closing brace (for example after complex
-                // function bodies). Only treat actual outer delimiters as terminal
-                // here; a following comma can still introduce another property.
-                if (CurTokenIs(TokenType.RBrace) &&
-                    !PeekTokenIs(TokenType.RBrace) &&
-                    (PeekTokenIs(TokenType.Semicolon) ||
-                     PeekTokenIs(TokenType.Eof) ||
-                     PeekTokenIs(TokenType.RParen) ||
-                     PeekTokenIs(TokenType.RBracket)))
-                {
-                    break;
-                }
-
-                if (CurTokenIs(TokenType.RBrace) &&
-                    PeekTokenIs(TokenType.Comma) &&
-                    !ShouldContinueObjectLiteralAfterComma())
-                {
-                    break;
-                }
-
                 if (!PeekTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.Comma))
                 {
                     return null;
                 }
-            }
-
-            if (CurTokenIs(TokenType.RBrace) &&
-                (PeekTokenIs(TokenType.Semicolon) ||
-                 PeekTokenIs(TokenType.Eof) ||
-                 PeekTokenIs(TokenType.RParen) ||
-                 PeekTokenIs(TokenType.RBracket) ||
-                 (PeekTokenIs(TokenType.Comma) && !ShouldContinueObjectLiteralAfterComma())))
-            {
-                return obj;
             }
 
             if (!ExpectPeek(TokenType.RBrace))
@@ -2970,61 +2939,6 @@ namespace FenBrowser.FenEngine.Core
         }
         return Precedence.Lowest;
     }
-
-        private bool ShouldContinueObjectLiteralAfterComma()
-        {
-            if (!PeekTokenIs(TokenType.Comma) || _lexer?.Source == null)
-            {
-                return true;
-            }
-
-            int nextTokenStart = _peekToken.Position + Math.Max(_peekToken.Literal?.Length ?? 0, 1);
-            if (nextTokenStart < 0 || nextTokenStart >= _lexer.Source.Length)
-            {
-                return false;
-            }
-
-            var probe = new Lexer(_lexer.Source.Substring(nextTokenStart))
-            {
-                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
-            };
-
-            var next = probe.NextToken();
-            var afterNext = probe.NextToken();
-
-            if (next.Type == TokenType.Eof)
-            {
-                return false;
-            }
-
-            if (next.Type == TokenType.Asterisk ||
-                next.Type == TokenType.Ellipsis ||
-                next.Type == TokenType.LBracket)
-            {
-                return true;
-            }
-
-            if (next.Type == TokenType.Identifier ||
-                next.Type == TokenType.String ||
-                next.Type == TokenType.Number ||
-                IsKeywordToken(next.Type))
-            {
-                if (next.Literal == "get" ||
-                    next.Literal == "set" ||
-                    next.Literal == "async")
-                {
-                    return true;
-                }
-
-                return afterNext.Type == TokenType.Colon ||
-                       afterNext.Type == TokenType.Comma ||
-                       afterNext.Type == TokenType.RBrace ||
-                       afterNext.Type == TokenType.Assign ||
-                       afterNext.Type == TokenType.LParen;
-            }
-
-            return false;
-        }
 
         private Statement ParseTryStatement()
         {

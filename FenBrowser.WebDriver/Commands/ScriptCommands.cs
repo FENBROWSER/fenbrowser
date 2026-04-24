@@ -14,6 +14,9 @@ namespace FenBrowser.WebDriver.Commands
     public class ScriptCommands
     {
         private const string WebDriverElementTokenPrefix = "__fen_wd_el__:";
+        private const string WebDriverShadowTokenPrefix = "__fen_wd_sr__:";
+        private const string WebDriverFrameTokenPrefix = "__fen_wd_fr__:";
+        private const string WebDriverWindowTokenPrefix = "__fen_wd_win__:";
         private readonly CommandHandler _handler;
 
         public ScriptCommands(CommandHandler handler)
@@ -153,13 +156,25 @@ namespace FenBrowser.WebDriver.Commands
             reference = null;
             if (element.TryGetProperty(ElementReference.Identifier, out var elementId))
             {
-                reference = session.GetElement(elementId.GetString());
+                reference = session.GetElement(elementId.GetString(), Session.ElementReferenceKind.Element);
                 return true;
             }
 
             if (element.TryGetProperty(ShadowRootReference.Identifier, out var shadowId))
             {
-                reference = session.GetElement(shadowId.GetString());
+                reference = session.GetElement(shadowId.GetString(), Session.ElementReferenceKind.ShadowRoot);
+                return true;
+            }
+
+            if (element.TryGetProperty(FrameReference.Identifier, out var frameId))
+            {
+                reference = session.GetElement(frameId.GetString(), Session.ElementReferenceKind.Frame);
+                return true;
+            }
+
+            if (element.TryGetProperty(WindowReference.Identifier, out var windowId))
+            {
+                reference = session.GetElement(windowId.GetString(), Session.ElementReferenceKind.Window);
                 return true;
             }
 
@@ -181,6 +196,42 @@ namespace FenBrowser.WebDriver.Commands
                 }
 
                 return new ElementReference(session.RegisterElement(nativeElementId));
+            }
+
+            if (result is string shadowToken &&
+                shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeShadowId, out var existingShadowRef))
+                {
+                    return new ShadowRootReference(existingShadowRef);
+                }
+
+                return new ShadowRootReference(session.RegisterShadowRoot(nativeShadowId));
+            }
+
+            if (result is string frameToken &&
+                frameToken.StartsWith(WebDriverFrameTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeFrameId = frameToken.Substring(WebDriverFrameTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeFrameId, out var existingFrameRef))
+                {
+                    return new FrameReference(existingFrameRef);
+                }
+
+                return new FrameReference(session.RegisterFrame(nativeFrameId));
+            }
+
+            if (result is string windowToken &&
+                windowToken.StartsWith(WebDriverWindowTokenPrefix, StringComparison.Ordinal))
+            {
+                var nativeWindowId = windowToken.Substring(WebDriverWindowTokenPrefix.Length);
+                if (session.TryGetElementReferenceId(nativeWindowId, out var existingWindowRef))
+                {
+                    return new WindowReference(existingWindowRef);
+                }
+
+                return new WindowReference(session.RegisterWindow(nativeWindowId));
             }
 
             if (session.TryGetElementReferenceId(result, out var existingReference))

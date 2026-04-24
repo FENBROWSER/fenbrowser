@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System.Threading.Tasks;
@@ -82,6 +83,8 @@ namespace FenBrowser.Tests.Engine
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"fen-wpt-{Guid.NewGuid():N}");
             Directory.CreateDirectory(Path.Combine(tempDir, "resources"));
+            WptTestRunnerTestHelpers.CopyWptResource(Path.Combine(tempDir, "resources"), "testharness.js");
+            WptTestRunnerTestHelpers.CopyWptResource(Path.Combine(tempDir, "resources"), "testharnessreport.js");
             string tempFile = Path.Combine(tempDir, "feature", "sync-loop-capture.html");
             Directory.CreateDirectory(Path.GetDirectoryName(tempFile)!);
             File.WriteAllText(tempFile, """
@@ -109,6 +112,102 @@ namespace FenBrowser.Tests.Engine
                 Assert.Equal(3, result.TotalCount);
                 Assert.Equal(3, result.PassCount);
                 Assert.Equal(0, result.FailCount);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task RunSingleTestAsync_TestdriverDependencies_RunAndReportAssertions()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"fen-wpt-{Guid.NewGuid():N}");
+            string resourcesDir = Path.Combine(tempDir, "resources");
+            Directory.CreateDirectory(resourcesDir);
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testharness.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testharnessreport.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testdriver.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testdriver-actions.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testdriver-vendor.js");
+
+            string tempFile = Path.Combine(tempDir, "dom", "testdriver-smoke.html");
+            Directory.CreateDirectory(Path.GetDirectoryName(tempFile)!);
+            File.WriteAllText(tempFile, """
+<!doctype html>
+<button id="btn">go</button>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<script>
+test(() => {
+  let clicked = false;
+  const target = {
+    dispatchEvent: () => true,
+    click: () => { clicked = true; }
+  };
+  const op = window.test_driver_internal.click(target, { x: 1, y: 1 });
+  assert_true(!!op && typeof op.then === 'function', 'testdriver click should return a promise');
+  assert_true(clicked, 'testdriver click should dispatch click');
+}, 'testdriver click smoke');
+</script>
+""");
+
+            try
+            {
+                var navigator = new HeadlessNavigator(tempDir, 4_000);
+                var runner = new WPTTestRunner(tempDir, navigator.GetNavigatorDelegate(), timeoutMs: 4_000);
+                var result = await runner.RunSingleTestAsync(tempFile);
+
+                Assert.True(result.Success);
+                Assert.False(result.IsExplicitSkip);
+                Assert.Equal("pass", result.OutcomeCategory);
+                Assert.True(result.TotalCount > 0);
+                Assert.Equal(0, result.FailCount);
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task RunSingleTestAsync_DependencyParserFailure_IsCategorized()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"fen-wpt-{Guid.NewGuid():N}");
+            string resourcesDir = Path.Combine(tempDir, "resources");
+            Directory.CreateDirectory(resourcesDir);
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testharness.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testharnessreport.js");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testdriver.js");
+            File.WriteAllText(Path.Combine(resourcesDir, "testdriver-vendor.js"), "const = ;");
+            WptTestRunnerTestHelpers.CopyWptResource(resourcesDir, "testdriver-actions.js");
+
+            string tempFile = Path.Combine(tempDir, "dom", "testdriver-parse-fail.html");
+            Directory.CreateDirectory(Path.GetDirectoryName(tempFile)!);
+            File.WriteAllText(tempFile, """
+<!doctype html>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<script>
+test(() => assert_true(true), 'won't run if dependency parse fails');
+</script>
+""");
+
+            try
+            {
+                var navigator = new HeadlessNavigator(tempDir, 4_000);
+                var runner = new WPTTestRunner(tempDir, navigator.GetNavigatorDelegate(), timeoutMs: 4_000);
+                var result = await runner.RunSingleTestAsync(tempFile);
+
+                Assert.False(result.Success);
+                Assert.False(result.IsExplicitSkip);
+                Assert.Equal("parse-dependency-failed", result.OutcomeCategory);
             }
             finally
             {
@@ -992,6 +1091,32 @@ namespace FenBrowser.Tests.Engine
             {
                 try { Directory.Delete(tempDir, recursive: true); } catch { }
             }
+        }
+    }
+
+    internal static class WptTestRunnerTestHelpers
+    {
+        internal static string ResolveRepoFile(params string[] parts)
+        {
+            var probe = AppContext.BaseDirectory;
+            for (int i = 0; i < 12 && !string.IsNullOrWhiteSpace(probe); i++)
+            {
+                var candidate = Path.Combine(new[] { probe }.Concat(parts).ToArray());
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                probe = Path.GetDirectoryName(probe);
+            }
+
+            throw new FileNotFoundException($"Could not locate repository file: {Path.Combine(parts)}");
+        }
+
+        internal static void CopyWptResource(string targetDir, string fileName)
+        {
+            var source = ResolveRepoFile("wpt", "resources", fileName);
+            File.Copy(source, Path.Combine(targetDir, fileName), overwrite: true);
         }
     }
 }

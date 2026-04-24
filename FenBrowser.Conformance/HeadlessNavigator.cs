@@ -15,153 +15,20 @@ namespace FenBrowser.Conformance;
 
 public sealed class HeadlessNavigator
 {
-    private const string MinimalHarnessScript = @"
-var __fenMiniHarnessPendingAsync = 0;
-var __fenMiniHarnessDoneSignaled = false;
-
-function __fenMiniHarnessToMessage(e) {
-  try {
-    if (e && e.message) { return String(e.message); }
-    return String(e);
-  } catch (_) {
-    return 'error';
-  }
-}
-
-function __fenMiniHarnessReport(name, pass, message) {
-  try {
-    if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportResult === 'function') {
-      testRunner.reportResult(String(name || 'unnamed'), !!pass, String(message || ''));
-    }
-  } catch (_) {}
-}
-
-function __fenMiniHarnessMaybeDone() {
-  if (__fenMiniHarnessDoneSignaled || __fenMiniHarnessPendingAsync !== 0) { return; }
-  __fenMiniHarnessDoneSignaled = true;
-  try {
-    if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportHarnessStatus === 'function') {
-      testRunner.reportHarnessStatus('complete', '');
-    }
-    if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.notifyDone === 'function') {
-      testRunner.notifyDone();
-    }
-  } catch (_) {}
-}
-
-function setup() {}
-
-function test(fn, name) {
-  var testName = name || 'unnamed';
-  try {
-    fn();
-    __fenMiniHarnessReport(testName, true, '');
-  } catch (e) {
-    __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-  }
-}
-
-function promise_test(fn, name) {
-  var testName = name || 'unnamed';
-  __fenMiniHarnessPendingAsync++;
-  try {
-    Promise.resolve(fn()).then(function () {
-      __fenMiniHarnessReport(testName, true, '');
-      __fenMiniHarnessPendingAsync--;
-      __fenMiniHarnessMaybeDone();
-    }, function (e) {
-      __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-      __fenMiniHarnessPendingAsync--;
-      __fenMiniHarnessMaybeDone();
-    });
-  } catch (e) {
-    __fenMiniHarnessReport(testName, false, __fenMiniHarnessToMessage(e));
-    __fenMiniHarnessPendingAsync--;
-    __fenMiniHarnessMaybeDone();
-  }
-}
-
-function async_test(name) {
-  var testName = name || 'unnamed';
-  var finished = false;
-  __fenMiniHarnessPendingAsync++;
-
-  function finish(pass, message) {
-    if (finished) { return; }
-    finished = true;
-    __fenMiniHarnessReport(testName, pass, message);
-    __fenMiniHarnessPendingAsync--;
-    __fenMiniHarnessMaybeDone();
-  }
-
-  return {
-    step_func: function (cb) {
-      return function () {
-        try {
-          cb.apply(this, arguments);
-        } catch (e) {
-          finish(false, __fenMiniHarnessToMessage(e));
-        }
-      };
-    },
-    step_timeout: function (cb, ms) {
-      var self = this;
-      setTimeout(self.step_func(cb), ms || 0);
-    },
-    unreached_func: function (message) {
-      return function () {
-        throw new Error(message || 'Reached unreachable function');
-      };
-    },
-    done: function () {
-      finish(true, '');
-    }
-  };
-}
-
-function done() { __fenMiniHarnessMaybeDone(); }
-function assert_true(value, message) { if (!value) { throw new Error(message || 'assert_true failed'); } }
-function assert_false(value, message) { if (value) { throw new Error(message || 'assert_false failed'); } }
-function assert_equals(actual, expected, message) {
-  if (actual !== expected) { throw new Error(message || ('assert_equals failed: ' + actual + ' !== ' + expected)); }
-}
-function assert_not_equals(actual, expected, message) {
-  if (actual === expected) { throw new Error(message || ('assert_not_equals failed: both are ' + actual)); }
-}
-function assert_throws_dom(_name, fn, message) {
-  var threw = false;
-  try { fn(); } catch (e) { threw = true; }
-  if (!threw) { throw new Error(message || 'Expected DOM exception was not thrown'); }
-}
-function assert_throws_js(_ctor, fn, message) {
-  var threw = false;
-  try { fn(); } catch (e) { threw = true; }
-  if (!threw) { throw new Error(message || 'Expected JS exception was not thrown'); }
-}
-function assert_unreached(message) { throw new Error(message || 'Reached unreachable code'); }
-function assert_array_equals(actual, expected, message) {
-  if (!actual || !expected || actual.length !== expected.length) {
-    throw new Error(message || 'assert_array_equals length mismatch');
-  }
-  for (var i = 0; i < actual.length; i++) {
-    if (actual[i] !== expected[i]) {
-      throw new Error(message || ('assert_array_equals mismatch at index ' + i));
-    }
-  }
-}
-
-setTimeout(__fenMiniHarnessMaybeDone, 0);
-";
-
     private const string HarnessBridgeScript = @"
 (function () {
   if (typeof globalThis === 'undefined') { return; }
   if (globalThis.__fenWptBridgeInstalled) { return; }
-  if (typeof add_result_callback !== 'function' || typeof add_completion_callback !== 'function') { return; }
+  var root = (typeof window !== 'undefined' && window) ? window : globalThis;
+  var addResultCallback = (typeof root.add_result_callback === 'function') ? root.add_result_callback
+                        : ((typeof globalThis.add_result_callback === 'function') ? globalThis.add_result_callback : null);
+  var addCompletionCallback = (typeof root.add_completion_callback === 'function') ? root.add_completion_callback
+                           : ((typeof globalThis.add_completion_callback === 'function') ? globalThis.add_completion_callback : null);
+  if (typeof addResultCallback !== 'function' || typeof addCompletionCallback !== 'function') { return; }
 
   globalThis.__fenWptBridgeInstalled = true;
 
-  add_result_callback(function (test) {
+  addResultCallback(function (test) {
     try {
       if (typeof testRunner === 'undefined' || !testRunner || typeof testRunner.reportResult !== 'function') { return; }
       var status = (test && typeof test.status === 'number') ? test.status : 1;
@@ -172,7 +39,7 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
     } catch (e) {}
   });
 
-  add_completion_callback(function (tests, harness_status) {
+  addCompletionCallback(function (tests, harness_status) {
     try {
       if (typeof testRunner !== 'undefined' && testRunner && typeof testRunner.reportHarnessStatus === 'function') {
         var message = harness_status && harness_status.message ? String(harness_status.message) : '';
@@ -183,12 +50,99 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
       }
     } catch (e) {}
   });
+})();
+";
 
+    private const string DispatchWindowLoadScript = @"
+(function () {
   try {
+    if (typeof globalThis === 'undefined') { return; }
+    if (globalThis.__fenWptLoadDispatched) { return; }
+    globalThis.__fenWptLoadDispatched = true;
     if (typeof window !== 'undefined' && window && typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
       window.dispatchEvent(new Event('load'));
     }
   } catch (e) {}
+})();
+";
+
+    private const string MinimalHarnessFallbackScript = @"
+(function () {
+  if (typeof globalThis === 'undefined') { return; }
+  if (globalThis.__fenMinimalHarnessInstalled) { return; }
+  globalThis.__fenMinimalHarnessInstalled = true;
+
+  var resultCallbacks = [];
+  var completionCallbacks = [];
+  var pending = 0;
+  var completed = false;
+
+  function completeIfIdle(message) {
+    if (completed || pending !== 0) { return; }
+    completed = true;
+    for (var i = 0; i < completionCallbacks.length; i++) {
+      try { completionCallbacks[i]([], { status: 0, message: message || '' }); } catch (e) {}
+    }
+  }
+
+  globalThis.add_result_callback = function (cb) {
+    if (typeof cb === 'function') { resultCallbacks.push(cb); }
+  };
+
+  globalThis.add_completion_callback = function (cb) {
+    if (typeof cb === 'function') { completionCallbacks.push(cb); }
+  };
+
+  globalThis.assert_true = globalThis.assert_true || function (value, message) {
+    if (!value) { throw new Error(message || 'assert_true failed'); }
+  };
+
+  globalThis.assert_equals = globalThis.assert_equals || function (actual, expected, message) {
+    if (actual !== expected) { throw new Error(message || ('assert_equals failed: ' + actual + ' !== ' + expected)); }
+  };
+
+  function emitResult(name, status, message) {
+    var result = { name: name || 'unnamed', status: status || 0, message: message || '' };
+    for (var i = 0; i < resultCallbacks.length; i++) {
+      try { resultCallbacks[i](result); } catch (e) {}
+    }
+  }
+
+  function runSync(name, fn) {
+    pending++;
+    try {
+      fn();
+      emitResult(name, 0, '');
+    } catch (e) {
+      emitResult(name, 1, e && e.message ? String(e.message) : String(e));
+    } finally {
+      pending--;
+      completeIfIdle('');
+    }
+  }
+
+  function runAsync(name, fn) {
+    pending++;
+    Promise.resolve()
+      .then(fn)
+      .then(function () { emitResult(name, 0, ''); })
+      .catch(function (e) { emitResult(name, 1, e && e.message ? String(e.message) : String(e)); })
+      .finally(function () {
+        pending--;
+        completeIfIdle('');
+      });
+  }
+
+  globalThis.test = function (fn, name) {
+    runSync(name, fn);
+  };
+
+  globalThis.promise_test = function (fn, name) {
+    runAsync(name, fn);
+  };
+
+  globalThis.setup = function () {};
+  globalThis.done = function () { completeIfIdle('done'); };
 })();
 ";
 
@@ -220,6 +174,8 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         };
 
         var scripts = ExtractScripts(document);
+        scripts = OrderScriptsDeterministically(scripts);
+        var fallbackHarnessInstalled = false;
         var scriptOrdinal = 0;
         foreach (var (src, scriptContent, isExternal) in scripts)
         {
@@ -231,34 +187,40 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
 
             if (isExternal && !string.IsNullOrWhiteSpace(src))
             {
-                if (IsTestHarnessScript(src))
+                var scriptPath = ResolveExternalScriptPath(src, filePath);
+                if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
                 {
-                    code = MinimalHarnessScript;
-                    scriptLabel = "fen-minimal-testharness.js";
+                    TestConsoleCapture.AddEntry("error", $"[WPT-DEP-RUNTIME] missing external script: {src}");
+                    continue;
                 }
-                else if (IsTestHarnessReportScript(src))
-                {
-                    code = "/* FenBrowser shim: testharnessreport.js intentionally no-op */";
-                    scriptLabel = "fen-minimal-testharnessreport.js";
-                }
-                else
-                {
-                    var scriptPath = ResolveExternalScriptPath(src, filePath);
-                    if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
-                    {
-                        continue;
-                    }
 
-                    code = await File.ReadAllTextAsync(scriptPath);
-                }
+                code = await File.ReadAllTextAsync(scriptPath);
             }
             else
             {
                 code = scriptContent;
             }
 
+            // In FenRuntime headless mode, ensure a deterministic minimal harness
+            // exists before inline page tests execute.
+            if (!isExternal && !fallbackHarnessInstalled)
+            {
+                TryExecuteScript(runtime, MinimalHarnessFallbackScript, Math.Min(_timeoutMs, 2_000), "fen-minimal-harness.js");
+                TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js");
+                fallbackHarnessInstalled = true;
+            }
+
             if (string.IsNullOrWhiteSpace(code))
             {
+                continue;
+            }
+
+            // In this lightweight runtime, upstream testharness scripts are parse-gated
+            // but not executed; assertion plumbing is provided by the fallback harness.
+            if (isExternal &&
+                (IsTestHarnessScript(scriptLabel) || IsTestHarnessReportScript(scriptLabel)))
+            {
+                AppendParserDiagnostics(code, scriptLabel);
                 continue;
             }
 
@@ -273,6 +235,7 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
 
         // Final bridge attempt for tests that load harness late in the script list.
         TryExecuteScript(runtime, HarnessBridgeScript, Math.Min(_timeoutMs, 2_000), "fen-harness-bridge.js");
+        TryExecuteScript(runtime, DispatchWindowLoadScript, Math.Min(_timeoutMs, 2_000), "fen-window-load-dispatch.js");
     }
 
     public Func<string, Task> GetNavigatorDelegate()
@@ -280,11 +243,27 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         return NavigateAsync;
     }
 
-    private static string ResolveTestFilePath(string url)
+    private string ResolveTestFilePath(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
             throw new FileNotFoundException("Test file URL is empty.");
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+        {
+            if ((string.Equals(absoluteUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(absoluteUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) &&
+                !string.IsNullOrWhiteSpace(_wptRootPath) &&
+                string.Equals(absoluteUri.Host, "web-platform.test", StringComparison.OrdinalIgnoreCase))
+            {
+                var relative = absoluteUri.AbsolutePath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                var mapped = Path.GetFullPath(Path.Combine(_wptRootPath!, relative));
+                if (File.Exists(mapped))
+                {
+                    return mapped;
+                }
+            }
         }
 
         if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
@@ -364,23 +343,23 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
         try
         {
             using var cts = new CancellationTokenSource(timeoutMs);
-            var result = runtime.ExecuteSimple(code, allowReturn: true, cancellationToken: cts.Token);
+            var result = runtime.ExecuteSimple(code, scriptLabel, allowReturn: true, cancellationToken: cts.Token);
             if (result.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Error ||
                 result.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
             {
-                TestConsoleCapture.AddEntry("error", $"[WPT-NAV] {scriptLabel} returned {result.Type}: {result}");
+                TestConsoleCapture.AddEntry("error", $"[WPT-DEP-RUNTIME] {scriptLabel} returned {result.Type}: {result}");
                 AppendParserDiagnostics(code, scriptLabel);
             }
             return true;
         }
         catch (OperationCanceledException)
         {
-            TestConsoleCapture.AddEntry("error", $"[WPT-NAV] {scriptLabel} timed out after {timeoutMs}ms");
+            TestConsoleCapture.AddEntry("error", $"[WPT-DEP-RUNTIME] {scriptLabel} timed out after {timeoutMs}ms");
             return false;
         }
         catch (Exception ex)
         {
-            TestConsoleCapture.AddEntry("error", $"[WPT-NAV] {scriptLabel} threw host exception: {ex.Message}");
+            TestConsoleCapture.AddEntry("error", $"[WPT-DEP-RUNTIME] {scriptLabel} threw host exception: {ex.Message}");
             return true;
         }
     }
@@ -400,12 +379,62 @@ setTimeout(__fenMiniHarnessMaybeDone, 0);
             var previewCount = Math.Min(3, parser.Errors.Count);
             for (var i = 0; i < previewCount; i++)
             {
-                TestConsoleCapture.AddEntry("error", $"[WPT-NAV] {scriptLabel} parser[{i + 1}/{parser.Errors.Count}]: {parser.Errors[i]}");
+                TestConsoleCapture.AddEntry("error", $"[WPT-DEP-PARSE] {scriptLabel} parser[{i + 1}/{parser.Errors.Count}]: {parser.Errors[i]}");
             }
         }
         catch
         {
         }
+    }
+
+    private static List<(string? Src, string Content, bool IsExternal)> OrderScriptsDeterministically(
+        List<(string? Src, string Content, bool IsExternal)> scripts)
+    {
+        static int GetRank(string? src, bool isExternal, int fallbackIndex)
+        {
+            if (!isExternal)
+            {
+                return 2000 + fallbackIndex;
+            }
+
+            var normalized = NormalizeScriptSrc(src);
+            if (normalized.EndsWith("/resources/testharness.js", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (normalized.EndsWith("/resources/testharnessreport.js", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (normalized.EndsWith("/resources/testdriver.js", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (normalized.EndsWith("/resources/testdriver-vendor.js", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (normalized.EndsWith("/resources/testdriver-actions.js", StringComparison.OrdinalIgnoreCase)) return 4;
+            return 1000 + fallbackIndex;
+        }
+
+        return scripts
+            .Select((script, index) => (script, index))
+            .OrderBy(tuple => GetRank(tuple.script.Src, tuple.script.IsExternal, tuple.index))
+            .ThenBy(tuple => tuple.index)
+            .Select(tuple => tuple.script)
+            .ToList();
+    }
+
+    private static string NormalizeScriptSrc(string? src)
+    {
+        if (string.IsNullOrWhiteSpace(src))
+        {
+            return string.Empty;
+        }
+
+        var normalized = src.Replace('\\', '/');
+        var queryIx = normalized.IndexOf('?');
+        if (queryIx >= 0)
+        {
+            normalized = normalized.Substring(0, queryIx);
+        }
+
+        var hashIx = normalized.IndexOf('#');
+        if (hashIx >= 0)
+        {
+            normalized = normalized.Substring(0, hashIx);
+        }
+
+        return normalized;
     }
 
     private static bool IsTestHarnessScript(string src)

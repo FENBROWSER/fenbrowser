@@ -198,8 +198,21 @@ namespace FenBrowser.FenEngine.Rendering
     public sealed class BrowserHost : IBrowser, IDisposable, IHistoryBridge
     {
         private const string WebDriverElementTokenPrefix = "__fen_wd_el__:";
+        private const string WebDriverShadowTokenPrefix = "__fen_wd_sr__:";
+        private const string WebDriverFrameTokenPrefix = "__fen_wd_fr__:";
+        private const string WebDriverWindowTokenPrefix = "__fen_wd_win__:";
         private const string WebDriverArgElementMarker = "__fen_wd_arg_element_id__";
+        private const string WebDriverArgShadowRootMarker = "__fen_wd_arg_shadow_root_id__";
+        private const string WebDriverArgFrameMarker = "__fen_wd_arg_frame_id__";
+        private const string WebDriverArgWindowMarker = "__fen_wd_arg_window_id__";
         private const string WebDriverDomIdAttribute = "data-fen-wd-id";
+        private static readonly HashSet<string> WebDriverBooleanAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "allowfullscreen", "allowpaymentrequest", "async", "autofocus", "autoplay", "checked", "controls",
+            "default", "defer", "disabled", "formnovalidate", "hidden", "ismap", "itemscope", "loop",
+            "multiple", "muted", "nomodule", "novalidate", "open", "playsinline", "readonly", "required",
+            "reversed", "selected"
+        };
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
         private readonly NavigationManager _navManager;
@@ -1748,7 +1761,7 @@ pre {{
 
         public async Task ClickElementAsync(string elementId)
         {
-            var element = ResolveElementInActiveContext(elementId);
+            var element = ResolveElementInActiveContextOrThrow(elementId);
             Console.WriteLine($"[WD-ClickDbg] resolve id={elementId} found={(element != null)}");
             if (element != null)
             {
@@ -3259,28 +3272,56 @@ pre {{
 
         public Task<string> GetShadowRootAsync(string elementId)
         {
-            var element = ResolveElementInActiveContext(elementId);
-            if (element?.ShadowRoot == null)
+            var element = ResolveElementInActiveContextOrThrow(elementId);
+            var shadowRoot = element?.ShadowRoot;
+            if (shadowRoot == null)
             {
+                try
+                {
+                    var probe = ExecuteScriptAsync(
+                        @"if (!arguments[0]) return null;
+                          try {
+                              if (window.customElements &&
+                                  typeof window.customElements.upgrade === 'function') {
+                                  window.customElements.upgrade(arguments[0]);
+                              }
+                          } catch (e) {}
+                          return arguments[0].shadowRoot || window._shadowRoot || null;",
+                        new object[] { elementId }).GetAwaiter().GetResult();
+                    if (probe is string shadowToken &&
+                        shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
+                    {
+                        var resolvedShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
+                        if (!string.IsNullOrWhiteSpace(resolvedShadowId))
+                        {
+                            return Task.FromResult(resolvedShadowId);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Keep deterministic null behavior for no-open-shadow-root cases.
+                }
+
                 return Task.FromResult<string>(null);
             }
 
             foreach (var entry in _shadowRootMap)
             {
-                if (ReferenceEquals(entry.Value, element.ShadowRoot))
+                if (ReferenceEquals(entry.Value, shadowRoot))
                 {
                     return Task.FromResult(entry.Key);
                 }
             }
 
             var id = Guid.NewGuid().ToString();
-            _shadowRootMap[id] = element.ShadowRoot;
+            _shadowRootMap[id] = shadowRoot;
             return Task.FromResult(id);
         }
 
         public Task<bool> IsElementSelectedAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 if (el.Attr != null)
@@ -3294,25 +3335,24 @@ pre {{
 
         public Task<string> GetElementAttributeAsync(string elementId, string name)
         {
-            var el = ResolveElementInActiveContext(elementId);
-            if (el?.Attr != null)
-            {
-                if (el.Attr.TryGetValue(name, out var val))
-                    return Task.FromResult(val);
-            }
-            return Task.FromResult<string>(null);
+            _ = ResolveElementInActiveContextOrThrow(elementId);
+            return GetElementAttributeViaScriptAsync(elementId, name);
         }
 
-        public Task<object> GetElementPropertyAsync(string elementId, string name)
+        public async Task<object> GetElementPropertyAsync(string elementId, string name)
         {
-            var el = ResolveElementInActiveContext(elementId);
-            if (el?.Attr != null)
-            {
-                if (el.Attr.TryGetValue(name, out var val))
-                    return Task.FromResult<object>(val);
-            }
+            _ = ResolveElementInActiveContextOrThrow(elementId);
 
-            return Task.FromResult<object>(null);
+            var jsonName = JsonSerializer.Serialize(name ?? string.Empty);
+            var script = $"return arguments[0] == null ? null : arguments[0][{jsonName}];";
+            try
+            {
+                return await ExecuteScriptAsync(script, new object[] { elementId }).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.IndexOf("TypeError", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return null;
+            }
         }
 
         public Task<string> GetElementCssValueAsync(string elementId, string property)
@@ -3323,7 +3363,7 @@ pre {{
 
         public Task<string> GetElementTextAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 var sb = new System.Text.StringBuilder();
@@ -3339,7 +3379,7 @@ pre {{
 
         public Task<string> GetElementTagNameAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
                 return Task.FromResult(el.TagName?.ToLowerInvariant() ?? "");
             return Task.FromResult("");
@@ -3348,7 +3388,7 @@ pre {{
         public async Task<ElementRect> GetElementRectAsync(string elementId)
         {
             var layout = _engine?.LastLayout;
-            var element = ResolveElementInActiveContext(elementId);
+            var element = ResolveElementInActiveContextOrThrow(elementId);
             if (element == null)
             {
                 return new ElementRect { X = 0, Y = 0, Width = 0, Height = 0 };
@@ -3424,7 +3464,7 @@ pre {{
 
         public Task<bool> IsElementEnabledAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 if (el.Attr != null && el.Attr.ContainsKey("disabled"))
@@ -3435,7 +3475,7 @@ pre {{
 
         public Task<string> GetElementComputedRoleAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 var doc = el.OwnerDocument;
@@ -3451,7 +3491,7 @@ pre {{
 
         public Task<string> GetElementComputedLabelAsync(string elementId)
         {
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 var doc = el.OwnerDocument;
@@ -3464,7 +3504,7 @@ pre {{
         public Task ClearElementAsync(string elementId)
         {
             // Clear input/textarea value
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 var tag = el.TagName?.ToLowerInvariant();
@@ -3479,7 +3519,7 @@ pre {{
         public Task SendKeysToElementAsync(string elementId, string text)
         {
             // Set value on input/textarea elements
-            var el = ResolveElementInActiveContext(elementId);
+            var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
                 var tag = el.TagName?.ToLowerInvariant();
@@ -3559,68 +3599,62 @@ pre {{
                 return element;
             }
 
-            var remapped = TryRemapElementInActiveContext(searchRoot, elementId, element);
-            if (remapped != null)
-            {
-                _elementMap[elementId] = remapped;
-                TagElementWithWebDriverId(remapped, elementId);
-                return remapped;
-            }
-
             return null;
         }
 
-        private static Element TryRemapElementInActiveContext(Element searchRoot, string elementId, Element previousElement)
+        private Element ResolveElementInActiveContextOrThrow(string elementId)
         {
-            if (searchRoot == null || string.IsNullOrWhiteSpace(elementId))
+            if (string.IsNullOrWhiteSpace(elementId))
             {
-                return null;
+                throw new InvalidOperationException("no such element: invalid element reference");
             }
 
-            foreach (var candidate in searchRoot.SelfAndDescendants().OfType<Element>())
+            if (!_elementMap.TryGetValue(elementId, out var element) || element == null)
             {
-                if (string.Equals(candidate.GetAttribute(WebDriverDomIdAttribute), elementId, StringComparison.Ordinal))
-                {
-                    return candidate;
-                }
+                throw new InvalidOperationException("no such element");
             }
 
-            if (previousElement == null)
+            if (!element.IsConnected)
             {
-                return null;
+                throw new InvalidOperationException("stale element reference");
             }
 
-            var previousDomId = GetStableDomElementId(previousElement);
-            if (!string.IsNullOrWhiteSpace(previousDomId))
+            var searchRoot = ResolveSearchRoot();
+            if (searchRoot == null)
             {
-                var byDomId = searchRoot
-                    .SelfAndDescendants()
-                    .OfType<Element>()
-                    .FirstOrDefault(candidate =>
-                        string.Equals(candidate.TagName, previousElement.TagName, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(GetStableDomElementId(candidate), previousDomId, StringComparison.Ordinal));
-                if (byDomId != null)
-                {
-                    return byDomId;
-                }
+                throw new InvalidOperationException("Current browsing context is no longer open");
             }
 
-            var previousPath = BuildElementPathSignature(previousElement);
-            if (!string.IsNullOrWhiteSpace(previousPath))
+            if (!IsElementWithinSearchRoot(searchRoot, element))
             {
-                var byPath = searchRoot
-                    .SelfAndDescendants()
-                    .OfType<Element>()
-                    .FirstOrDefault(candidate =>
-                        string.Equals(candidate.TagName, previousElement.TagName, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(BuildElementPathSignature(candidate), previousPath, StringComparison.Ordinal));
-                if (byPath != null)
-                {
-                    return byPath;
-                }
+                throw new InvalidOperationException("no such element");
             }
 
-            return null;
+            return element;
+        }
+
+        private async Task<string> GetElementAttributeViaScriptAsync(string elementId, string name)
+        {
+            var normalizedName = name ?? string.Empty;
+            var jsonName = JsonSerializer.Serialize(normalizedName);
+            var script = $@"
+                var __el = arguments[0];
+                if (!__el) return null;
+                var __name = {jsonName};
+                if (!__name) return null;
+                if (!__el.hasAttribute(__name)) return null;
+                var __attr = __el.getAttribute(__name);
+                if (__attr === null) return null;
+                if (__attr === '' && {BuildBooleanAttributeProbe("__name")}) return 'true';
+                return String(__attr);";
+            var value = await ExecuteScriptAsync(script, new object[] { elementId }).ConfigureAwait(false);
+            return value?.ToString();
+        }
+
+        private static string BuildBooleanAttributeProbe(string variableName)
+        {
+            var entries = string.Join(",", WebDriverBooleanAttributes.Select(v => $"'{v.ToLowerInvariant()}'"));
+            return $"([{entries}]).indexOf(({variableName} || '').toLowerCase()) >= 0";
         }
 
         private object[] PrepareScriptArgsForExecution(object[] args)
@@ -3651,6 +3685,34 @@ pre {{
                 return new Dictionary<string, object>(StringComparer.Ordinal)
                 {
                     [WebDriverArgElementMarker] = elementId
+                };
+            }
+
+            if (arg is string shadowRootId &&
+                shadowRootId.StartsWith("sr:host:", StringComparison.Ordinal) &&
+                _shadowRootMap.ContainsKey(shadowRootId))
+            {
+                return new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    [WebDriverArgShadowRootMarker] = shadowRootId
+                };
+            }
+
+            if (arg is string frameReferenceId &&
+                frameReferenceId.StartsWith("frm:", StringComparison.Ordinal))
+            {
+                return new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    [WebDriverArgFrameMarker] = frameReferenceId
+                };
+            }
+
+            if (arg is string windowReferenceId &&
+                windowReferenceId.StartsWith("win:", StringComparison.Ordinal))
+            {
+                return new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    [WebDriverArgWindowMarker] = windowReferenceId
                 };
             }
 
@@ -3713,6 +3775,42 @@ pre {{
                                 if (__all[__i].getAttribute('{WebDriverDomIdAttribute}') === __wdId) {{
                                     return __all[__i];
                                 }}
+                            }}
+                            return null;
+                        }}
+                        if (!Array.isArray(value) &&
+                            Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowRootMarker}')) {{
+                            var __wdShadowId = value['{WebDriverArgShadowRootMarker}'];
+                            if (typeof __wdShadowId === 'string' && __wdShadowId.indexOf('sr:host:') === 0) {{
+                                var __hostId = __wdShadowId.substring('sr:host:'.length);
+                                var __hosts = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
+                                for (var __s = 0; __s < __hosts.length; __s++) {{
+                                    if (__hosts[__s].getAttribute('{WebDriverDomIdAttribute}') === __hostId) {{
+                                        return __hosts[__s].shadowRoot || null;
+                                    }}
+                                }}
+                            }}
+                            return null;
+                        }}
+                        if (!Array.isArray(value) &&
+                            Object.prototype.hasOwnProperty.call(value, '{WebDriverArgFrameMarker}')) {{
+                            var __wdFrameId = value['{WebDriverArgFrameMarker}'];
+                            if (typeof __wdFrameId === 'string' && __wdFrameId.indexOf('frm:') === 0) {{
+                                var __frameElementId = __wdFrameId.substring('frm:'.length);
+                                var __frames = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
+                                for (var __f = 0; __f < __frames.length; __f++) {{
+                                    if (__frames[__f].getAttribute('{WebDriverDomIdAttribute}') === __frameElementId) {{
+                                        return __frames[__f].contentWindow || null;
+                                    }}
+                                }}
+                            }}
+                            return null;
+                        }}
+                        if (!Array.isArray(value) &&
+                            Object.prototype.hasOwnProperty.call(value, '{WebDriverArgWindowMarker}')) {{
+                            var __wdWindowId = value['{WebDriverArgWindowMarker}'];
+                            if (__wdWindowId === 'win:top') {{
+                                return window;
                             }}
                             return null;
                         }}
@@ -3897,6 +3995,42 @@ pre {{
                         }}
                         return null;
                     }}
+                    if (!Array.isArray(value) &&
+                        Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowRootMarker}')) {{
+                        var __wdShadowId = value['{WebDriverArgShadowRootMarker}'];
+                        if (typeof __wdShadowId === 'string' && __wdShadowId.indexOf('sr:host:') === 0) {{
+                            var __hostId = __wdShadowId.substring('sr:host:'.length);
+                            var __hosts = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
+                            for (var __s = 0; __s < __hosts.length; __s++) {{
+                                if (__hosts[__s].getAttribute('{WebDriverDomIdAttribute}') === __hostId) {{
+                                    return __hosts[__s].shadowRoot || null;
+                                }}
+                            }}
+                        }}
+                        return null;
+                    }}
+                    if (!Array.isArray(value) &&
+                        Object.prototype.hasOwnProperty.call(value, '{WebDriverArgFrameMarker}')) {{
+                        var __wdFrameId = value['{WebDriverArgFrameMarker}'];
+                        if (typeof __wdFrameId === 'string' && __wdFrameId.indexOf('frm:') === 0) {{
+                            var __frameElementId = __wdFrameId.substring('frm:'.length);
+                            var __frames = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
+                            for (var __f = 0; __f < __frames.length; __f++) {{
+                                if (__frames[__f].getAttribute('{WebDriverDomIdAttribute}') === __frameElementId) {{
+                                    return __frames[__f].contentWindow || null;
+                                }}
+                            }}
+                        }}
+                        return null;
+                    }}
+                    if (!Array.isArray(value) &&
+                        Object.prototype.hasOwnProperty.call(value, '{WebDriverArgWindowMarker}')) {{
+                        var __wdWindowId = value['{WebDriverArgWindowMarker}'];
+                        if (__wdWindowId === 'win:top') {{
+                            return window;
+                        }}
+                        return null;
+                    }}
                     if (Array.isArray(value)) {{
                         for (var __j = 0; __j < value.length; __j++) value[__j] = __fenResolveWdArgs(value[__j]);
                         return value;
@@ -3979,6 +4113,19 @@ pre {{
             while (sw.ElapsedMilliseconds < timeoutMs)
             {
                 loopCount++;
+                // Drive the shared event loop so timer/promise callbacks can execute
+                // while WebDriver execute/async is waiting for completion.
+                try
+                {
+                    var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                    eventLoop.ProcessNextTask();
+                    eventLoop.PerformMicrotaskCheckpoint();
+                }
+                catch
+                {
+                    // Keep waiting deterministically even if event-loop pumping fails.
+                }
+
                 // Process any pending requestAnimationFrame callbacks
                 try 
                 { 
@@ -4007,6 +4154,15 @@ pre {{
                         return ConvertFenValueForWebDriver(fenValue);
                     }
                     return result;
+                }
+
+                // Some WebDriver user-prompt fixture scripts intentionally create a modal
+                // without invoking the async callback. In that case, complete the command
+                // once the prompt is observable so the caller can assert prompt handling.
+                if (!string.IsNullOrEmpty(_pendingAlertText))
+                {
+                    TryLogDebug($"[AsyncScript] Completing due to observable modal prompt: '{_pendingAlertText}'", LogCategory.JavaScript);
+                    return null;
                 }
                 
                 // Small delay to not spin too fast
@@ -4993,7 +5149,21 @@ pre {{
 
         private object ConvertFenValueForWebDriver(FenBrowser.FenEngine.Core.FenValue fenValue)
         {
+            return ConvertFenValueForWebDriver(fenValue, new HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject>(ReferenceEqualityComparer.Instance), 0);
+        }
+
+        private object ConvertFenValueForWebDriver(
+            FenBrowser.FenEngine.Core.FenValue fenValue,
+            HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject> visited,
+            int depth)
+        {
             if (fenValue == null)
+            {
+                return null;
+            }
+
+            // Prevent runaway recursion for self-referential runtime objects.
+            if (depth > 16)
             {
                 return null;
             }
@@ -5011,7 +5181,7 @@ pre {{
                     return fenValue.AsString();
                 case FenBrowser.FenEngine.Core.Interfaces.ValueType.Object:
                 case FenBrowser.FenEngine.Core.Interfaces.ValueType.Function:
-                    return ConvertFenObjectForWebDriver(fenValue.AsObject());
+                    return ConvertFenObjectForWebDriver(fenValue.AsObject(), visited, depth + 1);
                 default:
                     return fenValue.ToNativeObject();
             }
@@ -5026,6 +5196,18 @@ pre {{
             }
 
             var wrapperType = value.GetType();
+            var wrapperName = wrapperType.Name ?? string.Empty;
+            var wrapperNamespace = wrapperType.Namespace ?? string.Empty;
+            var isLikelyDomWrapper =
+                wrapperName.EndsWith("Wrapper", StringComparison.Ordinal) ||
+                wrapperName.IndexOf("ElementWrapper", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                wrapperName.EndsWith("Element", StringComparison.Ordinal) ||
+                wrapperNamespace.IndexOf(".DOM", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isLikelyDomWrapper)
+            {
+                return false;
+            }
+
             var bindingFlags = System.Reflection.BindingFlags.Instance |
                                System.Reflection.BindingFlags.Public |
                                System.Reflection.BindingFlags.NonPublic;
@@ -5073,9 +5255,174 @@ pre {{
             return false;
         }
 
-        private object ConvertFenObjectForWebDriver(FenBrowser.FenEngine.Core.Interfaces.IObject value)
+        private static bool TryExtractShadowRootFromWrapper(FenBrowser.FenEngine.Core.Interfaces.IObject value, out ShadowRoot shadowRoot)
+        {
+            shadowRoot = null;
+            if (value == null)
+            {
+                return false;
+            }
+
+            var wrapperType = value.GetType();
+            var wrapperName = wrapperType.Name ?? string.Empty;
+            var wrapperNamespace = wrapperType.Namespace ?? string.Empty;
+            var isLikelyDomWrapper =
+                wrapperName.EndsWith("Wrapper", StringComparison.Ordinal) ||
+                wrapperName.IndexOf("ShadowRoot", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                wrapperNamespace.IndexOf(".DOM", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isLikelyDomWrapper)
+            {
+                return false;
+            }
+
+            var bindingFlags = System.Reflection.BindingFlags.Instance |
+                               System.Reflection.BindingFlags.Public |
+                               System.Reflection.BindingFlags.NonPublic;
+
+            var shadowProperty = wrapperType.GetProperty("ShadowRoot", bindingFlags);
+            if (shadowProperty != null && typeof(ShadowRoot).IsAssignableFrom(shadowProperty.PropertyType))
+            {
+                shadowRoot = shadowProperty.GetValue(value) as ShadowRoot;
+                if (shadowRoot != null)
+                {
+                    return true;
+                }
+            }
+
+            var nodeProperty = wrapperType.GetProperty("Node", bindingFlags);
+            if (nodeProperty != null && typeof(ShadowRoot).IsAssignableFrom(nodeProperty.PropertyType))
+            {
+                shadowRoot = nodeProperty.GetValue(value) as ShadowRoot;
+                if (shadowRoot != null)
+                {
+                    return true;
+                }
+            }
+
+            var shadowField = wrapperType.GetField("_shadowRoot", bindingFlags);
+            if (shadowField != null && typeof(ShadowRoot).IsAssignableFrom(shadowField.FieldType))
+            {
+                shadowRoot = shadowField.GetValue(value) as ShadowRoot;
+                if (shadowRoot != null)
+                {
+                    return true;
+                }
+            }
+
+            var nodeField = wrapperType.GetField("_node", bindingFlags);
+            if (nodeField != null && typeof(ShadowRoot).IsAssignableFrom(nodeField.FieldType))
+            {
+                shadowRoot = nodeField.GetValue(value) as ShadowRoot;
+                if (shadowRoot != null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private string GetOrRegisterShadowRootId(ShadowRoot shadowRoot)
+        {
+            if (shadowRoot == null)
+            {
+                return null;
+            }
+
+            var host = shadowRoot.Host;
+            if (host != null)
+            {
+                var hostId = GetOrRegisterElementId(host);
+                if (!string.IsNullOrWhiteSpace(hostId))
+                {
+                    var deterministicId = $"sr:host:{hostId}";
+                    _shadowRootMap[deterministicId] = shadowRoot;
+                    return deterministicId;
+                }
+            }
+
+            foreach (var entry in _shadowRootMap)
+            {
+                if (ReferenceEquals(entry.Value, shadowRoot))
+                {
+                    return entry.Key;
+                }
+            }
+
+            var id = Guid.NewGuid().ToString();
+            _shadowRootMap[id] = shadowRoot;
+            return id;
+        }
+
+        private bool TryExtractFrameOrWindowReference(
+            FenBrowser.FenEngine.Core.Interfaces.IObject value,
+            out bool isFrameReference,
+            out string nativeReferenceId)
+        {
+            isFrameReference = false;
+            nativeReferenceId = null;
+            if (value == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                var frameElementValue = value.Get("frameElement");
+                if (frameElementValue != null &&
+                    frameElementValue.IsObject &&
+                    TryExtractDomElementFromWrapper(frameElementValue.AsObject(), out var frameElement) &&
+                    frameElement != null)
+                {
+                    var frameElementId = GetOrRegisterElementId(frameElement);
+                    if (!string.IsNullOrWhiteSpace(frameElementId))
+                    {
+                        isFrameReference = true;
+                        nativeReferenceId = $"frm:{frameElementId}";
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Non-window objects may throw for unknown properties.
+            }
+
+            try
+            {
+                var selfValue = value.Get("window");
+                if (selfValue != null &&
+                    selfValue.IsObject &&
+                    ReferenceEquals(selfValue.AsObject(), value))
+                {
+                    isFrameReference = false;
+                    nativeReferenceId = "win:top";
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private object ConvertFenObjectForWebDriver(
+            FenBrowser.FenEngine.Core.Interfaces.IObject value,
+            HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject> visited,
+            int depth)
         {
             if (value == null)
+            {
+                return null;
+            }
+
+            if (depth > 16)
+            {
+                return null;
+            }
+
+            if (!visited.Add(value))
             {
                 return null;
             }
@@ -5084,6 +5431,17 @@ pre {{
             if (TryExtractDomElementFromWrapper(value, out var elementValue))
             {
                 return WebDriverElementTokenPrefix + GetOrRegisterElementId(elementValue);
+            }
+
+            if (TryExtractShadowRootFromWrapper(value, out var shadowRootValue))
+            {
+                return WebDriverShadowTokenPrefix + GetOrRegisterShadowRootId(shadowRootValue);
+            }
+
+            if (TryExtractFrameOrWindowReference(value, out var isFrameReference, out var nativeReferenceId) &&
+                !string.IsNullOrWhiteSpace(nativeReferenceId))
+            {
+                return (isFrameReference ? WebDriverFrameTokenPrefix : WebDriverWindowTokenPrefix) + nativeReferenceId;
             }
 
             if (value is FenBrowser.FenEngine.Core.FenObject fenObj)
@@ -5095,7 +5453,7 @@ pre {{
                     var list = new List<object>(length);
                     for (var i = 0; i < length; i++)
                     {
-                        list.Add(ConvertFenValueForWebDriver(fenObj.Get(i.ToString())));
+                        list.Add(ConvertFenValueForWebDriver(fenObj.Get(i.ToString()), visited, depth + 1));
                     }
 
                     return list;
@@ -5104,7 +5462,7 @@ pre {{
                 var dict = new Dictionary<string, object>(StringComparer.Ordinal);
                 foreach (var key in fenObj.Keys())
                 {
-                    dict[key] = ConvertFenValueForWebDriver(fenObj.Get(key));
+                    dict[key] = ConvertFenValueForWebDriver(fenObj.Get(key), visited, depth + 1);
                 }
 
                 return dict;
@@ -5120,7 +5478,7 @@ pre {{
                     var list = new List<object>(length);
                     for (var i = 0; i < length; i++)
                     {
-                        list.Add(ConvertFenValueForWebDriver(value.Get(i.ToString())));
+                        list.Add(ConvertFenValueForWebDriver(value.Get(i.ToString()), visited, depth + 1));
                     }
 
                     return list;
@@ -5138,7 +5496,7 @@ pre {{
                     var dict = new Dictionary<string, object>(StringComparer.Ordinal);
                     foreach (var key in keys)
                     {
-                        dict[key] = ConvertFenValueForWebDriver(value.Get(key));
+                        dict[key] = ConvertFenValueForWebDriver(value.Get(key), visited, depth + 1);
                     }
 
                     return dict;
@@ -5150,6 +5508,17 @@ pre {{
 
             // Preserve host DOM wrapper instances so WebDriver can serialize them as element references.
             return value;
+        }
+
+        private sealed class ReferenceEqualityComparer : IEqualityComparer<FenBrowser.FenEngine.Core.Interfaces.IObject>
+        {
+            public static readonly ReferenceEqualityComparer Instance = new ReferenceEqualityComparer();
+
+            public bool Equals(FenBrowser.FenEngine.Core.Interfaces.IObject x, FenBrowser.FenEngine.Core.Interfaces.IObject y)
+                => ReferenceEquals(x, y);
+
+            public int GetHashCode(FenBrowser.FenEngine.Core.Interfaces.IObject obj)
+                => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
         }
 
         private bool TryHandleFrameRemovalActivation(Element element, bool allowDefaultActivation)
@@ -6267,3 +6636,4 @@ pre {{
         }
     }
 }
+

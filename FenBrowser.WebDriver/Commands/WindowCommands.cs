@@ -133,6 +133,8 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_handler.Browser != null)
             {
+                // Multi-session safety: ensure browser-side active context matches the session-selected handle.
+                await _handler.Browser.SwitchToWindowAsync(closedHandle);
                 await _handler.Browser.CloseWindowAsync();
                 await SynchronizeWindowStateAsync(session);
 

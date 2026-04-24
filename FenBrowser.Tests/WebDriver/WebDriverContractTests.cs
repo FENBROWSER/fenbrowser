@@ -164,6 +164,42 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task ElementCommand_RejectsShadowRootReferenceAsElement()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var shadowRef = session.RegisterShadowRoot("shadow-token");
+            var handler = new CommandHandler(manager)
+            {
+                Browser = new ScriptStubBrowserDriver()
+            };
+
+            var router = new CommandRouter();
+            var match = router.Match("GET", $"/session/{session.Id}/element/{shadowRef}/text");
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, null));
+
+            Assert.Equal(ErrorCodes.NoSuchElement, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ElementCommand_MapsStaleElementInvalidOperation()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var elementRef = session.RegisterElement("element-token");
+            var handler = new CommandHandler(manager)
+            {
+                Browser = new StaleElementBrowserDriver()
+            };
+
+            var router = new CommandRouter();
+            var match = router.Match("GET", $"/session/{session.Id}/element/{elementRef}/text");
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, null));
+
+            Assert.Equal(ErrorCodes.StaleElementReference, ex.ErrorCode);
+        }
+
+        [Fact]
         public async Task PerformActions_RejectsUnsupportedWheelSource()
         {
             var manager = new SessionManager();
@@ -499,6 +535,64 @@ namespace FenBrowser.Tests.WebDriver
             public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
             public bool HasValidCurrentBrowsingContext() => !string.IsNullOrWhiteSpace(_currentHandle) && _handles.Contains(_currentHandle);
+        }
+
+        private sealed class StaleElementBrowserDriver : IBrowserDriver
+        {
+            public Task NavigateAsync(string url) => Task.CompletedTask;
+            public Task<string> GetCurrentUrlAsync() => Task.FromResult("about:blank");
+            public Task<string> GetTitleAsync() => Task.FromResult(string.Empty);
+            public Task<string> GetWindowHandleAsync() => Task.FromResult("window-1");
+            public Task<IReadOnlyList<string>> GetWindowHandlesAsync() => Task.FromResult((IReadOnlyList<string>)new[] { "window-1" });
+            public Task CloseWindowAsync() => Task.CompletedTask;
+            public Task GoBackAsync() => Task.CompletedTask;
+            public Task GoForwardAsync() => Task.CompletedTask;
+            public Task RefreshAsync() => Task.CompletedTask;
+            public Task<object> FindElementAsync(string strategy, string selector, object parentElement = null) => Task.FromResult<object>(null);
+            public Task<object[]> FindElementsAsync(string strategy, string selector, object parentElement = null) => Task.FromResult(Array.Empty<object>());
+            public Task<object> GetActiveElementAsync() => Task.FromResult<object>(null);
+            public Task<object> GetShadowRootAsync(object element) => Task.FromResult<object>(null);
+            public Task<bool> IsElementSelectedAsync(object element) => Task.FromResult(false);
+            public Task<object> GetElementPropertyAsync(object element, string name) => Task.FromResult<object>(null);
+            public Task<string> GetElementCssValueAsync(object element, string propertyName) => Task.FromResult(string.Empty);
+            public Task<string> GetElementTextAsync(object element) => throw new InvalidOperationException("stale element reference");
+            public Task<string> GetElementTagNameAsync(object element) => Task.FromResult(string.Empty);
+            public Task<WdElementRect> GetElementRectAsync(object element) => Task.FromResult(new WdElementRect());
+            public Task<bool> IsElementEnabledAsync(object element) => Task.FromResult(true);
+            public Task<string> GetElementComputedRoleAsync(object element) => Task.FromResult(string.Empty);
+            public Task<string> GetElementComputedLabelAsync(object element) => Task.FromResult(string.Empty);
+            public Task ClickElementAsync(object element) => Task.CompletedTask;
+            public Task ClearElementAsync(object element) => Task.CompletedTask;
+            public Task SendKeysAsync(object element, string text) => Task.CompletedTask;
+            public Task<string> GetElementAttributeAsync(object element, string name) => Task.FromResult(string.Empty);
+            public Task<string> GetPageSourceAsync() => Task.FromResult("<html></html>");
+            public Task<object> ExecuteScriptAsync(string script, object[] args) => Task.FromResult<object>(null);
+            public Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeout) => Task.FromResult<object>(null);
+            public Task<string> TakeScreenshotAsync() => Task.FromResult(string.Empty);
+            public Task<string> TakeElementScreenshotAsync(object element) => Task.FromResult(string.Empty);
+            public Task<string> PrintPageAsync(WdPrintOptions options) => Task.FromResult(string.Empty);
+            public (int x, int y, int width, int height) GetWindowRect() => (0, 0, 1024, 768);
+            public void SetWindowRect(int? x, int? y, int? width, int? height) { }
+            public (int x, int y, int width, int height) MaximizeWindow() => (0, 0, 1024, 768);
+            public (int x, int y, int width, int height) MinimizeWindow() => (0, 0, 1024, 768);
+            public (int x, int y, int width, int height) FullscreenWindow() => (0, 0, 1024, 768);
+            public Task<string> NewWindowAsync(string typeHint) => Task.FromResult("window-2");
+            public Task SwitchToWindowAsync(string windowHandle) => Task.CompletedTask;
+            public Task SwitchToFrameAsync(object frameReference) => Task.CompletedTask;
+            public Task SwitchToParentFrameAsync() => Task.CompletedTask;
+            public Task<IReadOnlyList<WdCookie>> GetAllCookiesAsync() => Task.FromResult((IReadOnlyList<WdCookie>)Array.Empty<WdCookie>());
+            public Task<WdCookie> GetNamedCookieAsync(string name) => Task.FromResult<WdCookie>(null);
+            public Task AddCookieAsync(WdCookie cookie) => Task.CompletedTask;
+            public Task DeleteCookieAsync(string name) => Task.CompletedTask;
+            public Task DeleteAllCookiesAsync() => Task.CompletedTask;
+            public Task PerformActionsAsync(IReadOnlyList<WdActionSequence> actions) => Task.CompletedTask;
+            public Task ReleaseActionsAsync() => Task.CompletedTask;
+            public Task<bool> HasAlertAsync() => Task.FromResult(false);
+            public Task DismissAlertAsync() => Task.CompletedTask;
+            public Task AcceptAlertAsync() => Task.CompletedTask;
+            public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
+            public Task SendAlertTextAsync(string text) => Task.CompletedTask;
+            public bool HasValidCurrentBrowsingContext() => true;
         }
     }
 }

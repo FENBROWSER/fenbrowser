@@ -33,10 +33,31 @@ namespace FenBrowser.Host.WebDriver
             await _integration.NavigateProgrammaticAsync(url);
         }
 
-        public Task<string> GetCurrentUrlAsync() => Task.FromResult(_integration.CurrentUrl);
+        public async Task<string> GetCurrentUrlAsync()
+        {
+            if (Host != null)
+            {
+                if (!Host.HasValidCurrentBrowsingContext())
+                {
+                    throw new InvalidOperationException("Current browsing context is no longer open");
+                }
+
+                var currentUrl = await Host.GetCurrentUrlAsync().ConfigureAwait(false);
+                return string.IsNullOrWhiteSpace(currentUrl) ? "about:blank" : currentUrl;
+            }
+
+            return _integration.CurrentUrl;
+        }
         public Task<string> GetTitleAsync() => Host?.GetTitleAsync() ?? Task.FromResult("FenBrowser");
-        public Task<string> GetWindowHandleAsync() => Task.FromResult(TabManager.Instance.ActiveTab?.Id.ToString() ?? string.Empty);
-        public Task<IReadOnlyList<string>> GetWindowHandlesAsync() => Task.FromResult((IReadOnlyList<string>)TabManager.Instance.Tabs.Select(tab => tab.Id.ToString()).ToList());
+        public Task<string> GetWindowHandleAsync()
+        {
+            return Task.FromResult(TabManager.Instance.ActiveTab?.Id.ToString() ?? string.Empty);
+        }
+
+        public Task<IReadOnlyList<string>> GetWindowHandlesAsync()
+        {
+            return Task.FromResult((IReadOnlyList<string>)TabManager.Instance.Tabs.Select(tab => tab.Id.ToString()).ToList());
+        }
         public Task CloseWindowAsync()
         {
             var tabs = TabManager.Instance;
@@ -232,34 +253,47 @@ namespace FenBrowser.Host.WebDriver
         public async Task<string> NewWindowAsync(string typeHint)
         {
             var tabs = TabManager.Instance;
-            if (Host != null)
-            {
-                await Host.CreateNewTabAsync();
-            }
-            else
+            var beforeActiveTabId = tabs.ActiveTab?.Id;
+            var beforeCount = tabs.Tabs.Count;
+            tabs.CreateTab();
+
+            // Guarantee a new top-level browsing context and handle.
+            if (tabs.Tabs.Count <= beforeCount || tabs.ActiveTab?.Id == beforeActiveTabId)
             {
                 tabs.CreateTab();
             }
 
             var activeTab = tabs.ActiveTab;
-            return activeTab != null ? activeTab.Id.ToString() : Guid.NewGuid().ToString("N");
+            if (activeTab != null)
+            {
+                return activeTab.Id.ToString();
+            }
+
+            return beforeActiveTabId?.ToString() ?? Guid.NewGuid().ToString("N");
         }
 
         public Task SwitchToWindowAsync(string windowHandle)
         {
             if (!int.TryParse(windowHandle, out var tabId))
             {
-                return Task.CompletedTask;
+                throw new InvalidOperationException($"Invalid window handle format: {windowHandle}");
             }
 
             var tabs = TabManager.Instance;
+            var switched = false;
             for (int i = 0; i < tabs.Tabs.Count; i++)
             {
                 if (tabs.Tabs[i].Id == tabId)
                 {
                     tabs.SwitchToTab(i);
+                    switched = true;
                     break;
                 }
+            }
+
+            if (!switched)
+            {
+                throw new InvalidOperationException($"No such window handle in tab manager: {windowHandle}");
             }
 
             return Task.CompletedTask;
@@ -350,6 +384,11 @@ namespace FenBrowser.Host.WebDriver
         {
             if (Host == null) return Task.CompletedTask;
             return Host.SendAlertTextAsync(text ?? string.Empty);
+        }
+
+        public bool HasValidCurrentBrowsingContext()
+        {
+            return Host == null || Host.HasValidCurrentBrowsingContext();
         }
 
         private static WdCookie ToWdCookie(FenBrowser.FenEngine.Rendering.WebDriverCookie cookie)

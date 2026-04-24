@@ -149,6 +149,14 @@ namespace FenBrowser.WebDriver
     /// </summary>
     public class Session : IDisposable
     {
+        public enum ElementReferenceKind
+        {
+            Element,
+            ShadowRoot,
+            Frame,
+            Window
+        }
+
         public string Id { get; }
         public Capabilities Capabilities { get; }
         public DateTime CreatedAt { get; }
@@ -161,6 +169,7 @@ namespace FenBrowser.WebDriver
         
         // Element cache for references
         private readonly ConcurrentDictionary<string, WeakReference<object>> _elementCache = new();
+        private readonly ConcurrentDictionary<string, ElementReferenceKind> _elementReferenceKinds = new();
         private readonly ConditionalWeakTable<object, ElementReferenceToken> _elementIdsByObject = new();
         private readonly ConcurrentDictionary<string, string> _elementRefsByNativeString = new(StringComparer.Ordinal);
         private readonly object _elementRegistrationLock = new();
@@ -185,6 +194,18 @@ namespace FenBrowser.WebDriver
         /// Register an element and get its reference ID.
         /// </summary>
         public string RegisterElement(object element)
+            => RegisterReference(element, ElementReferenceKind.Element);
+
+        public string RegisterShadowRoot(object shadowRoot)
+            => RegisterReference(shadowRoot, ElementReferenceKind.ShadowRoot);
+
+        public string RegisterFrame(object frame)
+            => RegisterReference(frame, ElementReferenceKind.Frame);
+
+        public string RegisterWindow(object window)
+            => RegisterReference(window, ElementReferenceKind.Window);
+
+        private string RegisterReference(object element, ElementReferenceKind kind)
         {
             if (element == null)
             {
@@ -195,11 +216,13 @@ namespace FenBrowser.WebDriver
             {
                 if (_elementIdsByObject.TryGetValue(element, out var existingToken))
                 {
+                    _elementReferenceKinds.TryAdd(existingToken.Id, kind);
                     return existingToken.Id;
                 }
 
                 var id = $"{_elementIdPrefix}-e{Interlocked.Increment(ref _elementCounter)}";
                 _elementCache[id] = new WeakReference<object>(element);
+                _elementReferenceKinds[id] = kind;
                 _elementIdsByObject.Add(element, new ElementReferenceToken(id));
                 if (element is string nativeString && !string.IsNullOrEmpty(nativeString))
                 {
@@ -251,7 +274,7 @@ namespace FenBrowser.WebDriver
         /// <summary>
         /// Get a cached element by ID.
         /// </summary>
-        public object GetElement(string elementId)
+        public object GetElement(string elementId, ElementReferenceKind? expectedKind = null)
         {
             if (string.IsNullOrWhiteSpace(elementId))
             {
@@ -269,6 +292,27 @@ namespace FenBrowser.WebDriver
                         Id));
             }
 
+            if (expectedKind.HasValue && _elementReferenceKinds.TryGetValue(elementId, out var actualKind) &&
+                actualKind != expectedKind.Value)
+            {
+                if (expectedKind.Value == ElementReferenceKind.ShadowRoot)
+                {
+                    throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Element does not have an open shadow root");
+                }
+
+                if (expectedKind.Value == ElementReferenceKind.Frame)
+                {
+                    throw new WebDriverException(ErrorCodes.NoSuchFrame, "Frame not found");
+                }
+
+                if (expectedKind.Value == ElementReferenceKind.Window)
+                {
+                    throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+                }
+
+                throw new WebDriverException(ErrorCodes.NoSuchElement, $"Element not found: {elementId}");
+            }
+
             if (_elementCache.TryGetValue(elementId, out var weakRef))
             {
                 if (weakRef.TryGetTarget(out var element))
@@ -276,6 +320,7 @@ namespace FenBrowser.WebDriver
                     
                 // Stale reference
                 _elementCache.TryRemove(elementId, out _);
+                _elementReferenceKinds.TryRemove(elementId, out _);
                 throw new WebDriverException(
                     ErrorCodes.StaleElementReference,
                     "Element is no longer attached to the DOM");
@@ -289,6 +334,7 @@ namespace FenBrowser.WebDriver
         public void Dispose()
         {
             _elementCache.Clear();
+            _elementReferenceKinds.Clear();
             _elementRefsByNativeString.Clear();
             WindowHandles.Clear();
         }

@@ -34,6 +34,23 @@ namespace FenBrowser.Tests.Engine
             }
         }
 
+        private static string ResolveRepoFile(params string[] parts)
+        {
+            var probe = AppContext.BaseDirectory;
+            for (int i = 0; i < 12 && !string.IsNullOrWhiteSpace(probe); i++)
+            {
+                var candidate = Path.Combine(new[] { probe }.Concat(parts).ToArray());
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+
+                probe = Path.GetDirectoryName(probe);
+            }
+
+            throw new FileNotFoundException($"Could not locate repository file: {Path.Combine(parts)}");
+        }
+
         [Fact]
         public void Lexer_DecodesEscapedIdentifier_Exactly()
         {
@@ -357,6 +374,76 @@ try{
             var parser = CreateParser(input);
             var program = parser.ParseProgram();
 
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_WptTestdriverJs_RuntimeParser_NoErrors()
+        {
+            var path = ResolveRepoFile("wpt", "resources", "testdriver.js");
+            var source = File.ReadAllText(path);
+            var parser = CreateRuntimeParser(source);
+            _ = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_WptTestdriverActionsJs_RuntimeParser_NoErrors()
+        {
+            var path = ResolveRepoFile("wpt", "resources", "testdriver-actions.js");
+            var source = File.ReadAllText(path);
+            var parser = CreateRuntimeParser(source);
+            _ = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectMethodAsyncDefaultParams_NoErrors()
+        {
+            var source = """
+const driver = {
+  async click(target = { node: null }, options = { x: 0, y: 0 }) {
+    return { ok: !!target, ...options };
+  }
+};
+""";
+            var parser = CreateRuntimeParser(source);
+            _ = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ObjectLiteralNestedTrailingCommaAndComments_NoErrors()
+        {
+            var source = """
+const cfg = {
+  a: {
+    b: 1,
+    c: 2, // trailing
+  },
+  d: {
+    e: { f: 3, },
+  },
+};
+""";
+            var parser = CreateRuntimeParser(source);
+            _ = parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_OptionalChainNullishDefaultArgsInMethod_NoErrors()
+        {
+            var source = """
+const obj = {
+  run(input = {}) {
+    const value = input?.meta?.value ?? "fallback";
+    return value;
+  },
+};
+""";
+            var parser = CreateRuntimeParser(source);
+            _ = parser.ParseProgram();
             AssertNoErrors(parser);
         }
 
