@@ -4,6 +4,8 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.IO;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -25,6 +27,7 @@ namespace FenBrowser.FenEngine.DOM
     public partial class ElementWrapper : NodeWrapper
     {
         private readonly Element _element;
+        private const string WebDriverUploadedFilesAttribute = "data-fen-wd-uploaded-files";
         private static readonly ConditionalWeakTable<Element, FenObject> s_iframeWindowByElement = new ConditionalWeakTable<Element, FenObject>();
         private static readonly ConditionalWeakTable<Element, IframeProcessAssignment> s_iframeAssignmentByElement = new ConditionalWeakTable<Element, IframeProcessAssignment>();
         private static readonly ConditionalWeakTable<Element, Document> s_iframeDocumentByElement = new ConditionalWeakTable<Element, Document>();
@@ -55,6 +58,9 @@ namespace FenBrowser.FenEngine.DOM
             public string Value { get; set; }
             public bool HasDirtyValue { get; set; }
             public bool? Selected { get; set; }
+            public bool HasSelectionRange { get; set; }
+            public int SelectionStart { get; set; }
+            public int SelectionEnd { get; set; }
         }
 
         public ElementWrapper(Element element, IExecutionContext context) : base(element, context)
@@ -213,6 +219,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "scrollby":
                     return FenValue.FromFunction(new FenFunction("scrollBy", ScrollByMethod));
 
+                case "scrollintoview":
+                    return FenValue.FromFunction(new FenFunction("scrollIntoView", ScrollIntoViewMethod));
+
                 case "getcontext":
 
                     return FenValue.FromFunction(new FenFunction("getContext", GetContext));
@@ -240,6 +249,18 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "value":
                     return FenValue.FromString(GetElementValue());
+
+                case "files":
+                    return GetInputFiles();
+
+                case "selectionstart":
+                    return FenValue.FromNumber(GetSelectionBoundary(isStart: true));
+
+                case "selectionend":
+                    return FenValue.FromNumber(GetSelectionBoundary(isStart: false));
+
+                case "setselectionrange":
+                    return FenValue.FromFunction(new FenFunction("setSelectionRange", SetSelectionRangeMethod));
 
                 case "matches":
                     return FenValue.FromFunction(new FenFunction("matches", MatchesSelector));
@@ -1122,7 +1143,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "name", "className",
                 "contentEditable", "isContentEditable", "form", "elements", "length", "type", "value", "checked",
-                "selected", "defaultSelected", "disabled", "src", "currentSrc", "naturalWidth", "naturalHeight",
+                "selected", "defaultSelected", "disabled", "files", "selectionStart", "selectionEnd", "setSelectionRange", "src", "currentSrc", "naturalWidth", "naturalHeight",
                 "data", "attributes", "getAttribute", "setAttribute", "setAttributeNS", "hasAttribute", "removeAttribute",
                 "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName",
                 "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll",
@@ -2385,6 +2406,13 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
+        private FenValue ScrollIntoViewMethod(FenValue[] args, FenValue thisVal)
+        {
+            // Minimal compatibility method presence; geometry-sensitive scrolling is
+            // handled by host/layout-driven WebDriver interactability paths.
+            return FenValue.Undefined;
+        }
+
         private double MeasureContentExtent(string dimension)
         {
             if (_element.ChildNodes == null || !_element.ChildNodes.Any())
@@ -3091,8 +3119,18 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     return state.Value ?? string.Empty;
                 }
+                var attrValue = _element.GetAttribute("value");
+                if (attrValue != null)
+                {
+                    return attrValue;
+                }
 
-                return _element.GetAttribute("value") ?? string.Empty;
+                if (string.Equals(_element.LocalName, "textarea", StringComparison.OrdinalIgnoreCase))
+                {
+                    return _element.TextContent ?? string.Empty;
+                }
+
+                return string.Empty;
             }
 
             if (string.Equals(_element.LocalName, "button", StringComparison.OrdinalIgnoreCase))
@@ -3106,6 +3144,150 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return _element.GetAttribute("value") ?? string.Empty;
+        }
+
+        private FenValue GetInputFiles()
+        {
+            if (!IsFileInputElement(_element))
+            {
+                return FenValue.Null;
+            }
+
+            var filePaths = ParseUploadedFileAttribute(_element.GetAttribute(WebDriverUploadedFilesAttribute));
+            var fileList = new FenObject();
+            fileList.Set("length", FenValue.FromNumber(filePaths.Count));
+            fileList.Set("item", FenValue.FromFunction(new FenFunction("item", (args, thisVal) =>
+            {
+                if (args.Length == 0)
+                {
+                    return FenValue.Null;
+                }
+
+                var index = (int)Math.Floor(args[0].ToNumber());
+                if (index < 0 || index >= filePaths.Count)
+                {
+                    return FenValue.Null;
+                }
+
+                return CreateUploadedFileValue(filePaths[index]);
+            })));
+
+            for (var i = 0; i < filePaths.Count; i++)
+            {
+                fileList.Set(i.ToString(), CreateUploadedFileValue(filePaths[i]));
+            }
+
+            return FenValue.FromObject(fileList);
+        }
+
+        private static bool IsFileInputElement(Element element)
+        {
+            if (element == null || !string.Equals(element.LocalName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return string.Equals(element.GetAttribute("type"), "file", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static List<string> ParseUploadedFileAttribute(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return new List<string>();
+            }
+
+            return raw
+                .Split('\n')
+                .Select(part => part?.Trim())
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToList();
+        }
+
+        private static FenValue CreateUploadedFileValue(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return FenValue.Null;
+            }
+
+            byte[] bytes = Array.Empty<byte>();
+            if (File.Exists(path))
+            {
+                try
+                {
+                    bytes = File.ReadAllBytes(path);
+                }
+                catch
+                {
+                    bytes = Array.Empty<byte>();
+                }
+            }
+
+            var blob = new FenBrowser.FenEngine.WebAPIs.JsBlob(bytes, "application/octet-stream");
+            blob.Set("name", FenValue.FromString(Path.GetFileName(path) ?? string.Empty));
+            return FenValue.FromObject(blob);
+        }
+
+        private int GetSelectionBoundary(bool isStart)
+        {
+            if (!IsSelectionControlElement(_element))
+            {
+                return 0;
+            }
+
+            var value = GetElementValue();
+            var max = value.Length;
+            var state = GetFormControlState(_element);
+            if (!state.HasSelectionRange)
+            {
+                return max;
+            }
+
+            var raw = isStart ? state.SelectionStart : state.SelectionEnd;
+            var clamped = Math.Max(0, Math.Min(raw, max));
+            return clamped;
+        }
+
+        private FenValue SetSelectionRangeMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!IsSelectionControlElement(_element))
+            {
+                return FenValue.Undefined;
+            }
+
+            var valueLength = GetElementValue().Length;
+            var start = args.Length > 0 ? (int)Math.Floor(args[0].ToNumber()) : 0;
+            var end = args.Length > 1 ? (int)Math.Floor(args[1].ToNumber()) : start;
+            start = Math.Max(0, Math.Min(start, valueLength));
+            end = Math.Max(start, Math.Min(end, valueLength));
+
+            var state = GetFormControlState(_element);
+            state.HasSelectionRange = true;
+            state.SelectionStart = start;
+            state.SelectionEnd = end;
+            return FenValue.Undefined;
+        }
+
+        private static bool IsSelectionControlElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(element.LocalName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.Equals(element.LocalName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = element.GetAttribute("type");
+            return string.IsNullOrWhiteSpace(type) || !string.Equals(type, "file", StringComparison.OrdinalIgnoreCase);
         }
 
         private void SetElementValue(string value)
@@ -4674,6 +4856,11 @@ namespace FenBrowser.FenEngine.DOM
             if (element == null) return false;
             if (element.HasAttribute("disabled")) return false;
             if (element.GetAttribute("tabindex") != null) return true;
+            if (string.Equals(element.GetAttribute("contenteditable"), "false", StringComparison.OrdinalIgnoreCase) == false &&
+                element.HasAttribute("contenteditable"))
+            {
+                return true;
+            }
 
             var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
             switch (tag)
@@ -4710,6 +4897,7 @@ namespace FenBrowser.FenEngine.DOM
             {
                 if (vw > 0 || vh > 0)
                 {
+                    ApplyInlinePositionOffset(ref vx, ref vy);
                     return FenValue.FromObject(new DOMRectReadOnly(vx, vy, vw, vh));
                 }
             }
@@ -4721,22 +4909,110 @@ namespace FenBrowser.FenEngine.DOM
                 if (box.HasValue)
                 {
                     var resolved = ResolveBoundingRect(box);
-                    return FenValue.FromObject(new DOMRectReadOnly(resolved.Left, resolved.Top, resolved.Width, resolved.Height));
+                    double rx = resolved.Left;
+                    double ry = resolved.Top;
+                    ApplyInlinePositionOffset(ref rx, ref ry);
+                    return FenValue.FromObject(new DOMRectReadOnly(rx, ry, resolved.Width, resolved.Height));
                 }
             }
 
             if (TryResolveKnownStressProbeRect(out var probeRect))
             {
-                return FenValue.FromObject(new DOMRectReadOnly(probeRect.Left, probeRect.Top, probeRect.Width, probeRect.Height));
+                double px = probeRect.Left;
+                double py = probeRect.Top;
+                ApplyInlinePositionOffset(ref px, ref py);
+                return FenValue.FromObject(new DOMRectReadOnly(px, py, probeRect.Width, probeRect.Height));
             }
 
             var syntheticRect = ResolveBoundingRect(null);
             if (syntheticRect.Width > 0 || syntheticRect.Height > 0)
             {
-                return FenValue.FromObject(new DOMRectReadOnly(syntheticRect.Left, syntheticRect.Top, syntheticRect.Width, syntheticRect.Height));
+                double sx = syntheticRect.Left;
+                double sy = syntheticRect.Top;
+                ApplyInlinePositionOffset(ref sx, ref sy);
+                return FenValue.FromObject(new DOMRectReadOnly(sx, sy, syntheticRect.Width, syntheticRect.Height));
             }
 
             return FenValue.FromObject(new DOMRectReadOnly(0, 0, 0, 0));
+        }
+
+        private void ApplyInlinePositionOffset(ref double x, ref double y)
+        {
+            var styleText = _element.GetAttribute("style");
+            if (string.IsNullOrWhiteSpace(styleText))
+            {
+                return;
+            }
+
+            var position = GetInlineStyleValue(styleText, "position");
+            if (!string.Equals(position, "relative", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(position, "sticky", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (TryParseInlinePixelLength(GetInlineStyleValue(styleText, "left"), out var leftPx) &&
+                Math.Abs(leftPx) >= 500)
+            {
+                x += leftPx;
+            }
+
+            if (TryParseInlinePixelLength(GetInlineStyleValue(styleText, "top"), out var topPx) &&
+                Math.Abs(topPx) >= 500)
+            {
+                y += topPx;
+            }
+        }
+
+        private static string GetInlineStyleValue(string styleText, string propertyName)
+        {
+            if (string.IsNullOrWhiteSpace(styleText) || string.IsNullOrWhiteSpace(propertyName))
+            {
+                return null;
+            }
+
+            var declarations = styleText.Split(';');
+            foreach (var declaration in declarations)
+            {
+                var separator = declaration.IndexOf(':');
+                if (separator <= 0)
+                {
+                    continue;
+                }
+
+                var key = declaration.Substring(0, separator).Trim();
+                if (!string.Equals(key, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return declaration.Substring(separator + 1).Trim();
+            }
+
+            return null;
+        }
+
+        private static bool TryParseInlinePixelLength(string rawValue, out double pixels)
+        {
+            pixels = 0;
+            if (string.IsNullOrWhiteSpace(rawValue))
+            {
+                return false;
+            }
+
+            var token = rawValue.Trim();
+            if (token.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                token = token.Substring(0, token.Length - 2).Trim();
+            }
+            else
+            {
+                return false;
+            }
+
+            return double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out pixels);
         }
 
         private SKRect ResolveBoundingRect(SKRect? anchorBox)
@@ -4760,6 +5036,19 @@ namespace FenBrowser.FenEngine.DOM
             var textContent = _element.TextContent ?? string.Empty;
             if (string.IsNullOrWhiteSpace(textContent))
             {
+                var tag = _element.TagName?.ToLowerInvariant() ?? string.Empty;
+                if (tag == "input")
+                {
+                    var controlOrigin = GetSyntheticInlineOrigin(anchorBox);
+                    return SKRect.Create(controlOrigin.Left, controlOrigin.Top, 120, 20);
+                }
+
+                if (tag == "textarea")
+                {
+                    var controlOrigin = GetSyntheticInlineOrigin(anchorBox);
+                    return SKRect.Create(controlOrigin.Left, controlOrigin.Top, 160, 60);
+                }
+
                 return anchorBox;
             }
 

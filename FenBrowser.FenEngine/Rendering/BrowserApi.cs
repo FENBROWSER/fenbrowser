@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
@@ -93,7 +94,7 @@ namespace FenBrowser.FenEngine.Rendering
         Task<string> GetElementComputedLabelAsync(string elementId);
         Task ClickElementAsync(string elementId);
         Task ClearElementAsync(string elementId);
-        Task SendKeysToElementAsync(string elementId, string text);
+        Task SendKeysToElementAsync(string elementId, string text, bool strictFileInteractability = false);
 
         // Document
         Task<string> GetPageSourceAsync();
@@ -213,6 +214,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const string WebDriverShadowHostProbeAttribute = "data-fen-wd-shadow-host-probe";
         private const string WebDriverShadowRootProbeAttribute = "data-fen-wd-shadow-root-probe";
         private const string WebDriverFrameScriptsHydratedAttribute = "data-fen-wd-frame-scripts-hydrated";
+        private const string WebDriverUploadedFilesAttribute = "data-fen-wd-uploaded-files";
         private static readonly bool WebDriverFrameTraceEnabled =
             string.Equals(Environment.GetEnvironmentVariable("FEN_WEBDRIVER_FRAME_TRACE"), "1", StringComparison.Ordinal);
         private static readonly HashSet<string> WebDriverBooleanAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -4138,6 +4140,12 @@ pre {{
                 activeElement = null;
             }
 
+            if (activeElement == null)
+            {
+                var activeDocument = searchRoot?.OwnerDocument;
+                activeElement = FindBodyElement(activeDocument) ?? activeDocument?.DocumentElement;
+            }
+
             return Task.FromResult(GetOrRegisterElementId(activeElement));
         }
 
@@ -4658,6 +4666,10 @@ pre {{
                 string.Equals(loweredTag, "input", StringComparison.Ordinal))
             {
                 var previous = GetTextEntryValue(element);
+                if (string.Equals(loweredTag, "input", StringComparison.Ordinal) && IsFileInputElement(element))
+                {
+                    element.RemoveAttribute(WebDriverUploadedFilesAttribute);
+                }
                 SetTextEntryValue(element, replacementValue ?? string.Empty);
                 var current = GetTextEntryValue(element);
                 return !string.Equals(previous, current, StringComparison.Ordinal);
@@ -4705,20 +4717,654 @@ pre {{
             FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
         }
 
-        public Task SendKeysToElementAsync(string elementId, string text)
+        public async Task SendKeysToElementAsync(string elementId, string text, bool strictFileInteractability = false)
         {
-            // Set value on input/textarea elements
-            var el = ResolveElementInActiveContextOrThrow(elementId);
-            if (el != null)
+            Element el;
+            try
             {
-                var tag = el.TagName?.ToLowerInvariant();
-                if (tag == "input" || tag == "textarea")
+                el = ResolveElementInActiveContextOrThrow(elementId);
+            }
+            catch (InvalidOperationException ex) when (
+                ex.Message.IndexOf("no such element", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                _elementMap.TryGetValue(elementId, out var fallbackElement) &&
+                fallbackElement != null &&
+                fallbackElement.IsConnected &&
+                IsFrameElement(fallbackElement))
+            {
+                // Frame references remain valid top-context controls while connected.
+                el = fallbackElement;
+            }
+
+            if (el == null)
+            {
+                throw new InvalidOperationException("no such element");
+            }
+
+            el = ResolveLiveElementInCurrentSearchRoot(elementId, el);
+            var activeSearchRoot = ResolveSearchRoot();
+            if (activeSearchRoot != null && !IsElementWithinSearchRoot(activeSearchRoot, el))
+            {
+                el = ResolveLiveElementBySignature(activeSearchRoot, el) ?? el;
+            }
+
+            var tag = el.TagName?.ToLowerInvariant() ?? string.Empty;
+            var isFileInput = IsFileInputElement(el);
+
+            if (isFileInput)
+            {
+                var uploadedFiles = ParseUploadedFilePayload(text);
+                if (uploadedFiles.Count == 0)
                 {
-                    var currentValue = GetTextEntryValue(el);
-                    SetTextEntryValue(el, currentValue + (text ?? string.Empty));
+                    throw new ArgumentException("invalid argument");
+                }
+
+                if (strictFileInteractability && IsElementHiddenForInteraction(el))
+                {
+                    throw new InvalidOperationException("element not interactable");
+                }
+
+                foreach (var filePath in uploadedFiles)
+                {
+                    if (!File.Exists(filePath))
+                    {
+                        throw new ArgumentException("invalid argument");
+                    }
+                }
+
+                var allowsMultiple = el.HasAttribute("multiple");
+                if (!allowsMultiple && uploadedFiles.Count > 1)
+                {
+                    throw new ArgumentException("invalid argument");
+                }
+
+                var existingFiles = ParseUploadedFileAttribute(el.GetAttribute(WebDriverUploadedFilesAttribute)).ToList();
+                var nextFiles = allowsMultiple
+                    ? existingFiles.Concat(uploadedFiles).ToList()
+                    : new List<string> { uploadedFiles.Last() };
+
+                if (nextFiles.Count > 0)
+                {
+                    el.SetAttribute(WebDriverUploadedFilesAttribute, string.Join("\n", nextFiles));
+                    var lastFileName = Path.GetFileName(nextFiles[nextFiles.Count - 1]) ?? string.Empty;
+                    SetTextEntryValue(el, $@"C:\fakepath\{lastFileName}");
+                }
+                else
+                {
+                    el.RemoveAttribute(WebDriverUploadedFilesAttribute);
+                    SetTextEntryValue(el, string.Empty);
+                }
+
+                var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                    ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+                DispatchDomEvent(el, "input", eventContext, bubbles: true);
+                DispatchDomEvent(el, "change", eventContext, bubbles: true);
+
+                if (strictFileInteractability)
+                {
+                    SetFocusedElementState(el, fromKeyboard: true);
+                }
+
+                TryInvokeRepaintReady(_engine.GetActiveDom());
+                return;
+            }
+
+            if (!IsElementSendKeysInteractable(el))
+            {
+                throw new InvalidOperationException("element not interactable");
+            }
+
+            var isTextEntry = IsTextEntryElement(el);
+            var isContentEditable = IsContentEditableElement(el);
+            var isKeyboardTarget = string.Equals(tag, "body", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(tag, "html", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(tag, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(tag, "frame", StringComparison.OrdinalIgnoreCase);
+            if (!isTextEntry && !isContentEditable && !isKeyboardTarget)
+            {
+                throw new InvalidOperationException("element not interactable");
+            }
+
+            if (string.Equals(tag, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "frame", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendKeysToFrameElementAsync(el, elementId, text ?? string.Empty).ConfigureAwait(false);
+                return;
+            }
+
+            var alreadyFocused = ReferenceEquals(el.OwnerDocument?.ActiveElement, el);
+            if (!alreadyFocused)
+            {
+                var stateFocused = ElementStateManager.Instance.FocusedElement;
+                if (ReferenceEquals(stateFocused, el))
+                {
+                    alreadyFocused = true;
+                }
+                else if (stateFocused != null)
+                {
+                    var expectedDomId = el.GetAttribute(WebDriverDomIdAttribute);
+                    var focusedDomId = stateFocused.GetAttribute(WebDriverDomIdAttribute);
+                    if (!string.IsNullOrWhiteSpace(expectedDomId) &&
+                        string.Equals(expectedDomId, focusedDomId, StringComparison.Ordinal))
+                    {
+                        alreadyFocused = true;
+                    }
+                    else if (isContentEditable &&
+                             string.Equals(stateFocused.TagName, el.TagName, StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(stateFocused.TextContent ?? string.Empty, el.TextContent ?? string.Empty, StringComparison.Ordinal))
+                    {
+                        alreadyFocused = true;
+                    }
                 }
             }
-            return Task.CompletedTask;
+            if (!alreadyFocused && isContentEditable)
+            {
+                var documentFocused = el.OwnerDocument?.ActiveElement;
+                if (documentFocused != null &&
+                    IsContentEditableElement(documentFocused) &&
+                    string.Equals(documentFocused.TagName, el.TagName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(documentFocused.TextContent ?? string.Empty, el.TextContent ?? string.Empty, StringComparison.Ordinal))
+                {
+                    // Keep typing anchored to the actual focused node instance.
+                    el = documentFocused;
+                    alreadyFocused = true;
+                }
+            }
+            if (!alreadyFocused)
+            {
+                try
+                {
+                    var focusedProbe = await ExecuteScriptAsync(
+                        $@"if (!(document && document.activeElement && arguments[0])) return false;
+                            if (document.activeElement === arguments[0]) return true;
+                            var activeId = document.activeElement.getAttribute('{WebDriverDomIdAttribute}');
+                            var targetId = arguments[0].getAttribute('{WebDriverDomIdAttribute}');
+                            return !!(activeId && targetId && activeId === targetId);",
+                        new object[] { el }).ConfigureAwait(false);
+                    alreadyFocused = focusedProbe is bool isFocused && isFocused;
+                }
+                catch
+                {
+                }
+            }
+            int? existingContentEditableCaret = null;
+            if (isContentEditable)
+            {
+                existingContentEditableCaret = await TryGetCollapsedContentEditableCaretOffsetAsync(el).ConfigureAwait(false);
+                if (existingContentEditableCaret.HasValue)
+                {
+                    alreadyFocused = true;
+                }
+            }
+
+            if (!alreadyFocused)
+            {
+                SetFocusedElementState(el, fromKeyboard: true);
+                var focusContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                    ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+                DispatchDomEvent(el, "focus", focusContext, bubbles: false);
+                var initial = isContentEditable ? (el.TextContent ?? string.Empty) : GetTextEntryValue(el);
+                _cursorIndex = initial.Length;
+                _selectionAnchor = -1;
+            }
+            else if (!ReferenceEquals(_focusedElement, el))
+            {
+                SetFocusedElementState(el, fromKeyboard: true);
+            }
+
+            if (alreadyFocused && (tag == "input" || tag == "textarea"))
+            {
+                try
+                {
+                    var selection = await ExecuteScriptAsync(
+                        "return [Number(arguments[0].selectionStart)||0, Number(arguments[0].selectionEnd)||0];",
+                        new object[] { el }).ConfigureAwait(false);
+                    if (selection is IList<object> rawSelection && rawSelection.Count >= 2)
+                    {
+                        var start = Convert.ToInt32(rawSelection[0]);
+                        var end = Convert.ToInt32(rawSelection[1]);
+                        _cursorIndex = Math.Max(0, end);
+                        _selectionAnchor = start == end ? -1 : Math.Max(0, start);
+                    }
+                }
+                catch
+                {
+                }
+            }
+            else if (alreadyFocused && isContentEditable)
+            {
+                if (existingContentEditableCaret.HasValue)
+                {
+                    _cursorIndex = Math.Max(0, existingContentEditableCaret.Value);
+                    _selectionAnchor = -1;
+                }
+                else
+                {
+                    // If selection APIs are unavailable, keep deterministic caret behavior
+                    // for already-focused contenteditable elements.
+                    _cursorIndex = 0;
+                    _selectionAnchor = -1;
+                }
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            var suppressMutation = HasReadonlyStateForClear(el, tag);
+            var keyboardFallbackTarget = (!isTextEntry && !isContentEditable && isKeyboardTarget)
+                ? FindKeyboardFallbackTarget(el)
+                : null;
+            foreach (var character in text)
+            {
+                var key = character.ToString();
+                var fallbackBefore = ReadEditableValue(keyboardFallbackTarget);
+                await DispatchTypingKeySequenceAsync(
+                        el,
+                        key,
+                        shouldMutateFocusedElement: !suppressMutation && (isTextEntry || isContentEditable))
+                    .ConfigureAwait(false);
+
+                if (keyboardFallbackTarget != null &&
+                    key.Length == 1 &&
+                    string.Equals(ReadEditableValue(keyboardFallbackTarget), fallbackBefore, StringComparison.Ordinal))
+                {
+                    ApplyKeyboardFallbackTextMutation(keyboardFallbackTarget, key);
+                }
+            }
+
+            if (isTextEntry && !suppressMutation)
+            {
+                await SyncCollapsedSelectionRangeAsync(el).ConfigureAwait(false);
+            }
+        }
+
+        private async Task SendKeysToFrameElementAsync(Element frameElement, string frameElementId, string text)
+        {
+            frameElement = ResolveLiveElementInCurrentSearchRoot(frameElementId, frameElement);
+            SetFocusedElementState(frameElement, fromKeyboard: true);
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            await EnsureFrameSearchRootLoadedAsync(frameElement).ConfigureAwait(false);
+            var frameRoot = ResolveFrameSearchRoot(frameElement);
+            var frameDocument = frameRoot?.OwnerDocument;
+            var frameTarget = frameDocument?.ActiveElement ?? FindBodyElement(frameDocument) ?? frameRoot;
+            if (frameTarget == null)
+            {
+                return;
+            }
+
+            var keyboardFallbackTarget = FindKeyboardFallbackTarget(frameTarget);
+
+            foreach (var character in text)
+            {
+                var key = character.ToString();
+                var fallbackBefore = ReadEditableValue(keyboardFallbackTarget);
+                await DispatchTypingKeySequenceAsync(frameTarget, key, shouldMutateFocusedElement: false)
+                    .ConfigureAwait(false);
+
+                if (keyboardFallbackTarget != null &&
+                    key.Length == 1 &&
+                    string.Equals(ReadEditableValue(keyboardFallbackTarget), fallbackBefore, StringComparison.Ordinal))
+                {
+                    ApplyKeyboardFallbackTextMutation(keyboardFallbackTarget, key);
+                }
+            }
+
+            SetFocusedElementState(frameElement, fromKeyboard: true);
+        }
+
+        private async Task DispatchTypingKeySequenceAsync(Element eventTarget, string key, bool shouldMutateFocusedElement)
+        {
+            if (eventTarget == null || string.IsNullOrEmpty(key))
+            {
+                return;
+            }
+
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+
+            DispatchKeyboardEvent(eventTarget, "keydown", key, eventContext);
+            DispatchKeyboardEvent(eventTarget, "keypress", key, eventContext);
+
+            bool valueChanged = false;
+            if (shouldMutateFocusedElement)
+            {
+                var beforeValue = ReadEditableValue(_focusedElement);
+                await HandleKeyPress(key).ConfigureAwait(false);
+                var afterValue = ReadEditableValue(_focusedElement);
+                valueChanged = !string.Equals(beforeValue, afterValue, StringComparison.Ordinal);
+            }
+
+            if (valueChanged)
+            {
+                DispatchDomEvent(_focusedElement ?? eventTarget, "input", eventContext, bubbles: true);
+            }
+
+            DispatchKeyboardEvent(eventTarget, "keyup", key, eventContext);
+        }
+
+        private async Task SyncCollapsedSelectionRangeAsync(Element element)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (!string.Equals(tag, "input", StringComparison.Ordinal) &&
+                !string.Equals(tag, "textarea", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var cursor = Math.Max(0, _cursorIndex);
+            _selectionAnchor = -1;
+            try
+            {
+                await ExecuteScriptAsync(
+                    "if (arguments[0] && typeof arguments[0].setSelectionRange === 'function') { arguments[0].setSelectionRange(arguments[1], arguments[1]); }",
+                    new object[] { element, cursor }).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task<int?> TryGetCollapsedContentEditableCaretOffsetAsync(Element element)
+        {
+            if (element == null || !IsContentEditableElement(element))
+            {
+                return null;
+            }
+
+            try
+            {
+                var selection = await ExecuteScriptAsync(
+                    @"if (!arguments[0] || !window.getSelection) return null;
+                      var sel = window.getSelection();
+                      if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+                      var range = sel.getRangeAt(0);
+                      var node = range.startContainer;
+                      if (!node || !arguments[0].contains(node)) return null;
+                      var prefix = document.createRange();
+                      prefix.selectNodeContents(arguments[0]);
+                      prefix.setEnd(node, range.startOffset);
+                      return Number(prefix.toString().length) || 0;",
+                    new object[] { element }).ConfigureAwait(false);
+
+                return selection switch
+                {
+                    int i => Math.Max(0, i),
+                    long l => Math.Max(0, (int)l),
+                    double d => Math.Max(0, (int)Math.Floor(d)),
+                    float f => Math.Max(0, (int)Math.Floor(f)),
+                    decimal m => Math.Max(0, (int)Math.Floor(m)),
+                    _ => null
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void DispatchKeyboardEvent(
+            Element target,
+            string type,
+            string key,
+            FenBrowser.FenEngine.Core.ExecutionContext context)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(type))
+            {
+                return;
+            }
+
+            var domEvent = new FenBrowser.FenEngine.DOM.DomEvent(
+                type,
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                context: context);
+            domEvent.Set("key", FenBrowser.FenEngine.Core.FenValue.FromString(key ?? string.Empty));
+
+            var keyCode = string.IsNullOrEmpty(key) ? 0 : key[0];
+            domEvent.Set("which", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
+            domEvent.Set("keyCode", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
+
+            FenBrowser.FenEngine.Core.FenValue previousWindowEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
+            FenBrowser.FenEngine.Core.FenValue previousGlobalEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
+            var windowValue = context?.Environment?.Get("window") ?? FenBrowser.FenEngine.Core.FenValue.Undefined;
+            if (windowValue.IsObject)
+            {
+                var windowObject = windowValue.AsObject();
+                previousWindowEvent = windowObject.Get("event");
+                windowObject.Set("event", FenBrowser.FenEngine.Core.FenValue.FromObject(domEvent));
+            }
+            if (context?.Environment != null)
+            {
+                previousGlobalEvent = context.Environment.Get("event");
+                context.Environment.Set("event", FenBrowser.FenEngine.Core.FenValue.FromObject(domEvent));
+            }
+
+            FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
+
+            if (windowValue.IsObject)
+            {
+                windowValue.AsObject().Set("event", previousWindowEvent);
+            }
+            if (context?.Environment != null)
+            {
+                context.Environment.Set("event", previousGlobalEvent);
+            }
+        }
+
+        private static string ReadEditableValue(Element element)
+        {
+            if (element == null)
+            {
+                return string.Empty;
+            }
+
+            var tag = element.NodeName?.ToLowerInvariant();
+            if (tag == "input" || tag == "textarea")
+            {
+                return GetTextEntryValue(element);
+            }
+
+            if (IsContentEditableElement(element))
+            {
+                return element.TextContent ?? string.Empty;
+            }
+
+            return string.Empty;
+        }
+
+        private Element ResolveLiveElementInCurrentSearchRoot(string elementId, Element fallback)
+        {
+            if (string.IsNullOrWhiteSpace(elementId))
+            {
+                return fallback;
+            }
+
+            var searchRoot = ResolveSearchRoot();
+            if (searchRoot == null)
+            {
+                return fallback;
+            }
+
+            var expectedTag = fallback?.TagName ?? fallback?.NodeName;
+            var remapped = searchRoot
+                .SelfAndDescendants()
+                .OfType<Element>()
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate.GetAttribute(WebDriverDomIdAttribute), elementId, StringComparison.Ordinal) &&
+                    (string.IsNullOrWhiteSpace(expectedTag) ||
+                     string.Equals(candidate.TagName ?? candidate.NodeName, expectedTag, StringComparison.OrdinalIgnoreCase)));
+
+            return remapped ?? fallback;
+        }
+
+        private static Element ResolveLiveElementBySignature(Element searchRoot, Element fallback)
+        {
+            if (searchRoot == null || fallback == null)
+            {
+                return null;
+            }
+
+            var expectedTag = fallback.TagName ?? fallback.NodeName;
+            var expectedText = fallback.TextContent ?? string.Empty;
+            var expectedContentEditable = IsContentEditableElement(fallback);
+            var expectedFrame = IsFrameElement(fallback);
+            var expectedSrc = fallback.GetAttribute("src") ?? string.Empty;
+
+            return searchRoot
+                .SelfAndDescendants()
+                .OfType<Element>()
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate.TagName ?? candidate.NodeName, expectedTag, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(candidate.TextContent ?? string.Empty, expectedText, StringComparison.Ordinal) &&
+                    (!expectedContentEditable || IsContentEditableElement(candidate)) &&
+                    (!expectedFrame || (IsFrameElement(candidate) &&
+                                        string.Equals(candidate.GetAttribute("src") ?? string.Empty, expectedSrc, StringComparison.Ordinal))));
+        }
+
+        private static Element FindKeyboardFallbackTarget(Element keyboardTarget)
+        {
+            if (keyboardTarget == null)
+            {
+                return null;
+            }
+
+            if (IsTextEntryElement(keyboardTarget))
+            {
+                return keyboardTarget;
+            }
+
+            return keyboardTarget
+                .SelfAndDescendants()
+                .OfType<Element>()
+                .FirstOrDefault(candidate => IsTextEntryElement(candidate) && !HasReadonlyStateForClear(candidate, candidate.TagName?.ToLowerInvariant()));
+        }
+
+        private void ApplyKeyboardFallbackTextMutation(Element target, string key)
+        {
+            if (target == null || string.IsNullOrEmpty(key))
+            {
+                return;
+            }
+
+            var value = GetTextEntryValue(target);
+            SetTextEntryValue(target, value + key);
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            DispatchDomEvent(target, "input", eventContext, bubbles: true);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+        }
+
+        private static IReadOnlyList<string> ParseUploadedFilePayload(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return Array.Empty<string>();
+            }
+
+            return text
+                .Split('\n')
+                .Select(part => part?.Trim().Trim('\r'))
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToList();
+        }
+
+        private static IReadOnlyList<string> ParseUploadedFileAttribute(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return Array.Empty<string>();
+            }
+
+            return raw
+                .Split('\n')
+                .Select(part => part?.Trim())
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToList();
+        }
+
+        private static bool IsFileInputElement(Element element)
+        {
+            if (element == null || !string.Equals(element.NodeName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = element.GetAttribute("type");
+            return string.Equals(type, "file", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsContentEditableElement(Element element)
+        {
+            if (element == null || !element.HasAttribute("contenteditable"))
+            {
+                return false;
+            }
+
+            var value = element.GetAttribute("contenteditable");
+            return !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsElementSendKeysInteractable(Element element)
+        {
+            if (element == null || IsDisabledControl(element))
+            {
+                return false;
+            }
+
+            return !IsElementHiddenForInteraction(element);
+        }
+
+        private bool IsElementHiddenForInteraction(Element element)
+        {
+            if (element == null)
+            {
+                return true;
+            }
+
+            if (element.HasAttribute("hidden"))
+            {
+                return true;
+            }
+
+            var inlineStyle = element.GetAttribute("style") ?? string.Empty;
+            var styleNormalized = inlineStyle.ToLowerInvariant();
+            if (styleNormalized.Contains("display:none") || styleNormalized.Contains("display: none"))
+            {
+                return true;
+            }
+
+            if (styleNormalized.Contains("visibility:hidden") || styleNormalized.Contains("visibility: hidden"))
+            {
+                return true;
+            }
+
+            var computedStyles = _engine?.LastComputedStyles;
+            if (computedStyles != null && computedStyles.TryGetValue(element, out var style) && style != null)
+            {
+                if (string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(style.Visibility, "collapse", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public Task<string> GetPageSourceAsync()
@@ -4787,6 +5433,11 @@ pre {{
         private static Element GetContainingFrameElement(Node node)
         {
             Node cursor = node;
+            if (cursor is Element selfElement && IsFrameElement(selfElement))
+            {
+                // The containing frame is an ancestor frame, not the element itself.
+                cursor = selfElement.ParentNode;
+            }
             while (cursor != null)
             {
                 if (cursor is Element element && IsFrameElement(element))
@@ -5188,6 +5839,34 @@ pre {{
 
                         try { window.length = __frameNodes.length; } catch (e) {}
                     } catch (e) {}
+                })();
+                (function __fenEnsureScrollApis() {
+                    try {
+                        if (!window) {
+                            return;
+                        }
+
+                        if (typeof window.scrollTo !== 'function') {
+                            window.scrollTo = function(x, y) {
+                                var nx = Number(x);
+                                var ny = Number(y);
+                                if (!isFinite(nx)) nx = 0;
+                                if (!isFinite(ny)) ny = 0;
+                                this.scrollX = nx;
+                                this.scrollY = ny;
+                                this.pageXOffset = nx;
+                                this.pageYOffset = ny;
+                            };
+                        }
+
+                        if (typeof window.scrollBy !== 'function') {
+                            window.scrollBy = function(dx, dy) {
+                                var cx = Number(this.scrollX) || 0;
+                                var cy = Number(this.scrollY) || 0;
+                                this.scrollTo(cx + (Number(dx) || 0), cy + (Number(dy) || 0));
+                            };
+                        }
+                    } catch (e) {}
                 })();";
             // WebDriver spec: scripts are executed as an anonymous function
             // So we wrap the script: (function() { <script> }).apply(null, arguments)
@@ -5393,6 +6072,34 @@ pre {{
                         }
 
                         try { window.length = __frameNodes.length; } catch (e) {}
+                    } catch (e) {}
+                })();
+                (function __fenEnsureScrollApis() {
+                    try {
+                        if (!window) {
+                            return;
+                        }
+
+                        if (typeof window.scrollTo !== 'function') {
+                            window.scrollTo = function(x, y) {
+                                var nx = Number(x);
+                                var ny = Number(y);
+                                if (!isFinite(nx)) nx = 0;
+                                if (!isFinite(ny)) ny = 0;
+                                this.scrollX = nx;
+                                this.scrollY = ny;
+                                this.pageXOffset = nx;
+                                this.pageYOffset = ny;
+                            };
+                        }
+
+                        if (typeof window.scrollBy !== 'function') {
+                            window.scrollBy = function(dx, dy) {
+                                var cx = Number(this.scrollX) || 0;
+                                var cy = Number(this.scrollY) || 0;
+                                this.scrollTo(cx + (Number(dx) || 0), cy + (Number(dy) || 0));
+                            };
+                        }
                     } catch (e) {}
                 })();";
             // Reset state
@@ -7454,7 +8161,7 @@ pre {{
                 return IsTextInputType(element.GetAttribute("type"));
             }
 
-            return string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+            return IsContentEditableElement(element);
         }
 
         private static bool IsTextInputType(string type)
@@ -7476,11 +8183,6 @@ pre {{
                 case "image":
                 case "range":
                 case "color":
-                case "date":
-                case "datetime-local":
-                case "month":
-                case "time":
-                case "week":
                     return false;
                 default:
                     return true;

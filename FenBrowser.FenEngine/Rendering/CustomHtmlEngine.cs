@@ -211,6 +211,8 @@ namespace FenBrowser.FenEngine.Rendering
         public event EventHandler<string> TitleChanged;
         public event EventHandler<Element> DomReady;
         public event Action<string> AlertTriggered;
+        public event Func<string, bool> ConfirmTriggered;
+        public event Func<string, string, string> PromptTriggered;
         public event Action<string> ConsoleMessage; // New event for console logs
         public event Action<SKRect?> HighlightRectChanged;
         public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
@@ -1406,6 +1408,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return null;
                 }
 
+                var rectSource = element;
                 var box = _cachedRenderer.GetElementBox(element);
                 if (box == null)
                 {
@@ -1422,13 +1425,46 @@ namespace FenBrowser.FenEngine.Rendering
                                     string.Equals(candidate.GetAttribute("id"), elementId, StringComparison.Ordinal));
                             if (mapped != null)
                             {
+                                rectSource = mapped;
                                 box = _cachedRenderer.GetElementBox(mapped);
                             }
                         }
                     }
                 }
 
-                return box?.BorderBox;
+                if (box == null)
+                {
+                    return null;
+                }
+
+                var rect = box.BorderBox;
+                if (LastComputedStyles != null &&
+                    rectSource != null &&
+                    LastComputedStyles.TryGetValue(rectSource, out var computed) &&
+                    computed != null &&
+                    string.Equals(computed.Position, "relative", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Compensate for relative left/top offsets when layout metrics still report static origin.
+                    if (computed.Left.HasValue && Math.Abs(rect.Left) < 0.5f && Math.Abs(computed.Left.Value) > 0.5)
+                    {
+                        rect = SKRect.Create(
+                            rect.Left + (float)computed.Left.Value,
+                            rect.Top,
+                            rect.Width,
+                            rect.Height);
+                    }
+
+                    if (computed.Top.HasValue && Math.Abs(rect.Top) < 0.5f && Math.Abs(computed.Top.Value) > 0.5)
+                    {
+                        rect = SKRect.Create(
+                            rect.Left,
+                            rect.Top + (float)computed.Top.Value,
+                            rect.Width,
+                            rect.Height);
+                    }
+                }
+
+                return rect;
             });
 
             // [MIGRATION] View logic removed. Host is responsible for rendering.
@@ -1664,7 +1700,7 @@ namespace FenBrowser.FenEngine.Rendering
                      // are the keys in LastComputedStyles.  Without this fix _activeDom would
                      // still point to a stale incremental-parse clone, causing every style
                      // lookup to miss and producing a blank frame.
-                     Console.WriteLine($"[DBG-CSS] CSS done. Styles={LastComputedStyles?.Count ?? 0}, _activeDom={_activeDom?.GetType().Name ?? "NULL"}:{(_activeDom as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?"}");
+                     // Intentionally quiet in hot path: WPT runs are sensitive to stdout flooding.
 
                      // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
                      // This ensures flexbox centering, visibility, and other CSS properties are applied
@@ -1968,6 +2004,28 @@ namespace FenBrowser.FenEngine.Rendering
                  },
                  setTitle: null,
                  alert: (msg) => { AlertTriggered?.Invoke(msg); },
+                 confirm: (msg) =>
+                 {
+                     var handler = ConfirmTriggered;
+                     if (handler != null)
+                     {
+                         return handler(msg);
+                     }
+
+                     AlertTriggered?.Invoke(msg);
+                     return true;
+                 },
+                 prompt: (msg, defaultValue) =>
+                 {
+                     var handler = PromptTriggered;
+                     if (handler != null)
+                     {
+                         return handler(msg, defaultValue);
+                     }
+
+                     AlertTriggered?.Invoke(msg);
+                     return defaultValue ?? string.Empty;
+                 },
                  log: (msg) => 
                  { 
                      EngineLogCompat.Debug($"[CustomHtmlEngine] Received log from JS Engine: {msg}", LogCategory.JavaScript);
