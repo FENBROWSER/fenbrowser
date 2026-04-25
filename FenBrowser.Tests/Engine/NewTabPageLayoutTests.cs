@@ -482,6 +482,71 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task HoverHighlight_Respects_NewTab_SearchBox_Rounded_Corners()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            var renderer = new SkiaDomRenderer();
+            using var beforeBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var beforeCanvas = new SKCanvas(beforeBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = beforeCanvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.RoundedHover.before",
+                EmitVerificationReport = false
+            });
+            beforeCanvas.Flush();
+
+            var box = renderer.GetElementBox(searchBox);
+            Assert.NotNull(box);
+            int cornerX = (int)Math.Round(box!.BorderBox.Right - 2);
+            int cornerY = (int)Math.Round(box.BorderBox.Top + 2);
+            var beforeCorner = beforeBitmap.GetPixel(cornerX, cornerY);
+
+            using var hoveredBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var hoveredCanvas = new SKCanvas(hoveredBitmap);
+            try
+            {
+                ElementStateManager.Instance.SetHoveredElement(searchBox);
+                renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+                {
+                    Root = root,
+                    Canvas = hoveredCanvas,
+                    Styles = styles,
+                    Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                    BaseUrl = baseUri.AbsoluteUri,
+                    InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Input,
+                    RequestedBy = "NewTabPageLayoutTests.RoundedHover.hovered",
+                    EmitVerificationReport = false
+                });
+                hoveredCanvas.Flush();
+            }
+            finally
+            {
+                ElementStateManager.Instance.SetHoveredElement(null);
+            }
+
+            var hoveredCorner = hoveredBitmap.GetPixel(cornerX, cornerY);
+            Assert.Equal(beforeCorner.Red, hoveredCorner.Red);
+            Assert.Equal(beforeCorner.Green, hoveredCorner.Green);
+            Assert.Equal(beforeCorner.Blue, hoveredCorner.Blue);
+        }
+
+        [Fact]
         public void CascadeEngine_Author_Background_Shorthand_Overrides_UserAgent_BackgroundColor_Longhand()
         {
             var html = new Element("html");

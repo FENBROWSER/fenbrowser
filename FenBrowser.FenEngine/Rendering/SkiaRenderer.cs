@@ -568,10 +568,20 @@ namespace FenBrowser.FenEngine.Rendering
             if (!(node is BackgroundPaintNode) && !(node is ImagePaintNode) && !(node is BorderPaintNode) && !(node is MaskPaintNode)) return;
             
             var paintColor = new SKColor(255, 255, 255, 40); // Subtle white overlay
-            
-            if (node is BackgroundPaintNode bg && bg.BorderRadius != null && HasNonZeroRadius(bg.BorderRadius))
+
+            SKPoint[] radius = null;
+            if (node is BackgroundPaintNode bg)
             {
-                using var path = CreateRoundedRectPath(node.Bounds, bg.BorderRadius);
+                radius = bg.BorderRadius;
+            }
+            else if (node is BorderPaintNode border)
+            {
+                radius = border.BorderRadius;
+            }
+
+            if (radius != null && HasNonZeroRadius(radius))
+            {
+                using var path = CreateRoundedRectPath(node.Bounds, radius);
                 backend.DrawPath(path, paintColor);
             }
             else
