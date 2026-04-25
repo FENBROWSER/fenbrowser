@@ -91,5 +91,54 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(100f, box.Geometry.MarginBox.Left);
             Assert.Equal(-50f, box.Geometry.MarginBox.Top);
         }
+
+        [Fact]
+        public void PositionSubtree_UsesAuthoredInsetMapValue_WhenTypedInsetIsStale()
+        {
+            var style = new CssComputed
+            {
+                Position = "relative",
+                Top = -100d
+            };
+            style.Map["top"] = "0px";
+
+            var element = new Element("div");
+            var box = new BlockBox(element, style);
+            box.Geometry.ContentBox = new SKRect(0, 0, 40, 20);
+            box.Geometry.Padding = new Thickness();
+            box.Geometry.Border = new Thickness();
+            box.Geometry.Margin = new Thickness();
+            LayoutBoxOps.ComputeBoxModelFromContent(box, 40, 20);
+
+            var state = new LayoutState(new SKSize(800, 600), 800, 100, 800, 600);
+            LayoutBoxOps.PositionSubtree(box, 100, 50, state);
+
+            Assert.Equal(100f, box.Geometry.MarginBox.Left);
+            Assert.Equal(50f, box.Geometry.MarginBox.Top);
+        }
+
+        [Fact]
+        public void PositionSubtree_AppliesInsetShorthandForBottom()
+        {
+            var style = new CssComputed
+            {
+                Position = "relative"
+            };
+            style.Map["inset"] = "auto auto 100% auto";
+
+            var element = new Element("div");
+            var box = new BlockBox(element, style);
+            box.Geometry.ContentBox = new SKRect(0, 0, 40, 20);
+            box.Geometry.Padding = new Thickness();
+            box.Geometry.Border = new Thickness();
+            box.Geometry.Margin = new Thickness();
+            LayoutBoxOps.ComputeBoxModelFromContent(box, 40, 20);
+
+            var state = new LayoutState(new SKSize(800, 600), 800, 100, 800, 600);
+            LayoutBoxOps.PositionSubtree(box, 100, 50, state);
+
+            Assert.Equal(100f, box.Geometry.MarginBox.Left);
+            Assert.Equal(-50f, box.Geometry.MarginBox.Top);
+        }
     }
 }

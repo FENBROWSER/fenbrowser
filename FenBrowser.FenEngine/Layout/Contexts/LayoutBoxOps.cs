@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using FenBrowser.FenEngine.Layout.Tree;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
@@ -207,42 +208,191 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             }
 
             float dx = 0f;
-            if (HasExplicitInset(style, "left") && style.Left.HasValue)
+            if (TryResolveInsetOffset(style, "left", cbWidth, out float leftOffset))
             {
-                dx = (float)style.Left.Value;
+                dx = leftOffset;
             }
-            else if (HasExplicitInset(style, "left") && style.LeftPercent.HasValue && cbWidth > 0f)
+            else if (TryResolveInsetOffset(style, "right", cbWidth, out float rightOffset))
             {
-                dx = (float)(style.LeftPercent.Value / 100.0 * cbWidth);
-            }
-            else if (HasExplicitInset(style, "right") && style.Right.HasValue)
-            {
-                dx = -(float)style.Right.Value;
-            }
-            else if (HasExplicitInset(style, "right") && style.RightPercent.HasValue && cbWidth > 0f)
-            {
-                dx = -(float)(style.RightPercent.Value / 100.0 * cbWidth);
+                dx = -rightOffset;
             }
 
             float dy = 0f;
-            if (HasExplicitInset(style, "top") && style.Top.HasValue)
+            if (TryResolveInsetOffset(style, "top", cbHeight, out float topOffset))
             {
-                dy = (float)style.Top.Value;
+                dy = topOffset;
             }
-            else if (HasExplicitInset(style, "top") && style.TopPercent.HasValue && cbHeight > 0f)
+            else if (TryResolveInsetOffset(style, "bottom", cbHeight, out float bottomOffset))
             {
-                dy = (float)(style.TopPercent.Value / 100.0 * cbHeight);
-            }
-            else if (HasExplicitInset(style, "bottom") && style.Bottom.HasValue)
-            {
-                dy = -(float)style.Bottom.Value;
-            }
-            else if (HasExplicitInset(style, "bottom") && style.BottomPercent.HasValue && cbHeight > 0f)
-            {
-                dy = -(float)(style.BottomPercent.Value / 100.0 * cbHeight);
+                dy = -bottomOffset;
             }
 
             return new SKPoint(dx, dy);
+        }
+
+        private static bool TryResolveInsetOffset(CssComputed style, string side, float containingSize, out float offset)
+        {
+            offset = 0f;
+            if (!HasExplicitInset(style, side))
+            {
+                return false;
+            }
+
+            if (TryResolveInsetFromPrimaryKey(style, side, containingSize, out offset))
+            {
+                return true;
+            }
+
+            if (TryResolveInsetFromLogicalKey(style, side, containingSize, out offset))
+            {
+                return true;
+            }
+
+            if (TryResolveInsetFromShorthand(style, "inset", side, containingSize, out offset))
+            {
+                return true;
+            }
+
+            string axisShorthand = side == "top" || side == "bottom" ? "inset-block" : "inset-inline";
+            return TryResolveInsetFromShorthand(style, axisShorthand, side, containingSize, out offset);
+        }
+
+        private static bool TryResolveInsetFromPrimaryKey(CssComputed style, string side, float containingSize, out float offset)
+        {
+            offset = 0f;
+            if (style?.Map == null || !style.Map.TryGetValue(side, out string raw))
+            {
+                return false;
+            }
+
+            return TryParseInsetValue(raw, containingSize, out offset);
+        }
+
+        private static bool TryResolveInsetFromLogicalKey(CssComputed style, string side, float containingSize, out float offset)
+        {
+            offset = 0f;
+            if (style?.Map == null)
+            {
+                return false;
+            }
+
+            string logicalKey = side switch
+            {
+                "top" => "inset-block-start",
+                "bottom" => "inset-block-end",
+                "left" => "inset-inline-start",
+                "right" => "inset-inline-end",
+                _ => string.Empty
+            };
+
+            if (string.IsNullOrEmpty(logicalKey) || !style.Map.TryGetValue(logicalKey, out string raw))
+            {
+                return false;
+            }
+
+            return TryParseInsetValue(raw, containingSize, out offset);
+        }
+
+        private static bool TryResolveInsetFromShorthand(CssComputed style, string shorthandKey, string side, float containingSize, out float offset)
+        {
+            offset = 0f;
+            if (style?.Map == null || !style.Map.TryGetValue(shorthandKey, out string raw) || string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            string[] tokens = raw.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length == 0)
+            {
+                return false;
+            }
+
+            string selectedToken;
+            if (string.Equals(shorthandKey, "inset-block", StringComparison.OrdinalIgnoreCase))
+            {
+                selectedToken = side switch
+                {
+                    "top" => tokens[0],
+                    "bottom" => tokens.Length > 1 ? tokens[1] : tokens[0],
+                    _ => string.Empty
+                };
+            }
+            else if (string.Equals(shorthandKey, "inset-inline", StringComparison.OrdinalIgnoreCase))
+            {
+                selectedToken = side switch
+                {
+                    "left" => tokens[0],
+                    "right" => tokens.Length > 1 ? tokens[1] : tokens[0],
+                    _ => string.Empty
+                };
+            }
+            else
+            {
+                selectedToken = side switch
+                {
+                    "top" => tokens[0],
+                    "right" => tokens.Length == 1 ? tokens[0] : tokens.Length == 2 ? tokens[1] : tokens[1],
+                    "bottom" => tokens.Length == 1 ? tokens[0] : tokens.Length == 2 ? tokens[0] : tokens.Length == 3 ? tokens[2] : tokens[2],
+                    "left" => tokens.Length == 1 ? tokens[0] : tokens.Length == 2 ? tokens[1] : tokens.Length == 3 ? tokens[1] : tokens[3],
+                    _ => string.Empty
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(selectedToken))
+            {
+                return false;
+            }
+
+            return TryParseInsetValue(selectedToken, containingSize, out offset);
+        }
+
+        private static bool TryParseInsetValue(string raw, float containingSize, out float value)
+        {
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            string token = raw.Trim();
+            if (token.Length == 0 ||
+                token.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("revert", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (token.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                string px = token.Substring(0, token.Length - 2).Trim();
+                if (float.TryParse(px, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedPx))
+                {
+                    value = parsedPx;
+                    return true;
+                }
+            }
+
+            if (token.EndsWith("%", StringComparison.OrdinalIgnoreCase))
+            {
+                string percent = token.Substring(0, token.Length - 1).Trim();
+                if (containingSize > 0f &&
+                    float.TryParse(percent, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedPercent))
+                {
+                    value = containingSize * (parsedPercent / 100f);
+                    return true;
+                }
+            }
+
+            if (float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out float rawNumber))
+            {
+                value = rawNumber;
+                return true;
+            }
+
+            return false;
         }
 
         private static bool HasExplicitInset(CssComputed style, string side)
