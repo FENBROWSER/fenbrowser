@@ -60,6 +60,7 @@ namespace FenBrowser.FenEngine.Core
         private FenObject _locationObject;
         private FenObject _historyObject;
         private FenObject _visualViewportObject;
+        private int _windowFrameSlotCount;
         private BrowserSurfaceProfile _browserSurface;
         private readonly List<MediaQueryListRegistration> _mediaQueryLists = new List<MediaQueryListRegistration>();
         private readonly object _mediaQueryLock = new object();
@@ -7432,8 +7433,24 @@ namespace FenBrowser.FenEngine.Core
             window.Set("self", FenValue.FromObject(window));
             window.Set("top", FenValue.FromObject(window));
             window.Set("parent", FenValue.FromObject(window));
-            window.Set("frames", FenValue.FromObject(window));
-            window.Set("length", FenValue.FromNumber(0)); // No frames
+            window.DefineOwnProperty("frames", PropertyDescriptor.Accessor(
+                new FenFunction("get frames", (FenValue[] args, FenValue thisVal) =>
+                {
+                    SyncWindowFrameSlots(window);
+                    return FenValue.FromObject(window);
+                }),
+                null,
+                enumerable: true,
+                configurable: true));
+            window.DefineOwnProperty("length", PropertyDescriptor.Accessor(
+                new FenFunction("get length", (FenValue[] args, FenValue thisVal) =>
+                {
+                    var count = SyncWindowFrameSlots(window);
+                    return FenValue.FromNumber(count);
+                }),
+                null,
+                enumerable: true,
+                configurable: true));
             // Standard properties
             window.Set("name", FenValue.FromString(""));
             window.Set("closed", FenValue.FromBoolean(false));
@@ -17673,6 +17690,95 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        private int SyncWindowFrameSlots(FenObject window)
+        {
+            if (window == null)
+            {
+                _windowFrameSlotCount = 0;
+                return 0;
+            }
+
+            var frameWindows = CollectTopLevelFrameWindows();
+
+            for (var i = 0; i < _windowFrameSlotCount; i++)
+            {
+                try
+                {
+                    window.Delete(i.ToString(), _context);
+                }
+                catch
+                {
+                }
+            }
+
+            for (var i = 0; i < frameWindows.Count; i++)
+            {
+                window.Set(i.ToString(), frameWindows[i], _context);
+            }
+
+            _windowFrameSlotCount = frameWindows.Count;
+            return _windowFrameSlotCount;
+        }
+
+        private List<FenValue> CollectTopLevelFrameWindows()
+        {
+            var result = new List<FenValue>();
+            var documentValue = GetGlobal("document");
+            if (!documentValue.IsObject || documentValue.AsObject() is not DocumentWrapper documentWrapper)
+            {
+                return result;
+            }
+
+            var node = documentWrapper.Node;
+            var root = node as Document ?? node?.OwnerDocument;
+            if (root == null)
+            {
+                return result;
+            }
+
+            CollectFrameWindows(root, result);
+            return result;
+        }
+
+        private void CollectFrameWindows(Node root, List<FenValue> frameWindows)
+        {
+            if (root == null || frameWindows == null)
+            {
+                return;
+            }
+
+            if (root is Element element &&
+                (string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(element.TagName, "frame", StringComparison.OrdinalIgnoreCase)))
+            {
+                var wrappedElement = DomWrapperFactory.Wrap(element, _context);
+                if (wrappedElement.IsObject)
+                {
+                    var contentWindow = wrappedElement.AsObject().Get("contentWindow", _context);
+                    frameWindows.Add(contentWindow.IsUndefined ? FenValue.Null : contentWindow);
+                }
+                else
+                {
+                    frameWindows.Add(FenValue.Null);
+                }
+
+                // Nested frame documents are separate browsing contexts and should not
+                // contribute descendants to this window's immediate frame collection.
+                return;
+            }
+
+            var children = root.ChildNodes;
+            if (children == null)
+            {
+                return;
+            }
+
+            foreach (var child in children)
+            {
+                CollectFrameWindows(child, frameWindows);
+            }
+        }
+
         private FenValue CreateImageElementValue(FenValue[] args)
         {
             FenValue imageValue = FenValue.Null;
@@ -18039,6 +18145,34 @@ namespace FenBrowser.FenEngine.Core
             if (win.IsObject)
             {
                 win.AsObject().Set("alert", alertFunc);
+            }
+        }
+
+        public void SetConfirmPrompt(Func<string, bool> confirmAction, Func<string, string, string> promptAction)
+        {
+            var confirmFunc = FenValue.FromFunction(new FenFunction("confirm", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : string.Empty;
+                var accepted = confirmAction?.Invoke(msg) ?? true;
+                return FenValue.FromBoolean(accepted);
+            }));
+
+            var promptFunc = FenValue.FromFunction(new FenFunction("prompt", (args, thisVal) =>
+            {
+                var msg = args.Length > 0 ? args[0].ToString() : string.Empty;
+                var defaultValue = args.Length > 1 ? args[1].ToString() : string.Empty;
+                var value = promptAction?.Invoke(msg, defaultValue);
+                return value == null ? FenValue.Null : FenValue.FromString(value);
+            }));
+
+            SetGlobal("confirm", confirmFunc);
+            SetGlobal("prompt", promptFunc);
+
+            var win = GetGlobal("window");
+            if (win.IsObject)
+            {
+                win.AsObject().Set("confirm", confirmFunc);
+                win.AsObject().Set("prompt", promptFunc);
             }
         }
 

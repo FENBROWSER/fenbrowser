@@ -139,6 +139,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "removeattributens":
                     return FenValue.FromFunction(new FenFunction("removeAttributeNS", RemoveAttributeNS));
 
+                case "setattributens":
+                    return FenValue.FromFunction(new FenFunction("setAttributeNS", SetAttributeNS));
+
                 case "prepend":
                     return FenValue.FromFunction(new FenFunction("prepend", Prepend));
                 
@@ -425,8 +428,7 @@ namespace FenBrowser.FenEngine.DOM
                     if (_element.ShadowRoot != null)
                     {
                         if (_element.ShadowRoot.Mode == ShadowRootMode.Closed) return FenValue.Null;
-                        return FenValue.FromObject(new ShadowRootWrapper(_element.ShadowRoot, _context));
-                        // ShadowRootWrapper needs update to V2 ShadowRoot
+                        return DomWrapperFactory.Wrap(_element.ShadowRoot, _context);
                     }
                     return FenValue.Null;
                 
@@ -571,6 +573,7 @@ namespace FenBrowser.FenEngine.DOM
                 frameWindow.Set("self", FenValue.FromObject(frameWindow));
                 frameWindow.Set("top", FenValue.FromObject(frameWindow));
                 frameWindow.Set("parent", FenValue.FromObject(frameWindow));
+                frameWindow.Set("frameElement", DomWrapperFactory.Wrap(_element, _context));
                 frameWindow.Set("document", FenValue.Null);
                 frameWindow.Set("__fenSandboxLastBlockedAction", FenValue.Undefined);
 
@@ -1120,7 +1123,7 @@ namespace FenBrowser.FenEngine.DOM
                 "attachShadow", "shadowRoot", "innerHTML", "textContent", "tagName", "id", "name", "className",
                 "contentEditable", "isContentEditable", "form", "elements", "length", "type", "value", "checked",
                 "selected", "defaultSelected", "disabled", "src", "currentSrc", "naturalWidth", "naturalHeight",
-                "data", "attributes", "getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
+                "data", "attributes", "getAttribute", "setAttribute", "setAttributeNS", "hasAttribute", "removeAttribute",
                 "getAttributeNode", "setAttributeNode", "removeAttributeNode", "getElementsByTagName",
                 "getElementsByTagNameNS", "getElementsByClassName", "querySelector", "querySelectorAll",
                 "addEventListener", "removeEventListener", "dispatchEvent", "click", "focus", "blur", "getContext",
@@ -1940,6 +1943,20 @@ namespace FenBrowser.FenEngine.DOM
             var namespaceUri = args[0].IsNull ? null : args[0].ToString();
             var localName = args[1].ToString();
             _element.RemoveAttributeNS(namespaceUri, localName);
+            return FenValue.Undefined;
+        }
+
+        private FenValue SetAttributeNS(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "setAttributeNS"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length < 3) return FenValue.Undefined;
+
+            var namespaceUri = args[0].IsNull ? null : args[0].ToString();
+            var qualifiedName = args[1].ToString();
+            var value = args[2].ToString();
+            _element.SetAttributeNS(namespaceUri, qualifiedName, value);
             return FenValue.Undefined;
         }
 
@@ -3889,7 +3906,7 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             var shadow = _element.AttachShadow(init);
-            return FenValue.FromObject(new ShadowRootWrapper(shadow, _context)); 
+            return DomWrapperFactory.Wrap(shadow, _context);
         }
 
         // --- Event Listeners Reuse ---
