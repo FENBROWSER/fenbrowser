@@ -11,13 +11,13 @@ namespace FenBrowser.Tests.Rendering
             typeof(BrowserHost).GetMethod("NormalizeHoverTarget", BindingFlags.NonPublic | BindingFlags.Static);
 
         [Fact]
-        public void NormalizeHoverTarget_StripsPassiveContainerHover()
+        public void NormalizeHoverTarget_KeepsPassiveContainerHover_ForCssHoverMatching()
         {
             var container = new Element("div");
 
             var normalized = InvokeNormalizeHoverTarget(container);
 
-            Assert.Null(normalized);
+            Assert.Same(container, normalized);
         }
 
         [Fact]

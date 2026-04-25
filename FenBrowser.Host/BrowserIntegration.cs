@@ -160,11 +160,16 @@ public class BrowserIntegration
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
                 // Defensive reset: page-driven navigations can bypass NavigateInternal.
-                // Drop base-frame seed so first frame for the new document cannot reuse stale pixels.
+                // Clear committed frame/seed so first frame for the new document cannot reuse stale pixels.
                 lock (_frameLock)
                 {
+                    _currentFrame?.Dispose();
+                    _currentFrame = null;
                     _currentFrameSeedImage?.Dispose();
                     _currentFrameSeedImage = null;
+                    _currentOverlays = new List<InputOverlayData>();
+                    _lastCommittedFrameViewport = SKSize.Empty;
+                    _lastCommittedFrameScrollY = 0f;
                     _currentFrameSeedCreatedUtc = DateTime.MinValue;
                     _consecutiveBaseFrameReuseCount = 0;
                 }

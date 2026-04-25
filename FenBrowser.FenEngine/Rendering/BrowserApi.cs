@@ -2839,23 +2839,6 @@ pre {{
                 string.Equals(tag, "body", StringComparison.OrdinalIgnoreCase))
                 return null;
 
-            bool hasHref = !string.IsNullOrWhiteSpace(hovered.GetAttribute("href"));
-            bool isFocusable =
-                !string.IsNullOrWhiteSpace(hovered.GetAttribute("tabindex")) ||
-                string.Equals(hovered.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
-
-            bool isInteractiveTag =
-                string.Equals(tag, "a", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "button", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "input", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "select", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "textarea", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "label", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tag, "summary", StringComparison.OrdinalIgnoreCase);
-
-            if (!isInteractiveTag && !hasHref && !isFocusable)
-                return null;
-
             return hovered;
         }
 

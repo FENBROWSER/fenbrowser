@@ -72,9 +72,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         .tagline {{
             display: block;
-            width: 560px;
+            width: 100%;
+            max-width: 560px;
             margin-top: 16px;
-            margin-left: 70px;
+            margin-left: auto;
+            margin-right: auto;
             color: #94a3b8;
             font-size: 18px;
             line-height: 1.6;
@@ -82,20 +84,22 @@ namespace FenBrowser.FenEngine.Rendering
 
         .search-panel {{
             display: block;
-            width: 580px;
+            width: 100%;
+            max-width: 580px;
             margin-top: 34px;
-            margin-left: 60px;
+            margin-left: auto;
+            margin-right: auto;
             padding: 12px;
             box-sizing: border-box;
             border-radius: 30px;
             border: 1px solid #334155;
             background: rgba(15, 23, 42, 0.74);
+            overflow: hidden;
         }}
 
         .search-box {{
             display: block;
-            width: 554px;
-            max-width: 100%;
+            width: 100%;
             margin: 0 auto;
             height: 58px;
             padding: 0 20px;
