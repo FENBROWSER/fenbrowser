@@ -301,10 +301,22 @@ namespace FenBrowser.FenEngine.Rendering
                 case "opacity": style.Opacity = value; break;
                 case "width": style.Width = value; break;
                 case "height": style.Height = value; break;
-                case "left": style.Left = value; break;
-                case "top": style.Top = value; break;
-                case "right": style.Right = value; break;
-                case "bottom": style.Bottom = value; break;
+                case "left":
+                    style.Left = value;
+                    style.LeftPercent = null;
+                    break;
+                case "top":
+                    style.Top = value;
+                    style.TopPercent = null;
+                    break;
+                case "right":
+                    style.Right = value;
+                    style.RightPercent = null;
+                    break;
+                case "bottom":
+                    style.Bottom = value;
+                    style.BottomPercent = null;
+                    break;
                 case "font-size": style.FontSize = value; break;
                 case "margin-left":
                     var ml = style.Margin != null ? style.Margin : new Thickness();
