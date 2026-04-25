@@ -253,6 +253,46 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task RenderFrame_Does_Not_Create_Host_Text_Overlay_For_Visible_NewTab_Input_Text()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            Assert.True(styles.TryGetValue(searchBox, out var style));
+            Assert.NotNull(style);
+            Assert.True(style!.ForegroundColor.HasValue);
+            Assert.True(style.ForegroundColor!.Value.Alpha > 0);
+
+            var renderer = new SkiaDomRenderer();
+            using var surface = SKSurface.Create(new SKImageInfo(viewportWidth, viewportHeight));
+            var canvas = surface.Canvas;
+            canvas.Clear(SKColors.Transparent);
+
+            var result = renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = canvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.NoHostTextOverlay",
+                EmitVerificationReport = false
+            });
+
+            Assert.NotNull(result);
+            Assert.DoesNotContain(result.Overlays, overlay => ReferenceEquals(overlay.Node, searchBox));
+        }
+
+        [Fact]
         public async Task IncrementalRecascade_Preserves_Selector_And_Inline_Style_Correctness_For_NewTab_Input()
         {
             string html = NewTabRenderer.Render();

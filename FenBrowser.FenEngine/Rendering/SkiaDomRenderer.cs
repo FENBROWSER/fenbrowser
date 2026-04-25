@@ -965,6 +965,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (_lastStyles != null) _lastStyles.TryGetValue(el, out style);
                         
                         if (style != null && string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!ShouldCreateHostTextOverlay(style)) continue;
 
                         string align = "left";
                         if (style?.TextAlign == SKTextAlign.Center) align = "center";
@@ -1015,6 +1016,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return SKColors.Black;
+        }
+
+        private static bool ShouldCreateHostTextOverlay(CssComputed style)
+        {
+            // Avoid double-rendering text when the engine already paints visible input text.
+            // Keep host overlay text only as a fallback for invisible/sentinel colors.
+            if (style?.ForegroundColor is not SKColor color)
+            {
+                return true;
+            }
+
+            return color.Alpha == 0 || IsCurrentColorSentinel(color);
         }
 
         private static bool IsCurrentColorSentinel(SKColor color)
