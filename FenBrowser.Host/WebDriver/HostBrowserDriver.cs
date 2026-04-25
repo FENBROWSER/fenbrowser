@@ -11,7 +11,7 @@ namespace FenBrowser.Host.WebDriver
 {
     public class HostBrowserDriver : IBrowserDriver
     {
-        private const int ElementLookupTimeoutMs = 2000;
+        private const int ElementLookupTimeoutMs = 0;
         private static readonly TimeSpan ElementLookupPollInterval = TimeSpan.FromMilliseconds(50);
         private TabManager _tabs => TabManager.Instance;
 
@@ -89,7 +89,6 @@ namespace FenBrowser.Host.WebDriver
             return await RunOnMainThread(() =>
             {
                 var handles = _tabs.Tabs.Select(tab => tab.Id.ToString()).ToList();
-                Console.WriteLine($"[WD-Tab] GetWindowHandles active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} handles=[{string.Join(",", handles)}]");
                 return (IReadOnlyList<string>)handles;
             });
         }
@@ -98,10 +97,8 @@ namespace FenBrowser.Host.WebDriver
         {
             await RunOnMainThread(() =>
             {
-                Console.WriteLine($"[WD-Tab] CloseWindow before active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} count={_tabs.Tabs.Count}");
                 _ = GetActiveTabOrThrow();
                 _tabs.CloseActiveTab();
-                Console.WriteLine($"[WD-Tab] CloseWindow after active={_tabs.ActiveTab?.Id.ToString() ?? "<none>"} count={_tabs.Tabs.Count}");
             });
         }
 
@@ -410,7 +407,7 @@ namespace FenBrowser.Host.WebDriver
             });
         }
 
-        public async Task SendKeysAsync(object element, string text)
+        public async Task SendKeysAsync(object element, string text, bool strictFileInteractability = false)
         {
             await RunOnMainThread(async () =>
             {
@@ -420,7 +417,7 @@ namespace FenBrowser.Host.WebDriver
                     throw new InvalidOperationException("Element reference is invalid for current browsing context");
                 }
 
-                await host.SendKeysToElementAsync(id, text ?? string.Empty);
+                await host.SendKeysToElementAsync(id, text ?? string.Empty, strictFileInteractability);
             });
         }
 
@@ -453,7 +450,10 @@ namespace FenBrowser.Host.WebDriver
             return await RunOnMainThread(async () =>
             {
                 var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return null;
+                if (host == null)
+                {
+                    throw new InvalidOperationException("Current browsing context is no longer open");
+                }
                 return await host.ExecuteScriptAsync(script, args);
             });
         }
@@ -463,7 +463,10 @@ namespace FenBrowser.Host.WebDriver
             return await RunOnMainThread(async () =>
             {
                 var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null) return null;
+                if (host == null)
+                {
+                    throw new InvalidOperationException("Current browsing context is no longer open");
+                }
                 return await host.ExecuteAsyncScriptAsync(script, args, timeout);
             });
         }
@@ -567,30 +570,50 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task SwitchToWindowAsync(string windowHandle)
         {
-            await RunOnMainThread(() =>
+            var switched = await RunOnMainThread(() =>
             {
                 // Correlate WebDriver window handle to tab ID for physical tab switching
                 if (int.TryParse(windowHandle, out var tabId))
                 {
                     var tabs = _tabs.Tabs;
-                    var switched = false;
+                    var didSwitch = false;
                     for (int i = 0; i < tabs.Count; i++)
                     {
                         if (tabs[i].Id == tabId)
                         {
+                            if (i == _tabs.ActiveIndex)
+                            {
+                                return false;
+                            }
+
                             _tabs.SwitchToTab(i);
-                            switched = true;
+                            didSwitch = true;
                             break;
                         }
                     }
-                    if (!switched)
+                    if (!didSwitch)
                     {
                         throw new InvalidOperationException($"No such window handle in tab manager: {windowHandle}");
                     }
-                    return;
+                    return true;
                 }
 
                 throw new InvalidOperationException($"Invalid window handle format: {windowHandle}");
+            });
+
+            if (!switched)
+            {
+                return;
+            }
+
+            await RunOnMainThread(async () =>
+            {
+                // Switching top-level browsing context resets frame focus to top-level.
+                var host = _tabs.ActiveTab?.Browser?.Host;
+                if (host != null)
+                {
+                    await host.SwitchToFrameAsync(null);
+                }
             });
         }
 
@@ -739,6 +762,15 @@ namespace FenBrowser.Host.WebDriver
             });
         }
 
+        public void SetUnhandledPromptBehavior(string behavior)
+        {
+            RunOnMainThread(() =>
+            {
+                var host = _tabs.ActiveTab?.Browser?.Host;
+                host?.SetUnhandledPromptBehavior(behavior);
+            }).GetAwaiter().GetResult();
+        }
+
         public bool HasValidCurrentBrowsingContext()
         {
             var host = _tabs.ActiveTab?.Browser?.Host;
@@ -805,12 +837,19 @@ namespace FenBrowser.Host.WebDriver
 
         private Task<T> RunOnMainThread<T>(Func<T> func) => WindowManager.Instance.RunOnMainThread(func);
         private Task RunOnMainThread(Action action) => WindowManager.Instance.RunOnMainThread(action);
-        private Task RunOnMainThread(Func<Task> func) => WindowManager.Instance.RunOnMainThread(func);
+        private async Task RunOnMainThread(Func<Task> func)
+        {
+            var task = await WindowManager.Instance.RunOnMainThread(func).ConfigureAwait(false);
+            if (task != null)
+            {
+                await task.ConfigureAwait(false);
+            }
+        }
 
         private async Task<T> RunOnMainThread<T>(Func<Task<T>> func)
         {
-            var task = await WindowManager.Instance.RunOnMainThread(func);
-            return await task;
+            var task = await WindowManager.Instance.RunOnMainThread(func).ConfigureAwait(false);
+            return await task.ConfigureAwait(false);
         }
     }
 }

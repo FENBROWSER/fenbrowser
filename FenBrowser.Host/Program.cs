@@ -222,7 +222,6 @@ namespace FenBrowser.Host
             }
 
             bool requestedTooling =
-                string.Equals(args[0], "--test262", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(args[0], "--wpt", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(args[0], "--acid2", StringComparison.OrdinalIgnoreCase) ||
                 args.Any(a => a.StartsWith("--port=", StringComparison.OrdinalIgnoreCase)) ||
@@ -235,7 +234,7 @@ namespace FenBrowser.Host
 
             AttachConsole(ATTACH_PARENT_PROCESS);
             throw new InvalidOperationException(
-                "Tooling commands moved out of FenBrowser.Host. Use FenBrowser.Tooling for test262, wpt, acid2, webdriver, and debug-css workflows.");
+                "Tooling commands moved out of FenBrowser.Host. Use FenBrowser.Tooling for webdriver, acid2, and debug-css workflows.");
         }
 
         // Bridge for legacy static calls from DevTools or other components

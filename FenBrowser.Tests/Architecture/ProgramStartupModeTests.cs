@@ -8,7 +8,7 @@ public class ProgramStartupModeTests
     [Fact]
     public void ResolveStartupMode_RendererChildArg_TakesPrecedence()
     {
-        var mode = Program.ResolveStartupMode(new[] { "--renderer-child", "--test262", "input.js" }, _ => null);
+        var mode = Program.ResolveStartupMode(new[] { "--renderer-child", "--wpt", "input.js" }, _ => null);
 
         Assert.Equal(Program.StartupMode.RendererChild, mode);
     }
@@ -25,7 +25,7 @@ public class ProgramStartupModeTests
     [Fact]
     public void ResolveStartupMode_ToolingCli_NoLongerCreatesDedicatedStartupMode()
     {
-        var mode = Program.ResolveStartupMode(new[] { "--test262", "sample.js" }, _ => null);
+        var mode = Program.ResolveStartupMode(new[] { "--wpt", "sample.js" }, _ => null);
 
         Assert.Equal(Program.StartupMode.Browser, mode);
     }

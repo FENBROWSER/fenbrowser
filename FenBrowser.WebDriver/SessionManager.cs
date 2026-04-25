@@ -170,6 +170,7 @@ namespace FenBrowser.WebDriver
         // Element cache for references
         private readonly ConcurrentDictionary<string, WeakReference<object>> _elementCache = new();
         private readonly ConcurrentDictionary<string, ElementReferenceKind> _elementReferenceKinds = new();
+        private readonly ConcurrentDictionary<string, string> _elementWindowHandles = new(StringComparer.Ordinal);
         private readonly ConditionalWeakTable<object, ElementReferenceToken> _elementIdsByObject = new();
         private readonly ConcurrentDictionary<string, string> _elementRefsByNativeString = new(StringComparer.Ordinal);
         private readonly object _elementRegistrationLock = new();
@@ -217,12 +218,20 @@ namespace FenBrowser.WebDriver
                 if (_elementIdsByObject.TryGetValue(element, out var existingToken))
                 {
                     _elementReferenceKinds.TryAdd(existingToken.Id, kind);
+                    if (!string.IsNullOrEmpty(CurrentWindowHandle))
+                    {
+                        _elementWindowHandles.TryAdd(existingToken.Id, CurrentWindowHandle);
+                    }
                     return existingToken.Id;
                 }
 
                 var id = $"{_elementIdPrefix}-e{Interlocked.Increment(ref _elementCounter)}";
                 _elementCache[id] = new WeakReference<object>(element);
                 _elementReferenceKinds[id] = kind;
+                if (!string.IsNullOrEmpty(CurrentWindowHandle))
+                {
+                    _elementWindowHandles[id] = CurrentWindowHandle;
+                }
                 _elementIdsByObject.Add(element, new ElementReferenceToken(id));
                 if (element is string nativeString && !string.IsNullOrEmpty(nativeString))
                 {
@@ -270,6 +279,37 @@ namespace FenBrowser.WebDriver
 
             return false;
         }
+
+        public bool TryGetReferenceKind(string referenceId, out ElementReferenceKind kind)
+        {
+            kind = ElementReferenceKind.Element;
+            if (string.IsNullOrWhiteSpace(referenceId))
+            {
+                return false;
+            }
+
+            return _elementReferenceKinds.TryGetValue(referenceId, out kind);
+        }
+
+        public IReadOnlyDictionary<string, string> GetNativeReferenceMapSnapshot()
+        {
+            return new Dictionary<string, string>(_elementRefsByNativeString, StringComparer.Ordinal);
+        }
+
+        public void AssociateNativeReference(string nativeString, string referenceId)
+        {
+            if (string.IsNullOrWhiteSpace(nativeString) || string.IsNullOrWhiteSpace(referenceId))
+            {
+                return;
+            }
+
+            if (!_elementCache.ContainsKey(referenceId))
+            {
+                return;
+            }
+
+            _elementRefsByNativeString[nativeString] = referenceId;
+        }
         
         /// <summary>
         /// Get a cached element by ID.
@@ -283,13 +323,10 @@ namespace FenBrowser.WebDriver
 
             if (!elementId.StartsWith($"{_elementIdPrefix}-e", StringComparison.Ordinal))
             {
-                throw new WebDriverException(
-                    ErrorCodes.NoSuchElement,
-                    "Element reference does not belong to current session",
-                    SecurityAudit.CreateFailureData(
-                        SecurityBlockReasons.SessionIsolationViolation,
-                        "Attempted to dereference an element ID owned by another session",
-                        Id));
+                throw BuildNoSuchReferenceException(expectedKind, SecurityAudit.CreateFailureData(
+                    SecurityBlockReasons.SessionIsolationViolation,
+                    "Attempted to dereference an element ID owned by another session",
+                    Id));
             }
 
             if (expectedKind.HasValue && _elementReferenceKinds.TryGetValue(elementId, out var actualKind) &&
@@ -313,6 +350,24 @@ namespace FenBrowser.WebDriver
                 throw new WebDriverException(ErrorCodes.NoSuchElement, $"Element not found: {elementId}");
             }
 
+            if (expectedKind == ElementReferenceKind.Element &&
+                !string.IsNullOrEmpty(CurrentWindowHandle) &&
+                _elementWindowHandles.TryGetValue(elementId, out var owningWindow) &&
+                !string.IsNullOrEmpty(owningWindow) &&
+                !string.Equals(owningWindow, CurrentWindowHandle, StringComparison.Ordinal))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchElement, "Element not found");
+            }
+
+            if (expectedKind == ElementReferenceKind.ShadowRoot &&
+                !string.IsNullOrEmpty(CurrentWindowHandle) &&
+                _elementWindowHandles.TryGetValue(elementId, out var shadowOwningWindow) &&
+                !string.IsNullOrEmpty(shadowOwningWindow) &&
+                !string.Equals(shadowOwningWindow, CurrentWindowHandle, StringComparison.Ordinal))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Shadow root not found");
+            }
+
             if (_elementCache.TryGetValue(elementId, out var weakRef))
             {
                 if (weakRef.TryGetTarget(out var element))
@@ -321,20 +376,42 @@ namespace FenBrowser.WebDriver
                 // Stale reference
                 _elementCache.TryRemove(elementId, out _);
                 _elementReferenceKinds.TryRemove(elementId, out _);
+                _elementWindowHandles.TryRemove(elementId, out _);
                 throw new WebDriverException(
                     ErrorCodes.StaleElementReference,
                     "Element is no longer attached to the DOM");
             }
             
-            throw new WebDriverException(
-                ErrorCodes.NoSuchElement,
-                $"Element not found: {elementId}");
+            throw BuildNoSuchReferenceException(expectedKind);
+        }
+
+        private static WebDriverException BuildNoSuchReferenceException(
+            ElementReferenceKind? expectedKind,
+            object errorData = null)
+        {
+            if (expectedKind == ElementReferenceKind.ShadowRoot)
+            {
+                return new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Shadow root not found", errorData);
+            }
+
+            if (expectedKind == ElementReferenceKind.Frame)
+            {
+                return new WebDriverException(ErrorCodes.NoSuchFrame, "Frame not found", errorData);
+            }
+
+            if (expectedKind == ElementReferenceKind.Window)
+            {
+                return new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open", errorData);
+            }
+
+            return new WebDriverException(ErrorCodes.NoSuchElement, "Element not found", errorData);
         }
         
         public void Dispose()
         {
             _elementCache.Clear();
             _elementReferenceKinds.Clear();
+            _elementWindowHandles.Clear();
             _elementRefsByNativeString.Clear();
             WindowHandles.Clear();
         }

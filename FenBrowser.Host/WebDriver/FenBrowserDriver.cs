@@ -167,10 +167,10 @@ namespace FenBrowser.Host.WebDriver
             await Host.ClearElementAsync(id);
         }
 
-        public async Task SendKeysAsync(object element, string text)
+        public async Task SendKeysAsync(object element, string text, bool strictFileInteractability = false)
         {
             if (Host == null || element is not string id) return;
-            await Host.SendKeysToElementAsync(id, text ?? string.Empty);
+            await Host.SendKeysToElementAsync(id, text ?? string.Empty, strictFileInteractability);
         }
 
         public async Task<string> GetElementAttributeAsync(object element, string name)

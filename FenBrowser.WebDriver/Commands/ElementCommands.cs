@@ -23,6 +23,8 @@ namespace FenBrowser.WebDriver.Commands
         private const string WebDriverShadowTokenPrefix = "__fen_wd_sr__:";
         private const string WebDriverFrameTokenPrefix = "__fen_wd_fr__:";
         private const string WebDriverWindowTokenPrefix = "__fen_wd_win__:";
+        private const int NullImplicitWaitFallbackMs = 0;
+        private static readonly TimeSpan FindPollInterval = TimeSpan.FromMilliseconds(50);
         private readonly CommandHandler _handler;
         
         // Supported locator strategies per spec
@@ -54,7 +56,9 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.NoSuchElement, "No element found");
             }
             
-            var element = await _handler.Browser.FindElementAsync(strategy, selector);
+            var element = await FindElementWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementAsync(strategy, selector));
             
             if (element == null)
             {
@@ -62,7 +66,7 @@ namespace FenBrowser.WebDriver.Commands
                     $"No element found using {strategy}: {selector}");
             }
             
-            var elementId = session.RegisterElement(element);
+            var elementId = await RegisterElementReferenceAsync(session, element);
             return WebDriverResponse.Success(new ElementReference(elementId));
         }
         
@@ -80,12 +84,14 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             
-            var elements = await _handler.Browser.FindElementsAsync(strategy, selector);
+            var elements = await FindElementsWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementsAsync(strategy, selector));
             
             var refs = new List<ElementReference>();
             foreach (var element in elements ?? Array.Empty<object>())
             {
-                var elementId = session.RegisterElement(element);
+                var elementId = await RegisterElementReferenceAsync(session, element);
                 refs.Add(new ElementReference(elementId));
             }
             
@@ -95,40 +101,44 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> FindElementFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
             var (strategy, selector) = ParseLocator(body);
+            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
 
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.NoSuchElement, "No element found");
             }
 
-            var element = await _handler.Browser.FindElementAsync(strategy, selector, parent);
+            var element = await FindElementWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementAsync(strategy, selector, parent));
             if (element == null)
             {
                 throw new WebDriverException(ErrorCodes.NoSuchElement, $"No element found using {strategy}: {selector}");
             }
 
-            var elementId = session.RegisterElement(element);
+            var elementId = await RegisterElementReferenceAsync(session, element);
             return WebDriverResponse.Success(new ElementReference(elementId));
         }
 
         public async Task<WebDriverResponse> FindElementsFromElementAsync(string sessionId, string parentElementId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
             var (strategy, selector) = ParseLocator(body);
+            var parent = session.GetElement(parentElementId, Session.ElementReferenceKind.Element);
 
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
-            var elements = await _handler.Browser.FindElementsAsync(strategy, selector, parent);
+            var elements = await FindElementsWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementsAsync(strategy, selector, parent));
             var refs = new List<ElementReference>();
             foreach (var element in elements ?? Array.Empty<object>())
             {
-                var elementId = session.RegisterElement(element);
+                var elementId = await RegisterElementReferenceAsync(session, element);
                 refs.Add(new ElementReference(elementId));
             }
 
@@ -137,6 +147,11 @@ namespace FenBrowser.WebDriver.Commands
 
         public async Task<WebDriverResponse> GetShadowRootAsync(string sessionId, string elementId)
         {
+            if (_handler.Browser != null && !_handler.Browser.HasValidCurrentBrowsingContext())
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
+
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
 
@@ -158,40 +173,44 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> FindElementFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
             var (strategy, selector) = ParseLocator(body);
+            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
 
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.NoSuchElement, "No element found");
             }
 
-            var element = await _handler.Browser.FindElementAsync(strategy, selector, shadowRoot);
+            var element = await FindElementWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementAsync(strategy, selector, shadowRoot));
             if (element == null)
             {
                 throw new WebDriverException(ErrorCodes.NoSuchElement, $"No element found using {strategy}: {selector}");
             }
 
-            var elementId = session.RegisterElement(element);
+            var elementId = await RegisterElementReferenceAsync(session, element);
             return WebDriverResponse.Success(new ElementReference(elementId));
         }
 
         public async Task<WebDriverResponse> FindElementsFromShadowRootAsync(string sessionId, string shadowId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
             var (strategy, selector) = ParseLocator(body);
+            var shadowRoot = session.GetElement(shadowId, Session.ElementReferenceKind.ShadowRoot);
 
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
-            var elements = await _handler.Browser.FindElementsAsync(strategy, selector, shadowRoot);
+            var elements = await FindElementsWithImplicitWaitAsync(
+                session,
+                () => _handler.Browser.FindElementsAsync(strategy, selector, shadowRoot));
             var refs = new List<ElementReference>();
             foreach (var element in elements ?? Array.Empty<object>())
             {
-                var elementId = session.RegisterElement(element);
+                var elementId = await RegisterElementReferenceAsync(session, element);
                 refs.Add(new ElementReference(elementId));
             }
 
@@ -212,7 +231,7 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.NoSuchElement, "No active element");
             }
 
-            var elementId = session.RegisterElement(element);
+            var elementId = await RegisterElementReferenceAsync(session, element);
             return WebDriverResponse.Success(new ElementReference(elementId));
         }
         
@@ -242,7 +261,6 @@ namespace FenBrowser.WebDriver.Commands
         {
             var session = _handler.GetSession(sessionId);
             var element = session.GetElement(elementId, Session.ElementReferenceKind.Element);
-            Console.WriteLine($"[WD-ElementClick] ref={elementId} type={element?.GetType().Name ?? "null"} value={element?.ToString() ?? "<null>"}");
             
             if (_handler.Browser == null)
             {
@@ -266,15 +284,20 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Text is required");
             }
-            
-            var text = textElement.GetString() ?? "";
+
+            if (textElement.ValueKind != JsonValueKind.String)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Text must be a string");
+            }
+
+            var text = textElement.GetString() ?? string.Empty;
             
             if (_handler.Browser == null)
             {
                 throw new WebDriverException(ErrorCodes.ElementNotInteractable, "Browser not connected");
             }
-            
-            await _handler.Browser.SendKeysAsync(element, text);
+
+            await _handler.Browser.SendKeysAsync(element, text, session.Capabilities?.StrictFileInteractability == true);
             return WebDriverResponse.Success(null);
         }
         
@@ -501,7 +524,7 @@ namespace FenBrowser.WebDriver.Commands
         
         private (string strategy, string selector) ParseLocator(JsonElement? body)
         {
-            if (!body.HasValue)
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object)
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Locator is required");
             }
@@ -516,12 +539,22 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Locator value is required");
             }
             
+            if (usingElement.ValueKind != JsonValueKind.String)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Locator strategy must be a string");
+            }
+
+            if (valueElement.ValueKind != JsonValueKind.String)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Locator value must be a string");
+            }
+
             var strategy = usingElement.GetString();
             var selector = valueElement.GetString();
             
             if (string.IsNullOrEmpty(strategy) || !SupportedStrategies.Contains(strategy))
             {
-                throw new WebDriverException(ErrorCodes.InvalidSelector, 
+                throw new WebDriverException(ErrorCodes.InvalidArgument,
                     $"Invalid locator strategy: {strategy}");
             }
             
@@ -531,6 +564,181 @@ namespace FenBrowser.WebDriver.Commands
             }
             
             return (strategy, selector);
+        }
+
+        private async Task<string> RegisterElementReferenceAsync(Session session, object element)
+        {
+            if (element is not string nativeId || string.IsNullOrWhiteSpace(nativeId))
+            {
+                return session.RegisterElement(element);
+            }
+
+            if (session.TryGetElementReferenceId(nativeId, out var existingRef))
+            {
+                return existingRef;
+            }
+
+            var equivalentRef = await TryFindEquivalentElementReferenceAsync(session, nativeId);
+            if (!string.IsNullOrWhiteSpace(equivalentRef))
+            {
+                session.AssociateNativeReference(nativeId, equivalentRef);
+                return equivalentRef;
+            }
+
+            return session.RegisterElement(nativeId);
+        }
+
+        private async Task<string> TryFindEquivalentElementReferenceAsync(Session session, string nativeId)
+        {
+            if (_handler.Browser == null)
+            {
+                return null;
+            }
+
+            var target = await BuildFingerprintAsync(nativeId);
+            if (!target.IsValid)
+            {
+                return null;
+            }
+
+            var snapshot = session.GetNativeReferenceMapSnapshot();
+            foreach (var kvp in snapshot)
+            {
+                var candidateNativeId = kvp.Key;
+                var candidateRef = kvp.Value;
+                if (string.Equals(candidateNativeId, nativeId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var candidate = await BuildFingerprintAsync(candidateNativeId);
+                if (!candidate.IsValid)
+                {
+                    continue;
+                }
+
+                if (target.Equals(candidate))
+                {
+                    try
+                    {
+                        _ = session.GetElement(candidateRef, Session.ElementReferenceKind.Element);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    return candidateRef;
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<ElementFingerprint> BuildFingerprintAsync(string nativeId)
+        {
+            try
+            {
+                var tag = await _handler.Browser.GetElementTagNameAsync(nativeId) ?? string.Empty;
+                var text = await _handler.Browser.GetElementTextAsync(nativeId) ?? string.Empty;
+                var idAttr = await _handler.Browser.GetElementAttributeAsync(nativeId, "id") ?? string.Empty;
+                var hrefAttr = await _handler.Browser.GetElementAttributeAsync(nativeId, "href") ?? string.Empty;
+                return new ElementFingerprint(tag, text, idAttr, hrefAttr);
+            }
+            catch
+            {
+                return ElementFingerprint.Invalid;
+            }
+        }
+
+        private readonly struct ElementFingerprint
+        {
+            public static ElementFingerprint Invalid => new ElementFingerprint(string.Empty, string.Empty, string.Empty, string.Empty);
+
+            public ElementFingerprint(string tag, string text, string idAttr, string hrefAttr)
+            {
+                Tag = tag ?? string.Empty;
+                Text = text ?? string.Empty;
+                IdAttr = idAttr ?? string.Empty;
+                HrefAttr = hrefAttr ?? string.Empty;
+            }
+
+            public string Tag { get; }
+            public string Text { get; }
+            public string IdAttr { get; }
+            public string HrefAttr { get; }
+            public bool IsValid => !string.IsNullOrWhiteSpace(Tag);
+
+            public bool Equals(ElementFingerprint other)
+            {
+                return string.Equals(Tag, other.Tag, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(Text, other.Text, StringComparison.Ordinal) &&
+                       string.Equals(IdAttr, other.IdAttr, StringComparison.Ordinal) &&
+                       string.Equals(HrefAttr, other.HrefAttr, StringComparison.Ordinal);
+            }
+        }
+
+        private async Task<object> FindElementWithImplicitWaitAsync(
+            Session session,
+            Func<Task<object>> findOperation)
+        {
+            var timeoutMs = ResolveImplicitTimeoutMs(session);
+            var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+            while (true)
+            {
+                var element = await findOperation();
+                if (element != null)
+                {
+                    return element;
+                }
+
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    return null;
+                }
+
+                await Task.Delay(FindPollInterval).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<object[]> FindElementsWithImplicitWaitAsync(
+            Session session,
+            Func<Task<object[]>> findOperation)
+        {
+            var timeoutMs = ResolveImplicitTimeoutMs(session);
+            var deadlineUtc = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+
+            while (true)
+            {
+                var elements = await findOperation();
+                if (elements != null && elements.Length > 0)
+                {
+                    return elements;
+                }
+
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    return Array.Empty<object>();
+                }
+
+                await Task.Delay(FindPollInterval).ConfigureAwait(false);
+            }
+        }
+
+        private static int ResolveImplicitTimeoutMs(Session session)
+        {
+            if (session?.Timeouts == null)
+            {
+                return 0;
+            }
+
+            if (session.Timeouts.Implicit.HasValue)
+            {
+                return Math.Max(0, session.Timeouts.Implicit.Value);
+            }
+
+            return NullImplicitWaitFallbackMs;
         }
     }
 }

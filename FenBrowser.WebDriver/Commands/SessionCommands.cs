@@ -122,17 +122,17 @@ namespace FenBrowser.WebDriver.Commands
             if (element.ValueKind == JsonValueKind.Null)
                 return null;
 
-            if (element.ValueKind != JsonValueKind.Number || !element.TryGetInt64(out var rawValue))
+            if (element.ValueKind != JsonValueKind.Number || !element.TryGetDouble(out var rawValue))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer or null");
             }
 
-            if (rawValue < 0 || rawValue > int.MaxValue)
+            if (double.IsNaN(rawValue) || double.IsInfinity(rawValue) || rawValue < 0 || rawValue > int.MaxValue)
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must stay within [0, {int.MaxValue}]");
             }
 
-            return (int)rawValue;
+            return (int)Math.Floor(rawValue);
         }
     }
 }

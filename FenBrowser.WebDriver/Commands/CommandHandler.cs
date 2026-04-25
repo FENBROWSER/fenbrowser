@@ -179,7 +179,6 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> ExecuteAsync(RouteMatch match, string body)
         {
             var command = match.Command;
-            Console.WriteLine($"[WD-Cmd] {command}");
             var sessionId = match.GetSessionId();
 
             // Ensure per-session security context exists for all session-scoped commands.
@@ -196,7 +195,9 @@ namespace FenBrowser.WebDriver.Commands
             {
                 json = JsonSerializer.Deserialize<JsonElement>(body);
             }
+            await AlignBrowserToSessionWindowAsync(command, sessionId).ConfigureAwait(false);
             EnsureCommandPreconditions(command, sessionId);
+            await EnforceUnhandledPromptBehaviorAsync(command, sessionId);
 
             try
             {
@@ -307,6 +308,10 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, ex.Message);
             }
+            catch (InvalidOperationException ex) when (LooksLikeInvalidArgument(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, ex.Message);
+            }
             catch (NotSupportedException ex)
             {
                 throw new WebDriverException(ErrorCodes.UnsupportedOperation, ex.Message);
@@ -315,13 +320,69 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
             }
+            catch (InvalidOperationException ex) when (LooksLikeInvalidSelector(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidSelector, "Invalid selector");
+            }
+            catch (InvalidOperationException ex) when (LooksLikeNoSuchFrame(ex))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchFrame, "Frame not found");
+            }
+            catch (InvalidOperationException ex) when (LooksLikeDetachedShadowRoot(ex))
+            {
+                throw new WebDriverException(ErrorCodes.DetachedShadowRoot, "Shadow root is detached");
+            }
+            catch (InvalidOperationException ex) when (LooksLikeNoSuchShadowRoot(ex))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Shadow root not found");
+            }
             catch (InvalidOperationException ex) when (LooksLikeStaleElement(ex))
             {
                 throw new WebDriverException(ErrorCodes.StaleElementReference, "Element is no longer attached to the DOM");
             }
+            catch (InvalidOperationException ex) when (LooksLikeElementNotInteractable(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.ElementNotInteractable, "Element is not interactable");
+            }
+            catch (InvalidOperationException ex) when (LooksLikeInvalidElementState(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidElementState, "Element is in an invalid state");
+            }
             catch (InvalidOperationException ex) when (LooksLikeNoSuchElement(ex))
             {
                 throw new WebDriverException(ErrorCodes.NoSuchElement, ex.Message);
+            }
+            catch (Exception ex) when (LooksLikeNoSuchWindowMessage(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
+            catch (Exception ex) when (LooksLikeInvalidSelector(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidSelector, "Invalid selector");
+            }
+            catch (Exception ex) when (LooksLikeNoSuchFrameMessage(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchFrame, "Frame not found");
+            }
+            catch (Exception ex) when (LooksLikeDetachedShadowRootMessage(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.DetachedShadowRoot, "Shadow root is detached");
+            }
+            catch (Exception ex) when (LooksLikeNoSuchShadowRootMessage(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchShadowRoot, "Shadow root not found");
+            }
+            catch (Exception ex) when (LooksLikeStaleElementMessage(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.StaleElementReference, "Element is no longer attached to the DOM");
+            }
+            catch (Exception ex) when (LooksLikeElementNotInteractable(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.ElementNotInteractable, "Element is not interactable");
+            }
+            catch (Exception ex) when (LooksLikeInvalidElementState(ex.Message))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidElementState, "Element is in an invalid state");
             }
         }
         
@@ -387,7 +448,7 @@ namespace FenBrowser.WebDriver.Commands
             var cookie = await Browser.GetNamedCookieAsync(name);
             if (cookie == null)
             {
-                throw new WebDriverException(ErrorCodes.NoSuchElement, $"Cookie not found: {name}");
+                throw new WebDriverException(ErrorCodes.NoSuchCookie, $"Cookie not found: {name}");
             }
 
             return WebDriverResponse.Success(cookie);
@@ -700,6 +761,83 @@ namespace FenBrowser.WebDriver.Commands
             return response;
         }
 
+        private async Task AlignBrowserToSessionWindowAsync(string command, string sessionId)
+        {
+            if (Browser == null || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return;
+            }
+
+            // Window-management commands own their own switching semantics.
+            if (command is "GetStatus" or "NewSession" or "DeleteSession" or "SwitchToWindow" or "NewWindow" or "GetWindowHandles")
+            {
+                return;
+            }
+
+            if (!_topLevelContextCommands.Contains(command) && !_sessionScopedCommands.Contains(command))
+            {
+                return;
+            }
+
+            var session = _sessionManager.GetSession(sessionId);
+            if (session == null || string.IsNullOrWhiteSpace(session.CurrentWindowHandle))
+            {
+                return;
+            }
+
+            // Keep browser-side active tab aligned to session-selected handle only when needed.
+            // Blindly switching on every command resets frame selection and breaks context semantics.
+            var browserCurrentHandle = await Browser.GetWindowHandleAsync().ConfigureAwait(false);
+            var browserHandles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))
+                .Where(handle => !string.IsNullOrWhiteSpace(handle))
+                .ToList();
+
+            if (browserHandles.Count == 0)
+            {
+                return;
+            }
+
+            session.WindowHandles.RemoveAll(handle => !browserHandles.Contains(handle));
+            foreach (var handle in browserHandles)
+            {
+                if (!session.WindowHandles.Contains(handle))
+                {
+                    session.WindowHandles.Add(handle);
+                }
+            }
+
+            if (!browserHandles.Contains(session.CurrentWindowHandle))
+            {
+                // Keep session-selected handle untouched so command preconditions surface
+                // a deterministic `no such window` for closed/invalid contexts.
+                return;
+            }
+
+            if (string.Equals(browserCurrentHandle, session.CurrentWindowHandle, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (session.WindowHandles != null && session.WindowHandles.Contains(session.CurrentWindowHandle))
+            {
+                try
+                {
+                    await Browser.SwitchToWindowAsync(session.CurrentWindowHandle).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex) when (LooksLikeNoSuchWindow(ex))
+                {
+                    // Window lifecycle can race with parallel close/new operations.
+                    // Keep session state aligned with currently-open handles instead of surfacing unknown error.
+                    var refreshedHandles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))
+                        .Where(handle => !string.IsNullOrWhiteSpace(handle))
+                        .ToList();
+                    session.WindowHandles.Clear();
+                    session.WindowHandles.AddRange(refreshedHandles);
+                    session.CurrentWindowHandle = refreshedHandles.FirstOrDefault();
+                }
+            }
+        }
+
         private async Task<WebDriverResponse> CloseWindowWithSessionLifecycleAsync(string sessionId)
         {
             var response = await _windowCommands.CloseWindowAsync(sessionId);
@@ -815,6 +953,18 @@ namespace FenBrowser.WebDriver.Commands
 
         public void EnsureTopLevelBrowsingContext(string sessionId)
         {
+            EnsureTopLevelWindowHandleOpen(sessionId);
+
+            if (Browser != null && !Browser.HasValidCurrentBrowsingContext())
+            {
+                throw new WebDriverException(
+                    ErrorCodes.NoSuchWindow,
+                    "Current browsing context is no longer open");
+            }
+        }
+
+        private void EnsureTopLevelWindowHandleOpen(string sessionId)
+        {
             var session = _sessionManager.GetSession(sessionId);
             if (session == null)
             {
@@ -831,13 +981,6 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(
                     ErrorCodes.NoSuchWindow,
                     $"Current top-level browsing context is not open: {session.CurrentWindowHandle}");
-            }
-
-            if (Browser != null && !Browser.HasValidCurrentBrowsingContext())
-            {
-                throw new WebDriverException(
-                    ErrorCodes.NoSuchWindow,
-                    "Current browsing context is no longer open");
             }
         }
 
@@ -859,21 +1002,86 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_topLevelContextCommands.Contains(command))
             {
-                EnsureTopLevelBrowsingContext(sessionId);
+                if (command == "CloseWindow")
+                {
+                    EnsureTopLevelWindowHandleOpen(sessionId);
+                }
+                else
+                {
+                    EnsureTopLevelBrowsingContext(sessionId);
+                }
             }
+        }
+
+        private async Task EnforceUnhandledPromptBehaviorAsync(string command, string sessionId)
+        {
+            if (Browser == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                return;
+            }
+
+            // Alert commands themselves are exempt from prompt-interruption handling.
+            if (command is "DismissAlert" or "AcceptAlert" or "GetAlertText" or "SendAlertText")
+            {
+                return;
+            }
+
+            var session = _sessionManager.GetSession(sessionId);
+            if (session == null)
+            {
+                return;
+            }
+
+            var behavior = Capabilities.NormalizePromptBehavior(session.Capabilities?.UnhandledPromptBehavior);
+            Browser.SetUnhandledPromptBehavior(behavior);
+
+            if (!await Browser.HasAlertAsync().ConfigureAwait(false))
+            {
+                return;
+            }
+
+            var promptText = await Browser.GetAlertTextAsync().ConfigureAwait(false) ?? string.Empty;
+
+            switch (behavior)
+            {
+                case "dismiss":
+                    await Browser.DismissAlertAsync().ConfigureAwait(false);
+                    return;
+                case "accept":
+                    await Browser.AcceptAlertAsync().ConfigureAwait(false);
+                    return;
+                case "dismiss and notify":
+                    await Browser.DismissAlertAsync().ConfigureAwait(false);
+                    break;
+                case "accept and notify":
+                    await Browser.AcceptAlertAsync().ConfigureAwait(false);
+                    break;
+                case "ignore":
+                    break;
+                default:
+                    await Browser.DismissAlertAsync().ConfigureAwait(false);
+                    break;
+            }
+
+            throw new WebDriverException(
+                ErrorCodes.UnexpectedAlertOpen,
+                "Unexpected alert open",
+                new { text = promptText });
         }
 
         private static bool LooksLikeNoSuchWindow(InvalidOperationException ex)
         {
-            return ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   ex.Message.IndexOf("window handle", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   ex.Message.IndexOf("active tab", StringComparison.OrdinalIgnoreCase) >= 0;
+            return LooksLikeNoSuchWindowMessage(ex.Message);
         }
 
         private static bool LooksLikeStaleElement(InvalidOperationException ex)
         {
-            return ex.Message.IndexOf("stale element", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   ex.Message.IndexOf("detached", StringComparison.OrdinalIgnoreCase) >= 0;
+            return LooksLikeStaleElementMessage(ex.Message);
         }
 
         private static bool LooksLikeNoSuchElement(InvalidOperationException ex)
@@ -881,6 +1089,80 @@ namespace FenBrowser.WebDriver.Commands
             return ex.Message.IndexOf("no such element", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    ex.Message.IndexOf("element not found", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    ex.Message.IndexOf("invalid element reference", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeNoSuchFrame(InvalidOperationException ex)
+        {
+            return LooksLikeNoSuchFrameMessage(ex.Message);
+        }
+
+        private static bool LooksLikeDetachedShadowRoot(InvalidOperationException ex)
+        {
+            return LooksLikeDetachedShadowRootMessage(ex.Message);
+        }
+
+        private static bool LooksLikeNoSuchShadowRoot(InvalidOperationException ex)
+        {
+            return LooksLikeNoSuchShadowRootMessage(ex.Message);
+        }
+
+        private static bool LooksLikeNoSuchWindowMessage(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   (message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("window handle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("active tab", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("no such window", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool LooksLikeStaleElementMessage(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   (message.IndexOf("stale element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("invalid element reference", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool LooksLikeNoSuchFrameMessage(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   (message.IndexOf("no such frame", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("frame not found", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool LooksLikeDetachedShadowRootMessage(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("detached shadow root", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeNoSuchShadowRootMessage(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("no such shadow root", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeInvalidSelector(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("invalid selector", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeInvalidArgument(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("invalid argument", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeElementNotInteractable(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("element not interactable", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool LooksLikeInvalidElementState(string message)
+        {
+            return !string.IsNullOrWhiteSpace(message) &&
+                   message.IndexOf("invalid element state", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void EnsureSessionStorageIsolationForCookieCommands(string sessionId)
@@ -982,7 +1264,7 @@ namespace FenBrowser.WebDriver.Commands
         Task<string> GetElementComputedLabelAsync(object element);
         Task ClickElementAsync(object element);
         Task ClearElementAsync(object element);
-        Task SendKeysAsync(object element, string text);
+        Task SendKeysAsync(object element, string text, bool strictFileInteractability = false);
         Task<string> GetElementAttributeAsync(object element, string name);
         
         Task<string> GetPageSourceAsync();
@@ -1017,6 +1299,7 @@ namespace FenBrowser.WebDriver.Commands
         Task AcceptAlertAsync();
         Task<string> GetAlertTextAsync();
         Task SendAlertTextAsync(string text);
+        void SetUnhandledPromptBehavior(string behavior) { }
         bool HasValidCurrentBrowsingContext();
         bool SupportsSessionStorageIsolation() => false;
     }

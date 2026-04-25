@@ -71,24 +71,25 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(previousCurrentHandle))
-            {
-                // Preserve an intentionally invalid current context (e.g. after close).
-                session.CurrentWindowHandle = null;
-                session.WindowStateInitialized = true;
-                return;
-            }
-
-            if (session.WindowHandles.Contains(previousCurrentHandle))
+            if (!string.IsNullOrWhiteSpace(previousCurrentHandle) &&
+                session.WindowHandles.Contains(previousCurrentHandle))
             {
                 session.CurrentWindowHandle = previousCurrentHandle;
                 session.WindowStateInitialized = true;
                 return;
             }
 
-            // Preserve stale selection so subsequent commands surface no such window
-            // until client explicitly switches to a valid context.
-            session.CurrentWindowHandle = previousCurrentHandle;
+            // Preserve the selected handle even when it is now closed.
+            // WebDriver commands that require a current top-level context must then fail
+            // with "no such window" until the client explicitly selects another handle.
+            if (!string.IsNullOrWhiteSpace(previousCurrentHandle))
+            {
+                session.CurrentWindowHandle = previousCurrentHandle;
+                session.WindowStateInitialized = true;
+                return;
+            }
+
+            session.CurrentWindowHandle = session.WindowHandles.FirstOrDefault();
             session.WindowStateInitialized = true;
             return;
         }
@@ -138,10 +139,10 @@ namespace FenBrowser.WebDriver.Commands
                 await _handler.Browser.CloseWindowAsync();
                 await SynchronizeWindowStateAsync(session);
 
-                // Closing the selected context must invalidate current selection until client explicitly switches.
                 if (!string.IsNullOrWhiteSpace(closedHandle) &&
                     !session.WindowHandles.Contains(closedHandle))
                 {
+                    // Keep the now-closed handle selected until client switches explicitly.
                     session.CurrentWindowHandle = closedHandle;
                 }
             }

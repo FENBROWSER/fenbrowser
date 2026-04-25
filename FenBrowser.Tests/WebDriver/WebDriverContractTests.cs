@@ -401,7 +401,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task<string> GetElementComputedLabelAsync(object element) => Task.FromResult(string.Empty);
             public Task ClickElementAsync(object element) => Task.CompletedTask;
             public Task ClearElementAsync(object element) => Task.CompletedTask;
-            public Task SendKeysAsync(object element, string text) => Task.CompletedTask;
+            public Task SendKeysAsync(object element, string text, bool strictFileInteractability = false) => Task.CompletedTask;
             public Task<string> GetElementAttributeAsync(object element, string name) => Task.FromResult(string.Empty);
             public Task<string> GetPageSourceAsync() => Task.FromResult("<html></html>");
 
@@ -487,7 +487,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task<string> GetElementComputedLabelAsync(object element) => Task.FromResult(string.Empty);
             public Task ClickElementAsync(object element) => Task.CompletedTask;
             public Task ClearElementAsync(object element) => Task.CompletedTask;
-            public Task SendKeysAsync(object element, string text) => Task.CompletedTask;
+            public Task SendKeysAsync(object element, string text, bool strictFileInteractability = false) => Task.CompletedTask;
             public Task<string> GetElementAttributeAsync(object element, string name) => Task.FromResult(string.Empty);
             public Task<string> GetPageSourceAsync() => Task.FromResult("<html></html>");
             public Task<object> ExecuteScriptAsync(string script, object[] args) => Task.FromResult<object>(null);
@@ -563,7 +563,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task<string> GetElementComputedLabelAsync(object element) => Task.FromResult(string.Empty);
             public Task ClickElementAsync(object element) => Task.CompletedTask;
             public Task ClearElementAsync(object element) => Task.CompletedTask;
-            public Task SendKeysAsync(object element, string text) => Task.CompletedTask;
+            public Task SendKeysAsync(object element, string text, bool strictFileInteractability = false) => Task.CompletedTask;
             public Task<string> GetElementAttributeAsync(object element, string name) => Task.FromResult(string.Empty);
             public Task<string> GetPageSourceAsync() => Task.FromResult("<html></html>");
             public Task<object> ExecuteScriptAsync(string script, object[] args) => Task.FromResult<object>(null);
