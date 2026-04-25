@@ -127,8 +127,10 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var el in toUpdate)
             {
                 el?.MarkDirty(InvalidationKind.Style);
-                OnStateChanged?.Invoke(el);
             }
+
+            if (toUpdate.Count > 0)
+                OnStateChanged?.Invoke(element);
         }
         
         /// <summary>
@@ -198,8 +200,10 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var el in toUpdate)
             {
                 el?.MarkDirty(InvalidationKind.Style);
-                OnStateChanged?.Invoke(el);
             }
+
+            if (toUpdate.Count > 0)
+                OnStateChanged?.Invoke(element);
         }
         
         /// <summary>

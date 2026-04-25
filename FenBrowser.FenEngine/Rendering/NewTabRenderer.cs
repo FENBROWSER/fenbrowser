@@ -87,6 +87,7 @@ namespace FenBrowser.FenEngine.Rendering
             margin-left: 60px;
             padding: 12px;
             box-sizing: border-box;
+            overflow: hidden;
             border-radius: 30px;
             border: 1px solid #334155;
             background: rgba(15, 23, 42, 0.74);
@@ -95,6 +96,8 @@ namespace FenBrowser.FenEngine.Rendering
         .search-box {{
             display: block;
             width: 100%;
+            max-width: 100%;
+            margin: 0;
             height: 58px;
             padding: 0 20px;
             line-height: 56px;
