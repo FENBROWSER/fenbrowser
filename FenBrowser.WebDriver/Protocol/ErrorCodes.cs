@@ -20,6 +20,7 @@ namespace FenBrowser.WebDriver.Protocol
         // Element errors
         public const string NoSuchElement = "no such element";
         public const string NoSuchShadowRoot = "no such shadow root";
+        public const string DetachedShadowRoot = "detached shadow root";
         public const string StaleElementReference = "stale element reference";
         public const string ElementNotInteractable = "element not interactable";
         public const string ElementClickIntercepted = "element click intercepted";
@@ -29,6 +30,7 @@ namespace FenBrowser.WebDriver.Protocol
         public const string NoSuchWindow = "no such window";
         public const string NoSuchFrame = "no such frame";
         public const string NoSuchAlert = "no such alert";
+        public const string NoSuchCookie = "no such cookie";
         public const string Timeout = "timeout";
         
         // Script errors
@@ -44,6 +46,7 @@ namespace FenBrowser.WebDriver.Protocol
         public const string UnknownMethod = "unknown method";
         public const string UnknownError = "unknown error";
         public const string UnsupportedOperation = "unsupported operation";
+        public const string UnexpectedAlertOpen = "unexpected alert open";
         
         // Security
         public const string InsecureCertificate = "insecure certificate";
@@ -59,9 +62,11 @@ namespace FenBrowser.WebDriver.Protocol
                 InvalidSessionId => 404,
                 NoSuchElement => 404,
                 NoSuchShadowRoot => 404,
+                DetachedShadowRoot => 404,
                 NoSuchWindow => 404,
                 NoSuchFrame => 404,
                 NoSuchAlert => 404,
+                NoSuchCookie => 404,
                 StaleElementReference => 404,
                 ElementNotInteractable => 400,
                 ElementClickIntercepted => 400,
@@ -71,9 +76,10 @@ namespace FenBrowser.WebDriver.Protocol
                 UnknownCommand => 404,
                 UnknownMethod => 405,
                 Timeout => 408,
-                ScriptTimeout => 408,
+                ScriptTimeout => 500,
                 JavaScriptError => 500,
                 InsecureCertificate => 400,
+                UnexpectedAlertOpen => 500,
                 UnsupportedOperation => 500,
                 _ => 500
             };

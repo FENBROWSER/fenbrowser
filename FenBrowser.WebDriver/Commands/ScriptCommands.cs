@@ -40,10 +40,56 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.JavaScriptError, "Browser not connected");
             }
 
+            var timeout = session.Timeouts.Script ?? 30000;
+            var syncExecutionWrapper = @"
+                var __wdCallback = arguments[arguments.length - 1];
+                var __wdAllArgs = Array.prototype.slice.call(arguments, 0, arguments.length - 1);
+                var __wdScriptBody = String(__wdAllArgs.shift() || '');
+                var __wdArgs = __wdAllArgs;
+                try {
+                    var __wdRunner = eval('(async function(arguments){' + __wdScriptBody + '})');
+                    var __wdResult = __wdRunner.call(window, __wdArgs);
+                    if (__wdResult && typeof __wdResult.then === 'function') {
+                        __wdResult.then(function(__wdValue) {
+                            __wdCallback(__wdValue);
+                        }, function(__wdError) {
+                            __wdCallback(Promise.reject(__wdError));
+                        });
+                    } else {
+                        __wdCallback(__wdResult);
+                    }
+                } catch (__wdError) {
+                    __wdCallback(Promise.reject(__wdError));
+                }";
+            var argsWithScript = new object[(args?.Length ?? 0) + 1];
+            argsWithScript[0] = script;
+            if (args != null && args.Length > 0)
+            {
+                Array.Copy(args, 0, argsWithScript, 1, args.Length);
+            }
+
             try
             {
-                var result = await _handler.Browser.ExecuteScriptAsync(script, args);
+                var result = await _handler.Browser.ExecuteAsyncScriptAsync(syncExecutionWrapper, argsWithScript, timeout);
                 return WebDriverResponse.Success(SerializeResult(result, session));
+            }
+            catch (TimeoutException)
+            {
+                throw new WebDriverException(ErrorCodes.ScriptTimeout, "Script execution timed out");
+            }
+            catch (WebDriverException)
+            {
+                throw;
+            }
+            catch (InvalidOperationException ex) when (ShouldSurfaceAsProtocolStateError(ex.Message))
+            {
+                // Preserve host/runtime invalid-operation signals so CommandHandler can map
+                // to specific WebDriver protocol errors (no such element, stale, etc).
+                throw;
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
             }
             catch (Exception ex)
             {
@@ -78,10 +124,43 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.ScriptTimeout, "Script execution timed out");
             }
+            catch (WebDriverException)
+            {
+                throw;
+            }
+            catch (InvalidOperationException ex) when (ShouldSurfaceAsProtocolStateError(ex.Message))
+            {
+                // Preserve host/runtime invalid-operation signals so CommandHandler can map
+                // to specific WebDriver protocol errors (no such element, stale, etc).
+                throw;
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
+            }
             catch (Exception ex)
             {
                 throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
             }
+        }
+
+        private static bool ShouldSurfaceAsProtocolStateError(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("no such window", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("browsing context is no longer open", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("no such frame", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("no such shadow root", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("detached shadow root", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("stale element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("no such element", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("invalid selector", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("element not interactable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("invalid element state", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private (string script, object[] args) ParseScriptRequest(JsonElement? body, Session session)
@@ -154,26 +233,62 @@ namespace FenBrowser.WebDriver.Commands
         private static bool TryDeserializeReference(JsonElement element, Session session, out object reference)
         {
             reference = null;
-            if (element.TryGetProperty(ElementReference.Identifier, out var elementId))
+            var hasElement = element.TryGetProperty(ElementReference.Identifier, out var elementId);
+            var hasShadow = element.TryGetProperty(ShadowRootReference.Identifier, out var shadowId);
+            var hasFrame = element.TryGetProperty(FrameReference.Identifier, out var frameId);
+            var hasWindow = element.TryGetProperty(WindowReference.Identifier, out var windowId);
+
+            var referenceKeyCount =
+                (hasElement ? 1 : 0) +
+                (hasShadow ? 1 : 0) +
+                (hasFrame ? 1 : 0) +
+                (hasWindow ? 1 : 0);
+
+            if (referenceKeyCount > 1)
             {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Reference object cannot contain multiple WebDriver reference keys");
+            }
+
+            if (hasElement)
+            {
+                if (elementId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(elementId.GetString()))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Element reference value must be a non-empty string");
+                }
+
                 reference = session.GetElement(elementId.GetString(), Session.ElementReferenceKind.Element);
                 return true;
             }
 
-            if (element.TryGetProperty(ShadowRootReference.Identifier, out var shadowId))
+            if (hasShadow)
             {
+                if (shadowId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(shadowId.GetString()))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Shadow root reference value must be a non-empty string");
+                }
+
                 reference = session.GetElement(shadowId.GetString(), Session.ElementReferenceKind.ShadowRoot);
                 return true;
             }
 
-            if (element.TryGetProperty(FrameReference.Identifier, out var frameId))
+            if (hasFrame)
             {
+                if (frameId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(frameId.GetString()))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Frame reference value must be a non-empty string");
+                }
+
                 reference = session.GetElement(frameId.GetString(), Session.ElementReferenceKind.Frame);
                 return true;
             }
 
-            if (element.TryGetProperty(WindowReference.Identifier, out var windowId))
+            if (hasWindow)
             {
+                if (windowId.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(windowId.GetString()))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Window reference value must be a non-empty string");
+                }
+
                 reference = session.GetElement(windowId.GetString(), Session.ElementReferenceKind.Window);
                 return true;
             }
@@ -236,6 +351,17 @@ namespace FenBrowser.WebDriver.Commands
 
             if (session.TryGetElementReferenceId(result, out var existingReference))
             {
+                if (session.TryGetReferenceKind(existingReference, out var existingKind))
+                {
+                    return existingKind switch
+                    {
+                        Session.ElementReferenceKind.ShadowRoot => new ShadowRootReference(existingReference),
+                        Session.ElementReferenceKind.Frame => new FrameReference(existingReference),
+                        Session.ElementReferenceKind.Window => new WindowReference(existingReference),
+                        _ => new ElementReference(existingReference)
+                    };
+                }
+
                 return new ElementReference(existingReference);
             }
 
