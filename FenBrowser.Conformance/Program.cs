@@ -2,13 +2,11 @@
 // Program.cs
 // FenBrowser Unified Conformance CLI
 //
-// PURPOSE: Orchestrate all conformance test suites (Test262, WPT, Acid, html5lib)
+// PURPOSE: Orchestrate conformance test suites (Acid, html5lib)
 //          from a single CLI and generate aggregated compliance reports.
 //
 // USAGE:
 //   FenBrowser.Conformance run all [options]
-//   FenBrowser.Conformance run test262 [category] [options]
-//   FenBrowser.Conformance run wpt [category] [options]
 //   FenBrowser.Conformance run acid [1|2|3] [options]
 //   FenBrowser.Conformance run html5lib [options]
 //   FenBrowser.Conformance report [options]
@@ -88,7 +86,7 @@ public static class Program
     {
         if (args.Length == 0)
         {
-            Console.Error.WriteLine("Usage: run <test262|wpt|acid|html5lib|all> [options]");
+            Console.Error.WriteLine("Usage: run <acid|html5lib|all> [options]");
             return 1;
         }
 
@@ -101,8 +99,6 @@ public static class Program
             string fileName = suite switch
             {
                 "all" => "conformance_results.json",
-                "test262" => "test262_results.json",
-                "wpt" => "wpt_results.json",
                 "acid" => "acid_results.json",
                 "html5lib" => "html5lib_results.json",
                 _ => $"{suite}_results.json"
@@ -113,23 +109,8 @@ public static class Program
         switch (suite)
         {
             case "all":
-                await RunTest262Async(report, args.Skip(1).ToArray());
                 await RunHtml5LibAsync(report, args.Skip(1).ToArray());
                 await RunAcidAsync(report, args.Skip(1).ToArray());
-                // WPT requires setup; only run if root exists
-                var wptRoot = Path.Combine(_repoRoot, "wpt");
-                if (Directory.Exists(wptRoot))
-                    await RunWptAsync(report, args.Skip(1).ToArray());
-                else
-                    Console.WriteLine("[Conformance] Skipping WPT (wpt/ directory not found)");
-                break;
-
-            case "test262":
-                await RunTest262Async(report, args.Skip(1).ToArray());
-                break;
-
-            case "wpt":
-                await RunWptAsync(report, args.Skip(1).ToArray());
                 break;
 
             case "acid":
@@ -166,43 +147,6 @@ public static class Program
     // =========================================================================
     // Individual Suite Runners
     // =========================================================================
-
-    private static async Task RunTest262Async(ConformanceReport report, string[] args)
-    {
-        var test262Root = Path.Combine(_repoRoot, "test262");
-        if (!Directory.Exists(test262Root))
-        {
-            Console.Error.WriteLine("[Conformance] test262/ directory not found. Skipping.");
-            return;
-        }
-
-        string category = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : "";
-        int maxTests = GetMaxTests(args, 500); // Default to 500 for "all" runs
-
-        Console.WriteLine(
-            $"[Test262] Running{(string.IsNullOrEmpty(category) ? "" : $" category: {category}")} (max: {maxTests})...");
-        var runner = new Test262Runner(test262Root, 10_000);
-        var sw = Stopwatch.StartNew();
-
-        IReadOnlyList<Test262Runner.TestResult> results;
-        if (!string.IsNullOrEmpty(category))
-        {
-            results = await runner.RunCategoryAsync(category, ProgressCallback, maxTests);
-        }
-        else
-        {
-            // Run a slice from the beginning
-            results = await runner.RunSliceAsync("", 0, maxTests, ProgressCallback);
-        }
-
-        sw.Stop();
-        Console.WriteLine();
-        Console.WriteLine(runner.GenerateSummary());
-
-        report.AddResult("Test262", string.IsNullOrEmpty(category) ? "all" : category,
-            results.Count, results.Count(r => r.Passed), results.Count(r => !r.Passed),
-            sw.Elapsed);
-    }
 
     private static async Task RunHtml5LibAsync(ConformanceReport report, string[] args)
     {
@@ -339,44 +283,6 @@ public static class Program
 
         sw.Stop();
         report.AddResult("Acid", testNum, passed + failed, passed, failed, sw.Elapsed);
-    }
-
-    private static async Task RunWptAsync(ConformanceReport report, string[] args)
-    {
-        var wptRoot = Path.Combine(_repoRoot, "wpt");
-        if (!Directory.Exists(wptRoot))
-        {
-            Console.Error.WriteLine("[WPT] wpt/ directory not found. Skipping.");
-            report.AddResult("WPT", "all", 0, 0, 0, TimeSpan.Zero,
-                "Not available (wpt/ not found)");
-            return;
-        }
-
-        string category = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : "dom";
-        const int safeWptMax = 50;
-        int requestedMax = GetMaxTests(args, 50);
-        int maxTests = Math.Min(requestedMax, safeWptMax);
-        if (requestedMax > safeWptMax)
-        {
-            Console.WriteLine(
-                $"[WPT] Requested --max {requestedMax} exceeds safe limit {safeWptMax}; clamping to {safeWptMax} to avoid known VM recursion crash cases.");
-        }
-
-        Console.WriteLine($"[WPT] Running category: {category} (max: {maxTests})...");
-
-        var navigator = new HeadlessNavigator(wptRoot, 30_000);
-        var runner = new WPTTestRunner(wptRoot, navigator.GetNavigatorDelegate(), 30_000);
-        var sw = Stopwatch.StartNew();
-
-        var results = await runner.RunCategoryAsync(category, ProgressCallback, maxTests);
-        sw.Stop();
-
-        Console.WriteLine();
-        Console.WriteLine(runner.GenerateSummary());
-
-        report.AddResult("WPT", category,
-            results.Count, results.Count(r => r.Success), results.Count(r => !r.Success),
-            sw.Elapsed);
     }
 
     // =========================================================================
@@ -560,11 +466,10 @@ public static class Program
     {
         var format = (ResolveOption(args, "--format") ?? "json").ToLowerInvariant();
         var wptPath = ResolveOption(args, "--wpt");
-        var test262Path = ResolveOption(args, "--test262");
 
         try
         {
-            var inventory = FullSweepInventoryBuilder.Build(_repoRoot, wptPath, test262Path);
+            var inventory = FullSweepInventoryBuilder.Build(_repoRoot, wptPath);
             var outputPath = string.IsNullOrWhiteSpace(_outputPath)
                 ? Path.Combine(_repoRoot, "Results", format == "md" ? "full_sweep_inventory.md" : "full_sweep_inventory.json")
                 : _outputPath;
@@ -599,14 +504,12 @@ public static class Program
         var gatesRoot = Path.Combine(_repoRoot, "FenBrowser.Conformance", "Gates");
         var map = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            ["test262"] = new[] { Path.Combine(gatesRoot, "test262_gate_policy.json") },
             ["wpt-c80"] = new[] { Path.Combine(gatesRoot, "wpt_dom_gate_80.json") },
             ["wpt-c90"] = new[] { Path.Combine(gatesRoot, "wpt_dom_gate_90.json") },
             ["wpt-d"] = new[] { Path.Combine(gatesRoot, "wpt_css_layout_gate.json") },
             ["wpt-e"] = new[] { Path.Combine(gatesRoot, "wpt_fetch_cors_gate.json") },
             ["all"] = new[]
             {
-                Path.Combine(gatesRoot, "test262_gate_policy.json"),
                 Path.Combine(gatesRoot, "wpt_dom_gate_80.json"),
                 Path.Combine(gatesRoot, "wpt_dom_gate_90.json"),
                 Path.Combine(gatesRoot, "wpt_css_layout_gate.json"),
@@ -629,8 +532,6 @@ public static class Program
         Console.WriteLine("  Run 'FenBrowser.Conformance run all' to generate a report with data.");
 
         var report = new ConformanceReport();
-        report.AddResult("Test262", "(not run)", 0, 0, 0, TimeSpan.Zero);
-        report.AddResult("WPT", "(not run)", 0, 0, 0, TimeSpan.Zero);
         report.AddResult("Acid", "(not run)", 0, 0, 0, TimeSpan.Zero);
         report.AddResult("html5lib", "(not run)", 0, 0, 0, TimeSpan.Zero);
 
@@ -751,12 +652,10 @@ USAGE:
   FenBrowser.Conformance <command> [options]
 
 COMMANDS:
-  run all [options]              Run all test suites (Test262, WPT, Acid, html5lib)
-  run test262 [category]         Run ECMAScript Test262 tests
-  run wpt [category]             Run Web Platform Tests
+  run all [options]              Run all test suites (Acid, html5lib)
   run acid [1|2|3]               Run Acid tests
   run html5lib                   Run html5lib parser tests
-  gate <policy>|default <name>   Evaluate WPT/Test262 milestone gate policies
+  gate <policy>|default <name>   Evaluate milestone gate policies
   ipc-fuzz                       Run IPC fuzz-baseline suite for renderer/network/target channels
   parser-fuzz                    Run parser/renderer hostile corpus fuzz regression script
   a11y-validate                  Export platform accessibility mapping snapshot artifact
@@ -768,21 +667,19 @@ COMMANDS:
 
 OPTIONS:
   --output|-o <path>             Write report to file
-  --max <N>                      Max tests per suite
+  --max <N>                      Max tests for html5lib suite
   --bootstrap-html5lib           Auto-clone html5lib-tests when missing (run html5lib)
   --differential                 Compare html5lib run with external oracle (python html5lib)
   --oracle-python <exe>          Python executable for differential oracle (default: python)
-  --wpt <path>                   WPT result JSON path for matrix command
-  --test262 <path>               Test262 result JSON path for fullsweep-inventory
+  --wpt <path>                   WPT result JSON path for matrix command (external harness output)
   --scope <name>                 Scope label for matrix command (default: html-css-core)
   --format <json|md>             Output format for matrix/fullsweep-inventory (default: json)
   --verbose|-v                   Verbose output
 
 EXAMPLES:
   FenBrowser.Conformance run all --max 100 -o conformance_report.md
-  FenBrowser.Conformance run test262 language/expressions --max 50
   FenBrowser.Conformance gate default all
-  FenBrowser.Conformance gate FenBrowser.Conformance/Gates/test262_gate_policy.json
+  FenBrowser.Conformance gate FenBrowser.Conformance/Gates/wpt_dom_gate_80.json
   FenBrowser.Conformance matrix --wpt Results/wpt_results_latest.json --scope html-css-core --format json
   FenBrowser.Conformance fullsweep-inventory --format md
   FenBrowser.Conformance run acid 2

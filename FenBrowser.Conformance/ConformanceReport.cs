@@ -3,7 +3,7 @@
 // Aggregated conformance report generator
 //
 // PURPOSE: Generate a comprehensive conformance report combining results
-//          from all test suites (Test262, WPT, Acid, html5lib) into a single
+//          from all test suites (WPT, Acid, html5lib) into a single
 //          markdown dashboard with per-suite pass rates and overall score.
 // =============================================================================
 

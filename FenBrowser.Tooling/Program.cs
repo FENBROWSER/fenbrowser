@@ -37,18 +37,6 @@ namespace FenBrowser.Tooling
                 case "verify":
                     await RunVerifyAsync(args).ConfigureAwait(false);
                     return;
-                case "test262":
-                    await RunTest262Async(args).ConfigureAwait(false);
-                    return;
-                case "test262-suite":
-                    await RunTest262SuiteAsync(args).ConfigureAwait(false);
-                    return;
-                case "test262-range":
-                    await RunTest262RangeAsync(args).ConfigureAwait(false);
-                    return;
-                case "wpt":
-                    await RunWptAsync(args).ConfigureAwait(false);
-                    return;
                 case "acid2":
                     await RunAcid2Async().ConfigureAwait(false);
                     return;
@@ -70,6 +58,9 @@ namespace FenBrowser.Tooling
                 case "test":
                     await FenBrowser.FenEngine.Tests.LogicTestRunner.MainTest(args).ConfigureAwait(false);
                     return;
+                case "test262":
+                    await Test262ToolRunner.RunAsync(args).ConfigureAwait(false);
+                    return;
                 default:
                     PrintUsage();
                     return;
@@ -86,230 +77,6 @@ namespace FenBrowser.Tooling
             await VerificationRunner.GenerateSnapshot(args[1], "verification_output.png").ConfigureAwait(false);
         }
 
-        private static async Task RunTest262Async(string[] args)
-        {
-            if (args.Length < 2)
-            {
-                throw new ArgumentException("test262 requires <test_file_or_category>.");
-            }
-
-            var input = args[1];
-            var rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
-            var runner = new Test262Runner(rootPath);
-
-            if (File.Exists(input))
-            {
-                var result = await runner.RunSingleTestAsync(input).ConfigureAwait(false);
-                Console.WriteLine($"Result: {(result.Passed ? "PASS" : "FAIL")}");
-                Console.WriteLine($"Duration: {result.Duration.TotalMilliseconds}ms");
-                if (!result.Passed)
-                {
-                    Console.WriteLine($"Expected: {result.Expected}");
-                    Console.WriteLine($"Actual: {result.Actual}");
-                    if (!string.IsNullOrWhiteSpace(result.Error))
-                    {
-                        Console.WriteLine($"Error: {result.Error}");
-                    }
-                }
-                return;
-            }
-
-            var results = await runner.RunCategoryAsync(input, (_, count) =>
-            {
-                if (count % 100 == 0)
-                {
-                    Console.Write($"\rProcessed: {count}");
-                }
-            }).ConfigureAwait(false);
-
-            Console.WriteLine($"\rProcessed: {results.Count}");
-            Console.WriteLine(runner.GenerateSummary());
-        }
-
-        private static async Task RunTest262SuiteAsync(string[] args)
-        {
-            var category = args.Length > 1 ? args[1] : string.Empty;
-            var rootPath = args.Length > 2 ? args[2] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
-            var runner = new Test262Runner(rootPath);
-            var results = await runner.RunCategoryAsync(category, (_, count) =>
-            {
-                if (count % 100 == 0)
-                {
-                    Console.Write(".");
-                }
-            }).ConfigureAwait(false);
-
-            var passed = results.Count(r => r.Passed);
-            var failed = results.Count - passed;
-            Console.WriteLine();
-            Console.WriteLine($"Total: {results.Count}, Passed: {passed}, Failed: {failed}");
-        }
-
-        private static async Task RunTest262RangeAsync(string[] args)
-        {
-            if (args.Length < 3)
-            {
-                throw new ArgumentException("test262-range requires <skip> <take> [category] [root].");
-            }
-
-            var skip = int.Parse(args[1]);
-            var take = int.Parse(args[2]);
-            var category = args.Length > 3 ? args[3] : string.Empty;
-            var rootPath = args.Length > 4 ? args[4] : Path.Combine(Directory.GetCurrentDirectory(), "test262");
-            var runner = new Test262Runner(rootPath);
-            var results = await runner.RunSliceAsync(category, skip, take, (_, count) =>
-            {
-                if (count % 10 == 0)
-                {
-                    Console.Write(".");
-                }
-            }).ConfigureAwait(false);
-
-            var passed = results.Count(r => r.Passed);
-            var failed = results.Count - passed;
-            Console.WriteLine();
-            Console.WriteLine($"Total: {results.Count}, Passed: {passed}, Failed: {failed}");
-        }
-
-        private static async Task RunWptAsync(string[] args)
-        {
-            if (args.Length < 2)
-            {
-                throw new ArgumentException("wpt requires <test_file_or_category> [rootPath].");
-            }
-
-            var input = args[1];
-            int argIndex = 2;
-            var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "wpt");
-            if (args.Length > 2 && !args[2].StartsWith("-", StringComparison.Ordinal))
-            {
-                rootPath = args[2];
-                argIndex = 3;
-            }
-
-            int maxTests = int.MaxValue;
-            int skipTests = 0;
-            for (int i = argIndex; i < args.Length; i++)
-            {
-                if (string.Equals(args[i], "--max", StringComparison.OrdinalIgnoreCase) &&
-                    i + 1 < args.Length &&
-                    int.TryParse(args[i + 1], out var parsedMax) &&
-                    parsedMax > 0)
-                {
-                    maxTests = parsedMax;
-                    i++;
-                    continue;
-                }
-
-                if (string.Equals(args[i], "--skip", StringComparison.OrdinalIgnoreCase) &&
-                    i + 1 < args.Length &&
-                    int.TryParse(args[i + 1], out var parsedSkip) &&
-                    parsedSkip >= 0)
-                {
-                    skipTests = parsedSkip;
-                    i++;
-                }
-            }
-
-            BrowserIntegrationRuntime.BrowserHostOptionsFactory = () => ToolingBrowserHostOptions.CreateForWpt(rootPath);
-
-            CssEngineConfig.CurrentEngine = CssEngineType.Custom;
-            var windowManager = WindowManager.Instance;
-            windowManager.Initialize("about:blank", isHeadless: true);
-
-            WireToolingConsoleCapture();
-
-            windowManager.OnLoad += () =>
-            {
-                Task.Run(async () =>
-                {
-                    try
-                    {
-                        ChromeManager.Instance.Initialize("about:blank");
-
-                        var runner = new WPTTestRunner(rootPath, async url =>
-                        {
-                            await WindowManager.Instance.RunOnMainThread(async () =>
-                            {
-                                if (TabManager.Instance.ActiveTab == null)
-                                {
-                                    TabManager.Instance.CreateTab(url);
-                                    return;
-                                }
-
-                                await TabManager.Instance.ActiveTab.NavigateAsync(url).ConfigureAwait(false);
-                            }).ConfigureAwait(false);
-                        },
-                        timeoutMs: ResolveWptTimeoutMs());
-
-                        if (File.Exists(input))
-                        {
-                            var result = await runner.RunSingleTestAsync(input).ConfigureAwait(false);
-                            var resultLabel = result.IsExplicitSkip
-                                ? "SKIP"
-                                : (result.Success ? "PASS" : "FAIL");
-                            Console.WriteLine($"Result: {resultLabel}");
-                            Console.WriteLine($"Stats: {result.PassCount} passed, {result.FailCount} failed");
-                            Console.WriteLine($"Completion: {result.CompletionSignal}");
-                            if (result.IsExplicitSkip)
-                            {
-                                Console.WriteLine($"SkipReason: {result.SkipReason}");
-                            }
-                            if (!string.IsNullOrWhiteSpace(result.Error))
-                            {
-                                Console.WriteLine(result.Error);
-                            }
-                        }
-                        else
-                        {
-                            IReadOnlyList<WPTTestRunner.TestExecutionResult> results;
-                            if (string.Equals(input, "all", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(input, "*", StringComparison.Ordinal))
-                            {
-                                var discovered = runner.DiscoverAllTests();
-                                var selected = discovered.Skip(skipTests);
-                                if (maxTests != int.MaxValue)
-                                {
-                                    selected = selected.Take(maxTests);
-                                }
-                                var tests = selected.ToList();
-
-                                Console.WriteLine(
-                                    $"Running WPT slice from full discovery: total={discovered.Count}, skip={skipTests}, take={tests.Count}");
-                                results = await runner.RunSpecificTestsAsync(tests, (_, count) =>
-                                {
-                                    if (count % 10 == 0)
-                                    {
-                                        Console.Write($"\rProcessed: {count}/{tests.Count}");
-                                    }
-                                }).ConfigureAwait(false);
-                            }
-                            else
-                            {
-                                var categoryMax = maxTests == int.MaxValue ? int.MaxValue : maxTests;
-                                results = await runner.RunCategoryAsync(input, (_, count) =>
-                                {
-                                    if (count % 10 == 0)
-                                    {
-                                        Console.Write($"\rProcessed: {count}");
-                                    }
-                                }, categoryMax).ConfigureAwait(false);
-                            }
-
-                            Console.WriteLine($"\rProcessed: {results.Count}");
-                            Console.WriteLine(runner.GenerateSummary());
-                        }
-                    }
-                    finally
-                    {
-                        BrowserIntegrationRuntime.Reset();
-                        Environment.Exit(0);
-                    }
-                });
-            };
-
-            windowManager.Run();
-        }
 
         private static async Task RunAcid2Async()
         {
@@ -640,11 +407,6 @@ namespace FenBrowser.Tooling
         {
             Console.WriteLine("FenBrowser.Tooling commands:");
             Console.WriteLine("  verify <html_path>");
-            Console.WriteLine("  test262 <test_file_or_category> [root]");
-            Console.WriteLine("  test262-suite [category] [root]");
-            Console.WriteLine("  test262-range <skip> <take> [category] [root]");
-            Console.WriteLine("  wpt <test_file_or_category> [root]");
-            Console.WriteLine("      optional flags: --max <N> --skip <N>");
             Console.WriteLine("  acid2");
             Console.WriteLine("  acid2-compare");
             Console.WriteLine("  acid2-layout-html [output_html]");
@@ -652,23 +414,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  render-perf");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
-        }
-
-        private static int ResolveWptTimeoutMs()
-        {
-            const int defaultTimeoutMs = 60000;
-            const int minTimeoutMs = 5000;
-            const int maxTimeoutMs = 300000;
-
-            var raw = Environment.GetEnvironmentVariable("FEN_WPT_TIMEOUT_MS");
-            if (!int.TryParse(raw, out var parsed))
-            {
-                return defaultTimeoutMs;
-            }
-
-            if (parsed < minTimeoutMs) return minTimeoutMs;
-            if (parsed > maxTimeoutMs) return maxTimeoutMs;
-            return parsed;
+            Console.WriteLine("  test262 --root <path> [--workers N] [--max N] [--filter <substring>] [--output <json_path>]");
         }
 
         private static async Task<SKBitmap> CaptureWindowScreenshotAsync(string url, int settleMs = 3500)

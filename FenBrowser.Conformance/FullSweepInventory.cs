@@ -116,7 +116,7 @@ public static class FullSweepInventoryBuilder
         "FenBrowser.Host"
     };
 
-    public static FullSweepInventory Build(string repoRoot, string? wptPath = null, string? test262Path = null)
+    public static FullSweepInventory Build(string repoRoot, string? wptPath = null)
     {
         var inventory = new FullSweepInventory
         {
@@ -135,7 +135,7 @@ public static class FullSweepInventoryBuilder
         }
 
         PopulateSummary(inventory);
-        AddConformanceSignals(inventory, wptPath, test262Path);
+        AddConformanceSignals(inventory, wptPath);
         return inventory;
     }
 
@@ -236,10 +236,9 @@ public static class FullSweepInventoryBuilder
         inventory.Summary.Low = inventory.Items.Count(i => i.Severity == "low");
     }
 
-    private static void AddConformanceSignals(FullSweepInventory inventory, string? wptPath, string? test262Path)
+    private static void AddConformanceSignals(FullSweepInventory inventory, string? wptPath)
     {
         AddWptSignal(inventory, wptPath);
-        AddTest262Signal(inventory, test262Path);
     }
 
     private static void AddWptSignal(FullSweepInventory inventory, string? wptPath)
@@ -255,21 +254,6 @@ public static class FullSweepInventoryBuilder
         AddSignal(inventory, "WPT", "passed", ReadInt(root, "passed").ToString());
         AddSignal(inventory, "WPT", "failed", ReadInt(root, "failed").ToString());
         AddSignal(inventory, "WPT", "passRate", ReadDouble(root, "passRate").ToString("F2"));
-    }
-
-    private static void AddTest262Signal(FullSweepInventory inventory, string? test262Path)
-    {
-        var path = ResolveResultPath(inventory.RepoRoot, test262Path, "Results/test262_results_final.json");
-        if (path == null || !File.Exists(path))
-            return;
-
-        using var doc = JsonDocument.Parse(File.ReadAllText(path));
-        var root = doc.RootElement;
-        AddSignal(inventory, "Test262", "path", path);
-        AddSignal(inventory, "Test262", "total", ReadInt(root, "total").ToString());
-        AddSignal(inventory, "Test262", "passed", ReadInt(root, "passed").ToString());
-        AddSignal(inventory, "Test262", "failed", ReadInt(root, "failed").ToString());
-        AddSignal(inventory, "Test262", "passRate", ReadDouble(root, "passRate").ToString("F2"));
     }
 
     private static string? ResolveResultPath(string repoRoot, string? explicitPath, string fallbackRelative)

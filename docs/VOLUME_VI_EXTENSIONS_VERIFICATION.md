@@ -12,22 +12,16 @@ This volume details the infrastructure used to extend the browser and verify its
 - Official WPT verification now uses the upstream harness only:
   - start servers with `python wpt serve` (or run via `python wpt run ...`) from an upstream WPT checkout.
   - execute FenBrowser against `web-platform.test` endpoints provided by that harness.
-- Tooling WPT runner hardening (2026-04-22):
-  - `FenBrowser.Tooling wpt` now prefers navigating tests via `http://web-platform.test:8000/<relative-test-path>` instead of local `file://` execution when the test is under the configured WPT root.
-  - base URL can be overridden with `FEN_WPT_BASE_URL`.
-  - timeout can be tuned with `FEN_WPT_TIMEOUT_MS` (default `60000`, bounded).
-  - Runner outcomes are now explicit and deterministic: unsupported/manual/reftest/crashtest boundary cases are emitted as `SKIP` with a structured reason, and are no longer rewritten into `PASS`.
-  - TAP export mirrors this policy using `ok ... # SKIP <reason>` entries for explicit skips.
-  - Headless harness dependency execution now preserves deterministic resource order for WPT dependency scripts:
-    - `testharness.js` -> `testharnessreport.js` -> `testdriver.js` -> `testdriver-vendor.js` -> `testdriver-actions.js` -> page scripts.
-  - Headless navigator now resolves served-mode WPT URLs (`http://web-platform.test:8000/...`) back to the configured local WPT root when running file-backed conformance.
-  - WPT dependency failures are now classified explicitly instead of being masked as synthetic testdriver skips:
-    - `parse-dependency-failed`
-    - `runtime-dependency-failed`
-    - `harness-no-assertions`
-    - `assertion-failures`
-    - `pass`
-  - The synthetic `testdriver-unsupported` skip path has been removed from `WPTTestRunner`; testdriver-dependent pages now report real outcomes from dependency parse/runtime/assertion state.
+
+### 1.2 External Harness-Only Policy (2026-04-24)
+
+- In-repo Test262/WPT harness hosting has been removed from active solution surfaces.
+- Removed surfaces include:
+  - `FenBrowser.Test262` project
+  - `FenBrowser.Tooling` commands: `test262`, `test262-suite`, `test262-range`, `wpt`
+  - internal runner sources `FenBrowser.FenEngine/Testing/Test262Runner.cs` and `FenBrowser.FenEngine/Testing/WPTTestRunner.cs`
+  - local harness-specific unit tests and helper scripts
+- Verification input now comes from official upstream harness runs only, with FenBrowser consuming the resulting artifacts/reports.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
@@ -2310,3 +2304,43 @@ _End of Volume VI_
 - Focused verification:
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~IpcEnvelopeValidationTests" -v minimal`
   - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -v minimal --no-restore`
+
+## 6.74 Tooling Test262 Engine-Host Runner Reintroduction (2026-04-25)
+
+- `FenBrowser.Tooling/Program.cs`
+  - Added `test262` command surface:
+    - `test262 --root <path> [--workers N] [--max N] [--filter <substring>] [--output <json_path>]`
+- `FenBrowser.Tooling/Test262ToolRunner.cs` (new)
+  - Introduced a dedicated in-process Test262 runner path for FenBrowser runtime validation.
+  - Added deterministic discovery from official Test262 source tree (`test/**/*.js`, excluding `*_FIXTURE.js` and `test/harness`).
+  - Added metadata parsing for frontmatter keys used by Test262:
+    - `flags` (`onlyStrict`, `noStrict`, skip handling for `module`/`async`/`generated`)
+    - `includes`
+    - `negative` (`phase`, `type`)
+  - Added minimal Test262 host bootstrap (`$262`) to remove harness-level false negatives and align with engine-host expectations.
+  - Added structured JSON output payload with summary + per-scenario result records.
+  - Added execution hardening: serialized engine execution guard to prevent concurrent runtime initialization races in current in-proc mode.
+- Focused verification:
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal` (pass)
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 20 --workers 4 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_smoke20.json`
+    - Result: `32 pass / 8 fail / 0 skip` across `40` scenarios.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 100 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_100.json`
+    - Result: `112 pass / 88 fail / 0 skip` across `200` scenarios.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 200 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_200.json`
+    - Result: `296 pass / 104 fail / 0 skip` across `400` scenarios.
+
+## 6.75 Tooling Test262 Multi-Process Sharding (2026-04-25)
+
+- `FenBrowser.Tooling/Test262ToolRunner.cs`
+  - Added multi-process worker orchestration for `test262` command:
+    - parent process now shards deterministically by test index (`index % shardCount == shardIndex`)
+    - each worker runs in isolated process (`dotnet FenBrowser.Tooling.dll test262 ... --worker-mode --shard-index <i> --shard-count <n>`)
+    - parent aggregates worker JSON payloads into a single output artifact.
+  - Preserved single-process fallback automatically when worker spawning is unavailable.
+  - Added shard option parsing and validation:
+    - `--worker-mode`
+    - `--shard-index`
+    - `--shard-count`
+- Focused verification:
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 1000 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json`
+  - Result: `391 pass / 163 fail / 713 skip` across `1267` scenarios (run completed without runner crash).

@@ -434,7 +434,7 @@ internal static class Program
         }
         else if (upperVolume.Contains("VOLUME_VI_"))
         {
-            preferredPrefixes = ["FenBrowser.WebDriver/", "FenBrowser.Tests/", "FenBrowser.FenEngine/Testing/", "FenBrowser.Test262/"];
+            preferredPrefixes = ["FenBrowser.WebDriver/", "FenBrowser.Tests/", "FenBrowser.FenEngine/Testing/"];
         }
         else
         {
