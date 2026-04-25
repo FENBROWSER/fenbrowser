@@ -2786,7 +2786,9 @@ pre {{
                 if (!ReferenceEquals(ElementStateManager.Instance.HoveredElement, hovered))
                 {
                     ElementStateManager.Instance.SetHoveredElement(hovered);
-                    TryInvokeRepaintReady(_engine.GetActiveDom());
+                    // Hover state changes already flow through OnStateChanged -> ScheduleRecascade ->
+                    // engine RepaintReady. Triggering an extra immediate repaint here duplicates
+                    // frame work and causes visible hover lag under frequent pointer movement.
                 }
             }
 
