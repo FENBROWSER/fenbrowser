@@ -887,6 +887,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             float safeHeight = float.IsFinite(itemHeight) && itemHeight > 0f ? itemHeight : 0f;
             float safeAscent = float.IsFinite(itemAscent) && itemAscent >= 0f ? itemAscent : safeHeight;
+            if (safeHeight > 0f)
+            {
+                safeAscent = Math.Min(safeAscent, safeHeight);
+            }
             float safeDescent = Math.Max(0f, safeHeight - safeAscent);
             float lineAscent = Math.Max(0f, line?.Ascent ?? 0f);
             float lineDescent = Math.Max(0f, line?.Descent ?? 0f);
@@ -895,7 +899,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (string.IsNullOrWhiteSpace(verticalAlign))
             {
-                return baseOffset;
+                return Math.Max(0f, baseOffset);
             }
 
             float verticalOffset = 0f;
@@ -907,6 +911,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     break;
                 case "super":
                     verticalOffset = -safeHeight * 0.3f;
+                    break;
+                case "baseline":
+                    verticalOffset = 0f;
                     break;
                 case "middle":
                     verticalOffset = ((lineAscent + lineDescent - safeHeight) / 2f) - baseOffset;
@@ -927,7 +934,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     break;
             }
 
-            return baseOffset + verticalOffset;
+            float resolved = baseOffset + verticalOffset;
+            if (string.Equals(value, "baseline", StringComparison.OrdinalIgnoreCase))
+            {
+                return Math.Max(0f, resolved);
+            }
+
+            return resolved;
         }
 
         private static void ResolveInlineItemLineMetrics(

@@ -77,6 +77,7 @@ namespace FenBrowser.Tests.Core
             Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), "Missing layout rect for .Ne6nSd");
             Assert.True(renderer.LastLayout.TryGetElementRect(appsButton, out var appsButtonRect), "Missing layout rect for Google apps button");
             Assert.True(renderer.LastLayout.TryGetElementRect(signInButton, out var signInButtonRect), "Missing layout rect for Sign in button");
+            Assert.True(computed.TryGetValue(signInButton, out var signInStyle), "Missing computed style for Sign in button");
 
             string layoutContext =
                 $"main={DescribeRect(renderer.LastLayout, mainColumn)} nav={DescribeRect(renderer.LastLayout, topNav)} " +
@@ -105,6 +106,25 @@ namespace FenBrowser.Tests.Core
             Assert.True(searchButtonsBandRect.Top < 520f, $"Expected visible .FPdoLc.lJ9FBc within viewport, got top={searchButtonsBandRect.Top}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(appsButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Google apps button to stay within nav top band, got {DescribeRect(appsButtonRect)}. {layoutContext}");
             Assert.True(signInButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Sign in button to stay within nav top band, got {DescribeRect(signInButtonRect)}. {layoutContext}");
+            Assert.InRange(signInButtonRect.Height, 36f, 96f);
+            Assert.InRange(signInButtonRect.Width, 80f, 160f);
+
+            string signInStyleContext = BuildSignInStyleContext(signInStyle, signInButtonRect);
+            Assert.Equal("inline-block", signInStyle.Display);
+            Assert.Equal("border-box", signInStyle.BoxSizing);
+            Assert.Equal("relative", signInStyle.Position);
+            Assert.Equal(14d, signInStyle.FontSize.GetValueOrDefault(), 1);
+            Assert.Equal(40d, signInStyle.MinHeight.GetValueOrDefault(), 1);
+            Assert.Equal(85d, signInStyle.MinWidth.GetValueOrDefault(), 1);
+            Assert.Equal(10d, signInStyle.Padding.Top, 1);
+            Assert.Equal(10d, signInStyle.Padding.Bottom, 1);
+            Assert.Equal(12d, signInStyle.Padding.Left, 1);
+            Assert.Equal(12d, signInStyle.Padding.Right, 1);
+            Assert.Equal(18d, signInStyle.LineHeight.GetValueOrDefault(), 1);
+            Assert.Equal(100d, signInStyle.BorderRadius.TopLeft.Value, 1);
+            Assert.Equal(100d, signInStyle.BorderRadius.TopRight.Value, 1);
+            Assert.Equal(100d, signInStyle.BorderRadius.BottomRight.Value, 1);
+            Assert.Equal(100d, signInStyle.BorderRadius.BottomLeft.Value, 1);
 
             var topNavInteractiveRects = root
                 .Descendants()
@@ -131,6 +151,24 @@ namespace FenBrowser.Tests.Core
             Assert.True(topNavInteractiveRects.Count >= 5, $"Expected at least 5 top-nav interactive boxes, got {topNavInteractiveRects.Count}. {layoutContext}");
             Assert.All(topNavInteractiveRects, rect => Assert.True(rect.Top >= 0f, $"Expected top-nav boxes to stay within viewport top band, got {DescribeRect(rect)}. {layoutContext}"));
             Assert.True(topNavInteractiveRects.Max(r => r.Right) > 1400f, $"Expected right-aligned header controls to remain near viewport edge. MaxRight={topNavInteractiveRects.Max(r => r.Right)}. {layoutContext}");
+
+            var topNavDescendantRects = root
+                .Descendants()
+                .OfType<Element>()
+                .Where(e => topNav.Contains(e))
+                .Select(e =>
+                {
+                    bool hasRect = renderer.LastLayout.TryGetElementRect(e, out var rect);
+                    return (hasRect, rect, e);
+                })
+                .Where(x => x.hasRect && x.rect.Width >= 20f && x.rect.Height >= 20f)
+                .Select(x => x.rect)
+                .ToList();
+            Assert.All(
+                topNavDescendantRects,
+                rect => Assert.True(
+                    rect.Top >= -1f,
+                    $"Expected top-nav descendants to avoid negative-top clipping. bad={DescribeRect(rect)} nav={DescribeRect(topNavRect)} {signInStyleContext}"));
 
             var paintNodes = new List<PaintNodeBase>();
             CollectNodes(renderContext.PaintTreeRoots, paintNodes);
@@ -324,6 +362,24 @@ namespace FenBrowser.Tests.Core
             public int ShellVisiblePixels { get; init; }
             public bool HasSignInText { get; init; }
             public bool HasLanguagesPrompt { get; init; }
+        }
+
+        private static string BuildSignInStyleContext(CssComputed style, ElementGeometry rect)
+        {
+            if (style == null)
+            {
+                return $"signInRect={DescribeRect(rect)} style=(null)";
+            }
+
+            static string F(double? v) => v.HasValue ? v.Value.ToString("0.##") : "null";
+
+            return
+                $"signInRect={DescribeRect(rect)} " +
+                $"display={style.Display} width={F(style.Width)} height={F(style.Height)} min-width={F(style.MinWidth)} min-height={F(style.MinHeight)} " +
+                $"padding-top={style.Padding.Top:0.##} padding-bottom={style.Padding.Bottom:0.##} padding-left={style.Padding.Left:0.##} padding-right={style.Padding.Right:0.##} " +
+                $"line-height={F(style.LineHeight)} font-size={F(style.FontSize)} " +
+                $"border-radius={style.BorderRadius.TopLeft.Value:0.##}/{style.BorderRadius.TopRight.Value:0.##}/{style.BorderRadius.BottomRight.Value:0.##}/{style.BorderRadius.BottomLeft.Value:0.##} " +
+                $"box-sizing={style.BoxSizing} align-items={style.AlignItems} justify-content={style.JustifyContent}";
         }
 
         private static bool HasClass(Element element, string className)
