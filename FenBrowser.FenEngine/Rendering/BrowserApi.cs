@@ -5,6 +5,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
@@ -203,9 +204,17 @@ namespace FenBrowser.FenEngine.Rendering
         private const string WebDriverWindowTokenPrefix = "__fen_wd_win__:";
         private const string WebDriverArgElementMarker = "__fen_wd_arg_element_id__";
         private const string WebDriverArgShadowRootMarker = "__fen_wd_arg_shadow_root_id__";
+        private const string WebDriverArgElementDomIdMarker = "__fen_wd_arg_element_dom_id__";
+        private const string WebDriverArgShadowHostDomIdMarker = "__fen_wd_arg_shadow_host_dom_id__";
         private const string WebDriverArgFrameMarker = "__fen_wd_arg_frame_id__";
         private const string WebDriverArgWindowMarker = "__fen_wd_arg_window_id__";
         private const string WebDriverDomIdAttribute = "data-fen-wd-id";
+        private const string WebDriverCanonicalProbeAttribute = "data-fen-wd-canon";
+        private const string WebDriverShadowHostProbeAttribute = "data-fen-wd-shadow-host-probe";
+        private const string WebDriverShadowRootProbeAttribute = "data-fen-wd-shadow-root-probe";
+        private const string WebDriverFrameScriptsHydratedAttribute = "data-fen-wd-frame-scripts-hydrated";
+        private static readonly bool WebDriverFrameTraceEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("FEN_WEBDRIVER_FRAME_TRACE"), "1", StringComparison.Ordinal);
         private static readonly HashSet<string> WebDriverBooleanAttributes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "allowfullscreen", "allowpaymentrequest", "async", "autofocus", "autoplay", "checked", "controls",
@@ -213,6 +222,9 @@ namespace FenBrowser.FenEngine.Rendering
             "multiple", "muted", "nomodule", "novalidate", "open", "playsinline", "readonly", "required",
             "reversed", "selected"
         };
+        private static readonly FieldInfo ElementShadowRootField = typeof(Element).GetField(
+            "_shadowRoot",
+            BindingFlags.Instance | BindingFlags.NonPublic);
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
         private readonly NavigationManager _navManager;
@@ -238,9 +250,11 @@ namespace FenBrowser.FenEngine.Rendering
         
         // Map WebDriver element and shadow-root IDs to live DOM nodes.
         private readonly Dictionary<string, Element> _elementMap = new Dictionary<string, Element>();
+        private readonly Dictionary<string, string> _elementBrowsingContextMap = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, ShadowRoot> _shadowRootMap = new Dictionary<string, ShadowRoot>();
         private readonly Stack<Element> _frameContextStack = new Stack<Element>();
         private Element _currentFrameElement;
+        private bool _frameContextInvalidated;
         private Action<string> _fontLoadedHandler;
         private readonly ImageLoader.ImageLoaderRequestContext _imageLoaderContext;
         private readonly string _imageLoaderContextId = Guid.NewGuid().ToString("N");
@@ -827,6 +841,18 @@ namespace FenBrowser.FenEngine.Rendering
                 TriggerAlert(msg);
                 TryInvokeConsoleMessage($"[Alert] {msg}");
             };
+            _engine.ConfirmTriggered += msg =>
+            {
+                TriggerConfirm(msg);
+                TryInvokeConsoleMessage($"[Confirm] {msg}");
+                return ShouldAutoAcceptDialogs();
+            };
+            _engine.PromptTriggered += (msg, defaultValue) =>
+            {
+                TriggerPrompt(msg, defaultValue);
+                TryInvokeConsoleMessage($"[Prompt] {msg}");
+                return ShouldAutoAcceptDialogs() ? (defaultValue ?? string.Empty) : null;
+            };
 
             _engine.ConsoleMessage += (msg) =>
             {
@@ -1063,8 +1089,11 @@ namespace FenBrowser.FenEngine.Rendering
                 if (string.IsNullOrWhiteSpace(url)) return false;
 
                 _currentFrameElement = null;
+                _frameContextInvalidated = false;
                 _frameContextStack.Clear();
                 _elementMap.Clear();
+                _elementBrowsingContextMap.Clear();
+                _shadowRootMap.Clear();
 
                 navigationId = _navigationLifecycle.BeginNavigation(url, requestKind == NavigationRequestKind.UserInput);
                 var previousNavigationId = Interlocked.Exchange(ref _latestNavigationId, navigationId);
@@ -1181,7 +1210,6 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                 _navigationLifecycle.MarkFetching(navigationId, url);
-                Console.WriteLine($"[NavigateAsync] Start: {url}");
                 FenBrowser.Core.Verification.ContentVerifier.ResetForNavigation(url);
 
                 _resources.ResetBlockedCount();
@@ -1345,8 +1373,6 @@ pre {{
                         SecurityState = SecurityState.None;
                 }
 
-                Console.WriteLine($"[NavigateAsync] Rendering content for {uri}");
-                
                 // Debug: Log navigation with base URL
                 // Debug: Log navigation with base URL
                 TryLogDebug($"[BrowserApi] Navigating to: {uri}. Previous _current: {_current?.AbsoluteUri ?? "null"}", LogCategory.General);
@@ -1762,16 +1788,14 @@ pre {{
         public async Task ClickElementAsync(string elementId)
         {
             var element = ResolveElementInActiveContextOrThrow(elementId);
-            Console.WriteLine($"[WD-ClickDbg] resolve id={elementId} found={(element != null)}");
             if (element != null)
             {
                 var dispatchedByScript = false;
                 _pendingWebDriverClickPointValid = false;
-                for (var attempt = 0; attempt < 50 && !_pendingWebDriverClickPointValid; attempt++)
+                for (var attempt = 0; attempt < 8 && !_pendingWebDriverClickPointValid; attempt++)
                 {
                     if (await TryResolveWebDriverClickPointViaScriptAsync(elementId).ConfigureAwait(false))
                     {
-                        Console.WriteLine($"[WD-ClickDbg] source=scriptrect attempt={attempt} cx={_pendingWebDriverClickClientX} cy={_pendingWebDriverClickClientY}");
                     }
                     else if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(element, out var vx, out var vy, out var vw, out var vh) &&
                         vw > 0 &&
@@ -1780,7 +1804,6 @@ pre {{
                         _pendingWebDriverClickPointValid = true;
                         _pendingWebDriverClickClientX = (int)Math.Floor(vx + (vw / 2.0));
                         _pendingWebDriverClickClientY = (int)Math.Floor(vy + (vh / 2.0));
-                        Console.WriteLine($"[WD-ClickDbg] source=visual attempt={attempt} vx={vx:F2} vy={vy:F2} vw={vw:F2} vh={vh:F2} cx={_pendingWebDriverClickClientX} cy={_pendingWebDriverClickClientY}");
                     }
                     else
                     {
@@ -1790,7 +1813,6 @@ pre {{
                             _pendingWebDriverClickPointValid = true;
                             _pendingWebDriverClickClientX = (int)Math.Floor(rect.X + (rect.Width / 2.0));
                             _pendingWebDriverClickClientY = (int)Math.Floor(rect.Y + (rect.Height / 2.0));
-                            Console.WriteLine($"[WD-ClickDbg] source=layout attempt={attempt} x={rect.X:F2} y={rect.Y:F2} w={rect.Width:F2} h={rect.Height:F2} cx={_pendingWebDriverClickClientX} cy={_pendingWebDriverClickClientY}");
                         }
                     }
 
@@ -1815,7 +1837,6 @@ pre {{
 
                 if (!dispatchedByScript && _pendingWebDriverClickPointValid)
                 {
-                    Console.WriteLine("[WD-ClickDbg] script dispatch did not complete; falling back to native dispatch path");
                 }
 
                 _suppressNextDomClickDispatchInHandleElementClick = dispatchedByScript;
@@ -1863,11 +1884,9 @@ pre {{
                     return true;
                 }
 
-                Console.WriteLine($"[WD-ClickDbg] scriptrect returned no usable coordinates for elementId={elementId}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WD-ClickDbg] scriptrect exception for elementId={elementId}: {ex.GetType().Name}: {ex.Message}");
             }
 
             return false;
@@ -1894,13 +1913,11 @@ pre {{
 
                 if (dispatchResult is bool boolResult)
                 {
-                    Console.WriteLine($"[WD-ClickDbg] script dispatch result={boolResult} cx={clientX} cy={clientY}");
-                    return true;
+                    return boolResult;
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"[WD-ClickDbg] script dispatch exception={ex.Message}");
             }
 
             return false;
@@ -2410,27 +2427,24 @@ pre {{
 
         public bool HasValidCurrentBrowsingContext()
         {
+            if (_frameContextInvalidated)
+            {
+                return false;
+            }
+
+            // Top-level browsing-context validity is managed at the window/session layer.
+            // For frame contexts, fail when the selected frame is detached or unresolved.
             if (_currentFrameElement == null)
             {
                 return true;
             }
 
-            var activeDom = _engine.GetActiveDom();
-            var root = (activeDom as Element) ?? (activeDom as Document)?.DocumentElement;
-            if (root == null)
+            if (!_currentFrameElement.IsConnected)
             {
                 return false;
             }
 
-            if (ReferenceEquals(root, _currentFrameElement))
-            {
-                return true;
-            }
-
-            return root
-                .SelfAndDescendants()
-                .OfType<Element>()
-                .Any(element => ReferenceEquals(element, _currentFrameElement));
+            return ResolveFrameSearchRoot(_currentFrameElement) != null;
         }
 
         public WindowRect GetWindowRect()
@@ -2483,9 +2497,9 @@ pre {{
             if (frameId == null)
             {
                 _currentFrameElement = null;
+                _frameContextInvalidated = false;
                 _frameContextStack.Clear();
-                _elementMap.Clear();
-                _shadowRootMap.Clear();
+                SyncScriptContextToSelectedBrowsingContext();
                 TraceWebDriverFrame("SwitchToFrame reset to top-level context.");
                 return;
             }
@@ -2495,7 +2509,7 @@ pre {{
             {
                 TraceWebDriverFrame("SwitchToFrame could not resolve frame reference.");
                 TryLogWarn($"[BrowserHost] SwitchToFrameAsync could not resolve frame reference '{frameId}'.", LogCategory.Navigation);
-                return;
+                throw new InvalidOperationException("no such frame");
             }
 
             TraceWebDriverFrame($"SwitchToFrame resolved frame={DescribeFrameElement(frameElement)}");
@@ -2511,10 +2525,10 @@ pre {{
             }
 
             _currentFrameElement = frameElement;
-            _elementMap.Clear();
-            _shadowRootMap.Clear();
+            _frameContextInvalidated = false;
 
             var resolvedRoot = ResolveFrameSearchRoot(frameElement);
+            SyncScriptContextToSelectedBrowsingContext();
             TraceWebDriverFrame(
                 $"SwitchToFrame selected frame={DescribeFrameElement(frameElement)} root='{DescribeSearchRoot(resolvedRoot)}' preview='{BuildElementPreview(resolvedRoot, 12)}'");
         }
@@ -2522,8 +2536,8 @@ pre {{
         public Task SwitchToParentFrameAsync()
         {
             _currentFrameElement = _frameContextStack.Count > 0 ? _frameContextStack.Pop() : null;
-            _elementMap.Clear();
-            _shadowRootMap.Clear();
+            _frameContextInvalidated = false;
+            SyncScriptContextToSelectedBrowsingContext();
             return Task.CompletedTask;
         }
 
@@ -2549,7 +2563,19 @@ pre {{
             Element found = FindElementByStrategy(searchRoot, strategy, value);
             if (found != null)
             {
-                return GetOrRegisterElementId(found);
+                var canonicalId = await TryResolveRuntimeElementIdAsync(found).ConfigureAwait(false);
+                return canonicalId ?? GetOrRegisterElementId(found);
+            }
+
+            if (!string.IsNullOrWhiteSpace(parentId) &&
+                TryResolveHostElementReferenceForShadowRoot(parentId, out var hostElementRef))
+            {
+                var fallbackId = await FindElementFromShadowRootViaScriptAsync(hostElementRef, parentId, strategy, value)
+                    .ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(fallbackId))
+                {
+                    return fallbackId;
+                }
             }
 
             TryLogWarn(
@@ -2852,92 +2878,670 @@ pre {{
             var ids = new List<string>();
             foreach (var el in elements)
             {
-                ids.Add(GetOrRegisterElementId(el));
+                var canonicalId = await TryResolveRuntimeElementIdAsync(el).ConfigureAwait(false);
+                ids.Add(canonicalId ?? GetOrRegisterElementId(el));
             }
+
+            if (ids.Count == 0 &&
+                !string.IsNullOrWhiteSpace(parentId) &&
+                TryResolveHostElementReferenceForShadowRoot(parentId, out var hostElementRef))
+            {
+                var fallbackIds = await FindElementsFromShadowRootViaScriptAsync(hostElementRef, parentId, strategy, value)
+                    .ConfigureAwait(false);
+                if (fallbackIds.Length > 0)
+                {
+                    return fallbackIds;
+                }
+            }
+
             return ids.ToArray();
+        }
+
+        private async Task<string> TryResolveRuntimeElementIdAsync(Element element)
+        {
+            if (element == null)
+            {
+                return null;
+            }
+
+            var marker = "wdcanon-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                element.SetAttribute(WebDriverCanonicalProbeAttribute, marker);
+            }
+            catch
+            {
+                return null;
+            }
+
+            try
+            {
+                var script = $@"
+                    var marker = arguments[0];
+                    var selector = '[{WebDriverCanonicalProbeAttribute}=""' + marker + '""]';
+                    var el = document.querySelector(selector);
+                    if (!el) return null;
+                    el.removeAttribute('{WebDriverCanonicalProbeAttribute}');
+                    return el;";
+
+                var result = await ExecuteScriptAsync(script, new object[] { marker }).ConfigureAwait(false);
+                if (result is string token &&
+                    token.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
+                {
+                    return token.Substring(WebDriverElementTokenPrefix.Length);
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                try
+                {
+                    element.RemoveAttribute(WebDriverCanonicalProbeAttribute);
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        private async Task<string> FindElementFromShadowRootViaScriptAsync(
+            string hostElementId,
+            string shadowRootId,
+            string strategy,
+            string selector)
+        {
+            if (!TryResolveShadowHostElement(hostElementId, shadowRootId, out var hostElement) || hostElement == null)
+            {
+                return null;
+            }
+
+            var hostMarker = "fen-sr-host-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                hostElement.SetAttribute(WebDriverShadowHostProbeAttribute, hostMarker);
+            }
+            catch
+            {
+                return null;
+            }
+
+            var result = await ExecuteScriptAsync(
+                @"
+                var hostMarker = arguments[0] || '';
+                var usingStrategy = arguments[1] || '';
+                var selectorValue = arguments[2] || '';
+                var hostProbeAttribute = arguments[3] || '';
+                function collectText(node, parts) {
+                    if (!node) return;
+                    if (node.nodeType === Node.TEXT_NODE) { parts.push(node.nodeValue || ''); return; }
+                    if (node.nodeType === Node.ELEMENT_NODE && node.tagName && node.tagName.toLowerCase() === 'br') { parts.push('\n'); return; }
+                    var children = node.childNodes || [];
+                    for (var i = 0; i < children.length; i++) collectText(children[i], parts);
+                }
+                function renderedLinkText(anchor) {
+                    var parts = [];
+                    collectText(anchor, parts);
+                    var text = parts.join('').replace(/\u00a0/g, ' ').trim();
+                    var style = '';
+                    try { style = (anchor.getAttribute('style') || '').toLowerCase(); } catch (e) {}
+                    if (style.indexOf('text-transform') >= 0 && style.indexOf('uppercase') >= 0) text = text.toUpperCase();
+                    return text;
+                }
+                var host = null;
+                if (hostMarker) {
+                    try {
+                        host = Array.prototype.find.call(
+                            document.querySelectorAll('[' + hostProbeAttribute + ']'),
+                            function(node) { return node && node.getAttribute(hostProbeAttribute) === hostMarker; }) || null;
+                    } catch (e) { host = null; }
+                }
+                var root = null;
+                if (host) {
+                    try {
+                        if (window.customElements && typeof window.customElements.upgrade === 'function') {
+                            window.customElements.upgrade(host);
+                        }
+                    } catch (e) {}
+                    try { root = host.shadowRoot || null; } catch (e) { root = null; }
+                }
+                if (!root && window._shadowRoot) {
+                    try {
+                        if (window._shadowRoot.host === host) root = window._shadowRoot;
+                    } catch (e) {}
+                }
+                function collectElements(node, out) {
+                    if (!node) return;
+                    var children = node.childNodes || [];
+                    for (var i = 0; i < children.length; i++) {
+                        var child = children[i];
+                        if (child && child.nodeType === Node.ELEMENT_NODE) {
+                            out.push(child);
+                            collectElements(child, out);
+                        }
+                    }
+                }
+                function simpleCssMatch(el, sel) {
+                    if (!el || !sel) return false;
+                    if (sel === '*') return true;
+                    if (sel.charAt(0) === '#') return (el.id || '') === sel.substring(1);
+                    if (sel.charAt(0) === '.') {
+                        var cls = (el.getAttribute('class') || '').split(/\s+/);
+                        var needle = sel.substring(1);
+                        for (var i = 0; i < cls.length; i++) if (cls[i] === needle) return true;
+                        return false;
+                    }
+                    return (el.tagName || '').toLowerCase() === sel.toLowerCase();
+                }
+                if (!root) return null;
+                if (usingStrategy === 'css selector') {
+                    try {
+                        var direct = root.querySelector(selectorValue);
+                        if (direct) return direct;
+                    } catch (e) {}
+                    var cssCandidates = [];
+                    collectElements(root, cssCandidates);
+                    for (var i = 0; i < cssCandidates.length; i++) {
+                        if (simpleCssMatch(cssCandidates[i], selectorValue)) return cssCandidates[i];
+                    }
+                    return null;
+                }
+                if (usingStrategy === 'tag name') {
+                    var tags = [];
+                    collectElements(root, tags);
+                    for (var i = 0; i < tags.length; i++) {
+                        if ((tags[i].tagName || '').toLowerCase() === (selectorValue || '').toLowerCase()) return tags[i];
+                    }
+                    return null;
+                }
+                if (usingStrategy === 'link text' || usingStrategy === 'partial link text') {
+                    var all = [];
+                    collectElements(root, all);
+                    var anchors = [];
+                    for (var i = 0; i < all.length; i++) {
+                        if ((all[i].tagName || '').toLowerCase() === 'a') anchors.push(all[i]);
+                    }
+                    for (var i = 0; i < anchors.length; i++) {
+                        var text = renderedLinkText(anchors[i]);
+                        if (usingStrategy === 'link text' && text === selectorValue) return anchors[i];
+                        if (usingStrategy === 'partial link text' && text.indexOf(selectorValue) >= 0) return anchors[i];
+                    }
+                    return null;
+                }
+                if (usingStrategy === 'xpath') {
+                    try {
+                        var result = document.evaluate(selectorValue, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        for (var i = 0; i < result.snapshotLength; i++) {
+                            var candidate = result.snapshotItem(i);
+                            if (candidate && candidate.nodeType === Node.ELEMENT_NODE) return candidate;
+                        }
+                    } catch (e) {}
+                    var xpathCandidates = [];
+                    collectElements(root, xpathCandidates);
+                    if ((selectorValue || '').indexOf('//') === 0) {
+                        var tag = (selectorValue || '').substring(2).trim().toLowerCase();
+                        for (var i = 0; i < xpathCandidates.length; i++) {
+                            if ((xpathCandidates[i].tagName || '').toLowerCase() === tag) return xpathCandidates[i];
+                        }
+                    }
+                    return null;
+                }
+                return null;",
+                new object[] { hostMarker, strategy ?? string.Empty, selector ?? string.Empty, WebDriverShadowHostProbeAttribute }).ConfigureAwait(false);
+
+            try
+            {
+                hostElement.RemoveAttribute(WebDriverShadowHostProbeAttribute);
+            }
+            catch
+            {
+            }
+
+            if (result is string token &&
+                token.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
+            {
+                return token.Substring(WebDriverElementTokenPrefix.Length);
+            }
+
+            if (result is FenBrowser.FenEngine.Core.Interfaces.IObject obj &&
+                TryExtractDomElementFromWrapper(obj, out var element) &&
+                element != null)
+            {
+                return GetOrRegisterElementId(element);
+            }
+
+            if (result is Element directElement)
+            {
+                return GetOrRegisterElementId(directElement);
+            }
+
+            return null;
+        }
+
+        private async Task<string[]> FindElementsFromShadowRootViaScriptAsync(
+            string hostElementId,
+            string shadowRootId,
+            string strategy,
+            string selector)
+        {
+            if (!TryResolveShadowHostElement(hostElementId, shadowRootId, out var hostElement) || hostElement == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var hostMarker = "fen-sr-host-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                hostElement.SetAttribute(WebDriverShadowHostProbeAttribute, hostMarker);
+            }
+            catch
+            {
+                return Array.Empty<string>();
+            }
+
+            var result = await ExecuteScriptAsync(
+                @"
+                var hostMarker = arguments[0] || '';
+                var usingStrategy = arguments[1] || '';
+                var selectorValue = arguments[2] || '';
+                var hostProbeAttribute = arguments[3] || '';
+                function collectText(node, parts) {
+                    if (!node) return;
+                    if (node.nodeType === Node.TEXT_NODE) { parts.push(node.nodeValue || ''); return; }
+                    if (node.nodeType === Node.ELEMENT_NODE && node.tagName && node.tagName.toLowerCase() === 'br') { parts.push('\n'); return; }
+                    var children = node.childNodes || [];
+                    for (var i = 0; i < children.length; i++) collectText(children[i], parts);
+                }
+                function renderedLinkText(anchor) {
+                    var parts = [];
+                    collectText(anchor, parts);
+                    var text = parts.join('').replace(/\u00a0/g, ' ').trim();
+                    var style = '';
+                    try { style = (anchor.getAttribute('style') || '').toLowerCase(); } catch (e) {}
+                    if (style.indexOf('text-transform') >= 0 && style.indexOf('uppercase') >= 0) text = text.toUpperCase();
+                    return text;
+                }
+                var host = null;
+                if (hostMarker) {
+                    try {
+                        host = Array.prototype.find.call(
+                            document.querySelectorAll('[' + hostProbeAttribute + ']'),
+                            function(node) { return node && node.getAttribute(hostProbeAttribute) === hostMarker; }) || null;
+                    } catch (e) { host = null; }
+                }
+                var root = null;
+                if (host) {
+                    try {
+                        if (window.customElements && typeof window.customElements.upgrade === 'function') {
+                            window.customElements.upgrade(host);
+                        }
+                    } catch (e) {}
+                    try { root = host.shadowRoot || null; } catch (e) { root = null; }
+                }
+                if (!root && window._shadowRoot) {
+                    try {
+                        if (window._shadowRoot.host === host) root = window._shadowRoot;
+                    } catch (e) {}
+                }
+                function collectElements(node, out) {
+                    if (!node) return;
+                    var children = node.childNodes || [];
+                    for (var i = 0; i < children.length; i++) {
+                        var child = children[i];
+                        if (child && child.nodeType === Node.ELEMENT_NODE) {
+                            out.push(child);
+                            collectElements(child, out);
+                        }
+                    }
+                }
+                function simpleCssMatch(el, sel) {
+                    if (!el || !sel) return false;
+                    if (sel === '*') return true;
+                    if (sel.charAt(0) === '#') return (el.id || '') === sel.substring(1);
+                    if (sel.charAt(0) === '.') {
+                        var cls = (el.getAttribute('class') || '').split(/\s+/);
+                        var needle = sel.substring(1);
+                        for (var i = 0; i < cls.length; i++) if (cls[i] === needle) return true;
+                        return false;
+                    }
+                    return (el.tagName || '').toLowerCase() === sel.toLowerCase();
+                }
+                if (!root) return [];
+                if (usingStrategy === 'css selector' || usingStrategy === 'tag name') {
+                    try {
+                        var direct = Array.from(root.querySelectorAll(selectorValue));
+                        if (direct.length > 0) return direct;
+                    } catch (e) {}
+                    var cssCandidates = [];
+                    collectElements(root, cssCandidates);
+                    var outCss = [];
+                    for (var i = 0; i < cssCandidates.length; i++) {
+                        if (usingStrategy === 'tag name') {
+                            if ((cssCandidates[i].tagName || '').toLowerCase() === (selectorValue || '').toLowerCase()) outCss.push(cssCandidates[i]);
+                        } else if (simpleCssMatch(cssCandidates[i], selectorValue)) {
+                            outCss.push(cssCandidates[i]);
+                        }
+                    }
+                    return outCss;
+                }
+                if (usingStrategy === 'link text' || usingStrategy === 'partial link text') {
+                    var all = [];
+                    collectElements(root, all);
+                    var anchors = [];
+                    for (var i = 0; i < all.length; i++) {
+                        if ((all[i].tagName || '').toLowerCase() === 'a') anchors.push(all[i]);
+                    }
+                    var matches = [];
+                    for (var i = 0; i < anchors.length; i++) {
+                        var text = renderedLinkText(anchors[i]);
+                        if (usingStrategy === 'link text' && text === selectorValue) matches.push(anchors[i]);
+                        if (usingStrategy === 'partial link text' && text.indexOf(selectorValue) >= 0) matches.push(anchors[i]);
+                    }
+                    return matches;
+                }
+                if (usingStrategy === 'xpath') {
+                    var out = [];
+                    try {
+                        var result = document.evaluate(selectorValue, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        for (var i = 0; i < result.snapshotLength; i++) {
+                            var candidate = result.snapshotItem(i);
+                            if (candidate && candidate.nodeType === Node.ELEMENT_NODE) out.push(candidate);
+                        }
+                    } catch (e) {}
+                    if (out.length === 0 && (selectorValue || '').indexOf('//') === 0) {
+                        var tag = (selectorValue || '').substring(2).trim().toLowerCase();
+                        var xpathCandidates = [];
+                        collectElements(root, xpathCandidates);
+                        for (var i = 0; i < xpathCandidates.length; i++) {
+                            if ((xpathCandidates[i].tagName || '').toLowerCase() === tag) out.push(xpathCandidates[i]);
+                        }
+                    }
+                    return out;
+                }
+                return [];",
+                new object[] { hostMarker, strategy ?? string.Empty, selector ?? string.Empty, WebDriverShadowHostProbeAttribute }).ConfigureAwait(false);
+
+            try
+            {
+                hostElement.RemoveAttribute(WebDriverShadowHostProbeAttribute);
+            }
+            catch
+            {
+            }
+
+            var ids = new List<string>();
+            if (result is IEnumerable enumerable && result is not string)
+            {
+                foreach (var item in enumerable)
+                {
+                    if (item is string token &&
+                        token.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
+                    {
+                        ids.Add(token.Substring(WebDriverElementTokenPrefix.Length));
+                        continue;
+                    }
+
+                    if (item is FenBrowser.FenEngine.Core.Interfaces.IObject obj &&
+                        TryExtractDomElementFromWrapper(obj, out var element) &&
+                        element != null)
+                    {
+                        ids.Add(GetOrRegisterElementId(element));
+                        continue;
+                    }
+
+                    if (item is Element directElement)
+                    {
+                        ids.Add(GetOrRegisterElementId(directElement));
+                    }
+                }
+            }
+
+            return ids.ToArray();
+        }
+
+        private bool TryResolveShadowHostElement(string hostElementId, string shadowRootId, out Element hostElement)
+        {
+            hostElement = null;
+
+            if (!string.IsNullOrWhiteSpace(hostElementId) &&
+                _elementMap.TryGetValue(hostElementId, out var mappedHost) &&
+                mappedHost != null)
+            {
+                hostElement = mappedHost;
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(shadowRootId) &&
+                _shadowRootMap.TryGetValue(shadowRootId, out var mappedShadowRoot) &&
+                mappedShadowRoot?.Host != null)
+            {
+                hostElement = mappedShadowRoot.Host;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetHostElementReferenceFromShadowRootId(string shadowRootId, out string hostElementRef)
+        {
+            hostElementRef = null;
+            if (string.IsNullOrWhiteSpace(shadowRootId) ||
+                !shadowRootId.StartsWith("sr:host:", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            hostElementRef = shadowRootId.Substring("sr:host:".Length);
+            return !string.IsNullOrWhiteSpace(hostElementRef);
+        }
+
+        private bool TryResolveHostElementReferenceForShadowRoot(string shadowRootId, out string hostElementRef)
+        {
+            hostElementRef = null;
+
+            if (TryGetHostElementReferenceFromShadowRootId(shadowRootId, out var deterministicHostRef))
+            {
+                hostElementRef = deterministicHostRef;
+                return true;
+            }
+
+            if (!_shadowRootMap.TryGetValue(shadowRootId, out var shadowRoot) || shadowRoot?.Host == null)
+            {
+                return false;
+            }
+
+            hostElementRef = GetOrRegisterElementId(shadowRoot.Host);
+            return !string.IsNullOrWhiteSpace(hostElementRef);
         }
 
         private Element FindElementByStrategy(Node root, string strategy, string value)
         {
-            value = value?.Trim() ?? string.Empty;
-            if (strategy == "css selector")
-            {
-                if (value.StartsWith("#"))
-                {
-                    var id = value.Substring(1);
-                    return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
-                }
-                else if (value.StartsWith("."))
-                {
-                    var cls = value.Substring(1);
-                    return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n =>
-                        n.Attr != null &&
-                        n.Attr.TryGetValue("class", out var classAttr) &&
-                        classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                            .Any(token => string.Equals(token, cls, StringComparison.Ordinal)));
-                }
-                else
-                {
-                    return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n =>
-                        string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
-                }
-            }
-            else if (strategy == "xpath" && value.StartsWith("//"))
-            {
-                var tag = value.Substring(2);
-                return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n =>
-                    string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(n.NodeName, tag, StringComparison.OrdinalIgnoreCase));
-            }
-            else if (strategy == "tag name")
-            {
-                return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
-            }
-            else if (strategy == "link text")
-            {
-                return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "a", StringComparison.OrdinalIgnoreCase) && n.TextContent?.Trim() == value);
-            }
-            else if (strategy == "partial link text")
-            {
-                return root.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "a", StringComparison.OrdinalIgnoreCase) && n.TextContent?.Contains(value) == true);
-            }
-            return null;
+            return FindElementsByStrategy(root, strategy, value).FirstOrDefault();
         }
 
         private IEnumerable<Element> FindElementsByStrategy(Node root, string strategy, string value)
         {
             value = value?.Trim() ?? string.Empty;
-            if (strategy == "css selector")
+            var elements = root.SelfAndDescendants().OfType<Element>();
+
+            if (string.Equals(strategy, "css selector", StringComparison.Ordinal))
             {
-                if (value.StartsWith("#"))
+                if (string.IsNullOrWhiteSpace(value))
                 {
-                    var id = value.Substring(1);
-                    return root.SelfAndDescendants().OfType<Element>().Where(n => n.Attr != null && n.Attr.ContainsKey("id") && n.Attr["id"] == id);
+                    throw new InvalidOperationException("invalid selector");
                 }
-                else if (value.StartsWith("."))
-                {
-                    var cls = value.Substring(1);
-                    return root.SelfAndDescendants().OfType<Element>().Where(n =>
-                        n.Attr != null &&
-                        n.Attr.TryGetValue("class", out var classAttr) &&
-                        classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                            .Any(token => string.Equals(token, cls, StringComparison.Ordinal)));
-                }
-                else
-                {
-                    return root.SelfAndDescendants().OfType<Element>().Where(n =>
-                        string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
-                }
+
+                return elements.Where(element => IsCssMatch(element, value));
             }
-            else if (strategy == "tag name")
+
+            if (string.Equals(strategy, "tag name", StringComparison.Ordinal))
             {
-                return root.SelfAndDescendants().OfType<Element>().Where(n =>
+                return elements.Where(n =>
                     string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(n.NodeName, value, StringComparison.OrdinalIgnoreCase));
             }
+
+            if (string.Equals(strategy, "link text", StringComparison.Ordinal))
+            {
+                return elements.Where(element =>
+                    IsAnchorElement(element) &&
+                    string.Equals(GetRenderedLinkTextForMatch(element), value, StringComparison.Ordinal));
+            }
+
+            if (string.Equals(strategy, "partial link text", StringComparison.Ordinal))
+            {
+                return elements.Where(element =>
+                    IsAnchorElement(element) &&
+                    GetRenderedLinkTextForMatch(element).Contains(value, StringComparison.Ordinal));
+            }
+
+            if (string.Equals(strategy, "xpath", StringComparison.Ordinal))
+            {
+                return EvaluateXPath(root, value);
+            }
+
             return Enumerable.Empty<Element>();
+        }
+
+        private static bool IsAnchorElement(Element element)
+        {
+            return element != null &&
+                   (string.Equals(element.TagName, "a", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.NodeName, "a", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsCssMatch(Element element, string selector)
+        {
+            try
+            {
+                return element.Matches(selector);
+            }
+            catch
+            {
+                throw new InvalidOperationException("invalid selector");
+            }
+        }
+
+        private static string GetRenderedLinkTextForMatch(Element element)
+        {
+            if (element == null)
+            {
+                return string.Empty;
+            }
+
+            var pieces = new List<string>();
+            CollectRenderedText(element, pieces);
+            var rendered = string.Concat(pieces).Replace('\u00A0', ' ').Trim();
+
+            var inlineStyle = element.GetAttribute("style") ?? string.Empty;
+            if (inlineStyle.IndexOf("text-transform", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                inlineStyle.IndexOf("uppercase", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return rendered.ToUpperInvariant();
+            }
+
+            return rendered;
+        }
+
+        private static void CollectRenderedText(Node node, List<string> pieces)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            if (node.NodeType == NodeType.Text)
+            {
+                pieces.Add(node.TextContent ?? string.Empty);
+                return;
+            }
+
+            if (node is Element element &&
+                string.Equals(element.TagName, "br", StringComparison.OrdinalIgnoreCase))
+            {
+                pieces.Add("\n");
+                return;
+            }
+
+            var children = node.ChildNodes;
+            if (children == null)
+            {
+                return;
+            }
+
+            foreach (var child in children)
+            {
+                CollectRenderedText(child, pieces);
+            }
+        }
+
+        private static IEnumerable<Element> EvaluateXPath(Node root, string expression)
+        {
+            var query = (expression ?? string.Empty).Trim();
+            var elements = root.SelfAndDescendants().OfType<Element>().ToList();
+
+            if (query == "..")
+            {
+                if (root is not Element contextElement)
+                {
+                    throw new InvalidOperationException("invalid selector");
+                }
+
+                if (contextElement.ParentNode is Document)
+                {
+                    throw new InvalidOperationException("invalid selector");
+                }
+
+                if (contextElement.ParentNode is Element parentElement)
+                {
+                    return new[] { parentElement };
+                }
+
+                return Enumerable.Empty<Element>();
+            }
+
+            if (query == "/html")
+            {
+                var html = elements.FirstOrDefault(element =>
+                    string.Equals(element.TagName, "html", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.NodeName, "html", StringComparison.OrdinalIgnoreCase));
+                return html == null ? Enumerable.Empty<Element>() : new[] { html };
+            }
+
+            if (!query.StartsWith("//", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("invalid selector");
+            }
+
+            var selector = query.Substring(2).Trim();
+            if (string.IsNullOrWhiteSpace(selector))
+            {
+                throw new InvalidOperationException("invalid selector");
+            }
+
+            if (selector.StartsWith("*[name()='", StringComparison.Ordinal) &&
+                selector.EndsWith("']", StringComparison.Ordinal) &&
+                selector.Length > "*[name()='']".Length)
+            {
+                var name = selector.Substring(10, selector.Length - 12);
+                return elements.Where(element =>
+                    string.Equals(element.TagName, name, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(element.NodeName, name, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (selector.IndexOf('/', StringComparison.Ordinal) >= 0 ||
+                selector.IndexOf('[', StringComparison.Ordinal) >= 0 ||
+                selector.IndexOf('(', StringComparison.Ordinal) >= 0)
+            {
+                throw new InvalidOperationException("invalid selector");
+            }
+
+            return elements.Where(element =>
+                string.Equals(element.TagName, selector, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(element.NodeName, selector, StringComparison.OrdinalIgnoreCase));
         }
 
         private static string DescribeSearchRoot(Node root)
@@ -2984,12 +3588,43 @@ pre {{
         {
             if (!string.IsNullOrEmpty(parentId) && _elementMap.TryGetValue(parentId, out var parent))
             {
+                if (!IsElementReferenceInCurrentBrowsingContext(parentId))
+                {
+                    throw new InvalidOperationException("no such element");
+                }
+
+                if (!parent.IsConnected)
+                {
+                    throw new InvalidOperationException("stale element reference");
+                }
+
                 return parent;
             }
 
-            if (!string.IsNullOrEmpty(parentId) && _shadowRootMap.TryGetValue(parentId, out var shadowRoot))
+            if (!string.IsNullOrEmpty(parentId))
             {
-                return shadowRoot;
+                var activeSearchRoot = ResolveSearchRoot();
+                if (activeSearchRoot == null)
+                {
+                    if (_currentFrameElement != null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    if (TryResolveShadowRootWithoutSearchRoot(parentId, out var shadowRoot, out var shadowRootError))
+                    {
+                        return shadowRoot;
+                    }
+
+                    throw new InvalidOperationException(shadowRootError ?? "no such shadow root");
+                }
+
+                if (TryResolveShadowRootInActiveContext(parentId, activeSearchRoot, out var activeContextShadowRoot, out var error))
+                {
+                    return activeContextShadowRoot;
+                }
+
+                throw new InvalidOperationException(error ?? "no such shadow root");
             }
 
             if (_currentFrameElement != null)
@@ -2999,6 +3634,133 @@ pre {{
 
             var dom = _engine.GetActiveDom();
             return (dom as Element) ?? (dom as Document)?.DocumentElement;
+        }
+
+        private bool TryResolveShadowRootInActiveContext(
+            string shadowRootReference,
+            Element activeSearchRoot,
+            out ShadowRoot shadowRoot,
+            out string error)
+        {
+            shadowRoot = null;
+            error = null;
+
+            if (string.IsNullOrWhiteSpace(shadowRootReference))
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            if (!_shadowRootMap.TryGetValue(shadowRootReference, out shadowRoot) || shadowRoot == null)
+            {
+                if (shadowRootReference.StartsWith("sr:host:", StringComparison.Ordinal))
+                {
+                    var hostReferenceIdFromLookup = shadowRootReference.Substring("sr:host:".Length);
+                    if (!string.IsNullOrWhiteSpace(hostReferenceIdFromLookup) &&
+                        _elementMap.TryGetValue(hostReferenceIdFromLookup, out var hostElement))
+                    {
+                        shadowRoot = TryGetAttachedShadowRoot(hostElement);
+                        if (shadowRoot != null)
+                        {
+                            _shadowRootMap[shadowRootReference] = shadowRoot;
+                        }
+                    }
+                }
+            }
+
+            if (shadowRoot == null)
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            var hostReferenceId = string.Empty;
+            if (shadowRootReference.StartsWith("sr:host:", StringComparison.Ordinal))
+            {
+                hostReferenceId = shadowRootReference.Substring("sr:host:".Length);
+            }
+
+            var shadowHost = shadowRoot.Host;
+            if (shadowHost == null)
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            if (!shadowHost.IsConnected || shadowHost.ParentNode == null)
+            {
+                if (!string.IsNullOrWhiteSpace(hostReferenceId) &&
+                    IsElementReferenceInCurrentBrowsingContext(hostReferenceId))
+                {
+                    error = "detached shadow root";
+                }
+                else
+                {
+                    error = "no such shadow root";
+                }
+                return false;
+            }
+
+            if (!IsElementWithinSearchRoot(activeSearchRoot, shadowHost))
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool TryResolveShadowRootWithoutSearchRoot(
+            string shadowRootReference,
+            out ShadowRoot shadowRoot,
+            out string error)
+        {
+            shadowRoot = null;
+            error = null;
+
+            if (string.IsNullOrWhiteSpace(shadowRootReference))
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            if (!_shadowRootMap.TryGetValue(shadowRootReference, out shadowRoot) || shadowRoot == null)
+            {
+                if (shadowRootReference.StartsWith("sr:host:", StringComparison.Ordinal))
+                {
+                    var hostReferenceId = shadowRootReference.Substring("sr:host:".Length);
+                    if (!string.IsNullOrWhiteSpace(hostReferenceId) &&
+                        _elementMap.TryGetValue(hostReferenceId, out var hostElement))
+                    {
+                        shadowRoot = TryGetAttachedShadowRoot(hostElement);
+                        if (shadowRoot != null)
+                        {
+                            _shadowRootMap[shadowRootReference] = shadowRoot;
+                        }
+                    }
+                }
+            }
+
+            if (shadowRoot == null)
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            var shadowHost = shadowRoot.Host;
+            if (shadowHost == null)
+            {
+                error = "no such shadow root";
+                return false;
+            }
+
+            if (!shadowHost.IsConnected || shadowHost.ParentNode == null)
+            {
+                error = "detached shadow root";
+                return false;
+            }
+
+            return true;
         }
 
         private Element ResolveSearchRoot(string parentId = null)
@@ -3071,6 +3833,11 @@ pre {{
                 return null;
             }
 
+            if (!frameElement.IsConnected)
+            {
+                return null;
+            }
+
             if (FenBrowser.FenEngine.DOM.ElementWrapper.IsRemoteFrameElement(frameElement, _current?.AbsoluteUri))
             {
                 TraceWebDriverFrame($"ResolveFrameSearchRoot remote-frame block frame={DescribeFrameElement(frameElement)} currentUrl='{_current?.AbsoluteUri ?? "about:blank"}'");
@@ -3128,6 +3895,13 @@ pre {{
         {
             if (!IsFrameElement(frameElement))
             {
+                return;
+            }
+
+            var existingRoot = ResolveFrameSearchRoot(frameElement);
+            if (existingRoot != null)
+            {
+                await TryInitializeFrameScriptsAsync(frameElement, existingRoot, ResolveFrameBaseUri(frameElement)).ConfigureAwait(false);
                 return;
             }
 
@@ -3212,6 +3986,7 @@ pre {{
                 }
 
                 frameElement.AppendChild(parsedRoot);
+                await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, frameUri).ConfigureAwait(false);
                 TraceWebDriverFrame(
                     $"EnsureFrameRoot attached parsedRoot='{parsedRoot.TagName}' frameAfter={DescribeFrameElement(frameElement)}");
             }
@@ -3220,6 +3995,97 @@ pre {{
                 TryLogWarn($"[WebDriverFrame] failed parsing frame content: {ex.Message}", LogCategory.Navigation);
                 TraceWebDriverFrame($"EnsureFrameRoot parse-failed error='{ex.Message}'");
             }
+        }
+
+        private Uri ResolveFrameBaseUri(Element frameElement)
+        {
+            if (frameElement == null)
+            {
+                return _current;
+            }
+
+            var src = frameElement.GetAttribute("src");
+            if (string.IsNullOrWhiteSpace(src) ||
+                string.Equals(src, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+                src.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) ||
+                src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return _current;
+            }
+
+            if (Uri.TryCreate(src, UriKind.Absolute, out var absoluteSrc))
+            {
+                return absoluteSrc;
+            }
+
+            if (_current != null && Uri.TryCreate(_current, src, out var relativeSrc))
+            {
+                return relativeSrc;
+            }
+
+            return _current;
+        }
+
+        private async Task TryInitializeFrameScriptsAsync(Element frameElement, Element frameRoot, Uri frameUri)
+        {
+            if (frameElement == null || frameRoot == null)
+            {
+                return;
+            }
+
+            if (string.Equals(frameElement.GetAttribute(WebDriverFrameScriptsHydratedAttribute), "1", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var jsEngine = _engine?.JsEngine;
+            if (jsEngine == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+                frameElement.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[WebDriverFrame] failed initializing frame scripts: {ex.Message}", LogCategory.Navigation);
+            }
+        }
+
+        private void SyncScriptContextToSelectedBrowsingContext()
+        {
+            var jsEngine = _engine?.JsEngine;
+            if (jsEngine == null)
+            {
+                return;
+            }
+
+            Node activeRoot = null;
+            var baseUri = _current;
+
+            if (_currentFrameElement != null)
+            {
+                activeRoot = ResolveFrameSearchRoot(_currentFrameElement);
+                baseUri = ResolveFrameBaseUri(_currentFrameElement) ?? _current;
+            }
+            else
+            {
+                activeRoot = GetDomRoot();
+                if (activeRoot == null)
+                {
+                    activeRoot = _engine.GetActiveDom();
+                }
+            }
+
+            if (activeRoot == null)
+            {
+                return;
+            }
+
+            jsEngine.SyncDomContext(activeRoot, baseUri);
         }
 
         private static string DescribeFrameElement(Element frameElement)
@@ -3243,6 +4109,11 @@ pre {{
 
         private static void TraceWebDriverFrame(string message)
         {
+            if (!WebDriverFrameTraceEnabled)
+            {
+                return;
+            }
+
             var trace = $"[WebDriverFrameTrace] {message}";
             Console.WriteLine(trace);
             TryLogInfo(trace, LogCategory.Navigation);
@@ -3273,50 +4144,92 @@ pre {{
         public Task<string> GetShadowRootAsync(string elementId)
         {
             var element = ResolveElementInActiveContextOrThrow(elementId);
-            var shadowRoot = element?.ShadowRoot;
-            if (shadowRoot == null)
+            var marker = "fen-sr-probe-" + Guid.NewGuid().ToString("N");
+            try
             {
-                try
-                {
-                    var probe = ExecuteScriptAsync(
-                        @"if (!arguments[0]) return null;
+                element.SetAttribute(WebDriverShadowRootProbeAttribute, marker);
+            }
+            catch
+            {
+                marker = null;
+            }
+
+            try
+            {
+                var probe = ExecuteScriptAsync(
+                    @"var marker = arguments[0] || '';
+                      var probeAttr = arguments[1] || '';
+                      var host = null;
+                      if (marker && probeAttr) {
                           try {
-                              if (window.customElements &&
-                                  typeof window.customElements.upgrade === 'function') {
-                                  window.customElements.upgrade(arguments[0]);
-                              }
-                          } catch (e) {}
-                          return arguments[0].shadowRoot || window._shadowRoot || null;",
-                        new object[] { elementId }).GetAwaiter().GetResult();
-                    if (probe is string shadowToken &&
-                        shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
+                              host = Array.prototype.find.call(
+                                  document.querySelectorAll('[' + probeAttr + ']'),
+                                  function(node) { return node && node.getAttribute(probeAttr) === marker; }) || null;
+                          } catch (e) { host = null; }
+                      }
+                      if (!host) {
+                          host = arguments[2] || null;
+                      }
+                      if (!host) return null;
+                      try {
+                          if (window.customElements &&
+                              typeof window.customElements.upgrade === 'function') {
+                              window.customElements.upgrade(host);
+                          }
+                      } catch (e) {}
+                      if (host && host.shadowRoot) {
+                          return host.shadowRoot;
+                      }
+                      if (window._shadowRoot && window._shadowRoot.host === host) {
+                          return window._shadowRoot;
+                      }
+                      return null;",
+                    new object[] { marker ?? string.Empty, WebDriverShadowRootProbeAttribute, elementId }).GetAwaiter().GetResult();
+                if (probe is string shadowToken &&
+                    shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
+                {
+                    var resolvedShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
+                    if (!string.IsNullOrWhiteSpace(resolvedShadowId))
                     {
-                        var resolvedShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
-                        if (!string.IsNullOrWhiteSpace(resolvedShadowId))
-                        {
-                            return Task.FromResult(resolvedShadowId);
-                        }
+                        return Task.FromResult(resolvedShadowId);
                     }
                 }
-                catch
+
+                if (probe is FenBrowser.FenEngine.Core.Interfaces.IObject probeObject &&
+                    TryExtractShadowRootFromWrapper(probeObject, out var probeShadowRoot))
                 {
-                    // Keep deterministic null behavior for no-open-shadow-root cases.
+                    var probeShadowId = GetOrRegisterShadowRootId(probeShadowRoot);
+                    if (!string.IsNullOrWhiteSpace(probeShadowId))
+                    {
+                        return Task.FromResult(probeShadowId);
+                    }
                 }
-
-                return Task.FromResult<string>(null);
             }
-
-            foreach (var entry in _shadowRootMap)
+            catch
             {
-                if (ReferenceEquals(entry.Value, shadowRoot))
+                // Keep deterministic null behavior for no-shadow-root cases.
+            }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(marker))
                 {
-                    return Task.FromResult(entry.Key);
+                    try
+                    {
+                        element.RemoveAttribute(WebDriverShadowRootProbeAttribute);
+                    }
+                    catch
+                    {
+                    }
                 }
             }
 
-            var id = Guid.NewGuid().ToString();
-            _shadowRootMap[id] = shadowRoot;
-            return Task.FromResult(id);
+            var shadowRoot = TryGetAttachedShadowRoot(element);
+            if (shadowRoot != null)
+            {
+                return Task.FromResult(GetOrRegisterShadowRootId(shadowRoot));
+            }
+
+            return Task.FromResult<string>(null);
         }
 
         public Task<bool> IsElementSelectedAsync(string elementId)
@@ -3503,17 +4416,293 @@ pre {{
 
         public Task ClearElementAsync(string elementId)
         {
-            // Clear input/textarea value
             var el = ResolveElementInActiveContextOrThrow(elementId);
-            if (el != null)
+            var tag = (el?.NodeName ?? el?.TagName ?? string.Empty).ToLowerInvariant();
+
+            if (el == null)
             {
-                var tag = el.TagName?.ToLowerInvariant();
-                if (tag == "input" || tag == "textarea")
+                throw new InvalidOperationException("no such element");
+            }
+
+            if (IsDisabledControl(el))
+            {
+                throw new InvalidOperationException("invalid element state");
+            }
+
+            if (HasReadonlyStateForClear(el, tag))
+            {
+                throw new InvalidOperationException("invalid element state");
+            }
+
+            if (!TryResolveClearReplacement(el, tag, out var replacementValue, out var replacementTextContent))
+            {
+                throw new InvalidOperationException("invalid element state");
+            }
+
+            if (!CanClearElementAtCurrentViewport(el))
+            {
+                throw new InvalidOperationException("element not interactable");
+            }
+
+            if (!WillClearChangeElement(el, tag, replacementValue, replacementTextContent))
+            {
+                return Task.CompletedTask;
+            }
+
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            DispatchDomEvent(el, "focus", eventContext, bubbles: false);
+            SetFocusedElementState(el);
+
+            var changed = ApplyElementClear(el, tag, replacementValue, replacementTextContent);
+            if (changed)
+            {
+                DispatchDomEvent(el, "change", eventContext, bubbles: true);
+            }
+
+            DispatchDomEvent(el, "blur", eventContext, bubbles: false);
+            var body = FindBodyElement(el.OwnerDocument);
+            SetFocusedElementState(body);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+
+            return Task.CompletedTask;
+        }
+
+        private bool CanClearElementAtCurrentViewport(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (TryGetElementClickClientPoint(element, out var clickX, out var clickY))
+            {
+                var viewportRect = GetWindowRect();
+                if (clickX < 0 || clickY < 0 || clickX >= viewportRect.Width || clickY >= viewportRect.Height)
                 {
-                    SetTextEntryValue(el, string.Empty);
+                    return false;
                 }
             }
-            return Task.CompletedTask;
+
+            if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(element, out var vx, out var vy, out var vw, out var vh))
+            {
+                if (vw > 0 && vh > 0)
+                {
+                    var viewport = GetWindowRect();
+                    if ((vx + vw) <= 0 || (vy + vh) <= 0 || vx >= viewport.Width || vy >= viewport.Height)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool HasReadonlyStateForClear(Element element, string loweredTag)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(loweredTag, "input", StringComparison.Ordinal) &&
+                !string.Equals(loweredTag, "textarea", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return element.HasAttribute("readonly");
+        }
+
+        private bool TryResolveClearReplacement(
+            Element element,
+            string loweredTag,
+            out string replacementValue,
+            out string replacementTextContent)
+        {
+            replacementValue = string.Empty;
+            replacementTextContent = string.Empty;
+
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(loweredTag, "textarea", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (string.Equals(loweredTag, "input", StringComparison.Ordinal))
+            {
+                var type = element.GetAttribute("type")?.Trim().ToLowerInvariant() ?? string.Empty;
+                switch (type)
+                {
+                    case "hidden":
+                    case "button":
+                    case "submit":
+                    case "reset":
+                    case "checkbox":
+                    case "radio":
+                    case "image":
+                        return false;
+                    case "range":
+                        replacementValue = "50";
+                        return true;
+                    case "color":
+                        replacementValue = "#000000";
+                        return true;
+                    default:
+                        replacementValue = string.Empty;
+                        return true;
+                }
+            }
+
+            if (IsContentEditableForClear(element))
+            {
+                replacementValue = null;
+                replacementTextContent = string.Empty;
+                return true;
+            }
+
+            if (IsDocumentDesignModeEnabled())
+            {
+                replacementValue = null;
+                replacementTextContent = string.Empty;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsContentEditableForClear(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!element.HasAttribute("contenteditable"))
+            {
+                return false;
+            }
+
+            var value = element.GetAttribute("contenteditable");
+            return !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsDocumentDesignModeEnabled()
+        {
+            try
+            {
+                var result = ExecuteScriptAsync(
+                    "return ((document && document.designMode) || '').toLowerCase() === 'on';",
+                    Array.Empty<object>()).GetAwaiter().GetResult();
+                return result is bool b && b;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool WillClearChangeElement(
+            Element element,
+            string loweredTag,
+            string replacementValue,
+            string replacementTextContent)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(loweredTag, "textarea", StringComparison.Ordinal) ||
+                string.Equals(loweredTag, "input", StringComparison.Ordinal))
+            {
+                var previous = GetTextEntryValue(element);
+                var replacement = replacementValue ?? string.Empty;
+                return !string.Equals(previous, replacement, StringComparison.Ordinal);
+            }
+
+            if (IsContentEditableForClear(element))
+            {
+                var previous = element.TextContent ?? string.Empty;
+                var replacement = replacementTextContent ?? string.Empty;
+                return !string.Equals(previous, replacement, StringComparison.Ordinal);
+            }
+
+            if (replacementValue == null)
+            {
+                var previous = element.TextContent ?? string.Empty;
+                var replacement = replacementTextContent ?? string.Empty;
+                return !string.Equals(previous, replacement, StringComparison.Ordinal);
+            }
+
+            return false;
+        }
+
+        private static bool ApplyElementClear(
+            Element element,
+            string loweredTag,
+            string replacementValue,
+            string replacementTextContent)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(loweredTag, "textarea", StringComparison.Ordinal) ||
+                string.Equals(loweredTag, "input", StringComparison.Ordinal))
+            {
+                var previous = GetTextEntryValue(element);
+                SetTextEntryValue(element, replacementValue ?? string.Empty);
+                var current = GetTextEntryValue(element);
+                return !string.Equals(previous, current, StringComparison.Ordinal);
+            }
+
+            if (IsContentEditableForClear(element) || replacementValue == null)
+            {
+                var previous = element.TextContent ?? string.Empty;
+                element.TextContent = replacementTextContent ?? string.Empty;
+                var current = element.TextContent ?? string.Empty;
+                return !string.Equals(previous, current, StringComparison.Ordinal);
+            }
+
+            return false;
+        }
+
+        private static Element FindBodyElement(Document document)
+        {
+            if (document == null)
+            {
+                return null;
+            }
+
+            return document.DocumentElement?
+                .SelfAndDescendants()
+                .OfType<Element>()
+                .FirstOrDefault(candidate =>
+                    string.Equals(candidate.TagName, "body", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static void DispatchDomEvent(Element target, string type, FenBrowser.FenEngine.Core.ExecutionContext context, bool bubbles)
+        {
+            if (target == null || string.IsNullOrWhiteSpace(type))
+            {
+                return;
+            }
+
+            var domEvent = new FenBrowser.FenEngine.DOM.DomEvent(
+                type,
+                bubbles: bubbles,
+                cancelable: false,
+                composed: true,
+                context: context);
+
+            FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
         }
 
         public Task SendKeysToElementAsync(string elementId, string text)
@@ -3562,17 +4751,31 @@ pre {{
                 return false;
             }
 
-            if (ReferenceEquals(searchRoot, candidate))
+            var candidateFrame = GetContainingFrameElement(candidate);
+            var searchRootFrame = GetContainingFrameElement(searchRoot);
+            if (!ReferenceEquals(candidateFrame, searchRootFrame))
             {
-                return true;
+                return false;
             }
 
-            var cursor = candidate.ParentNode;
+            var composedOptions = new GetRootNodeOptions { Composed = true };
+            if (!ReferenceEquals(candidate.GetRootNode(composedOptions), searchRoot.GetRootNode(composedOptions)))
+            {
+                return false;
+            }
+
+            Node cursor = candidate;
             while (cursor != null)
             {
                 if (ReferenceEquals(cursor, searchRoot))
                 {
                     return true;
+                }
+
+                if (cursor is ShadowRoot shadowRoot)
+                {
+                    cursor = shadowRoot.Host;
+                    continue;
                 }
 
                 cursor = cursor.ParentNode;
@@ -3581,9 +4784,79 @@ pre {{
             return false;
         }
 
+        private static Element GetContainingFrameElement(Node node)
+        {
+            Node cursor = node;
+            while (cursor != null)
+            {
+                if (cursor is Element element && IsFrameElement(element))
+                {
+                    return element;
+                }
+
+                if (cursor is ShadowRoot shadowRoot)
+                {
+                    cursor = shadowRoot.Host;
+                    continue;
+                }
+
+                cursor = cursor.ParentNode;
+            }
+
+            return null;
+        }
+
+        private string GetCurrentBrowsingContextToken()
+        {
+            if (_currentFrameElement == null)
+            {
+                // Top-level browsing context identity must remain stable while the
+                // context is open; hash-based root identity is too volatile and causes
+                // false cross-context rejections during frame operations.
+                return "top";
+            }
+
+            foreach (var entry in _elementMap)
+            {
+                if (ReferenceEquals(entry.Value, _currentFrameElement))
+                {
+                    return "frame:" + entry.Key;
+                }
+            }
+
+            var domId = _currentFrameElement.GetAttribute(WebDriverDomIdAttribute);
+            if (!string.IsNullOrWhiteSpace(domId))
+            {
+                return "frame-dom:" + domId;
+            }
+
+            return "frame-obj:" + System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_currentFrameElement);
+        }
+
+        private bool IsElementReferenceInCurrentBrowsingContext(string elementId)
+        {
+            if (string.IsNullOrWhiteSpace(elementId))
+            {
+                return false;
+            }
+
+            if (!_elementBrowsingContextMap.TryGetValue(elementId, out var elementContext) || string.IsNullOrWhiteSpace(elementContext))
+            {
+                return true;
+            }
+
+            var currentContext = GetCurrentBrowsingContextToken();
+            return string.Equals(elementContext, currentContext, StringComparison.Ordinal);
+        }
+
         private Element ResolveElementInActiveContext(string elementId)
         {
             if (string.IsNullOrWhiteSpace(elementId) || !_elementMap.TryGetValue(elementId, out var element))
+            {
+                return null;
+            }
+
+            if (!IsElementReferenceInCurrentBrowsingContext(elementId))
             {
                 return null;
             }
@@ -3609,7 +4882,56 @@ pre {{
                 throw new InvalidOperationException("no such element: invalid element reference");
             }
 
+            if (_elementMap.TryGetValue(elementId, out var mappedElement) && mappedElement != null)
+            {
+                if (!IsElementReferenceInCurrentBrowsingContext(elementId))
+                {
+                    throw new InvalidOperationException("no such element");
+                }
+
+                if (!mappedElement.IsConnected)
+                {
+                    throw new InvalidOperationException("stale element reference");
+                }
+
+                var mappedSearchRoot = ResolveSearchRoot();
+                if (mappedSearchRoot == null)
+                {
+                    if (_currentFrameElement != null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    // Top-level context can transiently have no active search root while
+                    // preserving valid mapped references. Keep lookup deterministic.
+                    return mappedElement;
+                }
+
+                if (!IsElementWithinSearchRoot(mappedSearchRoot, mappedElement))
+                {
+                    throw new InvalidOperationException("no such element");
+                }
+
+                return mappedElement;
+            }
+
+            var searchRoot = ResolveSearchRoot();
+            if (searchRoot == null)
+            {
+                if (_currentFrameElement != null)
+                {
+                    throw new InvalidOperationException("Current browsing context is no longer open");
+                }
+
+                throw new InvalidOperationException("no such element");
+            }
+
             if (!_elementMap.TryGetValue(elementId, out var element) || element == null)
+            {
+                throw new InvalidOperationException("no such element");
+            }
+
+            if (!IsElementReferenceInCurrentBrowsingContext(elementId))
             {
                 throw new InvalidOperationException("no such element");
             }
@@ -3617,12 +4939,6 @@ pre {{
             if (!element.IsConnected)
             {
                 throw new InvalidOperationException("stale element reference");
-            }
-
-            var searchRoot = ResolveSearchRoot();
-            if (searchRoot == null)
-            {
-                throw new InvalidOperationException("Current browsing context is no longer open");
             }
 
             if (!IsElementWithinSearchRoot(searchRoot, element))
@@ -3673,6 +4989,49 @@ pre {{
             return prepared;
         }
 
+        private static bool ContainsWebDriverArgMarkers(object value)
+        {
+            if (value == null)
+            {
+                return false;
+            }
+
+            if (value is IDictionary dictionary)
+            {
+                foreach (DictionaryEntry entry in dictionary)
+                {
+                    if (entry.Key is string key &&
+                        (string.Equals(key, WebDriverArgElementMarker, StringComparison.Ordinal) ||
+                         string.Equals(key, WebDriverArgShadowRootMarker, StringComparison.Ordinal) ||
+                         string.Equals(key, WebDriverArgFrameMarker, StringComparison.Ordinal) ||
+                         string.Equals(key, WebDriverArgWindowMarker, StringComparison.Ordinal)))
+                    {
+                        return true;
+                    }
+
+                    if (ContainsWebDriverArgMarkers(entry.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            if (value is IEnumerable enumerable && value is not string)
+            {
+                foreach (var item in enumerable)
+                {
+                    if (ContainsWebDriverArgMarkers(item))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private object PrepareScriptArgForExecution(object arg)
         {
             if (arg == null)
@@ -3680,21 +5039,67 @@ pre {{
                 return null;
             }
 
-            if (arg is string elementId && ResolveElementInActiveContext(elementId) != null)
+            if (arg is string elementId &&
+                _elementMap.ContainsKey(elementId))
             {
+                Element mappedElement;
+                try
+                {
+                    mappedElement = ResolveElementInActiveContextOrThrow(elementId);
+                }
+                catch (InvalidOperationException ex) when (
+                    ex.Message.IndexOf("no such element", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    _elementMap.TryGetValue(elementId, out var fallbackElement) &&
+                    fallbackElement != null &&
+                    fallbackElement.IsConnected &&
+                    IsFrameElement(fallbackElement))
+                {
+                    // Frame element references are top-context controls and must remain
+                    // script-addressable while connected, even after frame switches.
+                    mappedElement = fallbackElement;
+                }
+
+                var elementDomId = mappedElement?.GetAttribute("id") ?? string.Empty;
+
                 return new Dictionary<string, object>(StringComparer.Ordinal)
                 {
-                    [WebDriverArgElementMarker] = elementId
+                    [WebDriverArgElementMarker] = elementId,
+                    [WebDriverArgElementDomIdMarker] = elementDomId
                 };
             }
 
             if (arg is string shadowRootId &&
-                shadowRootId.StartsWith("sr:host:", StringComparison.Ordinal) &&
-                _shadowRootMap.ContainsKey(shadowRootId))
+                (shadowRootId.StartsWith("sr:host:", StringComparison.Ordinal) || _shadowRootMap.ContainsKey(shadowRootId)))
             {
+                ShadowRoot mappedShadowRoot;
+                var activeSearchRoot = ResolveSearchRoot();
+                if (activeSearchRoot == null)
+                {
+                    if (_currentFrameElement != null)
+                    {
+                        throw new InvalidOperationException("Current browsing context is no longer open");
+                    }
+
+                    if (!TryResolveShadowRootWithoutSearchRoot(shadowRootId, out mappedShadowRoot, out var shadowErrorWithoutRoot))
+                    {
+                        throw new InvalidOperationException(shadowErrorWithoutRoot ?? "no such shadow root");
+                    }
+                }
+                else if (!TryResolveShadowRootInActiveContext(shadowRootId, activeSearchRoot, out mappedShadowRoot, out var shadowError))
+                {
+                    throw new InvalidOperationException(shadowError ?? "no such shadow root");
+                }
+
+                var shadowHostDomId = string.Empty;
+                if (mappedShadowRoot != null)
+                {
+                    shadowHostDomId = mappedShadowRoot?.Host?.GetAttribute("id") ?? string.Empty;
+                }
+
                 return new Dictionary<string, object>(StringComparer.Ordinal)
                 {
-                    [WebDriverArgShadowRootMarker] = shadowRootId
+                    [WebDriverArgShadowRootMarker] = shadowRootId,
+                    [WebDriverArgShadowHostDomIdMarker] = shadowHostDomId
                 };
             }
 
@@ -3754,8 +5159,36 @@ pre {{
 
         public async Task<object> ExecuteScriptAsync(string script, object[] args = null)
         {
-            await Task.CompletedTask;
-            EnsureFrameExecutionContextAvailable();
+            await EnsureExecutionDocumentReadyAsync().ConfigureAwait(false);
+            RefreshWebDriverDomReferenceAttributes();
+            var frameCollectionSyncScript = @"
+                (function __fenSyncFrameCollection() {
+                    try {
+                        if (!window || !document || typeof document.querySelectorAll !== 'function') {
+                            return;
+                        }
+
+                        var __frameNodes = document.querySelectorAll('iframe,frame') || [];
+                        var __existingLength = 0;
+                        try {
+                            __existingLength = Number(window.length) || 0;
+                        } catch (e) {
+                            __existingLength = 0;
+                        }
+
+                        for (var __i = 0; __i < __existingLength; __i++) {
+                            try { delete window[__i]; } catch (e) { window[__i] = undefined; }
+                        }
+
+                        for (var __j = 0; __j < __frameNodes.length; __j++) {
+                            var __frameWindow = null;
+                            try { __frameWindow = __frameNodes[__j].contentWindow || null; } catch (e) { __frameWindow = null; }
+                            window[__j] = __frameWindow;
+                        }
+
+                        try { window.length = __frameNodes.length; } catch (e) {}
+                    } catch (e) {}
+                })();";
             // WebDriver spec: scripts are executed as an anonymous function
             // So we wrap the script: (function() { <script> }).apply(null, arguments)
             string wrappedScript;
@@ -3763,30 +5196,91 @@ pre {{
             {
                 var preparedArgs = PrepareScriptArgsForExecution(args);
                 var jsonArgs = JsonSerializer.Serialize(preparedArgs);
+                var hasReferenceArgs = ContainsWebDriverArgMarkers(preparedArgs);
+                if (!hasReferenceArgs)
+                {
+                    wrappedScript = $@"
+                        var __args = {jsonArgs};
+                        {frameCollectionSyncScript}
+                        (function(arguments) {{
+                            {script}
+                        }}).call(window, __args);";
+                }
+                else
+                {
                 wrappedScript = $@"
                     var __args = {jsonArgs};
+                    function __fenFindWdElementById(__root, __wdId) {{
+                        if (!__root || typeof __wdId !== 'string') return null;
+
+                        var __candidates = [];
+                        try {{
+                            __candidates = __root.querySelectorAll('[{WebDriverDomIdAttribute}]') || [];
+                        }} catch (e) {{
+                            __candidates = [];
+                        }}
+
+                        for (var __i = 0; __i < __candidates.length; __i++) {{
+                            if (__candidates[__i].getAttribute('{WebDriverDomIdAttribute}') === __wdId) {{
+                                return __candidates[__i];
+                            }}
+                        }}
+
+                        var __descendants = [];
+                        try {{
+                            __descendants = __root.querySelectorAll('*') || [];
+                        }} catch (e) {{
+                            __descendants = [];
+                        }}
+
+                        for (var __d = 0; __d < __descendants.length; __d++) {{
+                            var __el = __descendants[__d];
+                            try {{
+                                if (__el.shadowRoot) {{
+                                    var __nested = __fenFindWdElementById(__el.shadowRoot, __wdId);
+                                    if (__nested) return __nested;
+                                }}
+                            }} catch (e) {{}}
+                        }}
+
+                        return null;
+                    }}
                     (function __fenResolveWdArgs(value) {{
                         if (!value || typeof value !== 'object') return value;
                         if (!Array.isArray(value) &&
                             Object.prototype.hasOwnProperty.call(value, '{WebDriverArgElementMarker}')) {{
                             var __wdId = value['{WebDriverArgElementMarker}'];
-                            var __all = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
-                            for (var __i = 0; __i < __all.length; __i++) {{
-                                if (__all[__i].getAttribute('{WebDriverDomIdAttribute}') === __wdId) {{
-                                    return __all[__i];
+                            var __resolvedEl = __fenFindWdElementById(document, __wdId);
+                            if (!__resolvedEl &&
+                                Object.prototype.hasOwnProperty.call(value, '{WebDriverArgElementDomIdMarker}')) {{
+                                var __domId = value['{WebDriverArgElementDomIdMarker}'];
+                                if (typeof __domId === 'string' && __domId.length > 0 && document.getElementById) {{
+                                    __resolvedEl = document.getElementById(__domId);
                                 }}
                             }}
-                            return null;
+                            if (__resolvedEl && window.customElements && typeof window.customElements.upgrade === 'function') {{
+                                try {{
+                                    window.customElements.upgrade(__resolvedEl);
+                                }} catch (e) {{}}
+                            }}
+                            return __resolvedEl;
                         }}
                         if (!Array.isArray(value) &&
                             Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowRootMarker}')) {{
                             var __wdShadowId = value['{WebDriverArgShadowRootMarker}'];
                             if (typeof __wdShadowId === 'string' && __wdShadowId.indexOf('sr:host:') === 0) {{
                                 var __hostId = __wdShadowId.substring('sr:host:'.length);
-                                var __hosts = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
-                                for (var __s = 0; __s < __hosts.length; __s++) {{
-                                    if (__hosts[__s].getAttribute('{WebDriverDomIdAttribute}') === __hostId) {{
-                                        return __hosts[__s].shadowRoot || null;
+                                var __host = __fenFindWdElementById(document, __hostId);
+                                if (__host) {{
+                                    return __host.shadowRoot || null;
+                                }}
+                            }}
+                            if (Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowHostDomIdMarker}')) {{
+                                var __hostDomId = value['{WebDriverArgShadowHostDomIdMarker}'];
+                                if (typeof __hostDomId === 'string' && __hostDomId.length > 0 && document.getElementById) {{
+                                    var __hostByDomId = document.getElementById(__hostDomId);
+                                    if (__hostByDomId) {{
+                                        return __hostByDomId.shadowRoot || null;
                                     }}
                                 }}
                             }}
@@ -3819,17 +5313,24 @@ pre {{
                             return value;
                         }}
                         var __keys = Object.keys(value);
-                        for (var __k = 0; __k < __keys.length; __k++) {{
-                            var __key = __keys[__k];
-                            value[__key] = __fenResolveWdArgs(value[__key]);
-                        }}
-                        return value;
-                    }})(__args);
-                    (function() {{ {script} }}).apply(null, __args)";
+                    for (var __k = 0; __k < __keys.length; __k++) {{
+                        var __key = __keys[__k];
+                        value[__key] = __fenResolveWdArgs(value[__key]);
+                    }}
+                    return value;
+                }})(__args);
+                {frameCollectionSyncScript}
+                (function(arguments) {{
+                    {script}
+                }}).call(window, __args)";
+                }
             }
             else
             {
-                wrappedScript = $"var __args = []; (function() {{ {script} }})()";
+                wrappedScript = $@"
+                    {frameCollectionSyncScript}
+                    var __args = [];
+                    (function() {{ {script} }})()";
             }
             
             TryLogDebug($"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...", LogCategory.JavaScript);
@@ -3864,7 +5365,36 @@ pre {{
 
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
         {
-            EnsureFrameExecutionContextAvailable();
+            await EnsureExecutionDocumentReadyAsync().ConfigureAwait(false);
+            RefreshWebDriverDomReferenceAttributes();
+            var frameCollectionSyncScript = @"
+                (function __fenSyncFrameCollection() {
+                    try {
+                        if (!window || !document || typeof document.querySelectorAll !== 'function') {
+                            return;
+                        }
+
+                        var __frameNodes = document.querySelectorAll('iframe,frame') || [];
+                        var __existingLength = 0;
+                        try {
+                            __existingLength = Number(window.length) || 0;
+                        } catch (e) {
+                            __existingLength = 0;
+                        }
+
+                        for (var __i = 0; __i < __existingLength; __i++) {
+                            try { delete window[__i]; } catch (e) { window[__i] = undefined; }
+                        }
+
+                        for (var __j = 0; __j < __frameNodes.length; __j++) {
+                            var __frameWindow = null;
+                            try { __frameWindow = __frameNodes[__j].contentWindow || null; } catch (e) { __frameWindow = null; }
+                            window[__j] = __frameWindow;
+                        }
+
+                        try { window.length = __frameNodes.length; } catch (e) {}
+                    } catch (e) {}
+                })();";
             // Reset state
             lock (_asyncScriptLock)
             {
@@ -3884,6 +5414,7 @@ pre {{
             var setupScript = $@"
                 window.__fen_async_result_{callbackId} = null;
                 window.__fen_async_done_{callbackId} = false;
+                window.__fen_async_error_{callbackId} = null;
                 
                 // Set up rAF queue if not present
                 if (!window.__raf_id) window.__raf_id = 0;
@@ -3914,96 +5445,88 @@ pre {{
             ";
             _engine.Evaluate(setupScript);
             
-            // Build arguments JSON - add a callback function at the end
-            var jsonArgs = JsonSerializer.Serialize(argsList);
-            
-            // Preprocess script to transform ES6+ syntax to ES5 equivalents
+            // Do not rewrite user script source. Execute with WebDriver arguments unchanged.
             var processedScript = script;
             
-            // 1. Transform destructuring: const [a, b] = expr; -> var __temp = expr; var a = __temp[0]; var b = __temp[1];
-            var destructuringPattern = new System.Text.RegularExpressions.Regex(
-                @"(const|let|var)\s*\[([^\]]+)\]\s*=\s*([^;]+);",
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-            processedScript = destructuringPattern.Replace(processedScript, match => {
-                var vars = match.Groups[2].Value.Split(',');
-                var expr = match.Groups[3].Value;
-                var tempId = Guid.NewGuid().ToString("N").Substring(0, 8);
-                var result = new System.Text.StringBuilder();
-                result.Append($"var __destruct_{tempId} = {expr}; ");
-                for (int i = 0; i < vars.Length; i++)
-                {
-                    var v = vars[i].Trim();
-                    if (!string.IsNullOrEmpty(v))
-                    {
-                        result.Append($"var {v} = __destruct_{tempId}[{i}]; ");
-                    }
-                }
-                return result.ToString();
-            });
-            
-            // 2. Transform const/let to var
-            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\bconst\s+", "var ");
-            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\blet\s+", "var ");
-            
-            // 3. Transform arrow functions: () => { ... } -> function() { ... }
-            // Use a more careful approach - only match arrow functions in valid contexts
-            // Arrow function with parens and block body: (args) => { ... }
-            // Only match when preceded by: comma, =, (, [, {, :, or start of line
-            processedScript = System.Text.RegularExpressions.Regex.Replace(
-                processedScript,
-                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)\(([^)]*)\)\s*=>\s*\{",
-                "$1function($2) {",
-                System.Text.RegularExpressions.RegexOptions.Multiline);
-            
-            // Single arg without parens with block body: arg => { ... }
-            processedScript = System.Text.RegularExpressions.Regex.Replace(
-                processedScript,
-                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)(\w+)\s*=>\s*\{",
-                "$1function($2) {",
-                System.Text.RegularExpressions.RegexOptions.Multiline);
-            
-            // Arrow function with parens and expression body: (args) => expr
-            processedScript = System.Text.RegularExpressions.Regex.Replace(
-                processedScript,
-                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)\(([^)]*)\)\s*=>\s*([^{;,\r\n\)]+)",
-                "$1function($2) { return $3; }",
-                System.Text.RegularExpressions.RegexOptions.Multiline);
-            
-            // Single arg with expression body: arg => expr  
-            processedScript = System.Text.RegularExpressions.Regex.Replace(
-                processedScript,
-                @"(,\s*|=\s*|\(\s*|\[\s*|\{\s*|:\s*|^\s*)(\w+)\s*=>\s*([^{;,\r\n\)]+)",
-                "$1function($2) { return $3; }",
-                System.Text.RegularExpressions.RegexOptions.Multiline);
-            
-            // 4. Replace 'arguments' keyword with '__args' so it works with our wrapper
-            processedScript = System.Text.RegularExpressions.Regex.Replace(processedScript, @"\barguments\b", "__args");
+            // Build arguments JSON - add a callback function at the end
+            var jsonArgs = JsonSerializer.Serialize(argsList);
+            var hasReferenceArgs = ContainsWebDriverArgMarkers(argsList);
             
             // The script wrapper that provides the callback function.
-            var wrappedScript = $@"
+            var wrappedScript = hasReferenceArgs ? $@"
                 var __args = {jsonArgs};
+                {frameCollectionSyncScript}
+                function __fenFindWdElementById(__root, __wdId) {{
+                    if (!__root || typeof __wdId !== 'string') return null;
+
+                    var __candidates = [];
+                    try {{
+                        __candidates = __root.querySelectorAll('[{WebDriverDomIdAttribute}]') || [];
+                    }} catch (e) {{
+                        __candidates = [];
+                    }}
+
+                    for (var __i = 0; __i < __candidates.length; __i++) {{
+                        if (__candidates[__i].getAttribute('{WebDriverDomIdAttribute}') === __wdId) {{
+                            return __candidates[__i];
+                        }}
+                    }}
+
+                    var __descendants = [];
+                    try {{
+                        __descendants = __root.querySelectorAll('*') || [];
+                    }} catch (e) {{
+                        __descendants = [];
+                    }}
+
+                    for (var __d = 0; __d < __descendants.length; __d++) {{
+                        var __el = __descendants[__d];
+                        try {{
+                            if (__el.shadowRoot) {{
+                                var __nested = __fenFindWdElementById(__el.shadowRoot, __wdId);
+                                if (__nested) return __nested;
+                            }}
+                        }} catch (e) {{}}
+                    }}
+
+                    return null;
+                }}
                 (function __fenResolveWdArgs(value) {{
                     if (!value || typeof value !== 'object') return value;
                     if (!Array.isArray(value) &&
                         Object.prototype.hasOwnProperty.call(value, '{WebDriverArgElementMarker}')) {{
                         var __wdId = value['{WebDriverArgElementMarker}'];
-                        var __all = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
-                        for (var __i = 0; __i < __all.length; __i++) {{
-                            if (__all[__i].getAttribute('{WebDriverDomIdAttribute}') === __wdId) {{
-                                return __all[__i];
+                        var __resolvedEl = __fenFindWdElementById(document, __wdId);
+                        if (!__resolvedEl &&
+                            Object.prototype.hasOwnProperty.call(value, '{WebDriverArgElementDomIdMarker}')) {{
+                            var __domId = value['{WebDriverArgElementDomIdMarker}'];
+                            if (typeof __domId === 'string' && __domId.length > 0 && document.getElementById) {{
+                                __resolvedEl = document.getElementById(__domId);
                             }}
                         }}
-                        return null;
+                        if (__resolvedEl && window.customElements && typeof window.customElements.upgrade === 'function') {{
+                            try {{
+                                window.customElements.upgrade(__resolvedEl);
+                            }} catch (e) {{}}
+                        }}
+                        return __resolvedEl;
                     }}
                     if (!Array.isArray(value) &&
                         Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowRootMarker}')) {{
                         var __wdShadowId = value['{WebDriverArgShadowRootMarker}'];
                         if (typeof __wdShadowId === 'string' && __wdShadowId.indexOf('sr:host:') === 0) {{
                             var __hostId = __wdShadowId.substring('sr:host:'.length);
-                            var __hosts = document.querySelectorAll('[{WebDriverDomIdAttribute}]');
-                            for (var __s = 0; __s < __hosts.length; __s++) {{
-                                if (__hosts[__s].getAttribute('{WebDriverDomIdAttribute}') === __hostId) {{
-                                    return __hosts[__s].shadowRoot || null;
+                            var __host = __fenFindWdElementById(document, __hostId);
+                            if (__host) {{
+                                return __host.shadowRoot || null;
+                            }}
+                        }}
+                        if (Object.prototype.hasOwnProperty.call(value, '{WebDriverArgShadowHostDomIdMarker}')) {{
+                            var __hostDomId = value['{WebDriverArgShadowHostDomIdMarker}'];
+                            if (typeof __hostDomId === 'string' && __hostDomId.length > 0 && document.getElementById) {{
+                                var __hostByDomId = document.getElementById(__hostDomId);
+                                if (__hostByDomId) {{
+                                    return __hostByDomId.shadowRoot || null;
                                 }}
                             }}
                         }}
@@ -4044,7 +5567,22 @@ pre {{
                 }})(__args);
                 console.log('[AsyncScript] __args before push: ' + __args.length);
                 var __callback = function(result) {{
-                    console.log('[AsyncScript] Callback called with: ' + JSON.stringify(result));
+                    console.log('[AsyncScript] Callback called');
+                    if (result && typeof result.then === 'function') {{
+                        result.then(function(__resolved) {{
+                            window.__fen_async_result_{callbackId} = __resolved;
+                            window.__fen_async_done_{callbackId} = true;
+                        }}, function(__error) {{
+                            try {{
+                                window.__fen_async_error_{callbackId} = __error && __error.message ? String(__error.message) : String(__error);
+                            }} catch (e) {{
+                                window.__fen_async_error_{callbackId} = 'javascript error';
+                            }}
+                            window.__fen_async_done_{callbackId} = true;
+                        }});
+                        return;
+                    }}
+
                     window.__fen_async_result_{callbackId} = result;
                     window.__fen_async_done_{callbackId} = true;
                 }};
@@ -4061,9 +5599,55 @@ pre {{
                 console.log('[AsyncScript] __args[0] type: ' + typeof __args[0]);
                 
                 (function() {{
+                    return (async function(arguments) {{
+                        {processedScript}
+                    }}).call(window, __args);
+                }})().catch(function(__error) {{
+                        try {{
+                            window.__fen_async_error_{callbackId} = __error && __error.message ? String(__error.message) : String(__error);
+                        }} catch (e) {{
+                            window.__fen_async_error_{callbackId} = 'javascript error';
+                        }}
+                        window.__fen_async_done_{callbackId} = true;
+                }});
+                "
+                : $@"
+                var __args = {jsonArgs};
+                {frameCollectionSyncScript}
+                console.log('[AsyncScript] __args before push: ' + __args.length);
+                var __callback = function(result) {{
+                    console.log('[AsyncScript] Callback called');
+                    if (result && typeof result.then === 'function') {{
+                        result.then(function(__resolved) {{
+                            window.__fen_async_result_{callbackId} = __resolved;
+                            window.__fen_async_done_{callbackId} = true;
+                        }}, function(__error) {{
+                            try {{
+                                window.__fen_async_error_{callbackId} = __error && __error.message ? String(__error.message) : String(__error);
+                            }} catch (e) {{
+                                window.__fen_async_error_{callbackId} = 'javascript error';
+                            }}
+                            window.__fen_async_done_{callbackId} = true;
+                        }});
+                        return;
+                    }}
+
+                    window.__fen_async_result_{callbackId} = result;
+                    window.__fen_async_done_{callbackId} = true;
+                }};
+                __args.push(__callback);
+
+                (async function(arguments) {{
                     {processedScript}
-                }})();
-                
+                }}).call(window, __args).catch(function(__error) {{
+                        try {{
+                            window.__fen_async_error_{callbackId} = __error && __error.message ? String(__error.message) : String(__error);
+                        }} catch (e) {{
+                            window.__fen_async_error_{callbackId} = 'javascript error';
+                        }}
+                        window.__fen_async_done_{callbackId} = true;
+                }});
+
                 // Debug: Log rAF queue after script
                 console.log('[AsyncScript] rAF callbacks length: ' + (window.__raf_callbacks ? window.__raf_callbacks.length : 'no array'));
             ";
@@ -4072,19 +5656,12 @@ pre {{
             TryLogDebug($"[AsyncScript] Input script (first 500 chars): {(script.Length > 500 ? script.Substring(0, 500) : script)}", LogCategory.JavaScript);
             TryLogDebug($"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}", LogCategory.JavaScript);
             
-            // Execute the script (it should call the callback eventually)
-            try 
+            // Execute the script and surface immediate JavaScript errors deterministically.
+            var execResult = _engine.Evaluate(wrappedScript);
+            TryLogDebug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript);
+            if (execResult is FenBrowser.FenEngine.Core.FenValue fv && fv.Type == JsValueType.Error)
             {
-                var execResult = _engine.Evaluate(wrappedScript);
-                TryLogDebug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript);
-                if (execResult is FenBrowser.FenEngine.Core.FenValue fv && (int)fv.Type == 10)
-                {
-                    TryLogDebug($"[AsyncScript] Script error: {fv.AsError()}", LogCategory.Errors);
-                }
-            }
-            catch (Exception ex)
-            {
-                TryLogDebug($"[AsyncScript] Script exception: {ex.Message}", LogCategory.Errors);
+                throw new InvalidOperationException(fv.AsError());
             }
             
             // Process rAF queue helper script
@@ -4142,8 +5719,28 @@ pre {{
                 
                 // Check if the callback was called
                 var doneCheck = _engine.Evaluate($"window.__fen_async_done_{callbackId}");
-                if (doneCheck is FenBrowser.FenEngine.Core.FenValue dv && dv.IsBoolean && dv.ToBoolean())
+                var isDone = doneCheck switch
                 {
+                    FenBrowser.FenEngine.Core.FenValue dv => dv.IsBoolean && dv.ToBoolean(),
+                    bool b => b,
+                    _ => false
+                };
+
+                if (isDone)
+                {
+                    var asyncError = _engine.Evaluate($"window.__fen_async_error_{callbackId}");
+                    if (asyncError is FenBrowser.FenEngine.Core.FenValue asyncErrorValue &&
+                        !asyncErrorValue.IsNull &&
+                        !asyncErrorValue.IsUndefined)
+                    {
+                        throw new InvalidOperationException(asyncErrorValue.ToString());
+                    }
+
+                    if (asyncError is string asyncErrorText && !string.IsNullOrWhiteSpace(asyncErrorText))
+                    {
+                        throw new InvalidOperationException(asyncErrorText);
+                    }
+
                     // Get the result
                     var result = _engine.Evaluate($"window.__fen_async_result_{callbackId}");
                     TryLogDebug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript);
@@ -4591,88 +6188,107 @@ pre {{
                 if (ReferenceEquals(entry.Value, element))
                 {
                     TagElementWithWebDriverId(element, entry.Key);
+                    if (!_elementBrowsingContextMap.ContainsKey(entry.Key))
+                    {
+                        _elementBrowsingContextMap[entry.Key] = GetCurrentBrowsingContextToken();
+                    }
                     return entry.Key;
                 }
             }
 
-            // Some JS wrapper paths can materialize equivalent Element instances.
-            // Reuse existing ids when a stable DOM id identifies the same node.
-            var elementDomId = GetStableDomElementId(element);
-            var elementPath = BuildElementPathSignature(element);
-
-            if (!string.IsNullOrWhiteSpace(elementDomId))
+            var taggedId = element.GetAttribute(WebDriverDomIdAttribute);
+            if (!string.IsNullOrWhiteSpace(taggedId))
             {
-                foreach (var entry in _elementMap)
+                if (_elementMap.TryGetValue(taggedId, out var taggedElement))
                 {
-                    var mapped = entry.Value;
-                    if (mapped == null)
+                    if (!ReferenceEquals(taggedElement, element))
                     {
-                        continue;
+                        _elementMap[taggedId] = element;
                     }
 
-                    var mappedDomId = GetStableDomElementId(mapped);
-
-                    if (string.IsNullOrWhiteSpace(mappedDomId))
+                    if (!_elementBrowsingContextMap.ContainsKey(taggedId))
                     {
-                        continue;
+                        _elementBrowsingContextMap[taggedId] = GetCurrentBrowsingContextToken();
                     }
-
-                    if (string.Equals(mappedDomId, elementDomId, StringComparison.Ordinal) &&
-                        string.Equals(mapped.TagName, element.TagName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        TagElementWithWebDriverId(element, entry.Key);
-                        return entry.Key;
-                    }
+                    TagElementWithWebDriverId(element, taggedId);
+                    return taggedId;
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(elementPath))
+            var structuralMatchId = FindExistingElementIdByStructure(element);
+            if (!string.IsNullOrWhiteSpace(structuralMatchId))
             {
-                foreach (var entry in _elementMap)
+                _elementMap[structuralMatchId] = element;
+                if (!_elementBrowsingContextMap.ContainsKey(structuralMatchId))
                 {
-                    var mapped = entry.Value;
-                    if (mapped == null)
-                    {
-                        continue;
-                    }
-
-                    var mappedPath = BuildElementPathSignature(mapped);
-                    if (string.IsNullOrWhiteSpace(mappedPath))
-                    {
-                        continue;
-                    }
-
-                    if (string.Equals(mappedPath, elementPath, StringComparison.Ordinal) &&
-                        string.Equals(mapped.TagName, element.TagName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        TagElementWithWebDriverId(element, entry.Key);
-                        return entry.Key;
-                    }
+                    _elementBrowsingContextMap[structuralMatchId] = GetCurrentBrowsingContextToken();
                 }
-            }
-
-            var normalizedText = NormalizeIdentityText(element.TextContent);
-            if (!string.IsNullOrWhiteSpace(normalizedText))
-            {
-                var textMatches = _elementMap
-                    .Where(entry => entry.Value != null &&
-                                    string.Equals(entry.Value.TagName, element.TagName, StringComparison.OrdinalIgnoreCase) &&
-                                    string.Equals(NormalizeIdentityText(entry.Value.TextContent), normalizedText, StringComparison.Ordinal))
-                    .Select(entry => entry.Key)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray();
-
-                if (textMatches.Length == 1)
-                {
-                    TagElementWithWebDriverId(element, textMatches[0]);
-                    return textMatches[0];
-                }
+                TagElementWithWebDriverId(element, structuralMatchId);
+                return structuralMatchId;
             }
 
             var id = Guid.NewGuid().ToString();
             _elementMap[id] = element;
+            if (!_elementBrowsingContextMap.ContainsKey(id))
+            {
+                _elementBrowsingContextMap[id] = GetCurrentBrowsingContextToken();
+            }
             TagElementWithWebDriverId(element, id);
             return id;
+        }
+
+        private string FindExistingElementIdByStructure(Element element)
+        {
+            if (element == null)
+            {
+                return null;
+            }
+
+            var elementSignature = BuildElementPathSignature(element);
+            if (string.IsNullOrWhiteSpace(elementSignature))
+            {
+                return null;
+            }
+
+            var currentContext = GetCurrentBrowsingContextToken();
+            var elementTag = element.TagName ?? element.NodeName ?? string.Empty;
+            var elementText = NormalizeIdentityText(element.TextContent ?? string.Empty);
+
+            foreach (var entry in _elementMap)
+            {
+                var candidateId = entry.Key;
+                var candidate = entry.Value;
+                if (candidate == null || !candidate.IsConnected)
+                {
+                    continue;
+                }
+
+                if (_elementBrowsingContextMap.TryGetValue(candidateId, out var candidateContext) &&
+                    !string.Equals(candidateContext, currentContext, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var candidateTag = candidate.TagName ?? candidate.NodeName ?? string.Empty;
+                if (!string.Equals(candidateTag, elementTag, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var candidateSignature = BuildElementPathSignature(candidate);
+                if (!string.Equals(candidateSignature, elementSignature, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var candidateText = NormalizeIdentityText(candidate.TextContent ?? string.Empty);
+                if (string.Equals(candidateText, elementText, StringComparison.Ordinal))
+                {
+                    return candidateId;
+                }
+            }
+
+            return null;
         }
 
         private static void TagElementWithWebDriverId(Element element, string elementId)
@@ -4689,6 +6305,20 @@ pre {{
             catch
             {
                 // Metadata only; ignore failures.
+            }
+        }
+
+        private void RefreshWebDriverDomReferenceAttributes()
+        {
+            foreach (var entry in _elementMap)
+            {
+                var element = entry.Value;
+                if (element == null || !element.IsConnected)
+                {
+                    continue;
+                }
+
+                TagElementWithWebDriverId(element, entry.Key);
             }
         }
 
@@ -4908,7 +6538,6 @@ pre {{
             bool allowDefaultActivation = ConsumeClickDefaultActivationDecision(element);
             var suppressDomClickDispatch = _suppressNextDomClickDispatchInHandleElementClick;
             _suppressNextDomClickDispatchInHandleElementClick = false;
-            Console.WriteLine($"[WD-ClickDbg] handle entry element={(element != null ? element.TagName : "<null>")} id={(element != null ? element.GetAttribute("id") : "<null>")}");
             if (element == null) 
             {
                 SetFocusedElementState(null);
@@ -4927,7 +6556,6 @@ pre {{
             // Without this, tests that observe click handlers (window.clicks, bubbling)
             // report false negatives even if fallback activation runs.
             var clickContext = _engine.Context ?? new FenBrowser.FenEngine.Core.ExecutionContext();
-            Console.WriteLine($"[WD-ClickDbg] handle context-null={(_engine.Context == null)}");
             var clickClientX = 0;
             var clickClientY = 0;
             if (_pendingWebDriverClickPointValid)
@@ -4957,21 +6585,10 @@ pre {{
                 clickEvent.Set("y", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientY));
                 var clickBubbleListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", false).Count;
                 var clickCaptureListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", true).Count;
-                Console.WriteLine($"[WD-ClickDbg] dispatch pre cx={clickClientX} cy={clickClientY} listeners(capture={clickCaptureListeners},bubble={clickBubbleListeners})");
                 clickNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(element, clickEvent, clickContext);
-                Console.WriteLine($"[WD-ClickDbg] dispatch post notPrevented={clickNotPrevented}");
-                try
-                {
-                    var clickCount = _engine.Evaluate("window && window.clicks ? window.clicks.length : -1");
-                    Console.WriteLine($"[WD-ClickDbg] dispatch post window.clicks.length={clickCount}");
-                }
-                catch
-                {
-                }
             }
             else
             {
-                Console.WriteLine($"[WD-ClickDbg] dispatch skipped in HandleElementClick (already script-dispatched) cx={clickClientX} cy={clickClientY}");
             }
             if (!clickNotPrevented)
             {
@@ -5199,10 +6816,10 @@ pre {{
             var wrapperName = wrapperType.Name ?? string.Empty;
             var wrapperNamespace = wrapperType.Namespace ?? string.Empty;
             var isLikelyDomWrapper =
-                wrapperName.EndsWith("Wrapper", StringComparison.Ordinal) ||
                 wrapperName.IndexOf("ElementWrapper", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                wrapperName.EndsWith("Element", StringComparison.Ordinal) ||
-                wrapperNamespace.IndexOf(".DOM", StringComparison.OrdinalIgnoreCase) >= 0;
+                wrapperName.Equals("Element", StringComparison.Ordinal) ||
+                (wrapperNamespace.IndexOf(".DOM", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 wrapperName.IndexOf("Element", StringComparison.OrdinalIgnoreCase) >= 0);
             if (!isLikelyDomWrapper)
             {
                 return false;
@@ -5352,6 +6969,29 @@ pre {{
             var id = Guid.NewGuid().ToString();
             _shadowRootMap[id] = shadowRoot;
             return id;
+        }
+
+        private static ShadowRoot TryGetAttachedShadowRoot(Element element)
+        {
+            if (element == null)
+            {
+                return null;
+            }
+
+            var openShadowRoot = element.ShadowRoot;
+            if (openShadowRoot != null)
+            {
+                return openShadowRoot;
+            }
+
+            try
+            {
+                return ElementShadowRootField?.GetValue(element) as ShadowRoot;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private bool TryExtractFrameOrWindowReference(
@@ -5523,7 +7163,7 @@ pre {{
 
         private bool TryHandleFrameRemovalActivation(Element element, bool allowDefaultActivation)
         {
-            if (!allowDefaultActivation || element == null || _currentFrameElement == null)
+            if (element == null || _currentFrameElement == null)
             {
                 return false;
             }
@@ -5541,6 +7181,7 @@ pre {{
             {
                 if (DetachFrameElement(_currentFrameElement))
                 {
+                    _frameContextInvalidated = true;
                     TraceWebDriverFrame($"Frame removal control removed current frame={DescribeFrameElement(_currentFrameElement)}");
                     TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
@@ -5553,6 +7194,7 @@ pre {{
                 var topFrame = _frameContextStack.Count > 0 ? _frameContextStack.Peek() : _currentFrameElement;
                 if (DetachFrameElement(topFrame))
                 {
+                    _frameContextInvalidated = true;
                     TraceWebDriverFrame($"Frame removal control removed top frame={DescribeFrameElement(topFrame)}");
                     TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
@@ -5618,12 +7260,25 @@ pre {{
 
         private void EnsureFrameExecutionContextAvailable()
         {
-            if (_currentFrameElement == null)
+            // Script execution remains available while a frame context is selected.
+            // Frame-specific invalid references are handled during element/frame resolution.
+        }
+
+        private async Task EnsureExecutionDocumentReadyAsync()
+        {
+            EnsureFrameExecutionContextAvailable();
+            if (_engine.GetActiveDom() != null)
             {
                 return;
             }
 
-            throw new InvalidOperationException("Frame-scoped script execution is blocked until a dedicated per-frame execution context is available.");
+            var bootstrapUrl = _current?.AbsoluteUri;
+            if (string.IsNullOrWhiteSpace(bootstrapUrl))
+            {
+                bootstrapUrl = "about:blank";
+            }
+
+            await NavigateAsync(bootstrapUrl).ConfigureAwait(false);
         }
 
         private static bool IsSubmitActivationControl(Element element, string loweredTag)
@@ -5973,6 +7628,32 @@ pre {{
             {
                 if (string.Equals(ancestor.NodeName, "FIELDSET", StringComparison.OrdinalIgnoreCase) &&
                     ancestor.HasAttribute("disabled"))
+                {
+                    var firstLegend = ancestor.ChildNodes?
+                        .OfType<Element>()
+                        .FirstOrDefault(child => string.Equals(child.NodeName, "LEGEND", StringComparison.OrdinalIgnoreCase));
+                    if (firstLegend != null && IsDescendantOrSelf(control, firstLegend))
+                    {
+                        continue;
+                    }
+
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsDescendantOrSelf(Element candidate, Element ancestor)
+        {
+            if (candidate == null || ancestor == null)
+            {
+                return false;
+            }
+
+            for (var cursor = candidate; cursor != null; cursor = cursor.ParentElement)
+            {
+                if (ReferenceEquals(cursor, ancestor))
                 {
                     return true;
                 }
@@ -6468,6 +8149,9 @@ pre {{
         // Alerts - connected to JavaScript engine
         private string _pendingAlertText = null;
         private string _pendingPromptResponse = null;
+        private string _pendingDialogType = null;
+        private string _pendingPromptDefaultValue = null;
+        private string _unhandledPromptBehavior = "dismiss and notify";
 
         /// <summary>
         /// Called by JavaScript engine when alert/confirm/prompt is triggered
@@ -6475,23 +8159,50 @@ pre {{
         public void TriggerAlert(string text)
         {
             _pendingAlertText = text;
+            _pendingDialogType = "alert";
+            _pendingPromptDefaultValue = null;
+        }
+
+        public void TriggerConfirm(string text)
+        {
+            _pendingAlertText = text;
+            _pendingDialogType = "confirm";
+            _pendingPromptDefaultValue = null;
+        }
+
+        public void TriggerPrompt(string text, string defaultValue)
+        {
+            _pendingAlertText = text;
+            _pendingDialogType = "prompt";
+            _pendingPromptDefaultValue = defaultValue ?? string.Empty;
+        }
+
+        public void SetUnhandledPromptBehavior(string behavior)
+        {
+            _unhandledPromptBehavior = NormalizeUnhandledPromptBehavior(behavior);
         }
 
         public Task<bool> HasAlertAsync()
         {
-            return Task.FromResult(!string.IsNullOrEmpty(_pendingAlertText));
+            return Task.FromResult(_pendingAlertText != null);
         }
 
         public Task DismissAlertAsync()
         {
+            ApplyPendingDialogReturnValue(accepted: false);
             _pendingAlertText = null;
             _pendingPromptResponse = null;
+            _pendingDialogType = null;
+            _pendingPromptDefaultValue = null;
             return Task.CompletedTask;
         }
 
         public Task AcceptAlertAsync()
         {
+            ApplyPendingDialogReturnValue(accepted: true);
             _pendingAlertText = null;
+            _pendingDialogType = null;
+            _pendingPromptDefaultValue = null;
             return Task.CompletedTask;
         }
 
@@ -6505,6 +8216,69 @@ pre {{
             // For prompt() dialogs
             _pendingPromptResponse = text;
             return Task.CompletedTask;
+        }
+
+        private void ApplyPendingDialogReturnValue(bool accepted)
+        {
+            if (string.Equals(_pendingDialogType, "confirm", StringComparison.Ordinal))
+            {
+                TrySetWindowDialogReturnValue(accepted ? "true" : "false");
+                return;
+            }
+
+            if (string.Equals(_pendingDialogType, "prompt", StringComparison.Ordinal))
+            {
+                if (!accepted)
+                {
+                    TrySetWindowDialogReturnValue("null");
+                    return;
+                }
+
+                var response = _pendingPromptResponse ?? _pendingPromptDefaultValue ?? string.Empty;
+                TrySetWindowDialogReturnValue(JsonSerializer.Serialize(response));
+            }
+        }
+
+        private void TrySetWindowDialogReturnValue(string jsLiteral)
+        {
+            if (string.IsNullOrWhiteSpace(jsLiteral))
+            {
+                return;
+            }
+
+            try
+            {
+                _engine.Evaluate($"window.dialog_return_value = {jsLiteral};");
+            }
+            catch
+            {
+                // Best-effort state sync for user prompt fixtures.
+            }
+        }
+
+        private bool ShouldAutoAcceptDialogs()
+        {
+            return string.Equals(_unhandledPromptBehavior, "accept", StringComparison.Ordinal) ||
+                   string.Equals(_unhandledPromptBehavior, "accept and notify", StringComparison.Ordinal);
+        }
+
+        private static string NormalizeUnhandledPromptBehavior(string behavior)
+        {
+            if (string.IsNullOrWhiteSpace(behavior))
+            {
+                return "dismiss and notify";
+            }
+
+            var normalized = behavior.Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "dismiss" => "dismiss",
+                "accept" => "accept",
+                "dismiss and notify" => "dismiss and notify",
+                "accept and notify" => "accept and notify",
+                "ignore" => "ignore",
+                _ => "dismiss and notify"
+            };
         }
 
         public void Dispose()
@@ -6636,4 +8410,6 @@ pre {{
         }
     }
 }
+
+
 
