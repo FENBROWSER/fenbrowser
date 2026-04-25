@@ -4897,7 +4897,6 @@ namespace FenBrowser.FenEngine.DOM
             {
                 if (vw > 0 || vh > 0)
                 {
-                    ApplyInlinePositionOffset(ref vx, ref vy);
                     return FenValue.FromObject(new DOMRectReadOnly(vx, vy, vw, vh));
                 }
             }
@@ -4909,10 +4908,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (box.HasValue)
                 {
                     var resolved = ResolveBoundingRect(box);
-                    double rx = resolved.Left;
-                    double ry = resolved.Top;
-                    ApplyInlinePositionOffset(ref rx, ref ry);
-                    return FenValue.FromObject(new DOMRectReadOnly(rx, ry, resolved.Width, resolved.Height));
+                    return FenValue.FromObject(new DOMRectReadOnly(resolved.Left, resolved.Top, resolved.Width, resolved.Height));
                 }
             }
 

@@ -54,11 +54,6 @@ public class BookmarksBarWidget : Widget
     {
         // Check setting FIRST. If disabled, always collapse.
         bool show = BrowserSettings.Instance.ShowFavoritesBar;
-        try {
-            System.IO.File.AppendAllText(
-                FenBrowser.Core.Logging.DiagnosticPaths.GetLogArtifactPath("click_debug.log"),
-                $"[BookmarksBar] OnMeasure - ShowFavoritesBar={show}, Count={_buttons.Count}\n");
-        } catch {}
         
         if (!show)
         {

@@ -69,17 +69,8 @@ public class WebContentWidget : Widget
     
     protected override void OnArrange(SKRect finalRect)
     {
-        EngineLogBridge.Info($"[WebContentWidget] OnArrange: {finalRect}", FenBrowser.Core.Logging.LogCategory.General);
-        try
-        {
-            string logPath = DiagnosticPaths.GetLogArtifactPath("click_debug.log");
-            System.IO.File.AppendAllText(logPath, $"[WebContentWidget.OnArrange] finalRect={finalRect}, this.Bounds={Bounds}\n");
-        }
-        catch (Exception ex)
-        {
-            EngineLogBridge.Error($"[WebContentWidget] click_debug log write failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
-        }
-        
+        // Hot path: avoid per-frame logging/file writes to keep pointer/hover interactions responsive.
+
         // Bounds set by parent
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
