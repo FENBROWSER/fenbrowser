@@ -547,6 +547,73 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task FocusStyle_Does_Not_Bleed_Outside_NewTab_SearchPanel_RightEdge()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var searchPanel = ById(doc, "newtab-form");
+
+            var renderer = new SkiaDomRenderer();
+            var baseStyles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            using var beforeBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var beforeCanvas = new SKCanvas(beforeBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = beforeCanvas,
+                Styles = baseStyles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.FocusBleed.before",
+                EmitVerificationReport = false
+            });
+            beforeCanvas.Flush();
+
+            var panelBox = renderer.GetElementBox(searchPanel);
+            var inputBox = renderer.GetElementBox(searchBox);
+            Assert.NotNull(panelBox);
+            Assert.NotNull(inputBox);
+
+            int sampleX = (int)Math.Round(panelBox!.BorderBox.Right + 2);
+            int sampleY = (int)Math.Round(inputBox!.BorderBox.MidY);
+            sampleX = Math.Clamp(sampleX, 0, viewportWidth - 1);
+            sampleY = Math.Clamp(sampleY, 0, viewportHeight - 1);
+            var beforePixel = beforeBitmap.GetPixel(sampleX, sampleY);
+
+            searchBox.SetAttribute("class", "search-box is-focused");
+            var focusedStyles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            using var focusedBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var focusedCanvas = new SKCanvas(focusedBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = focusedCanvas,
+                Styles = focusedStyles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Input,
+                RequestedBy = "NewTabPageLayoutTests.FocusBleed.focused",
+                EmitVerificationReport = false
+            });
+            focusedCanvas.Flush();
+
+            var focusedPixel = focusedBitmap.GetPixel(sampleX, sampleY);
+            Assert.Equal(beforePixel.Red, focusedPixel.Red);
+            Assert.Equal(beforePixel.Green, focusedPixel.Green);
+            Assert.Equal(beforePixel.Blue, focusedPixel.Blue);
+        }
+
+        [Fact]
         public void CascadeEngine_Author_Background_Shorthand_Overrides_UserAgent_BackgroundColor_Longhand()
         {
             var html = new Element("html");

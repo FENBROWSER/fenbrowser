@@ -124,7 +124,6 @@ namespace FenBrowser.FenEngine.Rendering
 
         .search-box.is-focused {{
             border-color: #60a5fa;
-            box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25);
         }}
 
         .search-hint {{
