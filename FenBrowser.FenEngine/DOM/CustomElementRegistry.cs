@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -70,7 +70,7 @@ namespace FenBrowser.FenEngine.DOM
                     Extends = options?.Extends
                 };
 
-                // WHATWG HTML §4.13.4: Extract lifecycle callbacks from constructor.prototype
+                // WHATWG HTML Â§4.13.4: Extract lifecycle callbacks from constructor.prototype
                 if (constructor is FenValue ctorFenVal && (ctorFenVal.IsObject || ctorFenVal.IsFunction))
                 {
                     var ctorObj = ctorFenVal.AsObject();
@@ -224,26 +224,43 @@ namespace FenBrowser.FenEngine.DOM
 
                 if (definition == null) return;
 
-                // Already upgraded — skip
+                // Already upgraded â€” skip
                 if (element.GetAttribute("data-ce-upgraded") == "true") return;
 
-                // WHATWG HTML §4.13.6: Custom element upgrade algorithm
-                element.SetAttribute("data-ce-upgraded", "true");
+                // WHATWG HTML Â§4.13.6: Custom element upgrade algorithm
                 EngineLogCompat.Debug($"[CustomElements] Upgrading element: {tag}", LogCategory.JavaScript);
 
                 // Step 1: Invoke the constructor
+                var constructorSucceeded = true;
                 if (_context != null && definition.Constructor is FenValue ctorVal && ctorVal.IsFunction)
                 {
                     try
                     {
                         var ctor = ctorVal.AsFunction();
-                        ctor?.Invoke(System.Array.Empty<FenValue>(), _context);
+                        var thisArg = DomWrapperFactory.Wrap(element, _context);
+                        ctor?.Invoke(System.Array.Empty<FenValue>(), _context, thisArg);
                     }
                     catch (Exception ex)
                     {
+                        constructorSucceeded = false;
                         EngineLogCompat.Error($"[CustomElements] Constructor error on <{tag}>: {ex.Message}", LogCategory.JavaScript);
                     }
                 }
+
+
+                if (!constructorSucceeded)
+                {
+                    try
+                    {
+                        element.RemoveAttribute("data-ce-upgraded");
+                    }
+                    catch
+                    {
+                    }
+                    return;
+                }
+
+                element.SetAttribute("data-ce-upgraded", "true");
 
                 // Step 2: Fire attributeChangedCallback for each observed attribute already present
                 if (definition.AttributeChangedCallback != null && _context != null)
@@ -259,7 +276,7 @@ namespace FenBrowser.FenEngine.DOM
                                     new[]
                                     {
                                         FenValue.FromString(attrName),
-                                        FenValue.Null, // oldValue (none — first time)
+                                        FenValue.Null, // oldValue (none â€” first time)
                                         FenValue.FromString(value),
                                         FenValue.Null  // namespace
                                     }, _context);
@@ -291,7 +308,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         /// <summary>
-        /// WHATWG HTML §4.13.5: Invoke disconnectedCallback when element is removed from the document.
+        /// WHATWG HTML Â§4.13.5: Invoke disconnectedCallback when element is removed from the document.
         /// Called by DOM mutation logic when a custom element is disconnected.
         /// </summary>
         public void NotifyDisconnected(Element element)
@@ -330,7 +347,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         /// <summary>
-        /// WHATWG HTML §4.13.5: Invoke attributeChangedCallback when an observed attribute changes.
+        /// WHATWG HTML Â§4.13.5: Invoke attributeChangedCallback when an observed attribute changes.
         /// Called by DOM mutation logic when an attribute is set/removed on a custom element.
         /// </summary>
         public void NotifyAttributeChanged(Element element, string attrName, string oldValue, string newValue)
@@ -375,7 +392,7 @@ namespace FenBrowser.FenEngine.DOM
         }
 
         /// <summary>
-        /// WHATWG HTML §4.13.5: Invoke adoptedCallback when element is adopted into a new document.
+        /// WHATWG HTML Â§4.13.5: Invoke adoptedCallback when element is adopted into a new document.
         /// </summary>
         public void NotifyAdopted(Element element, Document oldDocument, Document newDocument)
         {
@@ -520,8 +537,7 @@ namespace FenBrowser.FenEngine.DOM
                     return;
                 }
 
-                var documentWrapper = documentValue.AsObject() as DocumentWrapper;
-                var documentNode = documentWrapper?.Node as Document ?? documentWrapper?.Node?.OwnerDocument;
+                var documentNode = ResolveDocumentNode(documentValue.AsObject());
                 var root = documentNode?.DocumentElement;
                 if (root == null)
                 {
@@ -536,9 +552,65 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
+        private static Document ResolveDocumentNode(IObject documentObject)
+        {
+            if (documentObject == null)
+            {
+                return null;
+            }
+
+            if (documentObject is DocumentWrapper wrapper)
+            {
+                return wrapper.Node as Document ?? wrapper.Node?.OwnerDocument;
+            }
+
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var type = documentObject.GetType();
+            foreach (var memberName in new[] { "Node", "_node", "Document", "_document" })
+            {
+                try
+                {
+                    var property = type.GetProperty(memberName, flags);
+                    var propertyValue = property?.GetValue(documentObject);
+                    if (propertyValue is Document propertyDocument)
+                    {
+                        return propertyDocument;
+                    }
+
+                    if (propertyValue is Node propertyNode)
+                    {
+                        return propertyNode as Document ?? propertyNode.OwnerDocument;
+                    }
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    var field = type.GetField(memberName, flags);
+                    var fieldValue = field?.GetValue(documentObject);
+                    if (fieldValue is Document fieldDocument)
+                    {
+                        return fieldDocument;
+                    }
+
+                    if (fieldValue is Node fieldNode)
+                    {
+                        return fieldNode as Document ?? fieldNode.OwnerDocument;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
         private FenValue CreatePendingWhenDefinedPromise(string name)
         {
-            // Use real JsPromise when execution context is available per WHATWG HTML §4.13.5
+            // Use real JsPromise when execution context is available per WHATWG HTML Â§4.13.5
             if (_context != null)
             {
                 FenValue capturedResolve = FenValue.Undefined;
@@ -804,7 +876,7 @@ namespace FenBrowser.FenEngine.DOM
 
     /// <summary>
     /// Stores a custom element definition with lifecycle callback references.
-    /// WHATWG HTML §4.13.4: Custom element definition
+    /// WHATWG HTML Â§4.13.4: Custom element definition
     /// </summary>
     public class CustomElementDefinition
     {

@@ -189,6 +189,24 @@ namespace FenBrowser.Core.Storage
             _cookies.TryRemove(key, out _);
         }
 
+        public void DeleteByName(string domain, string name, StoragePartitionKey? partitionKey = null)
+        {
+            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            var partitionKeyText = partitionKey?.ToStorageKey() ?? "unpartitioned";
+            var prefix = $"pk:{partitionKeyText}:{domain}:{name}:";
+            foreach (var key in _cookies.Keys)
+            {
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    _cookies.TryRemove(key, out _);
+                }
+            }
+        }
+
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";

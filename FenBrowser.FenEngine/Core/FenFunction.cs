@@ -325,6 +325,13 @@ namespace FenBrowser.FenEngine.Core
                 }
 
                 SetBinding(newEnv, "this", thisBinding);
+
+                // Derived class constructors require a callable super binding for direct bytecode invocation paths.
+                var superCtor = Get("__super_ctor__");
+                if (superCtor.IsFunction || superCtor.IsObject)
+                {
+                    SetBinding(newEnv, "super", superCtor);
+                }
             }
 
             BindArguments(newEnv, args);

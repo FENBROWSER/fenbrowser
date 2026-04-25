@@ -237,6 +237,9 @@ namespace FenBrowser.FenEngine.Scripting
             if (_host != null)
             {
                 _fenRuntime.SetAlert(msg => _host.Alert(msg));
+                _fenRuntime.SetConfirmPrompt(
+                    msg => _host.Confirm(msg),
+                    (msg, defaultValue) => _host.Prompt(msg, defaultValue));
             }
             
             SetupPermissions();
@@ -3754,8 +3757,6 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         var errorHandler = "window.onerror = function(msg, url, line, col, error) { console.error('GLOBAL JS ERROR: ' + msg + ' at ' + url + ':' + line + ':' + col); if (error && error.stack) console.error(error.stack); };";
                         _fenRuntime.ExecuteSimple(errorHandler, "debug-handler");
-                        var consoleTest = "console.log('Console test verify'); console.warn('Console warn verify');";
-                        _fenRuntime.ExecuteSimple(consoleTest, "debug-console-test");
                     }
                     catch (Exception ex) { DiagnosticPaths.AppendRootText("js_debug.log", $"[SetupError] {ex}\n"); }
 
@@ -4419,6 +4420,8 @@ namespace FenBrowser.FenEngine.Scripting
 
         void SetTitle(string tval);
         void Alert(string msg);
+        bool Confirm(string msg);
+        string Prompt(string msg, string defaultValue);
         void Log(string msg);
         void ScrollToElement(Element element);
         void FocusNode(Element element);
@@ -4453,11 +4456,13 @@ namespace FenBrowser.FenEngine.Scripting
     private readonly Action<Action> _invokeOnUiThread;
     private readonly Action<string> _setTitle;
     private readonly Action<string> _alert;
+    private readonly Func<string, bool> _confirm;
+    private readonly Func<string, string, string> _prompt;
     private readonly Action<string> _log;
     private readonly Action<Element> _scrollToElement;
     private readonly Action<Element> _focusNode;
 
-        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Action<string> log = null, Action<Element> scrollToElement = null, Action<Element> focusNode = null)
+        public JsHostAdapter(Action<Uri> navigate, Action<Uri, string> post, Action<string> status, Action requestRender = null, Action<Action> invokeOnUiThread = null, Action<string> setTitle = null, Action<string> alert = null, Func<string, bool> confirm = null, Func<string, string, string> prompt = null, Action<string> log = null, Action<Element> scrollToElement = null, Action<Element> focusNode = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
@@ -4466,6 +4471,8 @@ namespace FenBrowser.FenEngine.Scripting
             _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch (Exception ex) { EngineLogCompat.Warn($"[JavaScriptEngine] Non-fatal operation failed: {ex.Message}", LogCategory.JavaScript); } });
             _setTitle = setTitle ?? (_ => { });
             _alert = alert ?? (_ => { });
+            _confirm = confirm ?? (_ => true);
+            _prompt = prompt ?? ((_, defaultValue) => defaultValue ?? string.Empty);
             _log = log ?? (_ => { });
             _scrollToElement = scrollToElement ?? (_ => { });
             _focusNode = focusNode ?? (_ => { });
@@ -4479,6 +4486,8 @@ namespace FenBrowser.FenEngine.Scripting
         public void InvokeOnUiThread(Action action) => _invokeOnUiThread(action);
         public void SetTitle(string t) => _setTitle(t);
         public void Alert(string msg) => _alert(msg);
+        public bool Confirm(string msg) => _confirm(msg);
+        public string Prompt(string msg, string defaultValue) => _prompt(msg, defaultValue);
         public void Log(string msg) => _log(msg);
         public void ScrollToElement(Element e) => _scrollToElement(e);
         public void FocusNode(Element e) => _focusNode(e);

@@ -174,6 +174,9 @@ namespace FenBrowser.FenEngine.DOM
                     var head = (_root as Document)?.Head ?? FindElementByTag(_root, "head");
                     return head != null ? DomWrapperFactory.Wrap(head, _context) : FenValue.Null;
 
+                case "links":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetDocumentLinks(), _context));
+
                 case "title":
                     var documentTitle = (_root as Document)?.Title;
                     if (documentTitle != null)
@@ -1161,6 +1164,36 @@ namespace FenBrowser.FenEngine.DOM
                 foreach (var child in node.ChildNodes)
                     CollectNodes(child, result);
             }
+        }
+
+        private IEnumerable<Element> GetDocumentLinks()
+        {
+            var nodes = new List<Node>();
+            CollectNodes(_root, nodes);
+            return nodes
+                .OfType<Element>()
+                .Where(IsHyperlinkElement);
+        }
+
+        private static bool IsHyperlinkElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag != "a" && tag != "area")
+            {
+                return false;
+            }
+
+            return !string.IsNullOrWhiteSpace(element.GetAttribute("href"));
         }
 
         private string GetDocumentUrl()

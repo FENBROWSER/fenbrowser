@@ -1,6 +1,6 @@
 // =============================================================================
 // TestHarnessAPI.cs
-// WPT/Test262 Test Harness API Implementation
+// WPT test harness API implementation.
 // 
 // SPEC REFERENCE: Web Platform Tests testharness.js
 //                 https://web-platform-tests.org/writing-tests/testharness-api.html

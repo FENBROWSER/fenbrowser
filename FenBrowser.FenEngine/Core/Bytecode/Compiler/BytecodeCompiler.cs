@@ -3355,6 +3355,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             var constructorFunction = BuildClassConstructorFunction(classStatement);
             Visit(constructorFunction);
+            if (classStatement.SuperClass != null && !string.IsNullOrEmpty(classStatement.SuperClass.Value))
+            {
+                // Preserve direct super-constructor binding for derived class constructor calls (super()).
+                Emit(OpCode.Dup);
+                int superCtorKeyIdx = AddConstant(FenValue.FromString("__super_ctor__"));
+                Emit(OpCode.LoadConst);
+                EmitInt32(superCtorKeyIdx);
+                EmitLoadVarByName(classStatement.SuperClass.Value);
+                Emit(OpCode.StoreProp);
+                Emit(OpCode.Pop);
+            }
             EmitStoreVarByName(className);
             Emit(OpCode.Pop);
 

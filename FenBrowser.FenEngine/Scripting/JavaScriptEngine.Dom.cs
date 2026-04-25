@@ -745,6 +745,17 @@ namespace FenBrowser.FenEngine.Scripting
 
             public void focus()
             {
+                 if (_node is Element element)
+                 {
+                     var ownerDocument = element.OwnerDocument;
+                     if (ownerDocument != null)
+                     {
+                         ownerDocument.ActiveElement = element;
+                     }
+
+                     FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetFocusedElement(element);
+                 }
+
                  if (_e._host != null)
                  {
                      _e._host.FocusNode(_node as Element);

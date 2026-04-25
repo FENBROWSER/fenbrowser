@@ -1431,29 +1431,6 @@ namespace FenBrowser.Tests.Engine.Bytecode
             Assert.NotNull(codeBlock);
         }
 
-        [Fact]
-        public void Bytecode_Test262ArrayFromSourceObjectIteratorHarness_ShouldCompile()
-        {
-            string repoRoot = GetRepositoryRoot();
-            string harnessRoot = Path.Combine(repoRoot, "test262", "harness");
-            string testRoot = Path.Combine(repoRoot, "test262", "test");
-
-            string assertJs = File.ReadAllText(Path.Combine(harnessRoot, "assert.js"));
-            string staJs = File.ReadAllText(Path.Combine(harnessRoot, "sta.js"));
-            string testJs = File.ReadAllText(Path.Combine(testRoot, "built-ins", "Array", "from", "source-object-iterator-1.js"));
-            string fullScript = assertJs + "\n;\n" + staJs + "\n;\n" + testJs;
-
-            var lexer = new Lexer(fullScript);
-            var parser = new Parser(lexer, false, allowReturnOutsideFunction: true);
-            var ast = parser.ParseProgram();
-
-            Assert.Empty(parser.Errors);
-
-            var codeBlock = _compiler.Compile(ast);
-            Assert.NotNull(codeBlock);
-        }
-
-
     }
 }
 

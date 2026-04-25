@@ -154,18 +154,8 @@ namespace FenBrowser.Core.Storage
             }
 
             var context = BuildContext(documentUri, topLevelDocumentUri);
-            var expiredCookie = new Cookie
-            {
-                Name = name,
-                Value = string.Empty,
-                Domain = documentUri.Host,
-                Path = "/",
-                Expires = DateTimeOffset.UtcNow.AddSeconds(-1),
-                SameSite = CookieSameSite.Lax
-            };
-
-            _storage.Cookies.Set(expiredCookie, context.PartitionKey);
-            _storage.Cookies.Set(expiredCookie, null);
+            _storage.Cookies.DeleteByName(documentUri.Host, name, context.PartitionKey);
+            _storage.Cookies.DeleteByName(documentUri.Host, name, null);
         }
 
         private string BuildCookieString(
