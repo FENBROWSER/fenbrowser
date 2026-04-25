@@ -90,20 +90,32 @@ namespace FenBrowser.FenEngine.Rendering.Css
                      break;
 
                 case "top": 
-                    if (CssLoader.TryPx(value, out double t)) style.Top = t; 
-                    else if (CssLoader.TryPercent(value, out double tp)) style.TopPercent = tp; 
+                    style.Top = null;
+                    style.TopPercent = null;
+                    if (string.Equals(value?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)) break;
+                    if (CssLoader.TryPx(value, out double topPx)) style.Top = topPx; 
+                    else if (CssLoader.TryPercent(value, out double topPercent)) style.TopPercent = topPercent; 
                     break;
                 case "left": 
-                    if (CssLoader.TryPx(value, out double l)) style.Left = l; 
-                    else if (CssLoader.TryPercent(value, out double lp)) style.LeftPercent = lp; 
+                    style.Left = null;
+                    style.LeftPercent = null;
+                    if (string.Equals(value?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)) break;
+                    if (CssLoader.TryPx(value, out double leftPx)) style.Left = leftPx; 
+                    else if (CssLoader.TryPercent(value, out double leftPercent)) style.LeftPercent = leftPercent; 
                     break;
                 case "right": 
-                    if (CssLoader.TryPx(value, out double r)) style.Right = r; 
-                    else if (CssLoader.TryPercent(value, out double rp)) style.RightPercent = rp; 
+                    style.Right = null;
+                    style.RightPercent = null;
+                    if (string.Equals(value?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)) break;
+                    if (CssLoader.TryPx(value, out double rightPx)) style.Right = rightPx; 
+                    else if (CssLoader.TryPercent(value, out double rightPercent)) style.RightPercent = rightPercent; 
                     break;
                 case "bottom": 
-                    if (CssLoader.TryPx(value, out double b)) style.Bottom = b; 
-                    else if (CssLoader.TryPercent(value, out double bp)) style.BottomPercent = bp; 
+                    style.Bottom = null;
+                    style.BottomPercent = null;
+                    if (string.Equals(value?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)) break;
+                    if (CssLoader.TryPx(value, out double bottomPx)) style.Bottom = bottomPx; 
+                    else if (CssLoader.TryPercent(value, out double bottomPercent)) style.BottomPercent = bottomPercent; 
                     break;
                 
                 case "background-color":

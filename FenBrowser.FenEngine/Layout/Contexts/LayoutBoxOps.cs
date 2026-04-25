@@ -181,7 +181,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 
         private static SKPoint ResolveRelativeOffset(CssComputed style, LayoutState state)
         {
-            if (style == null || !string.Equals(style.Position, "relative", StringComparison.OrdinalIgnoreCase))
+            if (style == null || !string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "relative", StringComparison.OrdinalIgnoreCase))
             {
                 return SKPoint.Empty;
             }
@@ -207,42 +207,64 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             }
 
             float dx = 0f;
-            if (style.Left.HasValue)
+            if (HasExplicitInset(style, "left") && style.Left.HasValue)
             {
                 dx = (float)style.Left.Value;
             }
-            else if (style.LeftPercent.HasValue && cbWidth > 0f)
+            else if (HasExplicitInset(style, "left") && style.LeftPercent.HasValue && cbWidth > 0f)
             {
                 dx = (float)(style.LeftPercent.Value / 100.0 * cbWidth);
             }
-            else if (style.Right.HasValue)
+            else if (HasExplicitInset(style, "right") && style.Right.HasValue)
             {
                 dx = -(float)style.Right.Value;
             }
-            else if (style.RightPercent.HasValue && cbWidth > 0f)
+            else if (HasExplicitInset(style, "right") && style.RightPercent.HasValue && cbWidth > 0f)
             {
                 dx = -(float)(style.RightPercent.Value / 100.0 * cbWidth);
             }
 
             float dy = 0f;
-            if (style.Top.HasValue)
+            if (HasExplicitInset(style, "top") && style.Top.HasValue)
             {
                 dy = (float)style.Top.Value;
             }
-            else if (style.TopPercent.HasValue && cbHeight > 0f)
+            else if (HasExplicitInset(style, "top") && style.TopPercent.HasValue && cbHeight > 0f)
             {
                 dy = (float)(style.TopPercent.Value / 100.0 * cbHeight);
             }
-            else if (style.Bottom.HasValue)
+            else if (HasExplicitInset(style, "bottom") && style.Bottom.HasValue)
             {
                 dy = -(float)style.Bottom.Value;
             }
-            else if (style.BottomPercent.HasValue && cbHeight > 0f)
+            else if (HasExplicitInset(style, "bottom") && style.BottomPercent.HasValue && cbHeight > 0f)
             {
                 dy = -(float)(style.BottomPercent.Value / 100.0 * cbHeight);
             }
 
             return new SKPoint(dx, dy);
+        }
+
+        private static bool HasExplicitInset(CssComputed style, string side)
+        {
+            if (style?.Map == null || string.IsNullOrWhiteSpace(side))
+            {
+                return false;
+            }
+
+            if (style.Map.ContainsKey(side) || style.Map.ContainsKey("inset") || style.Map.ContainsKey($"inset-{side}"))
+            {
+                return true;
+            }
+
+            return side switch
+            {
+                "top" => style.Map.ContainsKey("inset-block-start"),
+                "bottom" => style.Map.ContainsKey("inset-block-end"),
+                "left" => style.Map.ContainsKey("inset-inline-start"),
+                "right" => style.Map.ContainsKey("inset-inline-end"),
+                _ => false
+            };
         }
     }
 }
