@@ -7,6 +7,7 @@ using FenBrowser.FenEngine.Rendering.Css;
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -80,12 +81,13 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (backend == null || tree == null) return;
             var stats = new RenderPassStats();
+            var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
              
             backend.Clear(SKColors.White);
              
             foreach (var root in tree.Roots)
             {
-                DrawNodeSafe(backend, root, viewport, stats);
+                DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
             }
 
             LogRenderSummary(viewport, tree.NodeCount, stats, "RenderBackend");
@@ -98,6 +100,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (canvas == null || tree == null) return;
             var stats = new RenderPassStats();
+            var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
              
             // Wrap canvas in adapter (Rule 4)
             var backend = new SkiaRenderBackend(canvas);
@@ -112,7 +115,7 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var root in tree.Roots)
             {
                 EngineLogCompat.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
-                DrawNodeSafe(backend, root, viewport, stats);
+                DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
             }
 
             LogRenderSummary(viewport, tree.NodeCount, stats, "RenderCanvas");
@@ -145,6 +148,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             var backend = new SkiaRenderBackend(canvas);
             var stats = new RenderPassStats();
+            var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
             using var bgPaint = new SKPaint
             {
                 Color = backgroundColor,
@@ -165,7 +169,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 foreach (var root in tree.Roots)
                 {
-                    DrawNodeSafe(backend, root, viewport, stats);
+                    DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
                 }
 
                 canvas.Restore();
@@ -207,9 +211,10 @@ namespace FenBrowser.FenEngine.Rendering
                     offCanvas.Translate(-viewport.Left, -viewport.Top);
                     var backend = new SkiaRenderBackend(offCanvas);
                     var stats = new RenderPassStats();
+                    var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
                     foreach (var root in tree.Roots)
                     {
-                        DrawNodeSafe(backend, root, viewport, stats);
+                        DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
                     }
                     offCanvas.Restore();
 
@@ -359,13 +364,13 @@ namespace FenBrowser.FenEngine.Rendering
         /// Non-fatal wrapper for DrawNode. Catches any exceptions and skips bad nodes.
         /// INVARIANT: Renderer must never crash due to content.
         /// </summary>
-        private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats)
+        private void DrawNodeSafe(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats, HashSet<Node> hoverPaintedSources)
         {
             int initialSaveDepth = backend.SaveDepth;
 
             try
             {
-                DrawNode(backend, node, viewport, stats);
+                DrawNode(backend, node, viewport, stats, hoverPaintedSources);
             }
             catch (Exception ex)
             {
@@ -389,7 +394,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// INVARIANT: Uses recursive traversal ONLY - visitor pattern is for tooling.
         /// INVARIANT: Same input → identical output (deterministic).
         /// </summary>
-        private void DrawNode(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats)
+        private void DrawNode(IRenderBackend backend, PaintNodeBase node, SKRect viewport, RenderPassStats stats, HashSet<Node> hoverPaintedSources)
         {
             if (node == null) return;
             if (stats != null) stats.VisitedNodes++;
@@ -502,7 +507,7 @@ namespace FenBrowser.FenEngine.Rendering
             DrawSelf(backend, node);
             
             // Interaction feedback (Focus Ring & Hover Highlight)
-            if (node.IsHovered) DrawHoverHighlight(backend, node);
+            if (node.IsHovered && ShouldDrawHoverHighlight(node, hoverPaintedSources)) DrawHoverHighlight(backend, node);
             if (node.IsFocused && ShouldDrawGenericFocusRing(node)) DrawFocusRing(backend, node);
             
             // Draw children in order (recursive traversal)
@@ -510,7 +515,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 foreach (var child in node.Children)
                 {
-                    DrawNodeSafe(backend, child, viewport, stats);
+                    DrawNodeSafe(backend, child, viewport, stats, hoverPaintedSources);
                 }
             }
             
@@ -588,6 +593,27 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 backend.DrawRect(node.Bounds, paintColor);
             }
+        }
+
+        private static bool ShouldDrawHoverHighlight(PaintNodeBase node, HashSet<Node> hoverPaintedSources)
+        {
+            if (!(node is BackgroundPaintNode) && !(node is ImagePaintNode) && !(node is BorderPaintNode) && !(node is MaskPaintNode))
+            {
+                return false;
+            }
+
+            if (node.SourceNode is not Node source)
+            {
+                return true;
+            }
+
+            if (hoverPaintedSources.Contains(source))
+            {
+                return false;
+            }
+
+            hoverPaintedSources.Add(source);
+            return true;
         }
 
         private void DrawFocusRing(IRenderBackend backend, PaintNodeBase node)
