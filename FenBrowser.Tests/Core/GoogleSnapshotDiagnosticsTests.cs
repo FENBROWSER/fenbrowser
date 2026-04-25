@@ -55,6 +55,8 @@ namespace FenBrowser.Tests.Core
             Element searchFormWrapper = FindFirst(root, e => HasClass(e, "A8SBwf"));
             Element mainColumn = FindFirst(root, e => HasClass(e, "L3eUgb"));
             Element topNav = FindFirst(root, e => HasClass(e, "Ne6nSd"));
+            Element appsButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Google apps", StringComparison.OrdinalIgnoreCase));
+            Element signInButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Sign in", StringComparison.OrdinalIgnoreCase));
             Element doodleBand = FindFirst(root, e => HasClass(e, "LS8OJ"));
             Element formBand = FindFirst(root, e => HasClass(e, "ikrT4e"));
             Element nativeForm = FindFirst(root, e => string.Equals(e.TagName, "FORM", StringComparison.OrdinalIgnoreCase));
@@ -64,6 +66,8 @@ namespace FenBrowser.Tests.Core
             Assert.NotNull(searchTextArea);
             Assert.NotNull(aiModeButton);
             Assert.NotNull(searchButtonsBand);
+            Assert.NotNull(appsButton);
+            Assert.NotNull(signInButton);
 
             Assert.True(renderer.LastLayout.TryGetElementRect(searchShell, out var searchShellRect), "Missing layout rect for .RNNXgb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchTextWrapper, out var searchTextWrapperRect), "Missing layout rect for .a4bIc");
@@ -71,6 +75,8 @@ namespace FenBrowser.Tests.Core
             Assert.True(renderer.LastLayout.TryGetElementRect(aiModeButton, out var aiModeButtonRect), "Missing layout rect for .plR5qb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchButtonsBand, out var searchButtonsBandRect), "Missing layout rect for .lJ9FBc");
             Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), "Missing layout rect for .Ne6nSd");
+            Assert.True(renderer.LastLayout.TryGetElementRect(appsButton, out var appsButtonRect), "Missing layout rect for Google apps button");
+            Assert.True(renderer.LastLayout.TryGetElementRect(signInButton, out var signInButtonRect), "Missing layout rect for Sign in button");
 
             string layoutContext =
                 $"main={DescribeRect(renderer.LastLayout, mainColumn)} nav={DescribeRect(renderer.LastLayout, topNav)} " +
@@ -97,6 +103,8 @@ namespace FenBrowser.Tests.Core
             Assert.True(aiModeButtonRect.Width >= 60f, $"Expected .plR5qb width >= 60, got {aiModeButtonRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Height >= 30f, $"Expected .lJ9FBc height >= 30, got {searchButtonsBandRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Top < 520f, $"Expected visible .FPdoLc.lJ9FBc within viewport, got top={searchButtonsBandRect.Top}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+            Assert.True(appsButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Google apps button to stay within nav top band, got {DescribeRect(appsButtonRect)}. {layoutContext}");
+            Assert.True(signInButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Sign in button to stay within nav top band, got {DescribeRect(signInButtonRect)}. {layoutContext}");
 
             var topNavInteractiveRects = root
                 .Descendants()
