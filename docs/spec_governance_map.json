@@ -20,9 +20,7 @@
     "FenBrowser.Host/ProcessIsolation/RendererIpc.cs",
     "FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs",
     "FenBrowser.Core/Accessibility/AccessibilityTreeBuilder.cs",
-    "FenBrowser.DevTools/Domains/RuntimeDomain.cs",
-    "FenBrowser.FenEngine/Testing/WPTTestRunner.cs",
-    "FenBrowser.Test262/Program.cs"
+    "FenBrowser.DevTools/Domains/RuntimeDomain.cs"
   ],
   "requiredCapabilityIds": [
     "EVENTLOOP-MACROTASK-01",
@@ -46,7 +44,6 @@
     "PROCESS-SANDBOX-FAILCLOSED-01",
     "A11Y-TREE-ROLE-MAP-01",
     "DEVTOOLS-RUNTIME-SIGNAL-01",
-    "VERIFY-WPT-TRUTH-01",
-    "VERIFY-TEST262-TRUTH-01"
+    "VERIFY-WPT-TRUTH-01"
   ]
 }

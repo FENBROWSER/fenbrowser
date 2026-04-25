@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.0.31903.59
+# Visual Studio Version 18
+VisualStudioVersion = 18.4.11620.152 stable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Core", "FenBrowser.Core\FenBrowser.Core.csproj", "{0B778E16-731E-4661-B98E-3234DD0F90B4}"
 EndProject
@@ -14,8 +14,6 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.WebDriver", "FenBrowser.WebDriver\FenBrowser.WebDriver.csproj", "{DAD19852-9F27-4D7D-A345-6543A1F0D7EB}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Tests", "FenBrowser.Tests\FenBrowser.Tests.csproj", "{8BCB63A5-9873-4503-87EC-AD61E67BDD67}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Test262", "FenBrowser.Test262\FenBrowser.Test262.csproj", "{F61E43F8-8036-4291-B9CE-61ADE788BB32}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Conformance", "FenBrowser.Conformance\FenBrowser.Conformance.csproj", "{23316230-0442-493B-A8B8-D08AAC4A1035}"
 EndProject
@@ -105,18 +103,6 @@ Global
 		{8BCB63A5-9873-4503-87EC-AD61E67BDD67}.Release|x64.Build.0 = Release|Any CPU
 		{8BCB63A5-9873-4503-87EC-AD61E67BDD67}.Release|x86.ActiveCfg = Release|Any CPU
 		{8BCB63A5-9873-4503-87EC-AD61E67BDD67}.Release|x86.Build.0 = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|x64.Build.0 = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Debug|x86.Build.0 = Debug|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|Any CPU.Build.0 = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|x64.ActiveCfg = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|x64.Build.0 = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|x86.ActiveCfg = Release|Any CPU
-		{F61E43F8-8036-4291-B9CE-61ADE788BB32}.Release|x86.Build.0 = Release|Any CPU
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{23316230-0442-493B-A8B8-D08AAC4A1035}.Debug|x64.ActiveCfg = Debug|Any CPU

@@ -16,9 +16,6 @@
       <_Parameter1>FenBrowser.Tests</_Parameter1>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
-      <_Parameter1>FenBrowser.Test262</_Parameter1>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>FenBrowser.Conformance</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>

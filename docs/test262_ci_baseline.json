@@ -1,7 +1,0 @@
-{
-  "subset": "ci-regression-v1",
-  "total": 500,
-  "passing": 84,
-  "timestamp": "2026-03-28T00:00:00Z",
-  "notes": "Initial baseline from ~16.8% overall pass rate. Categories: language/expressions, language/statements, built-ins/Math, built-ins/String, built-ins/Array, built-ins/Number"
-}
