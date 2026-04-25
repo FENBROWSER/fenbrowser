@@ -153,8 +153,25 @@ public class BrowserIntegration
             // Clear CSS caches on start of navigation to prevent memory buildup
             if (loading)
             {
+                _lastNavigationTime = DateTime.Now;
+                _hasFirstStyledRender = false;
+                _scrollY = 0f;
+                _contentHeight = 0f;
+                ScrollChanged?.Invoke(_scrollY, _contentHeight);
+
+                // Defensive reset: page-driven navigations can bypass NavigateInternal.
+                // Drop base-frame seed so first frame for the new document cannot reuse stale pixels.
+                lock (_frameLock)
+                {
+                    _currentFrameSeedImage?.Dispose();
+                    _currentFrameSeedImage = null;
+                    _currentFrameSeedCreatedUtc = DateTime.MinValue;
+                    _consecutiveBaseFrameReuseCount = 0;
+                }
+
                 CssLoader.ClearCaches();
                 EngineLogBridge.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
+                RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserHost.LoadingChanged");
             }
             LoadingChanged?.Invoke(loading);
         };
