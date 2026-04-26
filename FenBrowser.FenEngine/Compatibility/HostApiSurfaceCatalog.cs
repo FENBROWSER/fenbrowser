@@ -46,12 +46,27 @@ namespace FenBrowser.FenEngine.Compatibility
         private static readonly Dictionary<string, HostApiSurfaceDescriptor> Entries =
             new(StringComparer.Ordinal)
             {
-                ["navigator.userAgentData"] = new HostApiSurfaceDescriptor(
-                    "navigator.userAgentData",
-                    HostApiImplementationClass.ProductionImplementation,
-                    "Core/FenRuntime.cs",
-                    "FenRuntime exposes coherent low-entropy and high-entropy UA-CH data, including brands, platform, and getHighEntropyValues snapshots for the active browser surface."),
-                ["crypto.subtle"] = new HostApiSurfaceDescriptor(
+["navigator.userAgentData"] = new HostApiSurfaceDescriptor(
+"navigator.userAgentData",
+HostApiImplementationClass.ProductionImplementation,
+"Core/FenRuntime.cs",
+"FenRuntime exposes coherent low-entropy and high-entropy UA-CH data, including brands, platform, and getHighEntropyValues snapshots for the active browser surface."),
+["navigator.connection"] = new HostApiSurfaceDescriptor(
+"navigator.connection",
+HostApiImplementationClass.CompatibilityShim,
+"WebAPIs/NetworkInformationAPI.cs",
+"Network Information API provides network connection metadata. Currently returns spoofed values; host integration for live metrics is a future enhancement."),
+["navigator.serial"] = new HostApiSurfaceDescriptor(
+"navigator.serial",
+HostApiImplementationClass.CompatibilityShim,
+"WebAPIs/SerialAPI.cs",
+"Web Serial API provides access to serial ports. Currently shows picker UI integration as future work; returns empty port list."),
+["navigator.mediaDevices"] = new HostApiSurfaceDescriptor(
+"navigator.mediaDevices",
+HostApiImplementationClass.CompatibilityShim,
+"WebAPIs/MediaDevicesAPI.cs",
+"MediaDevices API provides getUserMedia, enumerateDevices, getDisplayMedia. Currently stubbed with fake streams; host camera/mic integration is future work."),
+["crypto.subtle"] = new HostApiSurfaceDescriptor(
                     "crypto.subtle",
                     HostApiImplementationClass.CompatibilityShim,
                     "Scripting/JavaScriptEngine.cs",
@@ -61,12 +76,22 @@ namespace FenBrowser.FenEngine.Compatibility
                     HostApiImplementationClass.CompatibilityShim,
                     "Core/FenRuntime.cs",
                     "Popup orchestration still falls back to same-window navigation until real browsing-context creation exists."),
-                ["window.matchMedia"] = new HostApiSurfaceDescriptor(
-                    "window.matchMedia",
-                    HostApiImplementationClass.ProductionImplementation,
-                    "Core/FenRuntime.cs",
-                    "FenRuntime evaluates media queries against the active browser surface and keeps MediaQueryList objects synchronized as viewport and theme data change."),
-                ["window.requestIdleCallback"] = new HostApiSurfaceDescriptor(
+["window.matchMedia"] = new HostApiSurfaceDescriptor(
+"window.matchMedia",
+HostApiImplementationClass.ProductionImplementation,
+"Core/FenRuntime.cs",
+"FenRuntime evaluates media queries against the active browser surface and keeps MediaQueryList objects synchronized as viewport and theme data change."),
+["window.createImageBitmap"] = new HostApiSurfaceDescriptor(
+"window.createImageBitmap",
+HostApiImplementationClass.ProductionImplementation,
+"WebAPIs/ImageBitmapAPI.cs",
+"ImageBitmap API creates ImageBitmap from various image sources. Supports HTMLImageElement, Canvas, ImageData; Blob is future work."),
+["window.navigation"] = new HostApiSurfaceDescriptor(
+"window.navigation",
+HostApiImplementationClass.CompatibilityShim,
+"WebAPIs/NavigationAPI.cs",
+"Navigation API provides modern navigation history. Basic entries/navigate/reload implemented; traverseTo, traverseByType, and full transition tracking are future work."),
+["window.requestIdleCallback"] = new HostApiSurfaceDescriptor(
                     "window.requestIdleCallback",
                     HostApiImplementationClass.CompatibilityShim,
                     "Core/FenRuntime.cs",

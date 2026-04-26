@@ -7149,31 +7149,20 @@ namespace FenBrowser.FenEngine.Core
                 FenValue.FromFunction(new FenFunction("javaEnabled",
                     (FenValue[] args, FenValue thisVal) => FenValue.FromBoolean(false))));
 
-            // Network Information Spoofing
-            var connection = new FenObject();
-            connection.Set("effectiveType", FenValue.FromString("4g"));
-            connection.Set("rtt", FenValue.FromNumber(50));
-            connection.Set("downlink", FenValue.FromNumber(10));
-            connection.Set("saveData", FenValue.FromBoolean(false));
-            navigator.Set("connection", FenValue.FromObject(connection));
+// Network Information API - https://wicg.github.io/netinfo/
+var connection = FenBrowser.FenEngine.WebAPIs.NetworkInformationAPI.CreateNetworkInformation(_context);
+navigator.Set("connection", FenValue.FromObject(connection));
 
-            var serial = new FenObject();
-            serial.Set("onconnect", FenValue.Null);
-            serial.Set("ondisconnect", FenValue.Null);
-            serial.Set("getPorts", FenValue.FromFunction(new FenFunction("getPorts",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateEmptyArray())));
-                })));
-            serial.Set("requestPort", FenValue.FromFunction(new FenFunction("requestPort",
-                (FenValue[] args, FenValue thisVal) =>
-                {
-                    return FenValue.FromObject(ResolvedThenable.Rejected("NotFoundError: No serial ports available"));
-                })));
-            navigator.Set("serial", FenValue.FromObject(serial));
+// Web Serial API - https://wicg.github.io/serial/
+var serial = FenBrowser.FenEngine.WebAPIs.SerialAPI.CreateSerial(_context);
+navigator.Set("serial", FenValue.FromObject(serial));
 
-            /* [PERF-REMOVED] */
-            SetGlobal("navigator", FenValue.FromObject(navigator));
+// Media Devices API - https://www.w3.org/TR/mediacapture-streams/
+var mediaDevices = FenBrowser.FenEngine.WebAPIs.MediaDevicesAPI.CreateMediaDevices(_context);
+navigator.Set("mediaDevices", FenValue.FromObject(mediaDevices));
+
+/* [PERF-REMOVED] */
+SetGlobal("navigator", FenValue.FromObject(navigator));
 
             // location object (navigation capable)
             var location = new FenObject();
@@ -7455,13 +7444,22 @@ namespace FenBrowser.FenEngine.Core
             window.Set("name", FenValue.FromString(""));
             window.Set("closed", FenValue.FromBoolean(false));
             window.Set("opener", FenValue.Null);
-            window.Set("event", FenValue.Undefined);
-            foreach (var eventHandlerName in s_windowDefaultEventHandlerNames)
-            {
-                window.Set(eventHandlerName, FenValue.Null);
-            }
+window.Set("event", FenValue.Undefined);
+window.Set("origin", FenValue.FromString(GetCurrentOrigin()));
+foreach (var eventHandlerName in s_windowDefaultEventHandlerNames)
+{
+window.Set(eventHandlerName, FenValue.Null);
+}
 
-                        // EventTarget prototype for Window + generic EventTarget APIs.
+// createImageBitmap - ImageBitmap API - https://www.w3.org/TR/2dcontext/#imagebitmap
+window.Set("createImageBitmap", FenValue.FromFunction(new FenFunction("createImageBitmap",
+(args, thisVal) => FenBrowser.FenEngine.WebAPIs.ImageBitmapAPI.CreateImageBitmap(args, _context))));
+
+// navigation - Navigation API - https://wicg.github.io/navigation-api/
+var navigation = FenBrowser.FenEngine.WebAPIs.NavigationAPI.CreateNavigation(_context);
+window.Set("navigation", FenValue.FromObject(navigation));
+
+// EventTarget prototype for Window + generic EventTarget APIs.
             var eventTargetPrototype = new FenObject();
             eventTargetPrototype.SetPrototype(objectProto);
 
@@ -16840,7 +16838,7 @@ namespace FenBrowser.FenEngine.Core
 
                     return FenValue.FromObject(obj);
                 case JsonValueKind.Array:
-                    var arr = new FenObject();
+                    var arr = FenObject.CreateArray();
                     int index = 0;
                     foreach (var item in element.EnumerateArray())
                     {
