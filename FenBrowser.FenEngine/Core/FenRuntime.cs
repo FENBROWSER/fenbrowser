@@ -70,8 +70,9 @@ namespace FenBrowser.FenEngine.Core
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
-        private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWaiter>();
-        private static readonly object s_atomicsWaitersLock = new object();
+private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWaiter>();
+    private static readonly object s_atomicsWaitersLock = new object();
+    private readonly bool _isMainThread;
         private static readonly HashSet<string> s_rtlLocaleLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "ar", "arc", "ckb", "dv", "fa", "ha", "he", "iw", "ji", "ks", "ku", "nqo", "ps", "sd", "ug", "ur", "yi"
@@ -185,9 +186,10 @@ namespace FenBrowser.FenEngine.Core
                 // Clear DOM wrapper identity cache so stale wrappers from the previous page are not reused.
                 FenBrowser.FenEngine.DOM.DomWrapperFactory.ClearCache();
 
-                /* [PERF-REMOVED] */
-                _context = context ?? new ExecutionContext(new PermissionManager(Security.JsPermissions.StandardWeb));
-                _storageBackend = storageBackend ?? new InMemoryStorageBackend();
+/* [PERF-REMOVED] */
+    _context = context ?? new ExecutionContext(new PermissionManager(Security.JsPermissions.StandardWeb));
+    _storageBackend = storageBackend ?? new InMemoryStorageBackend();
+    _isMainThread = context != null;
                 _domBridge = domBridge;
                 _historyBridge = historyBridge;
 
@@ -4738,26 +4740,103 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Date.prototype.setDate()
-            dateProto.SetBuiltin("setDate", FenValue.FromFunction(new FenFunction("setDate", (args, thisVal) =>
-            {
-                try
-                {
-                    var dt = GetDate(thisVal);
-                    var day = args.Length > 0 ? (int)args[0].ToNumber() : dt.Day;
-                    dt = new DateTime(dt.Year, dt.Month, day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond,
-                        DateTimeKind.Utc);
-                    SetDate(thisVal, dt);
-                    return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
-                        .TotalMilliseconds);
-                }
-                catch
-                {
-                    return FenValue.FromNumber(double.NaN);
-                }
-            })));
+// Date.prototype.setDate()
+    dateProto.SetBuiltin("setDate", FenValue.FromFunction(new FenFunction("setDate", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            var day = args.Length > 0 ? (int)args[0].ToNumber() : dt.Day;
+            dt = new DateTime(dt.Year, dt.Month, day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond, DateTimeKind.Utc);
+            SetDate(thisVal, dt);
+            return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                .TotalMilliseconds);
+        }
+        catch
+        {
+            return FenValue.FromNumber(double.NaN);
+        }
+    })));
 
-            // Date.prototype.valueOf()
+    // Date.prototype.setHours() — ES5 §15.9.5.32
+    dateProto.SetBuiltin("setHours", FenValue.FromFunction(new FenFunction("setHours", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            var hours = args.Length > 0 ? (int)args[0].ToNumber() : dt.Hour;
+            var minutes = args.Length > 1 ? (int)args[1].ToNumber() : dt.Minute;
+            var seconds = args.Length > 2 ? (int)args[2].ToNumber() : dt.Second;
+            var ms = args.Length > 3 ? (int)args[3].ToNumber() : dt.Millisecond;
+            dt = new DateTime(dt.Year, dt.Month, dt.Day, hours, minutes, seconds, ms, DateTimeKind.Utc);
+            SetDate(thisVal, dt);
+            return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                .TotalMilliseconds);
+        }
+        catch
+        {
+            return FenValue.FromNumber(double.NaN);
+        }
+    })));
+
+    // Date.prototype.setMinutes() — ES5 §15.9.5.33
+    dateProto.SetBuiltin("setMinutes", FenValue.FromFunction(new FenFunction("setMinutes", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            var minutes = args.Length > 0 ? (int)args[0].ToNumber() : dt.Minute;
+            var seconds = args.Length > 1 ? (int)args[1].ToNumber() : dt.Second;
+            var ms = args.Length > 2 ? (int)args[2].ToNumber() : dt.Millisecond;
+            dt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, minutes, seconds, ms, DateTimeKind.Utc);
+            SetDate(thisVal, dt);
+            return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                .TotalMilliseconds);
+        }
+        catch
+        {
+            return FenValue.FromNumber(double.NaN);
+        }
+    })));
+
+    // Date.prototype.setSeconds() — ES5 §15.9.5.30
+    dateProto.SetBuiltin("setSeconds", FenValue.FromFunction(new FenFunction("setSeconds", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            var seconds = args.Length > 0 ? (int)args[0].ToNumber() : dt.Second;
+            var ms = args.Length > 1 ? (int)args[1].ToNumber() : dt.Millisecond;
+            dt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, seconds, ms, DateTimeKind.Utc);
+            SetDate(thisVal, dt);
+            return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                .TotalMilliseconds);
+        }
+        catch
+        {
+            return FenValue.FromNumber(double.NaN);
+        }
+    })));
+
+    // Date.prototype.setMilliseconds() — ES5 §15.9.5.28
+    dateProto.SetBuiltin("setMilliseconds", FenValue.FromFunction(new FenFunction("setMilliseconds", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            var ms = args.Length > 0 ? (int)args[0].ToNumber() : dt.Millisecond;
+            dt = new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second, ms, DateTimeKind.Utc);
+            SetDate(thisVal, dt);
+            return FenValue.FromNumber((dt - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                .TotalMilliseconds);
+        }
+        catch
+        {
+            return FenValue.FromNumber(double.NaN);
+        }
+    })));
+
+// Date.prototype.valueOf()
             dateProto.SetBuiltin("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
             {
                 try
@@ -4786,8 +4865,38 @@ namespace FenBrowser.FenEngine.Core
                 }
             })));
 
-            // Date.prototype.toISOString()
-            dateProto.SetBuiltin("toISOString", FenValue.FromFunction(new FenFunction("toISOString", (args, thisVal) =>
+// Date.prototype.toDateString() — ES5 §15.9.5.3
+    dateProto.SetBuiltin("toDateString", FenValue.FromFunction(new FenFunction("toDateString", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            if (dt == DateTime.MinValue) return FenValue.FromString("Invalid Date");
+            return FenValue.FromString(dt.ToString("ddd MMM dd yyyy"));
+        }
+        catch
+        {
+            return FenValue.FromString("Invalid Date");
+        }
+    })));
+
+    // Date.prototype.toTimeString() — ES5 §15.9.5.4
+    dateProto.SetBuiltin("toTimeString", FenValue.FromFunction(new FenFunction("toTimeString", (args, thisVal) =>
+    {
+        try
+        {
+            var dt = GetDate(thisVal);
+            if (dt == DateTime.MinValue) return FenValue.FromString("Invalid Date");
+            return FenValue.FromString(dt.ToString("HH:mm:ss 'GMT'K"));
+        }
+        catch
+        {
+            return FenValue.FromString("Invalid Date");
+        }
+    })));
+
+    // Date.prototype.toISOString()
+    dateProto.SetBuiltin("toISOString", FenValue.FromFunction(new FenFunction("toISOString", (args, thisVal) =>
             {
                 try
                 {
@@ -11990,12 +12099,62 @@ window.Set("navigation", FenValue.FromObject(navigation));
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 // Simplified: just return the BigInt for now
-                return args[1];
-            })));
+return args[1];
+})));
 
-            SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
+// BigInt.prototype (ES2020 §21.2.3)
+var bigIntProto = new FenObject();
+bigIntProto.SetPrototype(objectProto);
 
-            // ES6 Collection constructors: Map, Set, WeakMap, WeakSet
+// BigInt.prototype.toString (ES2020 §21.2.3.6)
+bigIntProto.SetBuiltin("toString", FenValue.FromFunction(new FenFunction("toString", (args, thisVal) =>
+{
+    var radix = args.Length > 0 && !args[0].IsUndefined ? (int)args[0].ToNumber() : 10;
+    if (radix < 2 || radix > 36) throw new FenRangeError("RangeError: radix must be between 2 and 36");
+
+    JsBigInt bigIntValue = null;
+    if (thisVal.IsBigInt)
+        bigIntValue = thisVal.AsBigInt();
+    else if (thisVal.IsObject)
+    {
+        var wrapped = thisVal.AsObject()?.Get("__value__");
+        if (wrapped.HasValue && wrapped.Value.IsBigInt)
+            bigIntValue = wrapped.Value.AsBigInt();
+    }
+
+    if (bigIntValue == null)
+        throw new FenTypeError("TypeError: BigInt.prototype.toString called on incompatible object");
+
+    if (radix == 10)
+        return FenValue.FromString(bigIntValue.ToString());
+    return FenValue.FromString(bigIntValue.ToStringWithoutSuffix());
+})));
+
+// BigInt.prototype.valueOf (ES2020 §21.2.3.7)
+bigIntProto.SetBuiltin("valueOf", FenValue.FromFunction(new FenFunction("valueOf", (args, thisVal) =>
+{
+    if (thisVal.IsBigInt)
+        return thisVal;
+    if (thisVal.IsObject)
+    {
+        var wrapped = thisVal.AsObject()?.Get("__value__");
+        if (wrapped.HasValue && wrapped.Value.IsBigInt)
+            return wrapped.Value;
+    }
+    throw new FenTypeError("TypeError: BigInt.prototype.valueOf called on incompatible object");
+})));
+
+bigIntCtor.Prototype = bigIntProto;
+bigIntCtor.Set("prototype", FenValue.FromObject(bigIntProto));
+bigIntProto.SetBuiltin("constructor", FenValue.FromFunction(bigIntCtor));
+
+// ES2024 §21.2.3.9: BigInt.prototype[@@toStringTag] = "BigInt"
+bigIntProto.SetSymbolProperty("toStringTag", FenValue.FromString("BigInt"),
+    writable: false, enumerable: false, configurable: true);
+
+SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
+
+// ES6 Collection constructors: Map, Set, WeakMap, WeakSet
             var mapCtorFn = new FenFunction("Map", (FenValue[] args, FenValue thisVal) =>
             {
                 var map = new FenBrowser.FenEngine.Core.Types.JsMap(_context);
@@ -15020,9 +15179,12 @@ window.Set("navigation", FenValue.FromObject(navigation));
             })));
 
             // Atomics.wait(typedArray, index, value[, timeout]) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â blocks until notified or timeout
-            atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal) =>
-            {
-                var view = ValidateAtomicView(args, 3, waitable: true);
+atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal) =>
+    {
+        if (_isMainThread)
+            throw new FenTypeError("TypeError: Atomics.wait may not be called on the main thread. Use Atomics.waitAsync instead.");
+
+        var view = ValidateAtomicView(args, 3, waitable: true);
                 var expected = CoerceAtomicOperand(view, args[2]);
                 lock (view.BufferData)
                 {

@@ -795,12 +795,58 @@ namespace FenBrowser.FenEngine.Core.Types
                 {
                     Array.Sort(vals);
                 }
-                var result = CreateSameType(Length);
-                for (int i = 0; i < Length; i++) result.SetIndex(i, vals[i]);
-                return FenValue.FromObject(result);
-            })));
+var result = CreateSameType(Length);
+    for (int i = 0; i < Length; i++) result.SetIndex(i, vals[i]);
+    return FenValue.FromObject(result);
+})));
 
-            // with — ES2023 §22.2.3.32: return new TypedArray with one element replaced
+// toSpliced — ES2023 §22.2.3.25: return new TypedArray with elements removed and/or replaced
+Set("toSpliced", FenValue.FromFunction(new FenFunction("toSpliced", (args, thisVal) =>
+{
+    CheckDetachedBuffer();
+
+    double startArg = args.Length > 0 ? args[0].ToNumber() : 0;
+    double deleteCountArg = args.Length > 1 ? args[1].ToNumber() : 0;
+
+    double relativeStart = double.IsNaN(startArg) ? 0 : (double.IsInfinity(startArg) ? (startArg > 0 ? Length : 0) : startArg);
+    if (relativeStart < 0) relativeStart = Math.Max(Length + relativeStart, 0);
+    else relativeStart = Math.Min(relativeStart, Length);
+
+    double actualDeleteCount = double.IsNaN(deleteCountArg) || double.IsInfinity(deleteCountArg) ? 0 : Math.Max(deleteCountArg < 0 ? 0 : Math.Floor(deleteCountArg), 0);
+    actualDeleteCount = Math.Min(actualDeleteCount, Length - relativeStart);
+
+    int insertCount = 0;
+    for (int i = 2; i < args.Length; i++) insertCount++;
+
+    double newLen = Length - actualDeleteCount + insertCount;
+    if (newLen > 9007199254740991) throw new FenTypeError("TypeError: TypedArray size too large");
+
+    var result = CreateSameType((int)newLen);
+    int k = 0;
+
+    while (k < relativeStart)
+    {
+        result.SetIndex(k, GetIndex(k));
+        k++;
+    }
+
+    for (int i = 2; i < args.Length; i++)
+    {
+        result.SetIndex(k, args[i].IsBigInt ? (double)(args[i].AsBigInt().Value) : args[i].ToNumber());
+        k++;
+    }
+
+    while (k < newLen)
+    {
+        int from = (int)(actualDeleteCount + k - (Length - relativeStart));
+        result.SetIndex(k, GetIndex(from));
+        k++;
+    }
+
+    return FenValue.FromObject(result);
+})));
+
+// with — ES2023 §22.2.3.32: return new TypedArray with one element replaced
             Set("with", FenValue.FromFunction(new FenFunction("with", (args, thisVal) =>
             {
                 CheckDetachedBuffer();
