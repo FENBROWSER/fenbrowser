@@ -4,18 +4,24 @@
 		{
 			"label": "Build and Run FenBrowser",
 			"type": "shell",
-			"command": "dotnet build c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.sln && c:\\Users\\udayk\\Videos\\FENBROWSER\\run_fenbrowser.bat",
+			"command": "dotnet build \"${workspaceFolder}\\FenBrowser.sln\" ; if ($?) { dotnet run --project \"${workspaceFolder}\\FenBrowser.Host\\FenBrowser.Host.csproj\" }",
 			"args": [],
 			"isBackground": false,
 			"problemMatcher": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
 			"group": "build"
 		},
 		{
 			"label": "Build and Run FenBrowser (PowerShell)",
 			"type": "shell",
-			"command": "dotnet build c:\\Users\\udayk\\Videos\\FENBROWSER\\FenBrowser.sln; if ($?) { c:\\Users\\udayk\\Videos\\FENBROWSER\\run_fenbrowser.bat }",
+			"command": "dotnet build \"${workspaceFolder}\\FenBrowser.sln\"; if ($?) { dotnet run --project \"${workspaceFolder}\\FenBrowser.Host\\FenBrowser.Host.csproj\" }",
 			"isBackground": false,
 			"problemMatcher": [],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
 			"group": "build"
 		}
 	]

@@ -53,6 +53,7 @@ wpt/
 html5lib-tests/
 Results/
 .config/
+.agents/
 
 # Test Results
 TestResults/
@@ -65,3 +66,12 @@ test262_results.md
 .testrun/
 scratch/
 local_report.md
+.opencode
+
+# keep graph outputs, skip heavy/local-only files
+graphify-out/*
+FenBrowser.*/graphify-out/*
+FenBrowser.FenEngine/Core/graphify-out/*
+graphify-out/*/cache/            # optional: commit for shared extraction speed, skip to keep repo small
+graphify-out/*/manifest.json     # mtime-based, invalid after git clone — always gitignore this
+graphify-out/*/cost.json         # local token tracking, not useful to share

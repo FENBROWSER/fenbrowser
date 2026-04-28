@@ -25,7 +25,6 @@ Primary projects:
 Other important surfaces:
 - `FenBrowser.WebDriver`
 - `FenBrowser.Tests`
-- `FenBrowser.Test262`
 - tooling and scripts under repo root / `scripts/`
 
 Default behavior:
