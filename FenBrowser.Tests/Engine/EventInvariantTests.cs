@@ -5,6 +5,7 @@ using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Scripting;
+using FenBrowser.FenEngine.Configuration;
 using System;
 using System.Linq;
 using EventListener = FenBrowser.Core.Dom.V2.EventListener;
@@ -72,6 +73,8 @@ namespace FenBrowser.Tests.Engine
             public bool StrictMode { get; set; }
             public Action<FenValue, FenObject> OnUnhandledRejection { get; set; }
             public Action<FenValue, string> OnUncaughtException { get; set; }
+            public FenEngineOptions Options { get; set; } = FenEngineOptions.Default;
+            public Uri DocumentUrl { get; set; } = new Uri("about:blank");
         }
 
         private readonly TestContext _context = new TestContext();

@@ -220,6 +220,22 @@ try{_.fB=function(a){return _.t(a,3)}}catch(e){_._DumpException(e)}
         }
 
         [Fact]
+        public void Parse_FunctionClosingAfterIfBlock_FollowedByClassExpression_NoErrors()
+        {
+            var input = """
+ir=function(a,b){if(a){var c=1}};
+nr=class extends hr{constructor(){super();this.D=[];this.style={mode:"x"}}reset(){this.i=0}};
+Or=function(a,b){const [c,d]=["k","v"];return a+b+c+d};
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 3);
+        }
+
+        [Fact]
         public void Parse_MinifiedTryCatchBoundary_FollowedByTopLevelTry_RuntimeParser_NoErrors()
         {
             var input = """
@@ -255,6 +271,197 @@ try{
 
             AssertNoErrors(parser);
             Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_GooglePageshowReasonsLabelAndForOfArrowChain_RuntimeParser_NoErrors()
+        {
+            var input = """
+_.ze(_.yi(),"pageshow",a=>{
+  var b=a.Ef;
+  a=(a=Ula())&&a.type||"null";
+  if((_.Qa.iV()||_.Nd())&&(a==="back_forward"||b.persisted))a:{
+    var c;
+    a=(c=Ula())==null?void 0:c.notRestoredReasons;
+    if(a!==void 0||b.persisted)
+      if(a===void 0&&b.persisted)var d="&nrrr=noAPIhit";
+      else if(b.persisted)d="&nrrr=hit";
+      else if(a===null)d="&nrrr=null";
+      else{
+        b:{c=a.reasons;if(c!==null&&c.length!==0)for(e of c)if(e.reason==="session-restored"){var e=!0;break b}e=!1}
+        if(e)break a;
+        var f;
+        e=`&murl=${encodeURIComponent((f=a.url)!=null?f:"unknown")}`;
+        f=[];
+        if(a.reasons!==null&&a.reasons.length>0)for(d of a.reasons)d.reason&&f.push(d.reason);else f.push("mainNotBlocking");
+        d=`&mnrr=${f.join(",")}`;
+        d=`${e}${d}`;
+        f=a.children!==null?Wla(a.children,""):"";
+        d+=`&nrrr=${f}`
+      }
+      else d="&nrrr=noAPImiss";
+    _.ff("nrr",d)
+  }
+},!1);
+_.ze(_.yi(),"popstate",()=>{_.Qa.Pz()&&Yla&&Xla===_.Ld().href?(clearTimeout(Yla),Xla=Yla=null):_.Vla("popstate")},!1);
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_GoogleFocusoutHandlerThenTopLevelTry_RuntimeParser_NoErrors()
+        {
+            var input = """
+var Eu=function(a){
+  if(a.B==1&&a.C&&a.F){
+    _.Ph(a.j,"background",a.i.D?"#282a2c":"#e9eef6");
+    _.Nf(a.j);
+    var b=new bu(a.G);
+    b=b.Za();
+    Iu(a,b)||a.o.H(b,"focusout",()=>{qs(a.i,!1);zs(a.i)});
+    a.j.appendChild(b);b.focus();Es(a.i,"314px")
+  }
+},Ju=function(a){a.j&&(_.Of(a.j),a.B!=1&&_.ci(a.J,!0),a.j=null)},Iu=function(a,b){b=b.querySelectorAll("button");return b.length==1?(a.o.H(b[0],"click",()=>{_.ns(a.i,!1);zs(a.i)}),!0):!1};
+try{
+  var gj=function(a){return a},hj=function(a,b){return a+b};
+}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_FunctionParameterDefaultArrow_RuntimeParser_NoErrors()
+        {
+            var input = "var f=function(a=d=>d){return a(1)};";
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.Single(program.Statements);
+        }
+
+        [Fact]
+        public void Parse_GoogleOgBundle_TryCatchBoundaryChunk_RuntimeParser_NoErrors()
+        {
+            var input = """
+try{
+  bj.prototype.Ca=function(a,b,c,d,e){let f;for(let l=0;f=dj[l];l++){a:{var g=a;var h=f;var k=!!c;if(_.Rg(g)){h=g.wc(h,k);break a}if(!g){h=[];break a}h=(g=_.dh(g))?g.wc(h,k):[]}for(g=0;k=h[g];g++){const m=k.listener;if(m.tb==b&&m.Eh==d){e?e.Ca(a,f,k.listener,c,d):_.hh(a,f,k.listener,c,d);break}}}};_.fj=function(){return _.ej.i().i};_.ej=class{constructor(){this.i=new Hh;this.i.o.log(1)}static i(){return _.Mh(_.ej)}};var gj=_.fj();_.Kd("gbar_._DumpException",function(a){gj.j.log(a)});
+}catch(e){_._DumpException(e)}
+try{
+  var hj=function(a){(a=_.L(a.i,_.Gg,5))?(a=_.S(a,5),a=/^\d+$/.test(a)?parseInt(a,10):0):a=0;return a},ij=function(a,b){_.cj.H(a,b)};
+}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_GoogleOgBundle_FocusoutChunk_RuntimeParser_NoErrors()
+        {
+            var input = """
+var xu=class{constructor(a){this.j=a;this.i=null}Za(){var a=this.j,b=this.v,c=this.o;tu(a);b="<div"+jt("")+kt(uu(a,b,c)+"")+it(vu(a,b,c)+"")+">";c=wu(c);const d=mt(a.v);d!==""&&(b+=" <style>"+d+"</style>");b+=c+"</div>";a.j&&_.sg(a.j);a=Ip(_.oj(b));this.i&&this.i.appendChild(a);return a}fill(a,b){this.v=a;this.o=b}instantiate(a){this.i=a;this.j.i[0]="rtl"==oo(a)}},vu=function(){return' dir="'+Ao("ltr")+'"'},yu=function(){return""},uu=function(a,b,c){return"padding:"+Ao(an(a.i)?uo("padding",b?"12px":"3px"):b?"12px":"3px")+";"+(c?"":"display:"+Ao(an(a.i)?uo("display","inline-block"):"inline-block")+";")+"vertical-align:"+Ao(an(a.i)?uo("vertical-align","middle"):"middle")+";"+(c&&!an(a.i)?"margin-left:"+Ao("calc(50% - 24px)")+";":"")+(c&&an(a.i)?"margin-right:"+Ao("calc(50% - 24px)")+";":"")+(c?"margin-top:"+Ao(an(a.i)?uo("margin-top","98px"):"98px")+";":"")},zu=function(){return!0},Au=function(){return!1},Bu=function(a,b){tu(a);return wu(b.Je)},Cu=function(a,b){tu(a);var c=b.Sg;b=b.Je;a="<div"+jt("")+kt(uu(a,c,b)+"")+it(vu(a,c,b)+"")+">";c=wu(b);return _.oj(a+(c+"</div>"))},wu=function(a){return" <div"+jt((a?"mspin-medium":"mspin-small")+" ")+kt("")+it("")+"> <div> <div></div> </div> </div> "},tu=function(a){Du in a.o||ot(a,Du,{Sg:0,Je:1},Bu,Cu,zu,Au,"",vu,"",yu,uu)},Du="t-s91B_Xq1PdE";var Fu=function(a){a.o.H(a.i,"sorp",a.N);a.o.H(a.i,"sort",a.fa);a.o.H(a.i,"rav",a.Z);a.o.H(a.i,"h",a.W);a.o.H(a.i,"sdm",()=>{a.j&&a.j.querySelector("[data-fb]")&&Eu(a)});a.o.H(a.D,"sdn",a.da);a.o.H(a.D,"close",a.Y)},Eu=function(a){if(a.B==1&&a.C&&a.F){_.Ph(a.j,"background",a.i.D?"#282a2c":"#e9eef6");_.Nf(a.j);var b=new bu(a.G);Xr(a.i)?Gu(a,b,a.F):Hu(a,b,a.F);b=b.Za();var c=b.querySelectorAll("a")[0];_.mk(c,a.C);a.o.H(c,"click",()=>{var d=a.i;_.Ie(d.j,21)!=null&&gs(d,_.R(d.j,21))});Iu(a,b)||a.o.H(b,"focusout",()=>{qs(a.i,!1);zs(a.i)});a.j.appendChild(b);b.focus();Es(a.i,"314px")}},Ju=function(a){a.j&&(_.Of(a.j),a.B!=1&&_.ci(a.J,!0),a.j=null)},Iu=function(a,b){b=b.querySelectorAll("button");return b.length==1?(a.o.H(b[0],"click",()=>{_.ns(a.i,!1);zs(a.i)}),!0):!1};
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 1);
+        }
+
+        [Fact]
+        public void Parse_GoogleOgBundle_ClassAndTooltipTryBoundary_RuntimeParser_NoErrors()
+        {
+            var input = """
+try{
+E.prototype.Lc=function(a){var b=this.I();b&&_.Of(b);E.U.Lc.call(this,a);a?(b=this.B.i.body,b.insertBefore(a,b.lastChild),_.Fc(this.o),this.o=new _.id(this.I()),_.uf(this,this.o),_.D(this.o,"focusin",this.C,void 0,this),_.D(this.o,"focusout",this.M,void 0,this)):(_.Fc(this.o),this.o=null)};var Ti=function(a){return a.j?a.isVisible()?4:1:a.D?3:a.isVisible()?2:0};
+E.prototype.rd=function(){if(!sd.prototype.rd.call(this))return!1;if(this.anchor){var a;for(let b=0;a=Ri[b];b++)_.Qf(a.I(),this.anchor)||a.Oa(!1)}_.ya(Ri,this)||Ri.push(this);a=this.I();a.className=this.className;this.C();_.D(a,"mouseover",this.da,!1,this);_.D(a,"mouseout",this.Z,!1,this);Ui(this);return!0};
+E.prototype.vd=function(){_.za(Ri,this);const a=this.I();let b;for(let c=0;b=Ri[c];c++)b.anchor&&_.Qf(a,b.anchor)&&b.Oa(!1);this.ga&&this.ga.M();_.hh(a,"mouseover",this.da,!1,this);_.hh(a,"mouseout",this.Z,!1,this);this.anchor=void 0;Ti(this)==0&&(this.L=!1);sd.prototype.vd.call(this)};
+E.prototype.la=function(a,b){this.anchor==a&&this.A.has(this.anchor)&&(this.L||!this.Qa?(this.Oa(!1),this.isVisible()||(this.anchor=a,this.R=b||this.O(0)||void 0,this.isVisible()&&this.Mb(),this.Oa(!0))):this.anchor=void 0);this.j=void 0};E.prototype.Ga=function(a){this.D=void 0;if(a==this.anchor){const b=this.B;a=(a=_.Rf(b.i))&&this.I()&&b.vf(this.I(),a);this.i!=null&&(this.i==this.I()||this.A.has(this.i))||a||this.T&&this.T.i||this.Oa(!1)}};
+var Vi=function(a,b){const c=Hf(a.B.i);a.N.x=b.clientX+c.x;a.N.y=b.clientY+c.y};E.prototype.W=function(a){const b=Wi(this,a.target);this.i=b;this.C();b!=this.anchor&&(this.anchor=b,this.j||(this.j=_.Ki((0,_.G)(this.la,this,b,void 0),500)),Xi(this),Vi(this,a))};var Wi=function(a,b){try{for(;b&&!a.A.has(b);)b=b.parentNode;return b}catch(c){return null}};E.prototype.Y=function(a){Vi(this,a);this.L=!0};
+E.prototype.P=function(a){this.i=a=Wi(this,a.target);this.L=!0;if(this.anchor!=a){this.anchor=a;const b=this.O(1);this.C();this.j||(this.j=_.Ki((0,_.G)(this.la,this,a,b),500));Xi(this)}};E.prototype.O=function(a){return a==0?new Yi(xf(this.N)):new Zi(this.i)};var Xi=function(a){if(a.anchor){let b;for(let c=0;b=Ri[c];c++)_.Qf(b.I(),a.anchor)&&(b.T=a,a.ga=b)}};
+E.prototype.J=function(a){const b=Wi(this,a.target),c=Wi(this,a.relatedTarget);b!=c&&(b==this.i&&(this.i=null),Ui(this),this.L=!1,!this.isVisible()||a.relatedTarget&&_.Qf(this.I(),a.relatedTarget)?this.anchor=void 0:this.M())};E.prototype.da=function(){const a=this.I();this.i!=a&&(this.C(),this.i=a)};E.prototype.Z=function(a){const b=this.I();this.i!=b||a.relatedTarget&&_.Qf(b,a.relatedTarget)||(this.i=null,this.M())};var Ui=function(a){a.j&&(_.t.clearTimeout(a.j),a.j=void 0)};
+E.prototype.M=function(){Ti(this)==2&&(this.D=_.Ki((0,_.G)(this.Ga,this,this.anchor),this.fa))};E.prototype.C=function(){this.D&&(_.t.clearTimeout(this.D),this.D=void 0)};E.prototype.S=function(){this.Oa(!1);Ui(this);Si(this);this.I()&&_.Of(this.I());this.i=null;delete this.B;E.U.S.call(this)};var Yi=function(a,b){ld.call(this,a,b)};_.H(Yi,ld);
+Yi.prototype.i=function(a,b,c){b=Zh((a?_.Af(a):document).documentElement);c=c?new _.dd(c.top+10,c.right,c.bottom,c.left+10):new _.dd(10,0,0,10);ji(this.j,a,8,c,b,9)&496&&ji(this.j,a,8,c,b,5)};var Zi=function(a){kd.call(this,a,5)};_.H(Zi,kd);Zi.prototype.i=function(a,b,c){const d=new _.y(10,0);_.ki(this.j,this.o,a,b,d,c,9)&496&&_.ki(this.j,4,a,1,d,c,5)};var $i;_.aj=class extends E{constructor(a,b){super(a);this.className="gb_Vc";this.Lc(b);this.oa=2;this.isVisible()&&this.Mb();this.fa=100;document.addEventListener("keydown",c=>{c.keyCode==27&&this.Oa(!1)});this.I().setAttribute("ng-non-bindable","")}O(){return new $i(this.i)}Oa(a){a||Ui(this);return super.Oa(a)}};
+$i=class extends kd{constructor(a){super(a,3)}i(a,b,c){const d=new _.y(0,0),e=Ff(window);let f=0;_.ki(this.j,this.o,a,b,d,c,9,void 0,new _.dd(0,e.width-8,e.height,8))&496&&(f=_.ki(this.j,4,a,1,d,c,5));f&2&&(b=parseInt(_.Th(a,"top"),10)+this.j.getBoundingClientRect().height+12,_.Ph(a,"top",b+"px"))}};var bj,dj;bj=function(){};_.cj=new bj;dj=["click","keydown","keyup"];bj.prototype.H=function(a,b,c,d,e){const f=function(g){const h=bh(b),k=_.Pf(g.target)?g.target.getAttribute("role")||null:null;g.type!="click"||g.Ua.button!=0||_.$d&&g.ctrlKey?g.keyCode!=13&&g.keyCode!=3||g.type=="keyup"?g.keyCode!=32||k!="button"&&k!="tab"&&k!="radio"||(g.type=="keyup"&&h.call(d,g),g.preventDefault()):(g.type="keypress",h.call(d,g)):h.call(d,g)};f.tb=b;f.Eh=d;e?e.H(a,dj,f,c):_.D(a,dj,f,c)};
+bj.prototype.Ca=function(a,b,c,d,e){let f;for(let l=0;f=dj[l];l++){a:{var g=a;var h=f;var k=!!c;if(_.Rg(g)){h=g.wc(h,k);break a}if(!g){h=[];break a}h=(g=_.dh(g))?g.wc(h,k):[]}for(g=0;k=h[g];g++){const m=k.listener;if(m.tb==b&&m.Eh==d){e?e.Ca(a,f,k.listener,c,d):_.hh(a,f,k.listener,c,d);break}}}};_.fj=function(){return _.ej.i().i};_.ej=class{constructor(){this.i=new Hh;this.i.o.log(1)}static i(){return _.Mh(_.ej)}};var gj=_.fj();_.Kd("gbar_._DumpException",function(a){gj.j.log(a)});
+}catch(e){_._DumpException(e)}
+try{
+var hj=function(a){(a=_.L(a.i,_.Gg,5))?(a=_.S(a,5),a=/^\d+$/.test(a)?parseInt(a,10):0):a=0;return a},ij=function(a,b){_.cj.H(a,b)};
+}catch(e){_._DumpException(e)}
+""";
+
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 2);
+        }
+
+        [Fact]
+        public void Parse_LocalGoogleOgBundle_RuntimeParser_NoErrors_WhenArtifactPresent()
+        {
+            string probe = AppContext.BaseDirectory;
+            string path = null;
+            for (int i = 0; i < 12 && !string.IsNullOrWhiteSpace(probe); i++)
+            {
+                var candidate = Path.Combine(probe, "logs", "google_og_bundle.js");
+                if (File.Exists(candidate))
+                {
+                    path = candidate;
+                    break;
+                }
+
+                probe = Path.GetDirectoryName(probe);
+            }
+
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            var input = File.ReadAllText(path);
+            var parser = CreateRuntimeParser(input);
+            var program = parser.ParseProgram();
+            if (parser.Errors.Any())
+            {
+                var lines = File.ReadAllLines(path);
+                int firstFailLine = -1;
+                string firstFailError = null;
+                for (int i = 1; i <= lines.Length; i++)
+                {
+                    var prefix = string.Join("\n", lines.Take(i));
+                    var prefixParser = CreateRuntimeParser(prefix);
+                    prefixParser.ParseProgram();
+                    if (prefixParser.Errors.Any())
+                    {
+                        firstFailLine = i;
+                        firstFailError = prefixParser.Errors[0];
+                        break;
+                    }
+                }
+
+                throw new Exception(
+                    "Parser errors:\n" +
+                    string.Join("\n", parser.Errors) +
+                    $"\n\nFirstFailLine={firstFailLine}\nFirstFailError={firstFailError}");
+            }
+
+            Assert.True(program.Statements.Count >= 1);
         }
 
         [Fact]

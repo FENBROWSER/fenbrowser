@@ -133,6 +133,95 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public void Overflow_Clip_Clips_Content()
+        {
+            var container = new Element("DIV");
+            var child = new Element("DIV");
+            container.AppendChild(child);
+
+            var styles = new Dictionary<Node, CssComputed>();
+
+            styles[container] = new CssComputed
+            {
+                Display = "block",
+                Width = 50,
+                Height = 50,
+                Overflow = "clip",
+                BackgroundColor = SKColors.Blue
+            };
+
+            styles[child] = new CssComputed
+            {
+                Display = "block",
+                Width = 100,
+                Height = 100,
+                BackgroundColor = SKColors.Red
+            };
+
+            var (_, boxes, tree) = RunPipeline(container, styles);
+
+            Assert.Equal(100, boxes[child].BorderBox.Width);
+
+            var paintNodes = FlattenTree(tree.Roots);
+            var clipNode = paintNodes.OfType<ClipPaintNode>().FirstOrDefault();
+
+            Assert.NotNull(clipNode);
+            Assert.True(clipNode.Bounds.Width <= 50);
+        }
+
+        [Fact]
+        public void MapBackedAbsolutePosition_RemovesChildFromFlow_AndResolvesPercentSize()
+        {
+            var root = new Element("DIV");
+            var absParent = new Element("DIV");
+            var child = new Element("DIV");
+
+            root.AppendChild(absParent);
+            absParent.AppendChild(child);
+
+            var styles = new Dictionary<Node, CssComputed>();
+
+            styles[root] = new CssComputed
+            {
+                Display = "block",
+                Position = "relative",
+                Width = 300,
+                Height = 200
+            };
+
+            styles[absParent] = new CssComputed
+            {
+                Display = "block",
+                Position = "absolute",
+                Top = 0,
+                Left = 0,
+                Width = 300,
+                Height = 200
+            };
+
+            var childStyle = new CssComputed
+            {
+                Display = "block",
+                Position = string.Empty,
+                BackgroundColor = SKColors.Red
+            };
+            childStyle.Map["position"] = "absolute";
+            childStyle.Map["width"] = "100%";
+            childStyle.Map["height"] = "100%";
+            styles[child] = childStyle;
+
+            var (_, boxes, _) = RunPipeline(root, styles);
+
+            var parentBox = boxes[absParent];
+            var childBox = boxes[child];
+
+            Assert.Equal(parentBox.ContentBox.Width, childBox.BorderBox.Width);
+            Assert.Equal(parentBox.ContentBox.Height, childBox.BorderBox.Height);
+            Assert.Equal(parentBox.ContentBox.Left, childBox.BorderBox.Left);
+            Assert.Equal(parentBox.ContentBox.Top, childBox.BorderBox.Top);
+        }
+
+        [Fact]
         public void Overflow_Hidden_OnInlineChild_PreservesInlinePaintOrder()
         {
             var parent = new Element("DIV");

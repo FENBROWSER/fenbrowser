@@ -60,6 +60,28 @@ public class WptDomSurfaceRegressionTests
     }
 
     [Fact]
+    public async Task Collection_And_Fragment_Interfaces_Use_Real_Prototype_Chains()
+    {
+        var baseUri = new Uri("https://example.com/index.html");
+        var parser = new HtmlParser("<html><body><div></div><div></div></body></html>", baseUri);
+        var doc = parser.Parse();
+        var engine = new JavaScriptEngine(CreateHost());
+
+        await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+        Assert.Equal("function", engine.Evaluate("typeof NodeList")?.ToString());
+        Assert.Equal("function", engine.Evaluate("typeof HTMLCollection")?.ToString());
+        Assert.Equal("function", engine.Evaluate("typeof DocumentFragment")?.ToString());
+        Assert.Equal("function", engine.Evaluate("typeof CharacterData")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(document.querySelectorAll('div') instanceof NodeList)")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(document.getElementsByTagName('div') instanceof HTMLCollection)")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(document.createDocumentFragment() instanceof DocumentFragment)")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(DocumentFragment.prototype instanceof Node)")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(document.createTextNode('x') instanceof CharacterData)")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(Comment.prototype instanceof CharacterData)")?.ToString());
+    }
+
+    [Fact]
     public async Task DomTokenList_IsBranded_And_ToggleAttribute_IsExposed()
     {
         var baseUri = new Uri("https://example.com/index.html");

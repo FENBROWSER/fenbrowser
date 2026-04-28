@@ -3,16 +3,26 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Css;
+using FenBrowser.Core.Engine;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine
 {
+    [Collection("Engine Tests")]
     public class JavaScriptEngineLifecycleTests
     {
+        public JavaScriptEngineLifecycleTests()
+        {
+            EngineContext.Reset();
+            EventLoopCoordinator.ResetInstance();
+        }
+
         [Fact]
         public async Task SetDomAsync_FiresDocumentDOMContentLoadedListenersRegisteredByScripts()
         {
@@ -27,6 +37,23 @@ namespace FenBrowser.Tests.Engine
             await engine.SetDomAsync(doc.DocumentElement, baseUri);
 
             Assert.Equal("interactive", engine.Evaluate("globalThis.__domReady")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_FocusHandlerCallingFocus_DoesNotRecurseOnAlreadyFocusedElement()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><input id='url-bar'><script>window.onload=function(){var input=document.getElementById('url-bar');globalThis.__focusCount=0;input.addEventListener('focus',function(){globalThis.__focusCount++;input.focus();});input.focus();globalThis.__activeId=document.activeElement&&document.activeElement.id;};</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__focusCount)")?.ToString());
+            Assert.Equal("url-bar", engine.Evaluate("globalThis.__activeId")?.ToString());
         }
 
         [Fact]
@@ -418,6 +445,26 @@ namespace FenBrowser.Tests.Engine
             Assert.Contains("underline", engine.Evaluate("globalThis.__textDecorationLine")?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("underline", engine.Evaluate("globalThis.__textDecoration")?.ToString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(true, engine.Evaluate("globalThis.__textDecorationCheck"));
+        }
+
+        [Fact]
+        public async Task SetDomAsync_GetComputedStyle_PreservesExistingComputedStyle()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><span id='probe'>x</span><script>globalThis.__probeColor = getComputedStyle(document.getElementById('probe')).color;</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+            var probe = doc.GetElementById("probe");
+            var cachedStyle = new CssComputed();
+            cachedStyle.Map["color"] = "rgb(29, 29, 31)";
+            probe.SetComputedStyle(cachedStyle);
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("rgb(29, 29, 31)", engine.Evaluate("globalThis.__probeColor")?.ToString());
         }
 
         [Fact]
@@ -1025,6 +1072,23 @@ namespace FenBrowser.Tests.Engine
 
             Assert.Equal("function", engine.Evaluate("typeof Date.prototype.getTimezoneOffset")?.ToString());
             Assert.NotEqual("NaN", engine.Evaluate("String((new Date()).getTimezoneOffset())")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DatePrototypePublishesUtcCookieDateHelpers()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser("<html><body></body></html>", baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("function", engine.Evaluate("typeof Date.prototype.toUTCString")?.ToString());
+            Assert.Equal("function", engine.Evaluate("typeof Date.prototype.setMilliseconds")?.ToString());
+            Assert.Equal("500", engine.Evaluate("String((function(){var d=new Date(0);d.setMilliseconds(500);return d.getMilliseconds();})())")?.ToString());
+            Assert.Equal("Thu, 01 Jan 1970 00:00:00 GMT", engine.Evaluate("(new Date(0)).toUTCString()")?.ToString());
         }
 
         [Fact]

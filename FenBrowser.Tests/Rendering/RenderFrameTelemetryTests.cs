@@ -15,6 +15,11 @@ namespace FenBrowser.Tests.Rendering
 {
     public class RenderFrameTelemetryTests
     {
+        private static Task<string> EmptyCssFetch(Uri _)
+        {
+            return Task.FromResult(string.Empty);
+        }
+
         [Fact]
         public async Task RenderFrame_ReportsInvalidationAndFrameTelemetry()
         {
@@ -209,6 +214,95 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public async Task RenderFrame_StyleSnapshotChange_ReflowsLayoutWithoutNodeDirtyFlags()
+        {
+            const string htmlSource = "<!doctype html><html><head><style>body{margin:0}#box{display:block;margin-left:48px;width:24px;height:24px;background:#00ff00}</style></head><body><div id='box'>x</div></body></html>";
+            var baseUri = new Uri("https://test.local/");
+            var parser = new HtmlParser(htmlSource, baseUri);
+            var doc = parser.Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var box = doc.GetElementById("box");
+
+            Assert.NotNull(box);
+
+            var renderer = new SkiaDomRenderer();
+            using var firstBitmap = new SKBitmap(128, 128);
+            using var firstCanvas = new SKCanvas(firstBitmap);
+
+            var firstResult = renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = html,
+                Canvas = firstCanvas,
+                Styles = new Dictionary<Node, CssComputed>(),
+                Viewport = new SKRect(0, 0, 128, 128),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "RenderFrameTelemetryTests.StyleSnapshotChange.First",
+                EmitVerificationReport = false
+            });
+            firstCanvas.Flush();
+
+            var initialBox = renderer.GetElementBox(box);
+            Assert.NotNull(firstResult);
+            Assert.NotNull(initialBox);
+
+            var styledSnapshot = await CssLoader.ComputeAsync(html, baseUri, EmptyCssFetch, viewportWidth: 128, viewportHeight: 128);
+
+            using var secondBitmap = new SKBitmap(128, 128);
+            using var secondCanvas = new SKCanvas(secondBitmap);
+
+            var secondResult = renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = html,
+                Canvas = secondCanvas,
+                Styles = styledSnapshot,
+                Viewport = new SKRect(0, 0, 128, 128),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = RenderFrameInvalidationReason.Style,
+                RequestedBy = "RenderFrameTelemetryTests.StyleSnapshotChange.Second",
+                EmitVerificationReport = false
+            });
+            secondCanvas.Flush();
+
+            var styledBox = renderer.GetElementBox(box);
+            Assert.NotNull(secondResult);
+            Assert.NotNull(secondResult.Telemetry);
+            Assert.True(secondResult.Telemetry.LayoutUpdated);
+            Assert.NotNull(styledBox);
+            Assert.True(styledBox.BorderBox.Left > initialBox.BorderBox.Left + 20f);
+        }
+
+        [Fact]
+        public async Task CssAnimationEngine_DoesNotTrackDisconnectedElementAsActive()
+        {
+            const string htmlSource = "<!doctype html><html><head><style>@keyframes spin { from { opacity: 0; } to { opacity: 1; } } #target { animation-name: spin; animation-duration: 1s; animation-iteration-count: infinite; }</style></head><body><div id='target'></div></body></html>";
+
+            CssAnimationEngine.Reset();
+            var animationEngine = CssAnimationEngine.Instance;
+            var baseUri = new Uri("https://test.local/");
+            var parser = new HtmlParser(htmlSource, baseUri);
+            var doc = parser.Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var target = doc.GetElementById("target");
+            Assert.NotNull(target);
+            Assert.True(target.IsConnected);
+
+            var styles = await CssLoader.ComputeAsync(html, baseUri, EmptyCssFetch, viewportWidth: 128, viewportHeight: 128);
+            var targetStyle = styles[target];
+
+            animationEngine.StartAnimation(target, targetStyle);
+            Assert.True(animationEngine.HasActiveAnimations(target));
+
+            ((ContainerNode)target.ParentNode).RemoveChild(target);
+            Assert.False(target.IsConnected);
+
+            animationEngine.CheckTransitions(target, targetStyle);
+
+            Assert.False(animationEngine.HasActiveAnimations(target));
+            Assert.DoesNotContain(target, animationEngine.GetAllActiveAnimationElements());
+        }
+
+        [Fact]
         public void CssAnimationEngine_ClassifiesOpacityAsPaintOnlyInvalidation()
         {
             Assert.Equal(InvalidationKind.Paint, CssAnimationEngine.ClassifyPropertyInvalidation("opacity"));
@@ -216,6 +310,28 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal(
                 InvalidationKind.Layout | InvalidationKind.Paint,
                 CssAnimationEngine.DetermineInvalidationKind(new[] { "opacity", "width" }));
+        }
+
+        [Fact]
+        public async Task CssAnimationEngine_DoesNotTrackDisplayNoneElementAsActive()
+        {
+            const string htmlSource = "<!doctype html><html><head><style>@keyframes spin { from { opacity: 0; } to { opacity: 1; } } #target { display:none; animation-name: spin; animation-duration: 1s; animation-iteration-count: infinite; }</style></head><body><div id='target'></div></body></html>";
+            var baseUri = new Uri("https://test.local/");
+            var parser = new HtmlParser(htmlSource, baseUri);
+            var doc = parser.Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(html, baseUri, EmptyCssFetch, viewportWidth: 128, viewportHeight: 128);
+            var target = doc.GetElementById("target");
+            var engine = CssAnimationEngine.Instance;
+
+            Assert.NotNull(target);
+            Assert.True(styles.TryGetValue(target, out var targetStyle));
+
+            engine.StopAnimations(target);
+            engine.StartAnimation(target, targetStyle);
+
+            Assert.DoesNotContain(target, engine.GetAllActiveAnimationElements());
+            Assert.False(engine.HasActiveAnimations(target));
         }
     }
 }

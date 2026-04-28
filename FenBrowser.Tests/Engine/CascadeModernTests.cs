@@ -1,4 +1,5 @@
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
 using Xunit;
@@ -116,6 +117,180 @@ namespace FenBrowser.Tests.Engine
             var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
 
             Assert.Equal("blue", computed[box].Map["color"]);
+        }
+
+        [Fact]
+        public async Task ExternalAppleLikeStylesheets_ApplyBodyVariablesAndGlobalNavLayout()
+        {
+            CssLoader.ClearCaches();
+
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <link rel='stylesheet' href='base.css'>
+    <link rel='stylesheet' href='globalnav.css'>
+</head>
+<body>
+    <nav id='globalnav'>
+        <ul class='globalnav-list'>
+            <li><a class='globalnav-link' href='/store'>Store</a></li>
+        </ul>
+    </nav>
+</body>
+</html>";
+
+            const string baseCss = @"
+@charset ""UTF-8"";
+:root {
+    --sk-body-text-color: rgb(29, 29, 31);
+    --sk-body-background-color: rgb(255, 255, 255);
+}
+html {
+    font-size: 106.25%;
+}
+body {
+    font-size: 17px;
+    line-height: 1.4705882353;
+    font-weight: 400;
+    letter-spacing: -0.022em;
+    font-family: ""SF Pro Text"", ""SF Pro Icons"", ""Helvetica Neue"", ""Helvetica"", ""Arial"", sans-serif;
+    background-color: var(--sk-body-background-color, rgb(255, 255, 255));
+    color: var(--sk-body-text-color, rgb(29, 29, 31));
+    font-style: normal;
+}";
+
+            const string globalNavCss = @"
+html {
+    --r-globalnav-height: 44px;
+}
+#globalnav {
+    --r-globalnav-color: rgba(0, 0, 0, 0.8);
+    --r-globalnav-height: 44px;
+}
+#globalnav .globalnav-list {
+    cursor: default;
+    margin: 0 -8px;
+    width: auto;
+    height: 44px;
+    display: flex;
+    justify-content: space-between;
+    list-style: none;
+}
+#globalnav .globalnav-link {
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--r-globalnav-color);
+    height: 44px;
+    text-decoration: none;
+}";
+
+            var parser = new HtmlParser(html, new Uri("https://www.apple.com/"));
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(
+                root,
+                new Uri("https://www.apple.com/"),
+                uri => Task.FromResult(
+                    uri.AbsolutePath.EndsWith("base.css", StringComparison.OrdinalIgnoreCase)
+                        ? baseCss
+                        : uri.AbsolutePath.EndsWith("globalnav.css", StringComparison.OrdinalIgnoreCase)
+                            ? globalNavCss
+                            : null));
+
+            var body = doc.Descendants().OfType<Element>().First(e => e.TagName == "BODY");
+            var list = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("globalnav-list"));
+            var link = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("globalnav-link"));
+
+            Assert.Equal("17px", computed[body].Map["font-size"]);
+            Assert.Equal("rgb(29, 29, 31)", computed[body].Map["color"]);
+            Assert.Equal("rgb(29, 29, 31)", computed[root].CustomProperties["--sk-body-text-color"]);
+            Assert.Equal("44px", computed[root].CustomProperties["--r-globalnav-height"]);
+            Assert.Equal("flex", computed[list].Map["display"]);
+            Assert.Equal("flex", computed[link].Map["display"]);
+        }
+
+        [Fact]
+        public async Task ComputeAsync_WorkerThreadStyles_AreVisibleAcrossThreads()
+        {
+            CssLoader.ClearCaches();
+
+            var previousCache = FenBrowser.Core.Css.NodeStyleExtensions.GetDefaultStyleCache();
+            FenBrowser.Core.Css.NodeStyleExtensions.SetDefaultStyleCache(new FenBrowser.Core.Css.StyleCache());
+            try
+            {
+                const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        body { color: rgb(29, 29, 31); }
+        .nav { display: flex; }
+    </style>
+</head>
+<body>
+    <div class='nav'>Test</div>
+</body>
+</html>";
+
+                var parser = new HtmlParser(html, new Uri("https://test.local/"));
+                var doc = parser.Parse();
+                var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+                var body = doc.Descendants().OfType<Element>().First(e => e.TagName == "BODY");
+                var nav = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("nav"));
+
+                await Task.Run(async () =>
+                {
+                    var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), null);
+                    Assert.Equal("rgb(29, 29, 31)", computed[body].Map["color"]);
+                    Assert.Equal("flex", computed[nav].Map["display"]);
+                });
+
+                Assert.Equal("rgb(29, 29, 31)", body.GetComputedStyle()?.Map["color"]);
+                Assert.Equal("flex", nav.GetComputedStyle()?.Map["display"]);
+            }
+            finally
+            {
+                FenBrowser.Core.Css.NodeStyleExtensions.SetDefaultStyleCache(previousCache);
+            }
+        }
+
+        [Fact]
+        public async Task HasSelector_WithAttributeArgument_AppliesInCascade()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .section-hero:has([data-tile-id='mothers-day-2026']) { position: relative; }
+        .mothers-day-icons { position: absolute; }
+    </style>
+</head>
+<body>
+    <section class='section-hero' id='hero'>
+        <div data-tile-id='mothers-day-2026'></div>
+        <div class='mothers-day-icons'></div>
+    </section>
+    <section class='section-hero' id='other'>
+        <div data-tile-id='other'></div>
+    </section>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var hero = doc.GetElementById("hero");
+            var other = doc.GetElementById("other");
+            var icons = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("mothers-day-icons"));
+
+            Assert.Equal("relative", computed[hero].Map["position"]);
+            Assert.Equal("absolute", computed[icons].Map["position"]);
+            Assert.False(computed[other].Map.TryGetValue("position", out var otherPosition) && otherPosition == "relative");
         }
 
         [Fact]

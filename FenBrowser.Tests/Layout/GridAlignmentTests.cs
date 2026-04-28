@@ -48,10 +48,11 @@ namespace FenBrowser.Tests.Layout
             return (container, items, styles);
         }
 
-        private Dictionary<Node, BoxModel> ArrangeGrid(Element container, Dictionary<Node, CssComputed> styles)
+        private Dictionary<Node, BoxModel> ArrangeGrid(Element container, Dictionary<Node, CssComputed> styles, System.Func<Node, SKSize, int, LayoutMetrics> measureNode = null)
         {
             var boxes = new Dictionary<Node, BoxModel>();
-            var metrics = GridLayoutComputer.Measure(container, new SKSize((float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, 0, (n, sz, d) => new LayoutMetrics());
+            measureNode ??= (n, sz, d) => new LayoutMetrics();
+            var metrics = GridLayoutComputer.Measure(container, new SKSize((float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, 0, measureNode);
             
             GridLayoutComputer.Arrange(container, new SKRect(0, 0, (float)styles[container].Width.Value, (float)styles[container].Height.Value), styles, boxes, 0, (node, rect, depth) =>
             {
@@ -63,7 +64,7 @@ namespace FenBrowser.Tests.Layout
                     // For alignment tests, we assume content box == border box for simplicity unless we test padding
                     boxes[el].BorderBox = rect; 
                 }
-            }, (n, sz, d) => new LayoutMetrics());
+            }, measureNode);
             return boxes;
         }
 
@@ -118,6 +119,34 @@ namespace FenBrowser.Tests.Layout
             var result = GetRect(items[0], boxes);
 
             Assert.Equal(0, result.Left);
+        }
+
+        [Fact]
+        public void JustifyItems_Center_UsesIntrinsicWidth_WhenItemHasNoExplicitWidth()
+        {
+            var (container, items, styles) = CreateGrid("200px", "200px", 1, justifyItems: "center");
+
+            styles[items[0]].Width = null;
+            styles[items[0]].Height = null;
+
+            var boxes = ArrangeGrid(container, styles, (node, size, depth) =>
+            {
+                if (node == items[0])
+                {
+                    return new LayoutMetrics
+                    {
+                        MaxChildWidth = 50,
+                        ContentHeight = 50
+                    };
+                }
+
+                return new LayoutMetrics();
+            });
+
+            var result = GetRect(items[0], boxes);
+
+            Assert.Equal(75, result.Left);
+            Assert.Equal(50, result.Width);
         }
 
         [Fact]

@@ -1,7 +1,10 @@
 using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using Xunit;
 
@@ -194,6 +197,48 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(64f, height);
         }
 
+        [Fact]
+        public async Task MinimalLayoutComputer_MeasureImgInPicture_UsesSelectedSourceIntrinsicDimensions()
+        {
+            ImageLoader.ClearCache();
+
+            try
+            {
+                const string selectedUrl = "https://example.test/responsive/selected.png";
+                const string fallbackUrl = "https://example.test/responsive/fallback.png";
+
+                await ImageLoader.PrewarmImageAsync(selectedUrl, CreatePngStream(80, 40, SKColors.Red));
+                await ImageLoader.PrewarmImageAsync(fallbackUrl, CreatePngStream(20, 20, SKColors.Blue));
+
+                var picture = new Element("picture");
+                var source = new Element("source");
+                source.SetAttribute("media", "(min-width:0px)");
+                source.SetAttribute("srcset", selectedUrl + " 1x");
+
+                var image = new Element("img");
+                image.SetAttribute("src", fallbackUrl);
+
+                picture.AppendChild(source);
+                picture.AppendChild(image);
+
+                var styles = new Dictionary<Node, CssComputed>
+                {
+                    [picture] = new CssComputed { Display = "block" },
+                    [image] = new CssComputed { Display = "inline" }
+                };
+
+                var computer = new MinimalLayoutComputer(styles, 1024, 768, "https://example.test/");
+                var metrics = computer.Measure(image, new SKSize(1024, 768));
+
+                Assert.Equal(80f, metrics.MaxChildWidth);
+                Assert.Equal(40f, metrics.ContentHeight);
+            }
+            finally
+            {
+                ImageLoader.ClearCache();
+            }
+        }
+
         private static string CreatePngDataUrl(int width, int height, SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(width, height));
@@ -201,6 +246,15 @@ namespace FenBrowser.Tests.Layout
             using var image = surface.Snapshot();
             using var data = image.Encode(SKEncodedImageFormat.Png, 100);
             return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+        }
+
+        private static MemoryStream CreatePngStream(int width, int height, SKColor color)
+        {
+            using var surface = SKSurface.Create(new SKImageInfo(width, height));
+            surface.Canvas.Clear(color);
+            using var image = surface.Snapshot();
+            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+            return new MemoryStream(data.ToArray(), writable: false);
         }
     }
 }

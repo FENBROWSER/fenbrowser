@@ -94,6 +94,69 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task LayoutEngine_NewTabQuickLinkCards_Do_Not_Collapse_To_Intrinsic_Widths()
+        {
+            const float viewportWidth = 1600f;
+            const float viewportHeight = 900f;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            var quickLinks = ElementsByClass(doc, "quick-link").ToArray();
+            Assert.Equal(4, quickLinks.Length);
+
+            var engine = new LayoutEngine(styles, viewportWidth, viewportHeight, null, baseUri.AbsoluteUri);
+            engine.ComputeLayout(root, viewportWidth, viewportHeight);
+
+            var boxes = engine.AllBoxes;
+            var firstCard = AssertBox(boxes, quickLinks[0]);
+            var secondCard = AssertBox(boxes, quickLinks[1]);
+            var thirdCard = AssertBox(boxes, quickLinks[2]);
+            var fourthCard = AssertBox(boxes, quickLinks[3]);
+
+            Assert.True(firstCard.ContentBox.Width >= 260f, $"Expected first quick-link card to retain authored card width, got {firstCard.ContentBox}.");
+            Assert.True(secondCard.ContentBox.Width >= 260f, $"Expected second quick-link card to retain authored card width, got {secondCard.ContentBox}.");
+            Assert.True(thirdCard.ContentBox.Width >= 260f, $"Expected third quick-link card to retain authored card width, got {thirdCard.ContentBox}.");
+            Assert.True(fourthCard.ContentBox.Width >= 260f, $"Expected fourth quick-link card to retain authored card width, got {fourthCard.ContentBox}.");
+        }
+
+        [Fact]
+        public async Task LayoutEngine_NewTabShortcutPills_StaySingleLine()
+        {
+            const float viewportWidth = 1600f;
+            const float viewportHeight = 900f;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            var shortcutChips = ElementsByClass(doc, "shortcut-chip").ToArray();
+            Assert.Equal(3, shortcutChips.Length);
+
+            var engine = new LayoutEngine(styles, viewportWidth, viewportHeight, null, baseUri.AbsoluteUri);
+            engine.ComputeLayout(root, viewportWidth, viewportHeight);
+
+            var boxes = engine.AllBoxes;
+            var firstChip = AssertBox(boxes, shortcutChips[0]);
+            var secondChip = AssertBox(boxes, shortcutChips[1]);
+            var thirdChip = AssertBox(boxes, shortcutChips[2]);
+
+            Assert.True(firstChip.ContentBox.Height <= 20f, $"Expected first shortcut pill to stay on one line, got {firstChip.ContentBox}.");
+            Assert.True(secondChip.ContentBox.Height <= 20f, $"Expected second shortcut pill to stay on one line, got {secondChip.ContentBox}.");
+            Assert.True(thirdChip.ContentBox.Height <= 20f, $"Expected third shortcut pill to stay on one line, got {thirdChip.ContentBox}.");
+            Assert.True(firstChip.BorderBox.Width >= 90f, $"Expected first shortcut pill to keep a usable width, got {firstChip.BorderBox}.");
+            Assert.True(secondChip.BorderBox.Width >= 140f, $"Expected second shortcut pill to keep a usable width, got {secondChip.BorderBox}.");
+            Assert.True(thirdChip.BorderBox.Width >= 170f, $"Expected third shortcut pill to keep a usable width, got {thirdChip.BorderBox}.");
+        }
+
+        [Fact]
         public async Task Cascade_Preserves_NewTab_SearchBox_Background_From_Author_Shorthand()
         {
             const float viewportWidth = 1600f;
@@ -190,6 +253,8 @@ namespace FenBrowser.Tests.Engine
 
             int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
             int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
+            Assert.InRange(sampleX, 0, viewportWidth - 1);
+            Assert.InRange(sampleY, 0, viewportHeight - 1);
             var pixel = bitmap.GetPixel(sampleX, sampleY);
 
             Assert.InRange(pixel.Red, 10, 30);
@@ -547,6 +612,61 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task NewTab_SearchBox_BorderBox_Stays_Within_SearchPanel_ContentBox()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var searchPanel = ById(doc, "newtab-form");
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            Assert.True(styles.TryGetValue(searchBox, out var searchBoxStyle));
+            Assert.NotNull(searchBoxStyle);
+            Assert.Equal("border-box", searchBoxStyle!.BoxSizing);
+
+            Assert.True(styles.TryGetValue(searchPanel, out var searchPanelStyle));
+            Assert.NotNull(searchPanelStyle);
+            Assert.Equal("border-box", searchPanelStyle!.BoxSizing);
+
+            var renderer = new SkiaDomRenderer();
+            using var surface = SKSurface.Create(new SKImageInfo(viewportWidth, viewportHeight));
+            var canvas = surface.Canvas;
+            canvas.Clear(SKColors.Transparent);
+
+            var result = renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = canvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.SearchBoxWithinPanelContentBox",
+                EmitVerificationReport = false
+            });
+
+            Assert.NotNull(result);
+
+            var panelBox = renderer.GetElementBox(searchPanel);
+            var inputBox = renderer.GetElementBox(searchBox);
+            Assert.NotNull(panelBox);
+            Assert.NotNull(inputBox);
+
+            Assert.True(
+                inputBox!.BorderBox.Left >= panelBox!.ContentBox.Left - 0.5f,
+                $"Expected new-tab input to stay inside the search panel content box on the left, got input={inputBox.BorderBox} panelContent={panelBox.ContentBox}.");
+            Assert.True(
+                inputBox.BorderBox.Right <= panelBox.ContentBox.Right + 0.5f,
+                $"Expected new-tab input to stay inside the search panel content box on the right, got input={inputBox.BorderBox} panelContent={panelBox.ContentBox}.");
+        }
+
+        [Fact]
         public async Task FocusStyle_Does_Not_Bleed_Outside_NewTab_SearchPanel_RightEdge()
         {
             const int viewportWidth = 1600;
@@ -614,6 +734,73 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task FocusStyle_Does_Not_Bleed_Into_NewTab_SearchPanel_RightPadding()
+        {
+            const int viewportWidth = 1600;
+            const int viewportHeight = 900;
+
+            string html = NewTabRenderer.Render();
+            var baseUri = new Uri("https://fen.newtab/");
+            var parser = new HtmlParser(html, baseUri);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var searchBox = ById(doc, "url-bar");
+            var searchPanel = ById(doc, "newtab-form");
+
+            var renderer = new SkiaDomRenderer();
+            var baseStyles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            using var beforeBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var beforeCanvas = new SKCanvas(beforeBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = beforeCanvas,
+                Styles = baseStyles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "NewTabPageLayoutTests.FocusPaddingBleed.before",
+                EmitVerificationReport = false
+            });
+            beforeCanvas.Flush();
+
+            var panelBox = renderer.GetElementBox(searchPanel);
+            var inputBox = renderer.GetElementBox(searchBox);
+            Assert.NotNull(panelBox);
+            Assert.NotNull(inputBox);
+
+            int sampleX = (int)Math.Round((panelBox!.ContentBox.Right + panelBox.PaddingBox.Right) / 2f);
+            int sampleY = (int)Math.Round(inputBox!.BorderBox.MidY);
+            sampleX = Math.Clamp(sampleX, 0, viewportWidth - 1);
+            sampleY = Math.Clamp(sampleY, 0, viewportHeight - 1);
+            var beforePixel = beforeBitmap.GetPixel(sampleX, sampleY);
+
+            searchBox.SetAttribute("class", "search-box is-focused");
+            var focusedStyles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
+
+            using var focusedBitmap = new SKBitmap(viewportWidth, viewportHeight);
+            using var focusedCanvas = new SKCanvas(focusedBitmap);
+            renderer.RenderFrame(new global::FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+            {
+                Root = root,
+                Canvas = focusedCanvas,
+                Styles = focusedStyles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = global::FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Input,
+                RequestedBy = "NewTabPageLayoutTests.FocusPaddingBleed.focused",
+                EmitVerificationReport = false
+            });
+            focusedCanvas.Flush();
+
+            var focusedPixel = focusedBitmap.GetPixel(sampleX, sampleY);
+            Assert.Equal(beforePixel.Red, focusedPixel.Red);
+            Assert.Equal(beforePixel.Green, focusedPixel.Green);
+            Assert.Equal(beforePixel.Blue, focusedPixel.Blue);
+        }
+
+        [Fact]
         public void CascadeEngine_Author_Background_Shorthand_Overrides_UserAgent_BackgroundColor_Longhand()
         {
             var html = new Element("html");
@@ -662,6 +849,14 @@ namespace FenBrowser.Tests.Engine
         private static Element FirstByClass(Document doc, string className)
         {
             return doc.Descendants().OfType<Element>().First(e =>
+                (e.ClassName ?? string.Empty)
+                    .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Contains(className, StringComparer.Ordinal));
+        }
+
+        private static IEnumerable<Element> ElementsByClass(Document doc, string className)
+        {
+            return doc.Descendants().OfType<Element>().Where(e =>
                 (e.ClassName ?? string.Empty)
                     .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
                     .Contains(className, StringComparer.Ordinal));

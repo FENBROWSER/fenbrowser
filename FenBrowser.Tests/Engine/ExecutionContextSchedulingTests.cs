@@ -80,5 +80,30 @@ namespace FenBrowser.Tests.Engine
                 EventLoopCoordinator.Instance.OnWorkEnqueued -= HandleWorkEnqueued;
             }
         }
+
+        [Fact]
+        public void ScheduleCallback_DefaultScheduler_KeepsDelayedTimerPendingUntilDue()
+        {
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext();
+            var ran = false;
+
+            context.ScheduleCallback(() => ran = true, 25);
+
+            Assert.False(ran);
+            Assert.Equal(0, EventLoopCoordinator.Instance.TaskCount);
+            Assert.True(EventLoopCoordinator.Instance.HasPendingDelayedTasks);
+
+            var earlyResult = EventLoopCoordinator.Instance.ProcessNextTaskDetailed();
+
+            Assert.False(earlyResult.Processed);
+            Assert.False(ran);
+            Assert.Equal(0, EventLoopCoordinator.Instance.TaskCount);
+
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            Assert.True(ran);
+            Assert.False(EventLoopCoordinator.Instance.HasPendingDelayedTasks);
+            Assert.Equal(0, EventLoopCoordinator.Instance.TaskCount);
+        }
     }
 }

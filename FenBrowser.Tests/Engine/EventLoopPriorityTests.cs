@@ -1,15 +1,22 @@
 using System.Collections.Generic;
+using FenBrowser.Core.Engine;
 using FenBrowser.FenEngine.Core.EventLoop;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine
 {
+    [Collection("Engine Tests")]
     public class EventLoopPriorityTests
     {
+        public EventLoopPriorityTests()
+        {
+            EngineContext.Reset();
+            EventLoopCoordinator.ResetInstance();
+        }
+
         [Fact]
         public void ProcessNextTaskDetailed_PrioritizesInteractiveWork_WhenRequested()
         {
-            EventLoopCoordinator.ResetInstance();
             var coordinator = EventLoopCoordinator.Instance;
             var order = new List<string>();
 
@@ -28,7 +35,6 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void TaskQueueSnapshot_ReportsPriorityBuckets()
         {
-            EventLoopCoordinator.ResetInstance();
             var coordinator = EventLoopCoordinator.Instance;
 
             coordinator.ScheduleTask(() => { }, TaskSource.UserInteraction, "input");
@@ -46,7 +52,6 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void ProcessNextTaskDetailed_DrainsPendingMicrotasks_WhenNoTaskIsQueued()
         {
-            EventLoopCoordinator.ResetInstance();
             var coordinator = EventLoopCoordinator.Instance;
             var order = new List<string>();
 

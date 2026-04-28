@@ -19,7 +19,7 @@ namespace FenBrowser.Tests.Core
         [Fact]
         public async Task LatestGoogleSnapshot_MainSearchChrome_HasLayoutAndPaintCoverage()
         {
-            string snapshotPath = GetLatestSnapshotPaths(1).FirstOrDefault();
+            string snapshotPath = GetLatestSnapshotPaths(1, requiredUrlPrefix: "https://www.google.com/").FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(snapshotPath))
             {
@@ -48,6 +48,7 @@ namespace FenBrowser.Tests.Core
             canvas.Flush();
 
             Element searchShell = FindFirst(root, e => HasClass(e, "RNNXgb"));
+            Element searchShellInnerBand = FindFirst(root, e => HasClass(e, "SDkEP"));
             Element searchTextWrapper = FindFirst(root, e => HasClass(e, "a4bIc"));
             Element searchTextArea = FindFirst(root, e => string.Equals(e.GetAttribute("id"), "APjFqb", StringComparison.Ordinal));
             Element aiModeButton = FindFirst(root, e => HasClass(e, "plR5qb"));
@@ -57,6 +58,18 @@ namespace FenBrowser.Tests.Core
             Element topNav = FindFirst(root, e => HasClass(e, "Ne6nSd"));
             Element appsButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Google apps", StringComparison.OrdinalIgnoreCase));
             Element signInButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Sign in", StringComparison.OrdinalIgnoreCase));
+            Element languagesPromptContainer = FindFirst(root, e => string.Equals(e.GetAttribute("id"), "SIvCob", StringComparison.OrdinalIgnoreCase))
+                ?? FindFirst(root, e =>
+                    e.Descendants().OfType<Text>().Any(t => (t.Data?.IndexOf("Google offered in", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0) &&
+                    e.Descendants().OfType<Element>().Any(IsAnchorWithText));
+            Element languageOfferLink = languagesPromptContainer?
+                .ChildNodes
+                .OfType<Element>()
+                .FirstOrDefault(IsAnchorWithText)
+                ?? languagesPromptContainer?
+                    .Descendants()
+                    .OfType<Element>()
+                    .FirstOrDefault(IsAnchorWithText);
             Element doodleBand = FindFirst(root, e => HasClass(e, "LS8OJ"));
             Element formBand = FindFirst(root, e => HasClass(e, "ikrT4e"));
             Element nativeForm = FindFirst(root, e => string.Equals(e.TagName, "FORM", StringComparison.OrdinalIgnoreCase));
@@ -66,23 +79,39 @@ namespace FenBrowser.Tests.Core
             Assert.NotNull(searchTextArea);
             Assert.NotNull(aiModeButton);
             Assert.NotNull(searchButtonsBand);
+            Assert.NotNull(searchShellInnerBand);
             Assert.NotNull(appsButton);
             Assert.NotNull(signInButton);
+            Assert.NotNull(languageOfferLink);
 
             Assert.True(renderer.LastLayout.TryGetElementRect(searchShell, out var searchShellRect), "Missing layout rect for .RNNXgb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchTextWrapper, out var searchTextWrapperRect), "Missing layout rect for .a4bIc");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchTextArea, out var searchTextAreaRect), "Missing layout rect for #APjFqb");
+            Assert.True(renderer.LastLayout.TryGetElementRect(searchShellInnerBand, out var searchShellInnerBandRect), "Missing layout rect for .SDkEP");
             Assert.True(renderer.LastLayout.TryGetElementRect(aiModeButton, out var aiModeButtonRect), "Missing layout rect for .plR5qb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchButtonsBand, out var searchButtonsBandRect), "Missing layout rect for .lJ9FBc");
             Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), "Missing layout rect for .Ne6nSd");
             Assert.True(renderer.LastLayout.TryGetElementRect(appsButton, out var appsButtonRect), "Missing layout rect for Google apps button");
             Assert.True(renderer.LastLayout.TryGetElementRect(signInButton, out var signInButtonRect), "Missing layout rect for Sign in button");
             Assert.True(computed.TryGetValue(signInButton, out var signInStyle), "Missing computed style for Sign in button");
+            computed.TryGetValue(searchTextArea, out var searchTextAreaStyle);
+            computed.TryGetValue(searchTextWrapper, out var searchTextWrapperStyle);
+            computed.TryGetValue(searchShellInnerBand, out var searchShellInnerBandStyle);
+            int searchTextAreaTextLength = string.Concat(searchTextArea.Descendants().OfType<Text>().Select(t => t.Data ?? string.Empty)).Length;
+            string searchStyleContext =
+                $"textarea-style={DescribeStyleSizing(searchTextAreaStyle)} " +
+                $"textWrap-style={DescribeStyleSizing(searchTextWrapperStyle)} " +
+                $"shellInner-style={DescribeStyleSizing(searchShellInnerBandStyle)} " +
+                $"textarea-map={DescribeStyleMapSizing(searchTextAreaStyle)} " +
+                $"textWrap-map={DescribeStyleMapSizing(searchTextWrapperStyle)} " +
+                $"shellInner-map={DescribeStyleMapSizing(searchShellInnerBandStyle)}";
 
             string layoutContext =
                 $"main={DescribeRect(renderer.LastLayout, mainColumn)} nav={DescribeRect(renderer.LastLayout, topNav)} " +
                 $"doodle={DescribeRect(renderer.LastLayout, doodleBand)} form={DescribeRect(renderer.LastLayout, formBand)} " +
-                $"wrapper={DescribeRect(renderer.LastLayout, searchFormWrapper)} shell={DescribeRect(searchShellRect)} buttons={DescribeRect(searchButtonsBandRect)}";
+                $"wrapper={DescribeRect(renderer.LastLayout, searchFormWrapper)} shell={DescribeRect(searchShellRect)} shellInner={DescribeRect(searchShellInnerBandRect)} " +
+                $"textWrap={DescribeRect(searchTextWrapperRect)} textArea={DescribeRect(searchTextAreaRect)} textAreaTextLen={searchTextAreaTextLength} " +
+                $"buttons={DescribeRect(searchButtonsBandRect)} {searchStyleContext}";
 
             var renderContext = renderer.CreateRenderContext();
             string rawBoxContext =
@@ -94,7 +123,9 @@ namespace FenBrowser.Tests.Core
             string childContext =
                 $" form-children={DescribeImmediateChildren(renderer.LastLayout, formBand)}" +
                 $" native-form-children={DescribeImmediateChildren(renderer.LastLayout, nativeForm)}" +
-                $" wrapper-children={DescribeImmediateChildren(renderer.LastLayout, searchFormWrapper)}";
+                $" wrapper-children={DescribeImmediateChildren(renderer.LastLayout, searchFormWrapper)}" +
+                $" shell-children={DescribeImmediateChildren(renderer.LastLayout, searchShell)}" +
+                $" shell-inner-children={DescribeImmediateChildren(renderer.LastLayout, searchShellInnerBand)}";
 
             Assert.True(searchShellRect.Width >= 400f, $"Expected .RNNXgb width >= 400, got {searchShellRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchShellRect.Height >= 48f, $"Expected .RNNXgb height >= 48, got {searchShellRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
@@ -104,10 +135,21 @@ namespace FenBrowser.Tests.Core
             Assert.True(aiModeButtonRect.Width >= 60f, $"Expected .plR5qb width >= 60, got {aiModeButtonRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Height >= 30f, $"Expected .lJ9FBc height >= 30, got {searchButtonsBandRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Top < 520f, $"Expected visible .FPdoLc.lJ9FBc within viewport, got top={searchButtonsBandRect.Top}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+            float navBandTop = Math.Max(0f, topNavRect.Top - 1f);
+            float navBandBottom = topNavRect.Bottom + Math.Max(appsButtonRect.Height, signInButtonRect.Height);
             Assert.True(appsButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Google apps button to stay within nav top band, got {DescribeRect(appsButtonRect)}. {layoutContext}");
             Assert.True(signInButtonRect.Top >= Math.Max(0f, topNavRect.Top - 1f), $"Expected Sign in button to stay within nav top band, got {DescribeRect(signInButtonRect)}. {layoutContext}");
-            Assert.InRange(signInButtonRect.Height, 36f, 96f);
+            Assert.InRange(appsButtonRect.Top, navBandTop, navBandBottom);
+            Assert.InRange(signInButtonRect.Top, navBandTop, navBandBottom);
+            Assert.InRange(appsButtonRect.Height, 24f, 64f);
+            Assert.InRange(appsButtonRect.Width, 24f, 64f);
+            Assert.InRange(signInButtonRect.Height, 36f, 72f);
             Assert.InRange(signInButtonRect.Width, 80f, 160f);
+            Assert.True(aiModeButtonRect.Top > topNavRect.Bottom + 8f, $"Expected AI mode button to remain below top nav band. ai={DescribeRect(aiModeButtonRect)} nav={DescribeRect(topNavRect)}. {layoutContext}");
+            Assert.True(searchShellRect.Top > topNavRect.Bottom + 8f, $"Expected search shell to remain below top nav band. shell={DescribeRect(searchShellRect)} nav={DescribeRect(topNavRect)}. {layoutContext}");
+            float shellCenterY = searchShellRect.Top + (searchShellRect.Height * 0.5f);
+            float textCenterY = searchTextAreaRect.Top + (searchTextAreaRect.Height * 0.5f);
+            Assert.InRange(Math.Abs(textCenterY - shellCenterY), 0f, 12f);
 
             string signInStyleContext = BuildSignInStyleContext(signInStyle, signInButtonRect);
             Assert.Equal("inline-block", signInStyle.Display);
@@ -178,6 +220,7 @@ namespace FenBrowser.Tests.Core
             int textAreaPaintCount = paintNodes.Count(n => ReferenceEquals(n.SourceNode, searchTextArea));
             int aiModePaintCount = paintNodes.Count(n => ReferenceEquals(n.SourceNode, aiModeButton));
             int buttonsBandPaintCount = paintNodes.Count(n => ReferenceEquals(n.SourceNode, searchButtonsBand));
+            var topBandArtifactTextNodes = FindTopBandArtifactTextNodes(paintNodes, navBandTop, navBandBottom);
             var shellSampleRect = ToSampleRect(searchShellRect, bitmap.Width, bitmap.Height, inset: 2, expand: 4);
             int shellVisiblePixels = CountNonWhitePixels(bitmap, shellSampleRect);
             string paintContext =
@@ -198,13 +241,22 @@ namespace FenBrowser.Tests.Core
             Assert.True(aiModePaintCount > 0, $"Expected paint nodes for .plR5qb.{paintContext}");
             Assert.True(wrapperPaintCount > 0 || textAreaPaintCount > 0, $"Expected search wrapper descendants to materialize into paint coverage.{paintContext}");
             Assert.True(buttonsBandPaintCount > 0 || paintNodes.Any(n => searchButtonsBand.Contains(n.SourceNode as Node)), $"Expected .lJ9FBc descendants to materialize into paint coverage.{paintContext}");
+            Assert.True(
+                topBandArtifactTextNodes.Count == 0,
+                $"Expected no leaked top-band artifact text nodes. found={string.Join(" | ", topBandArtifactTextNodes.Take(6).Select(DescribePaintNode))}. {paintContext}");
             Assert.True(shellVisiblePixels > 250, $"Expected the rendered search shell region to contain visible non-white pixels.{paintContext}");
+            Assert.True(TryResolveRenderedTextColor(paintNodes, languageOfferLink, out var languageOfferColor), $"Missing rendered text color for language offer link. {paintContext}");
+            Assert.False(IsNearBlack(languageOfferColor), $"Expected language offer link color to not be near black, got {DescribeColor(languageOfferColor)}. {paintContext}");
+            Assert.True(
+                languageOfferColor.Blue >= languageOfferColor.Red + 15 &&
+                languageOfferColor.Blue >= languageOfferColor.Green + 15,
+                $"Expected language offer link color to remain blue-toned, got {DescribeColor(languageOfferColor)}. {paintContext}");
         }
 
         [Fact]
         public async Task LatestGoogleSnapshots_FirstLoadAndRefresh_KeyChromeRegionsRemainStable()
         {
-            var snapshots = GetLatestSnapshotPaths(2);
+            var snapshots = GetLatestSnapshotPaths(2, requiredUrlPrefix: "https://www.google.com/");
             if (snapshots.Count < 2)
             {
                 return;
@@ -235,7 +287,7 @@ namespace FenBrowser.Tests.Core
             return root.Descendants().OfType<Element>().FirstOrDefault(predicate);
         }
 
-        private static IReadOnlyList<string> GetLatestSnapshotPaths(int count)
+        private static IReadOnlyList<string> GetLatestSnapshotPaths(int count, string requiredUrlPrefix = null)
         {
             string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
             string[] candidateLogDirs =
@@ -247,9 +299,40 @@ namespace FenBrowser.Tests.Core
             return candidateLogDirs
                 .Where(Directory.Exists)
                 .SelectMany(dir => Directory.GetFiles(dir, "engine_source_*.html"))
+                .Where(path => SnapshotMatchesUrl(path, requiredUrlPrefix))
                 .OrderByDescending(File.GetLastWriteTimeUtc)
                 .Take(Math.Max(1, count))
                 .ToArray();
+        }
+
+        private static bool SnapshotMatchesUrl(string path, string requiredUrlPrefix)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(requiredUrlPrefix))
+            {
+                return true;
+            }
+
+            try
+            {
+                foreach (string line in File.ReadLines(path).Take(2))
+                {
+                    if (line.IndexOf(requiredUrlPrefix, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
         }
 
         private static async Task<GoogleSnapshotMetrics> AnalyzeSnapshotAsync(string snapshotPath)
@@ -382,9 +465,83 @@ namespace FenBrowser.Tests.Core
                 $"box-sizing={style.BoxSizing} align-items={style.AlignItems} justify-content={style.JustifyContent}";
         }
 
+        private static string DescribeStyleSizing(CssComputed style)
+        {
+            if (style == null)
+            {
+                return "(null)";
+            }
+
+            static string F(double? v) => v.HasValue ? v.Value.ToString("0.##") : "null";
+            return
+                $"display={style.Display} position={style.Position} width={F(style.Width)} widthPct={F(style.WidthPercent)} " +
+                $"height={F(style.Height)} heightPct={F(style.HeightPercent)} minH={F(style.MinHeight)} minHPct={F(style.MinHeightPercent)} " +
+                $"maxH={F(style.MaxHeight)} maxHPct={F(style.MaxHeightPercent)} lineHeight={F(style.LineHeight)} " +
+                $"flexBasis={F(style.FlexBasis)} flexGrow={F(style.FlexGrow)} flexShrink={F(style.FlexShrink)}";
+        }
+
+        private static string DescribeStyleMapSizing(CssComputed style)
+        {
+            if (style?.Map == null)
+            {
+                return "(null)";
+            }
+
+            static string Read(IDictionary<string, string> map, string key)
+            {
+                return map.TryGetValue(key, out var value) ? value : "-";
+            }
+
+            return
+                $"h={Read(style.Map, "height")} minH={Read(style.Map, "min-height")} maxH={Read(style.Map, "max-height")} " +
+                $"inline={Read(style.Map, "inline-size")} block={Read(style.Map, "block-size")} " +
+                $"flex={Read(style.Map, "flex")} basis={Read(style.Map, "flex-basis")} " +
+                $"grow={Read(style.Map, "flex-grow")} shrink={Read(style.Map, "flex-shrink")}";
+        }
+
         private static bool HasClass(Element element, string className)
         {
             return element?.ClassList?.Contains(className) == true;
+        }
+
+        private static bool IsAnchorWithText(Element element)
+        {
+            if (element == null || !string.Equals(element.TagName, "A", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string text = string.Concat(element.Descendants().OfType<Text>().Select(t => t.Data ?? string.Empty)).Trim();
+            return text.Length > 0;
+        }
+
+        private static bool TryResolveRenderedTextColor(IEnumerable<PaintNodeBase> nodes, Element element, out SKColor color)
+        {
+            color = default;
+            if (nodes == null || element == null)
+            {
+                return false;
+            }
+
+            var linkTextPaint = nodes
+                .OfType<TextPaintNode>()
+                .Where(n => n != null && !string.IsNullOrWhiteSpace(n.FallbackText))
+                .FirstOrDefault(n =>
+                    (n.SourceNode is Text textNode && element.Contains(textNode)) ||
+                    (n.SourceNode is Element sourceElement && ReferenceEquals(sourceElement, element)));
+
+            if (linkTextPaint != null)
+            {
+                color = linkTextPaint.Color;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsNearBlack(SKColor color)
+        {
+            return color.Red <= 48 && color.Green <= 48 && color.Blue <= 48;
         }
 
         private static string DescribeRect(LayoutResult layout, Element element)
@@ -662,6 +819,46 @@ namespace FenBrowser.Tests.Core
             }
 
             return count;
+        }
+
+        private static List<TextPaintNode> FindTopBandArtifactTextNodes(IEnumerable<PaintNodeBase> nodes, float navBandTop, float navBandBottom)
+        {
+            if (nodes == null)
+            {
+                return new List<TextPaintNode>();
+            }
+
+            float bandTop = Math.Max(0f, navBandTop - 24f);
+            float bandBottom = navBandBottom + 48f;
+
+            return nodes
+                .OfType<TextPaintNode>()
+                .Where(n => n != null && !string.IsNullOrWhiteSpace(n.FallbackText))
+                .Where(n => n.Bounds.Bottom >= bandTop && n.Bounds.Top <= bandBottom)
+                .Where(n => ContainsTopBandArtifactToken(n.FallbackText))
+                .ToList();
+        }
+
+        private static bool ContainsTopBandArtifactToken(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            string compact = text.Trim().ToLowerInvariant();
+            if (compact == "gmail" || compact == "images" || compact == "sign in" || compact == "google apps")
+            {
+                return false;
+            }
+
+            return compact == "close" ||
+                   compact.Contains("spchx", StringComparison.Ordinal) ||
+                   compact.Contains("wuxmqc", StringComparison.Ordinal) ||
+                   compact.Contains("job8vb", StringComparison.Ordinal) ||
+                   compact.Contains("jsl.dh(this.id", StringComparison.Ordinal) ||
+                   compact.Contains("close choose what you're giving feedback on", StringComparison.Ordinal) ||
+                   compact.Contains("permission-bar-gradient", StringComparison.Ordinal);
         }
 
         private static bool TryFindPaintPath(IReadOnlyList<PaintNodeBase> nodes, Node source, List<PaintNodeBase> path)

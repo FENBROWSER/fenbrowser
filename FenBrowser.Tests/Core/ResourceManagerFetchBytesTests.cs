@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -168,6 +169,41 @@ namespace FenBrowser.Tests.Core
             }
         }
 
+        [Fact]
+        public async Task FetchTextDetailedAsync_MisleadingLatin1Header_PreservesUtf8Text()
+        {
+            const string html =
+                "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>" +
+                "<p>Beyonc\u00E9</p><p>World War\u00A0II</p><p>\u0939\u093F\u0928\u094D\u0926\u0940</p><p>\u0420\u0443\u0441\u0441\u043A\u0438\u0439</p>" +
+                "</body></html>";
+            byte[] payload = Encoding.UTF8.GetBytes(html);
+
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload)
+                };
+                response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
+                response.Content.Headers.ContentType.CharSet = "iso-8859-1";
+                return response;
+            }));
+
+            var manager = new ResourceManager(client, isPrivate: false);
+            var result = await manager.FetchTextDetailedAsync(
+                new Uri("https://example.test/utf8"),
+                referer: new Uri("https://example.test/page"),
+                secFetchDest: "document");
+
+            Assert.Equal(FetchStatus.Success, result.Status);
+            Assert.Contains("Beyonc\u00E9", result.Content);
+            Assert.Contains("World War\u00A0II", result.Content);
+            Assert.Contains("\u0939\u093F\u0928\u094D\u0926\u0940", result.Content);
+            Assert.Contains("\u0420\u0443\u0441\u0441\u043A\u0438\u0439", result.Content);
+            Assert.DoesNotContain("Beyonc\u00C3\u00A9", result.Content);
+            Assert.DoesNotContain("\u00E0\u00A4", result.Content);
+            Assert.DoesNotContain("\u00D0\u00A0\u00D1", result.Content);
+        }
         private static byte[] CreatePngBytes(SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(2, 2));
