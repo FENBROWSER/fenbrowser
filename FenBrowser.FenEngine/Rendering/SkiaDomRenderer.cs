@@ -21,8 +21,9 @@ namespace FenBrowser.FenEngine.Rendering
     /// <summary>
     /// Production render-frame pipeline built around layout, paint-tree construction,
     /// damage tracking, compositing stability, and backend rasterization.
+    /// Implements ILayoutEngine to provide DOM element geometry to JavaScript.
     /// </summary>
-    public class SkiaDomRenderer : IRenderFramePipeline
+    public class SkiaDomRenderer : IRenderFramePipeline, Core.ILayoutEngine
     {
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
@@ -78,19 +79,45 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public LayoutResult LastLayout => _lastLayout;
         
-        /// <summary>
-        /// Get the layout box for a specific element.
-        /// </summary>
-        public BoxModel GetElementBox(Node node)
-        {
-            if (node != null && _boxes.TryGetValue(node, out var box))
-                return box;
+    /// <summary>
+    /// Get the layout box for a specific element.
+    /// </summary>
+    public BoxModel GetElementBox(Node node)
+    {
+        if (node != null && _boxes.TryGetValue(node, out var box))
+            return box;
+        return null;
+    }
+
+    /// <summary>
+    /// ILayoutEngine implementation: Returns the border-box rectangle for the given element
+    /// in viewport coordinates, or null if the element has no layout box.
+    /// This enables getBoundingClientRect() API for JavaScript.
+    /// </summary>
+    public SKRect? GetBoxForNode(Element element)
+    {
+        if (element == null)
             return null;
-        }
-        
-        /// <summary>
-        /// Main render entry point - performs layout and paint.
-        /// </summary>
+
+        var box = GetElementBox(element);
+        if (box == null)
+            return null;
+
+        // Return border-box in absolute viewport coordinates
+        return box.BorderBox;
+    }
+
+    /// <summary>
+    /// ILayoutEngine implementation: No-op - layout is performed during RenderFrame.
+    /// </summary>
+    public void PerformLayout(LayoutContext context, FenBrowser.Core.Deadlines.FrameDeadline deadline)
+    {
+        // Layout happens in RenderFrame; this is a no-op for ILayoutEngine compliance.
+    }
+
+    /// <summary>
+    /// Main render entry point - performs layout and paint.
+    /// </summary>
         private bool _isRendering = false;
 
         public RenderFrameResult RenderFrame(RenderFrameRequest request)
@@ -220,6 +247,13 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Track dirty state
                 bool isLayoutDirty = forceLayout || (root.LayoutDirty || root.ChildLayoutDirty);
+                if (styleInvalidation)
+                {
+                    // Author styles can arrive after the first structural layout.
+                    // Until we track per-property layout-affecting diffs, treat any
+                    // stylesheet snapshot change as requiring a fresh layout pass.
+                    isLayoutDirty = true;
+                }
                 bool hasActiveAnimations = false;
                 var animationInvalidation = InvalidationKind.None;
                 bool paintInvalidationSignal = false;

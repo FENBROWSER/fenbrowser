@@ -26,30 +26,84 @@ namespace FenBrowser.FenEngine.Rendering
             font-family: 'Segoe UI', 'Segoe UI Variable Text', Arial, sans-serif;
             color: #e2e8f0;
             background-color: #0f172a;
+            overflow-x: hidden;
         }}
 
         .page {{
+            position: relative;
             min-height: 100vh;
             padding: 72px 24px 120px;
             box-sizing: border-box;
             text-align: center;
+            overflow: hidden;
         }}
 
         .shell {{
             display: inline-block;
-            width: 700px;
+            position: relative;
+            width: 860px;
             max-width: 100%;
-            margin-top: 10vh;
+            margin-top: 6vh;
             text-align: center;
+            z-index: 2;
+        }}
+
+        .hero-panel {{
+            display: block;
+            width: 100%;
+            padding: 38px 34px 28px;
+            box-sizing: border-box;
+            border: 1px solid #23324f;
+            border-radius: 34px;
+            background: rgba(17, 27, 49, 0.94);
+            text-align: center;
+        }}
+
+        .hero-rail {{
+            display: block;
+            width: 100%;
+            max-width: 700px;
+            margin: 0 auto 28px;
+            padding: 8px 12px;
+            box-sizing: border-box;
+            border: 1px solid #253452;
+            border-radius: 999px;
+            background: rgba(11, 18, 32, 0.55);
+        }}
+
+        .logo-mark {{
+            display: block;
+            margin: 0 auto 18px;
+        }}
+
+        .logo-mark-bar {{
+            display: inline-block;
+            width: 18px;
+            margin: 0 5px;
+            border-radius: 999px;
+            background: #60a5fa;
+            vertical-align: bottom;
+        }}
+
+        .logo-mark-bar-primary {{
+            height: 44px;
+            background: #60a5fa;
+        }}
+
+        .logo-mark-bar-secondary {{
+            height: 32px;
+            background: #38bdf8;
+        }}
+
+        .logo-mark-bar-tertiary {{
+            height: 22px;
+            background: #0f766e;
         }}
 
         .eyebrow {{
             display: inline-block;
-            padding: 8px 14px;
+            padding: 0;
             box-sizing: border-box;
-            border-radius: 999px;
-            border: 1px solid #334155;
-            background: rgba(15, 23, 42, 0.64);
             color: #93c5fd;
             font-size: 12px;
             font-weight: 700;
@@ -58,9 +112,9 @@ namespace FenBrowser.FenEngine.Rendering
         }}
 
         .logo {{
-            margin: 26px 0 0;
+            margin: 0;
             color: #f8fafc;
-            font-size: 68px;
+            font-size: 74px;
             font-weight: 700;
             letter-spacing: -0.05em;
             line-height: 1;
@@ -73,25 +127,23 @@ namespace FenBrowser.FenEngine.Rendering
         .tagline {{
             display: block;
             width: 100%;
-            max-width: 560px;
-            margin-top: 16px;
+            max-width: 620px;
+            margin-top: 18px;
             margin-left: auto;
             margin-right: auto;
             color: #94a3b8;
-            font-size: 18px;
+            font-size: 19px;
             line-height: 1.6;
         }}
 
         .search-panel {{
-            display: block;
+            display: inline-block;
             width: 100%;
-            max-width: 580px;
-            margin-top: 34px;
-            margin-left: auto;
-            margin-right: auto;
-            padding: 12px;
+            max-width: 600px;
+            margin-top: 30px;
+            padding: 14px;
             box-sizing: border-box;
-            border-radius: 30px;
+            border-radius: 28px;
             border: 1px solid #334155;
             background: rgba(15, 23, 42, 0.74);
             overflow: hidden;
@@ -135,18 +187,54 @@ namespace FenBrowser.FenEngine.Rendering
             text-transform: uppercase;
         }}
 
+        .shortcut-row {{
+            display: block;
+            width: 100%;
+            max-width: 700px;
+            margin: 18px auto 0;
+            text-align: center;
+        }}
+
+        .shortcut-chip {{
+            display: inline-block;
+            margin: 0 6px 10px;
+            padding: 10px 14px;
+            box-sizing: border-box;
+            white-space: nowrap;
+            border-radius: 999px;
+            border: 1px solid #243552;
+            background: #121c31;
+            color: #a5b4fc;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }}
+
+        .section-title {{
+            display: block;
+            margin-top: 28px;
+            color: #7dd3fc;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+        }}
+
         .quick-links {{
             display: block;
-            margin-top: 36px;
+            width: 100%;
+            max-width: 700px;
+            margin: 18px auto 0;
+            text-align: left;
         }}
 
         .quick-link {{
             display: block;
             width: 100%;
-            margin: 12px 0 0;
-            padding: 18px 20px;
+            margin: 0 0 16px;
+            padding: 20px 20px 18px;
             box-sizing: border-box;
-            border-radius: 18px;
+            border-radius: 22px;
             border: 1px solid #334155;
             background: #1e293b;
             color: #e2e8f0;
@@ -154,23 +242,64 @@ namespace FenBrowser.FenEngine.Rendering
             text-align: left;
         }}
 
+        .quick-link-kicker {{
+            display: inline-block;
+            padding: 6px 10px;
+            box-sizing: border-box;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.8);
+            color: #93c5fd;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }}
+
         .quick-link-title {{
             display: block;
+            margin-top: 16px;
             color: #f8fafc;
-            font-size: 16px;
+            font-size: 24px;
             font-weight: 600;
         }}
 
         .quick-link-copy {{
             display: block;
-            margin-top: 8px;
+            margin-top: 10px;
             color: #94a3b8;
-            font-size: 13px;
-            line-height: 1.45;
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+
+        .quick-link-meta {{
+            display: block;
+            margin-top: 16px;
+            color: #60a5fa;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }}
+
+        .quick-link-settings {{
+            background: #22304a;
+        }}
+
+        .quick-link-diagnostics {{
+            background: #1b2844;
+        }}
+
+        .quick-link-mdn {{
+            background: #334155;
+        }}
+
+        .quick-link-stackoverflow {{
+            background: #1f2a3f;
         }}
 
         .footer {{
-            margin-top: 42px;
+            margin-top: 20px;
+            padding-bottom: 16px;
             font-size: 12px;
             color: #64748b;
             text-align: center;
@@ -180,31 +309,55 @@ namespace FenBrowser.FenEngine.Rendering
 <body id='fen-newtab'>
     <div class='page'>
         <div class='shell'>
-            <div class='eyebrow'>Start Securely</div>
-            <div class='logo'><span class='logo-accent'>Fen</span>Browser</div>
-            <div class='tagline'>A focused start page built for quick search, direct navigation, and a calmer browsing surface.</div>
+            <div class='hero-panel'>
+                <div class='hero-rail'>
+                    <div class='eyebrow'>Start Securely</div>
+                </div>
+                <div class='logo-mark'>
+                    <span class='logo-mark-bar logo-mark-bar-secondary'></span>
+                    <span class='logo-mark-bar logo-mark-bar-primary'></span>
+                    <span class='logo-mark-bar logo-mark-bar-tertiary'></span>
+                </div>
+                <div class='logo'><span class='logo-accent'>Fen</span>Browser</div>
+                <div class='tagline'>A focused start page built for quick search, direct navigation, and a calmer browsing surface.</div>
 
-            <div id='newtab-form' class='search-panel'>
-                <input id='url-bar' class='search-box' type='text' autocomplete='off' spellcheck='false' placeholder='Search the web or enter a URL'>
-                <div class='search-hint'>Press Enter to search, open a site, or jump straight to a domain</div>
+                <div id='newtab-form' class='search-panel'>
+                    <input id='url-bar' class='search-box' type='text' autocomplete='off' spellcheck='false' placeholder='Search the web or enter a URL'>
+                    <div class='search-hint'>Press Enter to search, open a site, or jump straight to a domain</div>
+                </div>
+
+                <div class='shortcut-row'>
+                    <span class='shortcut-chip'>/ Focus search</span>
+                    <span class='shortcut-chip'>example.com Opens direct</span>
+                    <span class='shortcut-chip'>fen://settings Tune the browser</span>
+                </div>
             </div>
 
+            <div class='section-title'>Jump Back In</div>
             <div class='quick-links'>
-                <a class='quick-link' href='fen://settings'>
+                <a class='quick-link quick-link-settings' href='fen://settings'>
+                    <span class='quick-link-kicker'>Control</span>
                     <span class='quick-link-title'>Settings</span>
                     <span class='quick-link-copy'>Review privacy, appearance, and browser behavior.</span>
+                    <span class='quick-link-meta'>Open Fen settings</span>
                 </a>
-                <a class='quick-link' href='https://www.whatismybrowser.com/'>
+                <a class='quick-link quick-link-diagnostics' href='https://www.whatismybrowser.com/'>
+                    <span class='quick-link-kicker'>Inspect</span>
                     <span class='quick-link-title'>Diagnostics</span>
                     <span class='quick-link-copy'>Check browser identity and surface compatibility.</span>
+                    <span class='quick-link-meta'>Verify browser signals</span>
                 </a>
-                <a class='quick-link' href='https://developer.mozilla.org/'>
+                <a class='quick-link quick-link-mdn' href='https://developer.mozilla.org/'>
+                    <span class='quick-link-kicker'>Reference</span>
                     <span class='quick-link-title'>MDN</span>
                     <span class='quick-link-copy'>Open reference docs for HTML, CSS, and JavaScript.</span>
+                    <span class='quick-link-meta'>Read platform docs</span>
                 </a>
-                <a class='quick-link' href='https://stackoverflow.com/'>
+                <a class='quick-link quick-link-stackoverflow' href='https://stackoverflow.com/'>
+                    <span class='quick-link-kicker'>Debug</span>
                     <span class='quick-link-title'>Stack Overflow</span>
                     <span class='quick-link-copy'>Jump into implementation details and debugging threads.</span>
+                    <span class='quick-link-meta'>Find working fixes</span>
                 </a>
             </div>
 

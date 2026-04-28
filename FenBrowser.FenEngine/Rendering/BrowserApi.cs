@@ -260,6 +260,8 @@ namespace FenBrowser.FenEngine.Rendering
         private Action<string> _fontLoadedHandler;
         private readonly ImageLoader.ImageLoaderRequestContext _imageLoaderContext;
         private readonly string _imageLoaderContextId = Guid.NewGuid().ToString("N");
+        private double? _hostViewportHintWidth;
+        private double? _hostViewportHintHeight;
 
         // External renderer reference: BrowserIntegration injects the actual renderer used for
         // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
@@ -269,6 +271,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         private (double? Width, double? Height) GetRenderViewportHint()
         {
+            if (_hostViewportHintWidth > 0 && _hostViewportHintHeight > 0)
+            {
+                return (_hostViewportHintWidth, _hostViewportHintHeight);
+            }
+
             try
             {
                 var context = _activeRenderer?.CreateRenderContext();
@@ -283,6 +290,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return (null, null);
+        }
+
+        public void UpdateViewportHint(double width, double height)
+        {
+            _hostViewportHintWidth = width > 0 ? width : null;
+            _hostViewportHintHeight = height > 0 ? height : null;
         }
 
         // Tracks whether the last dispatched click event allowed default action.
@@ -7278,6 +7291,11 @@ pre {{
                 var clickBubbleListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", false).Count;
                 var clickCaptureListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", true).Count;
                 clickNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(element, clickEvent, clickContext);
+
+                // JS click handlers may modify DOM/styles (class toggles, popover,
+                // attribute changes). Request a repaint so those mutations are rendered
+                // immediately instead of waiting for the next input-driven invalidation.
+                TryInvokeRepaintReady(_engine.GetActiveDom());
             }
             else
             {
@@ -7391,6 +7409,66 @@ pre {{
             {
                  // Verify if this is a search button (simplified check)
                  TryLogDebug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General);
+
+                 // Popover target activation: if the button has popovertarget,
+                 // toggle/show/hide the referenced popover element.
+                 var popoverTargetId = element.GetAttribute("popovertarget");
+                 if (!string.IsNullOrEmpty(popoverTargetId) && allowDefaultActivation)
+                 {
+                     var root = _engine.GetActiveDom();
+                     var rootEl = (root as Element) ?? (root as Document)?.DocumentElement;
+                     var targetEl = rootEl?.SelfAndDescendants()
+                         .OfType<Element>()
+                         .FirstOrDefault(e => string.Equals(e.Id, popoverTargetId, StringComparison.Ordinal));
+
+                     if (targetEl != null && targetEl.GetAttribute("popover") != null)
+                     {
+                         var action = (element.GetAttribute("popovertargetaction") ?? "toggle").ToLowerInvariant();
+                         bool isOpen = targetEl.HasAttribute("data-popover-open");
+
+                         if (action == "show" && !isOpen)
+                         {
+                             targetEl.SetAttribute("data-popover-open", "");
+                             FenBrowser.FenEngine.DOM.DomMutationQueue.Instance.EnqueueMutation(
+                                 new FenBrowser.FenEngine.DOM.DomMutation(
+                                     FenBrowser.FenEngine.DOM.MutationType.AttributeChange,
+                                     InvalidationKind.Style | InvalidationKind.Layout,
+                                     targetEl, "data-popover-open", null, ""));
+                         }
+                         else if (action == "hide" && isOpen)
+                         {
+                             targetEl.RemoveAttribute("data-popover-open");
+                             FenBrowser.FenEngine.DOM.DomMutationQueue.Instance.EnqueueMutation(
+                                 new FenBrowser.FenEngine.DOM.DomMutation(
+                                     FenBrowser.FenEngine.DOM.MutationType.AttributeChange,
+                                     InvalidationKind.Style | InvalidationKind.Layout,
+                                     targetEl, "data-popover-open", "", null));
+                         }
+                         else if (action == "toggle")
+                         {
+                             if (isOpen)
+                             {
+                                 targetEl.RemoveAttribute("data-popover-open");
+                                 FenBrowser.FenEngine.DOM.DomMutationQueue.Instance.EnqueueMutation(
+                                     new FenBrowser.FenEngine.DOM.DomMutation(
+                                         FenBrowser.FenEngine.DOM.MutationType.AttributeChange,
+                                         InvalidationKind.Style | InvalidationKind.Layout,
+                                         targetEl, "data-popover-open", "", null));
+                             }
+                             else
+                             {
+                                 targetEl.SetAttribute("data-popover-open", "");
+                                 FenBrowser.FenEngine.DOM.DomMutationQueue.Instance.EnqueueMutation(
+                                     new FenBrowser.FenEngine.DOM.DomMutation(
+                                         FenBrowser.FenEngine.DOM.MutationType.AttributeChange,
+                                         InvalidationKind.Style | InvalidationKind.Layout,
+                                         targetEl, "data-popover-open", null, ""));
+                             }
+                         }
+
+                         TryInvokeRepaintReady(root);
+                     }
+                 }
 
                  if (allowDefaultActivation && IsSubmitActivationControl(element, tag))
                  {

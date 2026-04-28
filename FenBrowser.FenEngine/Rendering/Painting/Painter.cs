@@ -223,7 +223,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             // Use existing CssTransform3D for parsing
             var transform = CssTransform3D.Parse(style.Transform);
-            var matrix = transform.ToSKMatrix();
+            var matrix = transform.ToSKMatrix(box);
 
             // Apply transform origin (default: center)
             float ox = box.Left + box.Width / 2;

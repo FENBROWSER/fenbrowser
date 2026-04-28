@@ -1032,8 +1032,6 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     return;
                 }
-
-                EngineLogCompat.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap={(node.Bitmap != null ? $"{node.Bitmap.Width}x{node.Bitmap.Height}" : "NULL")}");
                 
                 // Guard: Check bitmap validity before accessing
                 if (node.Bitmap == null) return;
@@ -1045,6 +1043,8 @@ namespace FenBrowser.FenEngine.Rendering
                     EngineLogCompat.Debug($"[SkiaRenderer] DrawImage skipped: Bitmap is disposed/null");
                     return;
                 }
+
+                EngineLogCompat.Debug($"[SkiaRenderer] DrawImage called. Bounds={node.Bounds}, Bitmap=present");
                 
                 // Validate bitmap dimensions to prevent divide-by-zero or invalid geometry
                 if (node.Bitmap.Width <= 0 || node.Bitmap.Height <= 0)

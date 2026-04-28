@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
@@ -49,6 +50,12 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         
         private readonly Interaction.ScrollManager _scrollManager;
+
+        private static bool IsOverflowClipMode(string overflow)
+        {
+            return string.Equals(overflow, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(overflow, "clip", StringComparison.OrdinalIgnoreCase);
+        }
         
         private NewPaintTreeBuilder(
             IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
@@ -402,7 +409,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var cssTransform = CssTransform3D.Parse(style.Transform);
                     if (cssTransform.HasTransform)
                     {
-                        var matrix = cssTransform.ToSKMatrix();
+                        var matrix = cssTransform.ToSKMatrix(box.BorderBox);
                         if (matrix != SKMatrix.Identity)
                         {
                             // Determine transform-origin (default is center of border box per CSS spec)
@@ -432,7 +439,9 @@ namespace FenBrowser.FenEngine.Rendering
                 // Check for overflow/scroll
                 bool isScrollable = (style?.OverflowX == "scroll" || style?.OverflowX == "auto" || 
                                      style?.OverflowY == "scroll" || style?.OverflowY == "auto");
-                bool isClipped = (style?.Overflow == "hidden" || style?.OverflowX == "hidden" || style?.OverflowY == "hidden");
+                bool isClipped = IsOverflowClipMode(style?.Overflow) ||
+                                 IsOverflowClipMode(style?.OverflowX) ||
+                                 IsOverflowClipMode(style?.OverflowY);
 
                 if (isScrollable || isClipped)
                 {
@@ -507,7 +516,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // 2. Process Children (Clipped or Normal)
-                bool isClipped = (style?.Overflow == "hidden" || style?.OverflowX == "hidden" || style?.OverflowY == "hidden" ||
+                bool isClipped = (IsOverflowClipMode(style?.Overflow) || IsOverflowClipMode(style?.OverflowX) || IsOverflowClipMode(style?.OverflowY) ||
                                   style?.Overflow == "scroll" || style?.OverflowX == "scroll" || style?.OverflowY == "scroll");
 
                 if (isClipped)
@@ -2746,45 +2755,7 @@ namespace FenBrowser.FenEngine.Rendering
             
             if (tag == "IMG")
             {
-                // <picture> source selection: if this <img> is inside a <picture>,
-                // walk sibling <source> elements and pick the first with a matching
-                // type/media. Use the first srcset URL (ignoring descriptors for now).
-                var pictureParent = elem.ParentElement;
-                if (pictureParent != null &&
-                    string.Equals(pictureParent.NodeName, "picture", StringComparison.OrdinalIgnoreCase))
-                {
-                    foreach (var sibling in pictureParent.ChildNodes.OfType<Element>())
-                    {
-                        if (!string.Equals(sibling.NodeName, "source", StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        // Skip sources whose type is not an image we can handle
-                        var mime = sibling.GetAttribute("type");
-                        if (!string.IsNullOrEmpty(mime) &&
-                            !mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        // Skip sources with media queries we don't evaluate (just use first one)
-                        var srcset = sibling.GetAttribute("srcset");
-                        if (!string.IsNullOrEmpty(srcset))
-                        {
-                            var candidate = ResponsiveImageSourceSelector.PickBestImageCandidate(null, srcset, _viewportWidth);
-                            if (!string.IsNullOrEmpty(candidate))
-                            {
-                                url = candidate;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Fall back to img[srcset] / img.src when no <picture> source matched.
-                if (string.IsNullOrEmpty(url))
-                {
-                    var src = elem.GetAttribute("src");
-                    var srcset = elem.GetAttribute("srcset");
-                    url = ResponsiveImageSourceSelector.PickBestImageCandidate(src, srcset, _viewportWidth);
-                }
+                url = ResponsiveImageSourceSelector.PickCurrentImageSource(elem, _viewportWidth, _viewportHeight);
 
                 // Resolve Relative URLs
                 if (!string.IsNullOrEmpty(url) && 

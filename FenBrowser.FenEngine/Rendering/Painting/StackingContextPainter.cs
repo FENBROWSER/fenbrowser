@@ -273,7 +273,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
 
             var overflow = style.Overflow?.ToLowerInvariant() ?? "visible";
-            if (overflow == "hidden" || overflow == "scroll" || overflow == "auto")
+            if (overflow == "hidden" || overflow == "clip" || overflow == "scroll" || overflow == "auto")
             {
                 _displayList.Add(new DisplayCommand(
                     DisplayCommandType.PushClip, node, bounds, overflow));
@@ -287,7 +287,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             var bounds = GetBounds(node);
 
             var overflow = style.Overflow?.ToLowerInvariant() ?? "visible";
-            if (overflow == "hidden" || overflow == "scroll" || overflow == "auto")
+            if (overflow == "hidden" || overflow == "clip" || overflow == "scroll" || overflow == "auto")
             {
                 _displayList.Add(new DisplayCommand(DisplayCommandType.PopClip, node, bounds));
             }

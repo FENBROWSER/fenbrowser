@@ -376,7 +376,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (anim?.Frames == null) continue;
                 foreach (var frame in anim.Frames)
                 {
-                    frame?.Dispose();
+                    ScheduleBitmapDispose(frame);
                 }
             }
             _animatedGifs.Clear();
@@ -469,8 +469,11 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            _pendingBitmapDisposals.Enqueue(bitmap);
-            EnsureDisposeWorker();
+            // Image paint nodes hold raw SKBitmap references across immutable paint trees.
+            // Disposing cache-owned bitmaps during eviction or cache clear can invalidate an
+            // in-flight frame and crash native Skia access. Once cache ownership is dropped,
+            // let normal GC/finalization reclaim the bitmap after the last renderer reference
+            // is gone instead of forcing eager disposal here.
         }
 
 

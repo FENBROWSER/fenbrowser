@@ -348,8 +348,68 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 borderColor = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity / 255));
             }
 
-            // Draw each side
-            using var paint = new SKPaint
+            var radius = style.BorderRadius.ClampNonNegative();
+            bool hasRadius = !radius.IsZero;
+
+            // When border-radius is present, draw a single stroked rounded rect
+            // so corners are continuous curves instead of straight-line segments.
+            if (hasRadius)
+            {
+                // Use the average border width for uniform stroke since we have a
+                // single border color. CSS spec says when all sides differ the
+                // border follows the padding edge offset; using the average is a
+                // reasonable approximation for the uniform-color case.
+                float avgStroke = 0;
+                int sideCount = 0;
+                if (thickness.Top > 0 && IsPaintableBorderStyle(style.BorderStyleTop)) { avgStroke += (float)thickness.Top; sideCount++; }
+                if (thickness.Right > 0 && IsPaintableBorderStyle(style.BorderStyleRight)) { avgStroke += (float)thickness.Right; sideCount++; }
+                if (thickness.Bottom > 0 && IsPaintableBorderStyle(style.BorderStyleBottom)) { avgStroke += (float)thickness.Bottom; sideCount++; }
+                if (thickness.Left > 0 && IsPaintableBorderStyle(style.BorderStyleLeft)) { avgStroke += (float)thickness.Left; sideCount++; }
+                if (sideCount == 0) return;
+                avgStroke /= sideCount;
+
+                // Inset the rect by half the stroke so the stroke lands exactly
+                // on the border box edge (Skia strokes centered on the path).
+                float halfStroke = avgStroke / 2f;
+                var strokeRect = new SKRect(
+                    box.Left + halfStroke,
+                    box.Top + halfStroke,
+                    box.Right - halfStroke,
+                    box.Bottom - halfStroke);
+
+                using var paint = new SKPaint
+                {
+                    Color = borderColor,
+                    IsAntialias = true,
+                    Style = SKPaintStyle.Stroke,
+                    StrokeWidth = avgStroke
+                };
+
+                // Pick the dominant border style for the path effect
+                string dominantStyle = style.BorderStyleTop ?? style.BorderStyleRight ?? style.BorderStyleBottom ?? style.BorderStyleLeft ?? "solid";
+                SetupBorderStyle(paint, dominantStyle, avgStroke);
+
+                // Build per-corner radii: Skia expects [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]
+                float rtl = Math.Max(0, (float)radius.TopLeft.Value - halfStroke);
+                float rtr = Math.Max(0, (float)radius.TopRight.Value - halfStroke);
+                float rbr = Math.Max(0, (float)radius.BottomRight.Value - halfStroke);
+                float rbl = Math.Max(0, (float)radius.BottomLeft.Value - halfStroke);
+
+                using var rrect = new SKRoundRect();
+                rrect.SetRectRadii(strokeRect, new[]
+                {
+                    new SKPoint(rtl, rtl),
+                    new SKPoint(rtr, rtr),
+                    new SKPoint(rbr, rbr),
+                    new SKPoint(rbl, rbl)
+                });
+
+                canvas.DrawRoundRect(rrect, paint);
+                return;
+            }
+
+            // No border-radius: draw each side as a straight line (original path).
+            using var linePaint = new SKPaint
             {
                 Color = borderColor,
                 IsAntialias = true,
@@ -359,37 +419,37 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Top
             if (thickness.Top > 0 && IsPaintableBorderStyle(style.BorderStyleTop))
             {
-                paint.StrokeWidth = (float)thickness.Top;
-                SetupBorderStyle(paint, style.BorderStyleTop, paint.StrokeWidth);
+                linePaint.StrokeWidth = (float)thickness.Top;
+                SetupBorderStyle(linePaint, style.BorderStyleTop, linePaint.StrokeWidth);
                 float y = box.Top + (float)thickness.Top / 2;
-                canvas.DrawLine(box.Left, y, box.Right, y, paint);
+                canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
             // Right
             if (thickness.Right > 0 && IsPaintableBorderStyle(style.BorderStyleRight))
             {
-                paint.StrokeWidth = (float)thickness.Right;
-                SetupBorderStyle(paint, style.BorderStyleRight, paint.StrokeWidth);
+                linePaint.StrokeWidth = (float)thickness.Right;
+                SetupBorderStyle(linePaint, style.BorderStyleRight, linePaint.StrokeWidth);
                 float x = box.Right - (float)thickness.Right / 2;
-                canvas.DrawLine(x, box.Top, x, box.Bottom, paint);
+                canvas.DrawLine(x, box.Top, x, box.Bottom, linePaint);
             }
 
             // Bottom
             if (thickness.Bottom > 0 && IsPaintableBorderStyle(style.BorderStyleBottom))
             {
-                paint.StrokeWidth = (float)thickness.Bottom;
-                SetupBorderStyle(paint, style.BorderStyleBottom, paint.StrokeWidth);
+                linePaint.StrokeWidth = (float)thickness.Bottom;
+                SetupBorderStyle(linePaint, style.BorderStyleBottom, linePaint.StrokeWidth);
                 float y = box.Bottom - (float)thickness.Bottom / 2;
-                canvas.DrawLine(box.Left, y, box.Right, y, paint);
+                canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
             // Left
             if (thickness.Left > 0 && IsPaintableBorderStyle(style.BorderStyleLeft))
             {
-                paint.StrokeWidth = (float)thickness.Left;
-                SetupBorderStyle(paint, style.BorderStyleLeft, paint.StrokeWidth);
+                linePaint.StrokeWidth = (float)thickness.Left;
+                SetupBorderStyle(linePaint, style.BorderStyleLeft, linePaint.StrokeWidth);
                 float x = box.Left + (float)thickness.Left / 2;
-                canvas.DrawLine(x, box.Top, x, box.Bottom, paint);
+                canvas.DrawLine(x, box.Top, x, box.Bottom, linePaint);
             }
         }
 
@@ -475,10 +535,21 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             radius = radius.ClampNonNegative();
             if (!radius.IsZero)
             {
-                // Simplified: use uniform radius from top-left
-                float r = (float)Math.Max(radius.TopLeft.Value, Math.Max(radius.TopRight.Value, 
-                    Math.Max(radius.BottomRight.Value, radius.BottomLeft.Value)));
-                canvas.DrawRoundRect(rect, r, r, paint);
+                float rtl = (float)radius.TopLeft.Value;
+                float rtr = (float)radius.TopRight.Value;
+                float rbr = (float)radius.BottomRight.Value;
+                float rbl = (float)radius.BottomLeft.Value;
+
+                // Use SKRoundRect with per-corner radii for accurate rendering
+                using var rrect = new SKRoundRect();
+                rrect.SetRectRadii(rect, new[]
+                {
+                    new SKPoint(rtl, rtl),
+                    new SKPoint(rtr, rtr),
+                    new SKPoint(rbr, rbr),
+                    new SKPoint(rbl, rbl)
+                });
+                canvas.DrawRoundRect(rrect, paint);
             }
             else
             {
