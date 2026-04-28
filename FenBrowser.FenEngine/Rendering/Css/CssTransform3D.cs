@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using SkiaSharp;
 
@@ -30,9 +31,10 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 string func = m.Groups[1].Value.ToLowerInvariant();
                 string args = m.Groups[2].Value;
-                var values = ParseArgs(args);
+                var rawValues = SplitArgs(args);
+                var values = ParseArgs(rawValues);
 
-                var tf = new TransformFunction { Name = func, Values = values };
+                var tf = new TransformFunction { Name = func, Values = values, RawValues = rawValues };
                 transform._functions.Add(tf);
             }
 
@@ -44,11 +46,20 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public SKMatrix ToSKMatrix()
         {
+            return ToSKMatrix(SKRect.Empty);
+        }
+
+        /// <summary>
+        /// Get the combined 2D matrix for SkiaSharp rendering using the element bounds
+        /// to resolve percentage-based translation values.
+        /// </summary>
+        public SKMatrix ToSKMatrix(SKRect referenceBox)
+        {
             var matrix = SKMatrix.Identity;
 
             foreach (var func in _functions)
             {
-                var m = GetFunctionMatrix(func);
+                var m = GetFunctionMatrix(func, referenceBox);
                 matrix = matrix.PreConcat(m);
             }
 
@@ -100,7 +111,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public bool HasTransform => _functions.Count > 0;
 
-        private static SKMatrix GetFunctionMatrix(TransformFunction func)
+        private static SKMatrix GetFunctionMatrix(TransformFunction func, SKRect referenceBox)
         {
             var v = func.Values;
             float deg2rad = (float)(Math.PI / 180.0);
@@ -110,18 +121,18 @@ namespace FenBrowser.FenEngine.Rendering
                 // 2D Translate
                 case "translate":
                     return SKMatrix.CreateTranslation(
-                        v.Count > 0 ? v[0] : 0,
-                        v.Count > 1 ? v[1] : 0);
+                        ResolveTranslateValue(func, 0, referenceBox.Width),
+                        ResolveTranslateValue(func, 1, referenceBox.Height));
                 case "translatex":
-                    return SKMatrix.CreateTranslation(v.Count > 0 ? v[0] : 0, 0);
+                    return SKMatrix.CreateTranslation(ResolveTranslateValue(func, 0, referenceBox.Width), 0);
                 case "translatey":
-                    return SKMatrix.CreateTranslation(0, v.Count > 0 ? v[0] : 0);
+                    return SKMatrix.CreateTranslation(0, ResolveTranslateValue(func, 0, referenceBox.Height));
                 case "translatez":
                 case "translate3d":
                     // For 2D fallback, ignore Z
                     return SKMatrix.CreateTranslation(
-                        v.Count > 0 ? v[0] : 0,
-                        v.Count > 1 ? v[1] : 0);
+                        ResolveTranslateValue(func, 0, referenceBox.Width),
+                        ResolveTranslateValue(func, 1, referenceBox.Height));
 
                 // 2D Scale
                 case "scale":
@@ -278,10 +289,14 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static List<float> ParseArgs(string args)
+        private static List<string> SplitArgs(string args)
+        {
+            return new List<string>(args.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        private static List<float> ParseArgs(IEnumerable<string> parts)
         {
             var result = new List<float>();
-            var parts = args.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
             foreach (var part in parts)
             {
@@ -333,10 +348,26 @@ namespace FenBrowser.FenEngine.Rendering
             return result;
         }
 
+        private static float ResolveTranslateValue(TransformFunction func, int index, float referenceLength)
+        {
+            if (func.RawValues != null && index < func.RawValues.Count)
+            {
+                var raw = func.RawValues[index].Trim().ToLowerInvariant();
+                if (raw.EndsWith("%", StringComparison.Ordinal) &&
+                    float.TryParse(raw.Substring(0, raw.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+                {
+                    return referenceLength * (percent / 100f);
+                }
+            }
+
+            return index < func.Values.Count ? func.Values[index] : 0f;
+        }
+
         private class TransformFunction
         {
             public string Name { get; set; }
             public List<float> Values { get; set; }
+            public List<string> RawValues { get; set; }
         }
     }
 

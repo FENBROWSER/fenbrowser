@@ -134,6 +134,12 @@ namespace FenBrowser.FenEngine.Rendering
         public void CheckTransitions(Element element, CssComputed newStyle)
         {
             if (element == null || newStyle?.Map == null) return;
+
+            if (!CanParticipateInAnimation(element, newStyle))
+            {
+                RemoveAnimationState(element, clearPreviousValues: true);
+                return;
+            }
             
             // Get transition properties
             string transitionProperty = GetTransitionProperty(newStyle, "transition-property") ?? "all";
@@ -304,6 +310,12 @@ namespace FenBrowser.FenEngine.Rendering
         public void StartAnimation(Element element, CssComputed style)
         {
             if (element == null || style?.Map == null) return;
+
+            if (!CanParticipateInAnimation(element, style))
+            {
+                RemoveAnimationState(element, clearPreviousValues: false);
+                return;
+            }
             
             // Parse animation properties
             string animationName = GetAnimationProperty(style, "animation-name");
@@ -393,6 +405,8 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _activeAnimations.Remove(element);
             }
+
+            StopIfIdle();
         }
         
         /// <summary>
@@ -408,6 +422,84 @@ namespace FenBrowser.FenEngine.Rendering
                     if (list.Count == 0)
                         _activeAnimations.Remove(element);
                 }
+            }
+
+            StopIfIdle();
+        }
+
+        private static bool IsRenderableForAnimation(CssComputed style)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            string display = style.Display;
+            if (string.IsNullOrWhiteSpace(display) && style.Map?.TryGetValue("display", out var mappedDisplay) == true)
+            {
+                display = mappedDisplay;
+            }
+
+            if (string.Equals(display, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string visibility = style.Visibility;
+            if (string.IsNullOrWhiteSpace(visibility) && style.Map?.TryGetValue("visibility", out var mappedVisibility) == true)
+            {
+                visibility = mappedVisibility;
+            }
+
+            return !string.Equals(visibility, "hidden", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(visibility, "collapse", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool CanParticipateInAnimation(Element element, CssComputed style)
+        {
+            return element != null
+                && element.IsConnected
+                && IsRenderableForAnimation(style);
+        }
+
+        private void RemoveAnimationState(Element element, bool clearPreviousValues)
+        {
+            lock (_activeAnimations)
+            {
+                _activeAnimations.Remove(element);
+            }
+
+            lock (_activeTransitions)
+            {
+                _activeTransitions.Remove(element);
+            }
+
+            if (clearPreviousValues)
+            {
+                _previousValues.Remove(element);
+            }
+
+            StopIfIdle();
+        }
+
+        private void StopIfIdle()
+        {
+            bool hasAnimations;
+            bool hasTransitions;
+
+            lock (_activeAnimations)
+            {
+                hasAnimations = _activeAnimations.Count > 0;
+            }
+
+            lock (_activeTransitions)
+            {
+                hasTransitions = _activeTransitions.Count > 0;
+            }
+
+            if (!hasAnimations && !hasTransitions && _isRunning)
+            {
+                Stop();
             }
         }
         
@@ -554,6 +646,8 @@ namespace FenBrowser.FenEngine.Rendering
             var now = DateTime.UtcNow;
             var toRemove = new List<(Element element, ActiveAnimation anim)>();
             var toNotify = new HashSet<Element>();
+            var staleAnimationElements = new HashSet<Element>();
+            var staleTransitionElements = new HashSet<Element>();
             
             lock (_activeAnimations)
             {
@@ -561,6 +655,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     var element = kvp.Key;
                     var style = element.GetComputedStyle();
+                    if (!CanParticipateInAnimation(element, style))
+                    {
+                        staleAnimationElements.Add(element);
+                        continue;
+                    }
+
                     if (style != null) style.AnimationOverlay?.Clear();
 
                     foreach (var anim in kvp.Value)
@@ -627,6 +727,11 @@ namespace FenBrowser.FenEngine.Rendering
                         if (list.Count == 0) _activeAnimations.Remove(element);
                     }
                 }
+
+                foreach (var staleElement in staleAnimationElements)
+                {
+                    _activeAnimations.Remove(staleElement);
+                }
             }
 
             lock (_activeTransitions)
@@ -634,6 +739,13 @@ namespace FenBrowser.FenEngine.Rendering
                 foreach (var kvp in _activeTransitions)
                 {
                     var element = kvp.Key;
+                    var style = element.GetComputedStyle();
+                    if (!CanParticipateInAnimation(element, style))
+                    {
+                        staleTransitionElements.Add(element);
+                        continue;
+                    }
+
                     bool elementDirty = false;
                     var invalidation = InvalidationKind.None;
 
@@ -649,11 +761,11 @@ namespace FenBrowser.FenEngine.Rendering
                         string interpolated = InterpolateValue(trans.Property, trans.FromValue, trans.ToValue, progress);
                         if (interpolated != null)
                         {
-                            var style = element.GetComputedStyle();
-                            if (style != null)
+                            var currentStyle = element.GetComputedStyle();
+                            if (currentStyle != null)
                             {
-                                style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                style.AnimationOverlay[trans.Property] = interpolated;
+                                currentStyle.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                                currentStyle.AnimationOverlay[trans.Property] = interpolated;
                                 elementDirty = true;
                                 invalidation |= ClassifyPropertyInvalidation(trans.Property);
                             }
@@ -676,6 +788,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (_activeTransitions[el].All(t => t.IsComplete))
                         _activeTransitions.Remove(el);
+                }
+
+                foreach (var staleElement in staleTransitionElements)
+                {
+                    _activeTransitions.Remove(staleElement);
                 }
             }
             

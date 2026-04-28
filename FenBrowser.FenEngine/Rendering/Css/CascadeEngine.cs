@@ -29,6 +29,17 @@ namespace FenBrowser.FenEngine.Rendering
         
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
+        // Compatibility list for legacy single-colon pseudo-elements that may be
+        // parsed as pseudo-classes by some selector paths.
+        private static readonly HashSet<string> LegacyPseudoElementNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "before",
+            "after",
+            "first-line",
+            "first-letter",
+            "placeholder",
+            "selection"
+        };
 
         public CascadeEngine(StyleSet styleSet)
         {
@@ -101,13 +112,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (chain.Segments == null) continue;
                     foreach (var seg in chain.Segments)
                     {
-                        if (seg.PseudoElements != null)
-                        {
-                            foreach (var pe in seg.PseudoElements)
-                            {
-                                _pseudoElementsWithRules.Add(pe.Name.ToLowerInvariant());
-                            }
-                        }
+                        AddIndexedPseudoElementNames(seg);
                     }
 
                     // Index based on this chain's key segment (Rightmost)
@@ -126,6 +131,67 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _universalRules.Add(styleRule);
             }
+        }
+
+        private void AddIndexedPseudoElementNames(SelectorSegment seg)
+        {
+            if (seg == null)
+            {
+                return;
+            }
+
+            if (seg.PseudoElements != null)
+            {
+                foreach (var pe in seg.PseudoElements)
+                {
+                    if (TryNormalizePseudoElementName(pe?.Name, out var normalized))
+                    {
+                        _pseudoElementsWithRules.Add(normalized);
+                    }
+                }
+            }
+
+            // Some selector parsing paths still emit legacy pseudo-elements (:before/:after/etc.)
+            // under PseudoClasses. Track those names too so pseudo cascade remains reachable.
+            if (seg.PseudoClasses != null)
+            {
+                foreach (var pc in seg.PseudoClasses)
+                {
+                    if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var normalized))
+                    {
+                        _pseudoElementsWithRules.Add(normalized);
+                    }
+                }
+            }
+        }
+
+        private static bool TryNormalizePseudoElementName(string rawName, out string normalized)
+        {
+            normalized = null;
+            if (string.IsNullOrWhiteSpace(rawName))
+            {
+                return false;
+            }
+
+            normalized = rawName.Trim().TrimStart(':').ToLowerInvariant();
+            return normalized.Length > 0;
+        }
+
+        private static bool TryNormalizeLegacyPseudoElementName(string rawName, out string normalized)
+        {
+            normalized = null;
+            if (!TryNormalizePseudoElementName(rawName, out var candidate))
+            {
+                return false;
+            }
+
+            if (!LegacyPseudoElementNames.Contains(candidate))
+            {
+                return false;
+            }
+
+            normalized = candidate;
+            return true;
         }
 
         private void IndexKeySegment(SelectorSegment keySeg, CssStyleRule styleRule)
@@ -212,7 +278,9 @@ namespace FenBrowser.FenEngine.Rendering
             // selecting winners per declared property is incorrect because a higher-
             // priority shorthand (for example author `background`) must override a
             // lower-priority longhand (for example UA `background-color`).
-            var computed = new Dictionary<string, CssDeclaration>(StringComparer.OrdinalIgnoreCase);
+            // CSS custom properties are case-sensitive and must not be merged by
+            // case-insensitive dictionary keys.
+            var computed = new Dictionary<string, CssDeclaration>(StringComparer.Ordinal);
             foreach (var match in results)
             {
                 deadline?.Check();
@@ -229,7 +297,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            var winners = new Dictionary<string, MatchedDeclaration>(StringComparer.OrdinalIgnoreCase);
+            var winners = new Dictionary<string, MatchedDeclaration>(StringComparer.Ordinal);
             foreach (var match in results)
             {
                 var property = match?.Declaration?.Property;
@@ -389,7 +457,33 @@ namespace FenBrowser.FenEngine.Rendering
             if (matchedChain != null)
             {
                 var lastSeg = matchedChain.Segments.LastOrDefault();
-                bool ruleHasPseudo = lastSeg != null && lastSeg.PseudoElements.Count > 0;
+                var pseudoNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (lastSeg != null)
+                {
+                    if (lastSeg.PseudoElements != null)
+                    {
+                        foreach (var pe in lastSeg.PseudoElements)
+                        {
+                            if (TryNormalizePseudoElementName(pe?.Name, out var normalized))
+                            {
+                                pseudoNames.Add(normalized);
+                            }
+                        }
+                    }
+
+                    if (lastSeg.PseudoClasses != null)
+                    {
+                        foreach (var pc in lastSeg.PseudoClasses)
+                        {
+                            if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var normalized))
+                            {
+                                pseudoNames.Add(normalized);
+                            }
+                        }
+                    }
+                }
+
+                bool ruleHasPseudo = pseudoNames.Count > 0;
                 
                 if (string.IsNullOrEmpty(pseudoElement))
                 {
@@ -398,17 +492,9 @@ namespace FenBrowser.FenEngine.Rendering
                 else
                 {
                     if (!ruleHasPseudo) return;
-                    
-                    bool found = false;
-                    foreach (var pe in lastSeg.PseudoElements)
-                    {
-                        if (pe.Name.Equals(pseudoElement, StringComparison.OrdinalIgnoreCase))
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) return;
+
+                    string requestedPseudo = pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
+                    if (!pseudoNames.Contains(requestedPseudo)) return;
                 }
             }
 
@@ -444,7 +530,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            var property = declaration.Property;
+            var property = NormalizePropertyKey(declaration.Property);
             var value = declaration.Value?.Trim() ?? string.Empty;
             if (!IsValidDeclarationValue(property, value))
             {
@@ -495,6 +581,22 @@ namespace FenBrowser.FenEngine.Rendering
                     ApplyInsetShorthand(computed, declaration, value);
                     break;
             }
+        }
+
+        private static string NormalizePropertyKey(string property)
+        {
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return string.Empty;
+            }
+
+            // Custom properties are case-sensitive by spec.
+            if (property.StartsWith("--", StringComparison.Ordinal))
+            {
+                return property;
+            }
+
+            return property.ToLowerInvariant();
         }
 
         private static bool IsValidDeclarationValue(string property, string value)
@@ -550,7 +652,8 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            switch (value.Trim().ToLowerInvariant())
+            string trimmed = value.Trim();
+            switch (trimmed.ToLowerInvariant())
             {
                 case "inherit":
                 case "initial":
@@ -561,7 +664,14 @@ namespace FenBrowser.FenEngine.Rendering
                     return true;
             }
 
-            return CssParser.ParseColor(value).HasValue;
+            // Color custom-property references are valid at parse/cascade time and
+            // resolved during computed-style resolution.
+            if (trimmed.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            return CssParser.ParseColor(trimmed).HasValue;
         }
 
         private static bool IsValidSizingValue(string value)

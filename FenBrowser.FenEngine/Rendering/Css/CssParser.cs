@@ -104,7 +104,7 @@ namespace FenBrowser.FenEngine.Rendering
                 feature = feature.Substring(1, feature.Length - 2).Trim();
 
             int colon = feature.IndexOf(':');
-            if (colon < 0) return true; // Valid feature without value?
+            if (colon < 0) return false;
 
             string name = feature.Substring(0, colon).Trim();
             string val = feature.Substring(colon + 1).Trim();
@@ -226,8 +226,7 @@ namespace FenBrowser.FenEngine.Rendering
                 valueStr = feature.Substring(idx + 1).Trim();
                 return CompareRangeDimension(featureName, ParseDimensionPx(valueStr), "=");
             }
-
-            return true; // Boolean media feature with no operator (e.g. "color")
+            return false;
         }
 
         private static double ParseDimensionPx(string val)

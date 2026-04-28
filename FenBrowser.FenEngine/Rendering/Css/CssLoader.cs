@@ -2231,6 +2231,15 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
         isNot = true;
         query = query.Substring(4).Trim();
     }
+    else if (query.StartsWith("only ", StringComparison.OrdinalIgnoreCase))
+    {
+        query = query.Substring(5).Trim();
+    }
+
+    if (HasUnsupportedBareMediaSegment(query))
+    {
+        return false;
+    }
 
     // Get viewport dimensions
     var vpW = viewportWidth ?? CssParser.MediaViewportWidth ?? 1920;
@@ -2502,6 +2511,47 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
 
     bool result = isNot ? !conditionMatches : conditionMatches;
     return result;
+}
+
+private static bool HasUnsupportedBareMediaSegment(string query)
+{
+    if (string.IsNullOrWhiteSpace(query))
+    {
+        return false;
+    }
+
+    foreach (var segment in SplitTopLevel(query, " and "))
+    {
+        var normalized = StripOuterParens(segment).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            continue;
+        }
+
+        if (normalized.StartsWith("only ", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized.Substring(5).Trim();
+        }
+
+        if (string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "screen", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "print", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        if (normalized.IndexOf(':') >= 0 ||
+            normalized.IndexOf('<') >= 0 ||
+            normalized.IndexOf('>') >= 0 ||
+            normalized.IndexOf('=') >= 0)
+        {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
 }
 
 /// <summary>
@@ -5406,6 +5456,15 @@ private static double? ExtractPx(string text, string prop)
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Maximum recursion depth for CSS var() resolution to prevent infinite loops.
+        /// </summary>
+        private const int MaxCssVarRecursionDepth = 10;
+
+        /// <summary>
+        /// Resolves a CSS var() expression by looking up the variable value and applying fallbacks.
+        /// Implements the CSS Custom Properties specification with circular reference detection.
+        /// </summary>
         private static string EvaluateVarExpression(string rawArgs, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
             var trimmed = (rawArgs ?? string.Empty).Trim();
@@ -5413,66 +5472,121 @@ private static double? ExtractPx(string text, string prop)
 
             int comma = FindTopLevelComma(trimmed);
             string name = comma >= 0 ? trimmed.Substring(0, comma).Trim() : trimmed;
+            string fallback = comma >= 0 ? trimmed.Substring(comma + 1).Trim() : null;
+
+            // Only log in debug mode to avoid performance impact
+            #if DEBUG_CSS_VARS
             DebugLog(@"debug_log.txt", $"[D-BUG] EvaluateVarExpression name='{name}'\r\n");
-            string fallback = comma >= 0 ? trimmed.Substring(comma + 1) : null;
+            #endif
 
             if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
+            {
+                // Invalid variable name - use fallback
                 return ResolveFallback(fallback, current, rawCurrent, seen);
+            }
 
-            string resolved;
+            // Initialize recursion tracking
+            if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
+            
+            // Check for circular reference
+            if (seen.Contains(name))
+            {
+                #if DEBUG_CSS_VARS
+                DebugLog(@"debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' circular reference detected\r\n");
+                #endif
+                // Per CSS spec: circular references result in invalid at computed-value time
+                // Use fallback or return empty
+                return ResolveFallback(fallback, current, rawCurrent, seen);
+            }
+
+            // Check recursion depth limit
+            if (seen.Count >= MaxCssVarRecursionDepth)
+            {
+                #if DEBUG_CSS_VARS
+                DebugLog(@"debug_log.txt", $"[CSS-VAR-DEPTH] name='{name}' max recursion depth reached\r\n");
+                #endif
+                return ResolveFallback(fallback, current, rawCurrent, seen);
+            }
+
+            string resolved = null;
+            bool found = false;
+
+            // LEVEL 1: Check local raw properties (from the element's inline style)
             string rawValue;
             if (rawCurrent != null && rawCurrent.TryGetValue(name, out rawValue))
             {
-                if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
-                if (seen.Contains(name))
-                {
-                    DebugLog(@"debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' already in seen set\r\n");
-                    return ResolveFallback(fallback, current, rawCurrent, seen);
-                }
-
                 seen.Add(name);
                 resolved = ResolveCustomPropertyReferences(rawValue, current, rawCurrent, seen);
                 seen.Remove(name);
-                current.CustomProperties[name] = resolved;
+                
+                if (current != null)
+                {
+                    current.CustomProperties[name] = resolved;
+                }
+                
+                #if DEBUG_CSS_VARS
                 DebugLog(@"debug_log.txt", $"[CSS-VAR-LOCAL] name='{name}' resolved to='{resolved}'\r\n");
-                return resolved;
+                #endif
+                found = true;
             }
 
-            if (current != null && current.CustomProperties != null && current.CustomProperties.TryGetValue(name, out resolved))
+            // LEVEL 2: Check inherited computed properties (from parent)
+            if (!found && current != null && current.CustomProperties != null && current.CustomProperties.TryGetValue(name, out resolved))
             {
+                #if DEBUG_CSS_VARS
                 DebugLog(@"debug_log.txt", $"[CSS-VAR-INHERITED] name='{name}' found value='{resolved}'\r\n");
+                #endif
+                found = true;
+            }
+
+            // LEVEL 3: Check global properties (:root, html, body scoped)
+            if (!found)
+            {
+                lock (_customProperties)
+                {
+                    if (_customProperties.TryGetValue(name, out resolved))
+                    {
+                        // Handle nested var() in global property values
+                        if (resolved != null && resolved.Contains("var("))
+                        {
+                            seen.Add(name);
+                            #if DEBUG_CSS_VARS
+                            DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
+                            #endif
+                            resolved = ResolveCustomPropertyReferences(resolved, current, rawCurrent, seen);
+                            seen.Remove(name);
+                            #if DEBUG_CSS_VARS
+                            DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{resolved}'\r\n");
+                            #endif
+                        }
+                        
+                        #if DEBUG_CSS_VARS
+                        DebugLog(@"debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
+                        #endif
+                        found = true;
+                    }
+                    else
+                    {
+                        #if DEBUG_CSS_VARS
+                        DebugLog(@"debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
+                        #endif
+                    }
+                }
+            }
+
+            // If found and valid, return it
+            if (found && resolved != null)
+            {
+                // Special case: if resolved value is "initial" or "inherit", handle appropriately
+                if (resolved.Equals("initial", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ResolveFallback(fallback, current, rawCurrent, seen);
+                }
+                
                 return resolved;
             }
 
-            // GLOBAL FALLBACK (My addition for :root/global variables)
-            lock (_customProperties)
-            {
-                if (_customProperties.TryGetValue(name, out resolved))
-                {
-                    DebugLog(@"debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
-                    
-                    // Recursive resolution for global properties (e.g., --brand-font: var(--main-font))
-                    if (resolved != null && resolved.Contains("var("))
-                    {
-                        if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
-                        if (!seen.Contains(name))
-                        {
-                             seen.Add(name);
-                             DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
-                             var recursiveResolved = ResolveCustomPropertyReferences(resolved, current, rawCurrent, seen);
-                             seen.Remove(name);
-                             DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{recursiveResolved}'\r\n");
-                             return recursiveResolved;
-                        }
-                    }
-                    return resolved;
-                }
-                else
-                {
-                    DebugLog(@"debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
-                }
-            }
-
+            // Variable not found - use fallback
             return ResolveFallback(fallback, current, rawCurrent, seen);
         }
 

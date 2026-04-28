@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -49,6 +51,62 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 return src;
             }
+        }
+
+        public static string PickCurrentImageSource(Element image, double viewportWidth, double viewportHeight, double devicePixelRatio = 1.0)
+        {
+            if (image == null || !string.Equals(image.TagName, "IMG", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var pictureParent = image.ParentElement;
+            if (pictureParent != null &&
+                string.Equals(pictureParent.NodeName, "picture", StringComparison.OrdinalIgnoreCase))
+            {
+                var surface = new BrowserSurfaceProfile
+                {
+                    Viewport = BrowserViewportMetrics.Create(viewportWidth, viewportHeight, devicePixelRatio: devicePixelRatio)
+                };
+
+                foreach (var sibling in pictureParent.ChildNodes.OfType<Element>())
+                {
+                    if (!string.Equals(sibling.NodeName, "source", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var mime = sibling.GetAttribute("type");
+                    if (!string.IsNullOrEmpty(mime) &&
+                        !mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var media = sibling.GetAttribute("media");
+                    if (!string.IsNullOrWhiteSpace(media) && !surface.MatchesMediaQuery(media))
+                    {
+                        continue;
+                    }
+
+                    var candidate = PickBestImageCandidate(
+                        sibling.GetAttribute("src"),
+                        sibling.GetAttribute("srcset"),
+                        viewportWidth,
+                        devicePixelRatio);
+
+                    if (!string.IsNullOrWhiteSpace(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+
+            return PickBestImageCandidate(
+                image.GetAttribute("src"),
+                image.GetAttribute("srcset"),
+                viewportWidth,
+                devicePixelRatio);
         }
 
         private static List<Candidate> ParseCandidates(string srcset)

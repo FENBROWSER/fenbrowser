@@ -157,11 +157,30 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private void BeginAwaitingPostScriptSnapshot()
+        {
+            lock (_renderStateLock)
+            {
+                _awaitingPostScriptSnapshot = true;
+                _renderSnapshotVersion++;
+            }
+        }
+
+        private void EndAwaitingPostScriptSnapshot()
+        {
+            lock (_renderStateLock)
+            {
+                _awaitingPostScriptSnapshot = false;
+                _renderSnapshotVersion++;
+            }
+        }
+
         private bool HasStableComputedStyleSnapshot()
         {
             lock (_renderStateLock)
             {
                 return _hasStableStyles &&
+                       !_awaitingPostScriptSnapshot &&
                        LastComputedStyles != null &&
                        LastComputedStyles.Count > 0;
             }
@@ -301,6 +320,7 @@ namespace FenBrowser.FenEngine.Rendering
         private Node _activeDom;
         private long _renderSnapshotVersion;
         private bool _hasStableStyles;
+        private bool _awaitingPostScriptSnapshot;
         private string _lastRawHtml;
         private object _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -319,6 +339,16 @@ namespace FenBrowser.FenEngine.Rendering
         // Cache view/renderer to avoid full recreation
         // private SkiaBrowserView _cachedView;
         private SkiaDomRenderer _cachedRenderer;
+        private SkiaDomRenderer _externalRenderer; // Injected from BrowserIntegration
+
+        /// <summary>
+        /// Injects an external renderer (from BrowserIntegration) to use instead of creating our own.
+        /// When set, BuildVisualTreeAsync will use this renderer and skip setting up its own visual rect provider.
+        /// </summary>
+        public void SetExternalRenderer(SkiaDomRenderer renderer)
+        {
+            _externalRenderer = renderer;
+        }
         
         public CustomHtmlEngine()
         {
@@ -1393,14 +1423,27 @@ namespace FenBrowser.FenEngine.Rendering
             
             try { DomReady?.Invoke(this, dom); } catch (Exception drEx) { EngineLogCompat.Error($"[BuildVisualTree] DomReady error: {drEx}", LogCategory.Rendering); }
 
-            EngineLogCompat.Debug("[BuildVisualTree] Creating renderer...", LogCategory.Rendering);
+        EngineLogCompat.Debug("[BuildVisualTree] Creating renderer...", LogCategory.Rendering);
 
+        // Use external renderer from BrowserIntegration if available
+        SkiaDomRenderer activeRenderer;
+        if (_externalRenderer != null)
+        {
+            EngineLogCompat.Debug("[BuildVisualTree] Using external renderer from BrowserIntegration", LogCategory.Rendering);
+            activeRenderer = _externalRenderer;
+            // Don't set visual rect provider - BrowserIntegration already set it up
+        }
+        else
+        {
+            // Fallback: create our own renderer and set up provider
             if (_cachedRenderer == null)
             {
                 EngineLogCompat.Debug("[BuildVisualTree] Creating NEW renderer...", LogCategory.Rendering);
                 _cachedRenderer = new SkiaDomRenderer();
             }
+            activeRenderer = _cachedRenderer;
 
+            // Only set up visual rect provider if we own the renderer
             JavaScriptEngine.SetVisualRectProvider(element =>
             {
                 if (element == null || _cachedRenderer == null)
@@ -1466,11 +1509,12 @@ namespace FenBrowser.FenEngine.Rendering
 
                 return rect;
             });
+        }
 
-            // [MIGRATION] View logic removed. Host is responsible for rendering.
-            
-            EngineLogCompat.Debug("[RenderAsync] Visual tree built properly (Headless)", LogCategory.Rendering);
-            return _cachedRenderer;
+        // [MIGRATION] View logic removed. Host is responsible for rendering.
+
+        EngineLogCompat.Debug("[RenderAsync] Visual tree built properly (Headless)", LogCategory.Rendering);
+        return activeRenderer;
         }
 
         private async Task<object> RefreshAsyncInternal(bool includeDiagnosticsBanner)
@@ -1663,12 +1707,25 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private async Task LoadCssAsync(Element dom, Uri baseUri, Func<Uri, Task<string>> fetchExternalCssAsync)
+        private async Task LoadCssAsync(
+            Element dom,
+            Uri baseUri,
+            Func<Uri, Task<string>> fetchExternalCssAsync,
+            double? viewportWidth = null,
+            double? viewportHeight = null)
         {
              try
              {
                  EngineLogCompat.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
-                 var cssTask = CssLoader.ComputeAsync(dom, baseUri, fetchExternalCssAsync, null, null, (msg) => EngineLogCompat.Debug(msg, LogCategory.Rendering));
+                 var resolvedViewportWidth = viewportWidth ?? _activeViewportWidth;
+                 var resolvedViewportHeight = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
+                 var cssTask = CssLoader.ComputeAsync(
+                     dom,
+                     baseUri,
+                     fetchExternalCssAsync,
+                     resolvedViewportWidth,
+                     resolvedViewportHeight,
+                     msg => EngineLogCompat.Debug(msg, LogCategory.Rendering));
                  var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
@@ -1685,27 +1742,26 @@ namespace FenBrowser.FenEngine.Rendering
                      EngineLogCompat.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
 
-                     // Assign computed styles to DOM nodes so the renderer can access them via
-                     // Node.ComputedStyle even when the styles dict is not passed directly.
-                     if (LastComputedStyles != null)
-                     {
-                         foreach (var kvp in LastComputedStyles)
-                             if (kvp.Key != null) kvp.Key.ComputedStyle = kvp.Value;
-                     }
+                // Assign computed styles to DOM nodes so the renderer can access them via
+                // Node.ComputedStyle even when the styles dict is not passed directly.
+                if (LastComputedStyles != null)
+                {
+                    foreach (var kvp in LastComputedStyles)
+                        if (kvp.Key != null) kvp.Key.ComputedStyle = kvp.Value;
+                }
 
-                     ClearStyleDirtyFlags(dom);
+                // DO NOT clear dirty flags here - let the renderer see them and clear after processing.
+                // The renderer needs to see StyleDirty=true to know it must recompute layout.
+                // ClearStyleDirtyFlags(dom); // REMOVED - causes race condition
 
-                     // Sync _activeDom to the real parsed DOM (dom parameter) so that when
-                     // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
-                     // are the keys in LastComputedStyles.  Without this fix _activeDom would
-                     // still point to a stale incremental-parse clone, causing every style
-                     // lookup to miss and producing a blank frame.
-                     // Intentionally quiet in hot path: WPT runs are sensitive to stdout flooding.
+                // Sync _activeDom to the real parsed DOM (dom parameter) so that when
+                // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
+                // are the keys in LastComputedStyles.
 
-                     // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
-                     // This ensures flexbox centering, visibility, and other CSS properties are applied
-                     EngineLogCompat.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
-                     OnRepaintReady(dom);
+                // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
+                // The renderer will see StyleDirty=true and invalidate layout.
+                EngineLogCompat.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
+                OnRepaintReady(dom);
                  }
              }
              catch (Exception cssEx) 
@@ -1828,7 +1884,12 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     // Compute styles for this subtree only
-                    var subtreeStyles = await CssLoader.ComputeAsync(root, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
+                    var subtreeStyles = await CssLoader.ComputeAsync(
+                        root,
+                        _activeBaseUri,
+                        _activeFetchCss,
+                        _activeViewportWidth,
+                        _activeViewportHeight).ConfigureAwait(false);
                     
                     if (subtreeStyles != null)
                     {
@@ -2301,9 +2362,21 @@ namespace FenBrowser.FenEngine.Rendering
                 interleavedBatchCount = Math.Max(0, parseResult?.InterleavedBatchCount ?? 0);
                 interleavedFallbackUsed = parseResult?.InterleavedFallbackUsed ?? false;
                 
-                // CRITICAL FIX: Invalidate old styles immediately so the renderer stops using them.
-                // This forces BrowserIntegration to wait (showing previous frame or spinner) until new styles are ready.
-                SetComputedStyles(null);
+        // PROGRESSIVE RENDERING: Fire first paint immediately with DOM.
+        // This ensures the page appears as soon as HTML is parsed.
+        // CSS arrives asynchronously and progressively improves the rendering.
+        lock (_renderStateLock)
+        {
+            LastComputedStyles = new Dictionary<Node, CssComputed>();
+            _hasStableStyles = true; // Mark as stable so BrowserIntegration uses these styles
+            _renderSnapshotVersion++;
+        }
+            OnRepaintReady(dom);
+            EngineLogCompat.Debug("[PROGRESSIVE] First paint fired immediately after DOM parse", LogCategory.Rendering);
+
+            // CSS loading continues asynchronously; LoadCssAsync will fire RepaintReady
+            // when CSS completes via UpdateRenderState -> OnRepaintReady sequence.
+            // No additional fire-and-forget needed - the event-driven flow handles updates.
                 
                 var elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 tokenizingAndParsingMs = Math.Max(0, tokenizingMs + parsingMs);
@@ -2322,8 +2395,28 @@ namespace FenBrowser.FenEngine.Rendering
                     EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeSanitizeApplied changes={googleChallengeSanitized}", LogCategory.Rendering);
                 }
 
+                bool allowJs = EnableJavaScript;
+                if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
+
+                if (preferFallbackDom)
+                {
+                    allowJs = false;
+                }
+
+                if (allowJs && IsJsHeavyAppShell(dom, baseUri))
+                {
+                    EngineLogCompat.Debug($"[SAFE-MODE] Skipping JS for heavy app-shell page {baseUri}", LogCategory.Rendering);
+                    allowJs = false;
+                }
+
+                bool deferStableSnapshotUntilPostScript = allowJs;
+                if (deferStableSnapshotUntilPostScript)
+                {
+                    BeginAwaitingPostScriptSnapshot();
+                }
+
                 // 2. Helper: Load CSS
-                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
+                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
                 elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 cssAndStyleMs = Math.Max(0, elapsed - lastStageMarkMs);
                 lastStageMarkMs = elapsed;
@@ -2394,21 +2487,6 @@ namespace FenBrowser.FenEngine.Rendering
                 EngineLogCompat.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
                 try { await PrewarmImagesAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
 
-                // 5. Setup Javascript
-                bool allowJs = EnableJavaScript;
-                if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
-
-                if (preferFallbackDom)
-                {
-                    allowJs = false;
-                }
-
-                if (allowJs && IsJsHeavyAppShell(dom, baseUri))
-                {
-                    EngineLogCompat.Debug($"[SAFE-MODE] Skipping JS for heavy app-shell page {baseUri}", LogCategory.Rendering);
-                    allowJs = false;
-                }
-
                 // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
                 // fallback content (scripts, styles, inline HTML strings) from leaking into the page.
@@ -2465,7 +2543,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (fallbackDomMutated)
                         {
-                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
+                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
                             EngineLogCompat.Debug("[CustomHtmlEngine] Recomputed CSS after fallback DOM sanitization", LogCategory.Rendering);
                         }
                     }
@@ -2477,6 +2555,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
                 if (_activeJs != null && _historyBridge != null) _activeJs.SetHistoryBridge(_historyBridge);
+                if (_activeJs == null && deferStableSnapshotUntilPostScript)
+                {
+                    EndAwaitingPostScriptSnapshot();
+                    deferStableSnapshotUntilPostScript = false;
+                }
                 EngineLogCompat.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
@@ -2495,31 +2578,36 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_activeJs != null)
                 {
                     javascriptExecuted = true;
-                    await RunScriptsAsync(_activeJs, dom as Element, baseUri);
-                    var postScriptGoogleSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: false);
-                    if (postScriptGoogleSanitized > 0)
-                    {
-                        EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeBannerForcedVisible postScriptChanges={postScriptGoogleSanitized}", LogCategory.Rendering);
-                    }
-                    if (NeedsPostScriptStyleRefresh(dom, LastComputedStyles))
-                    {
-                        EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync);
-                    }
-                    elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                    scriptExecutionMs = Math.Max(0, elapsed - lastStageMarkMs);
-                    lastStageMarkMs = elapsed;
-                    EngineLogCompat.Debug($"[PERF] Script Run: {elapsed}ms", LogCategory.Rendering);
-                    // Re-build visual tree after scripts
-                    EngineLogCompat.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
                     try
                     {
+                        await RunScriptsAsync(_activeJs, dom as Element, baseUri);
+                        var postScriptGoogleSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: false);
+                        if (postScriptGoogleSanitized > 0)
+                        {
+                            EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeBannerForcedVisible postScriptChanges={postScriptGoogleSanitized}", LogCategory.Rendering);
+                        }
+                        if (NeedsPostScriptStyleRefresh(dom, LastComputedStyles))
+                        {
+                            EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
+                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                        }
+                        elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
+                        scriptExecutionMs = Math.Max(0, elapsed - lastStageMarkMs);
+                        lastStageMarkMs = elapsed;
+                        EngineLogCompat.Debug($"[PERF] Script Run: {elapsed}ms", LogCategory.Rendering);
+                        // Re-build visual tree after scripts
+                        EngineLogCompat.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
                         var vh2 = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                         element = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
                         elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                         postScriptVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
                         lastStageMarkMs = elapsed;
                         EngineLogCompat.Debug($"[PERF] Visual Tree 2: {elapsed}ms", LogCategory.Rendering);
+                        if (deferStableSnapshotUntilPostScript)
+                        {
+                            EndAwaitingPostScriptSnapshot();
+                            deferStableSnapshotUntilPostScript = false;
+                        }
                         // Fire repaint so the engine loop re-renders with post-script DOM state.
                         OnRepaintReady(_activeDom);
                     }
@@ -2528,9 +2616,21 @@ namespace FenBrowser.FenEngine.Rendering
                         EngineLogCompat.Error($"[RenderAsync] Visual tree error: {vtEx}", LogCategory.Rendering);
                         return null;
                     }
+                    finally
+                    {
+                        if (deferStableSnapshotUntilPostScript)
+                        {
+                            EndAwaitingPostScriptSnapshot();
+                            OnRepaintReady(_activeDom);
+                        }
+                    }
                 }
                 else
                 {
+                     if (deferStableSnapshotUntilPostScript)
+                     {
+                         EndAwaitingPostScriptSnapshot();
+                     }
                      EngineLogCompat.Debug($"[RenderAsync] Scripts SKIPPED (allowJs={allowJs}) element={control!=null}", LogCategory.Rendering);
                 }
                 return element;
@@ -2811,7 +2911,7 @@ namespace FenBrowser.FenEngine.Rendering
                     root,
                     LastComputedStyles,
                     _renderSnapshotVersion,
-                    _hasStableStyles);
+                    _hasStableStyles && !_awaitingPostScriptSnapshot);
             }
         }
 
