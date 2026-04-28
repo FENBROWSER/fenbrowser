@@ -270,23 +270,22 @@ public abstract class Widget
 
     private void InvalidateCore(SKRect? bounds)
     {
-        var localBounds = bounds ?? new SKRect(0, 0, Bounds.Width, Bounds.Height);
+        var dirtyBounds = bounds ?? Bounds;
         
         if (DirtyRect == null)
         {
-            DirtyRect = localBounds;
+            DirtyRect = dirtyBounds;
         }
         else
         {
-            DirtyRect = SKRect.Union(DirtyRect.Value, localBounds);
+            DirtyRect = SKRect.Union(DirtyRect.Value, dirtyBounds);
         }
         
-        // Propagate to parent (translating coordinates)
+        // Widget bounds in the host tree are arranged in root/global coordinates,
+        // so propagate the same dirty rect upward without applying another offset.
         if (Parent != null)
         {
-            var parentBounds = localBounds;
-            parentBounds.Offset(Bounds.Left, Bounds.Top);
-            Parent.Invalidate(parentBounds);
+            Parent.Invalidate(dirtyBounds);
         }
         
         Invalidated?.Invoke();

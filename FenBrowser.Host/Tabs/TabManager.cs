@@ -96,7 +96,7 @@ public class TabManager
         // Navigate if URL provided
         if (!string.IsNullOrEmpty(url))
         {
-            _ = tab.NavigateAsync(url);
+            tab.StartInitialNavigation(url);
         }
         
         return tab;

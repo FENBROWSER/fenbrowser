@@ -228,7 +228,7 @@ public class TabWidget : Widget
             if (nowMs - _lastSpinnerInvalidationMs >= SPINNER_INVALIDATE_INTERVAL_MS)
             {
                 _lastSpinnerInvalidationMs = nowMs;
-                Invalidate(new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE));
+                Invalidate(new SKRect(Bounds.Left + faviconX, Bounds.Top + faviconY, Bounds.Left + faviconX + FAVICON_SIZE, Bounds.Top + faviconY + FAVICON_SIZE));
             }
         }
         else

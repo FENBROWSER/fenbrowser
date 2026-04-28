@@ -16,6 +16,7 @@ public class WebContentWidget : Widget
     private SettingsPageWidget _settingsPage;
     private BrowserTab _subscribedTab;
     private bool _leftPointerDownInWebContent;
+    private bool _hasArrangedBounds;
 
     public WebContentWidget()
     {
@@ -47,10 +48,12 @@ public class WebContentWidget : Widget
         {
             _subscribedTab.Browser.NeedsRepaint += Invalidate;
             
-            // Ensure the new tab knows the current viewport size
-            if (Bounds.Width > 0 && Bounds.Height > 0)
+            // Cold launch can activate a tab before this widget has been arranged.
+            // Treat OnArrange as the authoritative source for the first usable viewport.
+            if (_hasArrangedBounds && Bounds.Width > 1 && Bounds.Height > 1)
             {
                 _subscribedTab.Browser.UpdateViewport(new SKSize(Bounds.Width, Bounds.Height));
+                _subscribedTab.NotifyViewportReady();
             }
 
             // Critical for tab-switch responsiveness: force the newly active tab's
@@ -70,12 +73,14 @@ public class WebContentWidget : Widget
     protected override void OnArrange(SKRect finalRect)
     {
         // Hot path: avoid per-frame logging/file writes to keep pointer/hover interactions responsive.
+        _hasArrangedBounds = finalRect.Width > 1 && finalRect.Height > 1;
 
         // Bounds set by parent
         var activeTab = TabManager.Instance.ActiveTab;
-        if (activeTab != null)
+        if (activeTab != null && _hasArrangedBounds)
         {
             activeTab.Browser.UpdateViewport(new SKSize(finalRect.Width, finalRect.Height));
+            activeTab.NotifyViewportReady();
         }
         
         // Arrange settings page (always full fill)

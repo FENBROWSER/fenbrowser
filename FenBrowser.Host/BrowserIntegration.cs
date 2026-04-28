@@ -136,7 +136,30 @@ public class BrowserIntegration
         // Inject the actual renderer into BrowserHost so its InputManager
         // hit tests use the populated paint tree instead of a stale copy.
         _browser.SetActiveRenderer(_renderer);
-        
+
+        // Wire up the visual rect provider so JavaScript's getBoundingClientRect()
+        // can access layout geometry from the renderer.
+        // This bridges DOM Element -> LayoutBox -> absolute viewport coordinates -> DOMRect.
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetVisualRectProvider(element =>
+        {
+            if (element == null || _renderer == null)
+                return null;
+
+            lock (_rendererLock)
+            {
+                var box = _renderer.GetElementBox(element);
+                if (box == null)
+                    return null;
+
+                return box.BorderBox;
+            }
+        });
+
+        // CRITICAL: Inject our renderer into CustomHtmlEngine so it uses the same
+        // renderer instance for visual rect lookups. Otherwise CustomHtmlEngine
+        // creates its own stale renderer that never has layout data.
+        _browser.Engine.SetExternalRenderer(_renderer);
+
         // Wire browser events
         _browser.Navigated += (s, e) => 
         {
@@ -185,21 +208,25 @@ public class BrowserIntegration
         {
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true) return;
 
-            // Sync DOM root early so EngineLoop has it on next tick.
-            // Sync styles only when snapshot reports a stable DOM+style pair. This avoids
-            // adopting transitional style states during refresh/cascade churn.
+            // Sync DOM root and styles immediately on every RepaintReady.
+            // PROGRESSIVE: Always adopt latest styles, even if they change incrementally.
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
-            if (snapshot.HasStableStyles && snapshot.Styles != null)
+            
+            // Use the snapshot styles directly - the renderer detects changes by reference
+            // and the engine provides a new dictionary reference when styles actually change.
+            // Creating copies here causes reference ping-pong between poller and RepaintReady.
+            if (snapshot.Styles != null && !ReferenceEquals(snapshot.Styles, _styles))
             {
                 _styles = snapshot.Styles;
+                _hasFirstStyledRender = true;
+                EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Styles updated ({snapshot.Styles.Count} rules)", LogCategory.Rendering);
             }
+            
             // Seed fragment intent before the first post-navigation frame.
-            // BrowserHost raises RepaintReady before Navigated, and Acid2 relies on
-            // initial `#top` fragment scrolling to land the face inside the viewport.
             UpdatePendingFragmentNavigation(_browser.CurrentUri);
 
-            EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}", LogCategory.Rendering);
+            EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}", LogCategory.Rendering);
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
             // after a valid frame is committed — never before _currentFrame is ready.
@@ -221,8 +248,9 @@ public class BrowserIntegration
         _engineThread = new Thread(EngineLoop) { IsBackground = true, Name = "FenEngine-Render" };
         _engineThread.Start();
         
-        // Timer to poll for missed updates
-        _domPoller = new System.Threading.Timer(_ => 
+        // Timer to poll for missed updates (conservative 500ms - event-driven is primary)
+        // PROGRESSIVE: RepaintReady event triggers immediate updates, polling is just fallback
+        _domPoller = new System.Threading.Timer(_ =>
         {
             try
             {
@@ -231,45 +259,29 @@ public class BrowserIntegration
                 var actualDom = snapshot.Root;
                 var actualStyles = snapshot.Styles;
                 var snapshotStable = snapshot.HasStableStyles;
-                
+
                 bool needsSync = false;
-                bool localStylesMissing = _styles == null || _styles.Count == 0;
-                bool committedStyledFrameReady = _hasFirstStyledRender && HasCommittedFrame();
 
-                if (committedStyledFrameReady && _root != null && !localStylesMissing)
-                {
-                    return;
-                }
-
+                // PROGRESSIVE: Always sync DOM if available, don't wait for styles
                 bool rootChanged = actualDom != null && actualDom != _root;
-                bool actualStylesReady = snapshotStable && actualStyles != null && actualStyles.Count > 0;
-                
-                // Sync DOM if changed
                 if (rootChanged)
                 {
                     _root = actualDom;
                     needsSync = true;
                 }
-                
-                // Bootstrap-time healing still adopts polled styles aggressively, but once a
-                // styled frame has committed we must not treat late dictionary reference churn
-                // as a real content change for the same settled root.
-                bool shouldAdoptPolledStyles =
-                    actualStylesReady &&
-                    (rootChanged || localStylesMissing || !_hasFirstStyledRender);
 
-                if (shouldAdoptPolledStyles && !ReferenceEquals(actualStyles, _styles))
-                {
-                    _styles = actualStyles;
-                    needsSync = true;
-                }
-                else if (!rootChanged && committedStyledFrameReady && actualStylesReady && !ReferenceEquals(actualStyles, _styles))
-                {
-                    EngineLogBridge.Debug(
-                        "[BrowserIntegration] DomPoller ignored late style snapshot churn after first styled render.",
-                        LogCategory.Rendering);
-                }
-                
+            // PROGRESSIVE: Adopt styles whenever they arrive, even if partial
+            // Use ReferenceEquals for dictionary identity check - the engine provides
+            // new dictionary instances when styles actually change via UpdateRenderState
+            bool stylesChanged = actualStyles != null && !ReferenceEquals(actualStyles, _styles);
+            if (stylesChanged)
+            {
+                _styles = actualStyles;
+                needsSync = true;
+                _hasFirstStyledRender = true;
+                EngineLogBridge.Info($"[BrowserIntegration] Poller: Styles updated ({actualStyles.Count} rules)", LogCategory.Rendering);
+            }
+
                 if (needsSync)
                 {
                     RequestFrame(
@@ -278,7 +290,7 @@ public class BrowserIntegration
                 }
             }
             catch {}
-        }, null, 1000, 500);
+        }, null, 100, 500); // Start after 100ms, poll every 500ms (event-driven is primary)
 
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
         {
@@ -660,26 +672,15 @@ public class BrowserIntegration
             _root = snapshot.Root;
             _styles = snapshot.HasStableStyles ? snapshot.Styles : null;
 
-            // Gate: wait for a stable DOM+style snapshot before first new frame.
-            if (!_hasFirstStyledRender && _root != null)
-            {
-                bool hasStyles = snapshot.HasStableStyles;
-                if (!hasStyles)
-                {
-                    var elapsed = DateTime.Now - _lastNavigationTime;
-                    if (elapsed.TotalMilliseconds < 60000)
-                    {
-                        DeferPendingFrame();
-                        _wakeEvent.WaitOne(250);
-                        return false;
-                    }
-                    EngineLogBridge.Warn($"[EngineLoop] CSS timeout after {elapsed.TotalMilliseconds:F0}ms — rendering unstyled.", LogCategory.Rendering);
-                }
-            }
-            if (_root != null && snapshot.HasStableStyles)
-                _hasFirstStyledRender = true;
+        // PROGRESSIVE RENDERING: Render with whatever data we have.
+        // Don't block waiting for "complete" styles - show content as soon as DOM is ready.
+        // The frame will naturally improve as styles arrive and trigger repaints.
+        if (!_hasFirstStyledRender && _root != null && snapshot.HasStableStyles)
+        {
+            _hasFirstStyledRender = true;
+        }
 
-            lock (_rendererLock)
+        lock (_rendererLock)
             {
                 RecordFrame(_lastViewportSize);
             }
@@ -1011,21 +1012,17 @@ public class BrowserIntegration
             return; 
         }
 
-        // Always defer when CSS styles are not yet ready. This prevents committing a blank
-        // structural frame (which would become the persistent _currentFrame base). After the
-        // 60-second CSS timeout we fall through so the page is at least partially visible.
-        if (_styles == null || _styles.Count == 0)
+        // PROGRESSIVE RENDERING: Always render with whatever we have.
+        // If styles aren't ready yet, use empty styles - the page will appear with default styling
+        // and progressively improve as CSS arrives. This eliminates the "blank page" problem.
+        if (_styles == null)
         {
-            var cssElapsed = (DateTime.Now - _lastNavigationTime).TotalMilliseconds;
-            if (cssElapsed < 60000)
-            {
-                DeferPendingFrame();
-                EngineLogBridge.Debug($"[BrowserIntegration] RecordFrame deferred: waiting for CSS styles ({cssElapsed:F0}ms).", LogCategory.Rendering);
-                return;
-            }
-            // Timeout exceeded — render structurally unstyled so the page isn't blank forever.
             _styles = new Dictionary<Node, CssComputed>();
-            EngineLogBridge.Warn("[BrowserIntegration] RecordFrame: CSS timeout — rendering unstyled.", LogCategory.Rendering);
+            if (_hasFirstStyledRender)
+            {
+                // Only log after first render - not during initial startup
+                EngineLogBridge.Debug("[BrowserIntegration] RecordFrame: rendering with default styles (CSS pending)", LogCategory.Rendering);
+            }
         }
         
         // Guard: Ensure we have a valid HTML element
@@ -1382,12 +1379,11 @@ public class BrowserIntegration
         var token = _lastNavigationTime; // capture; if another navigation starts, stops the old pulse
         _ = Task.Run(async () =>
         {
-            // Fire every 300 ms for up to 10 seconds, but stop once the first styled
-            // frame is committed. Wake only the render thread; the Compositor should
-            // invalidate from committed frames, not speculative pulses.
-            while (_running && (DateTime.Now - pulseStart).TotalSeconds < 10)
-            {
-                await Task.Delay(300).ConfigureAwait(false);
+    // FAST STARTUP: Fire every 50ms for up to 5 seconds (instead of 300ms/10s).
+    // Stop once the first styled frame is committed.
+    while (_running && (DateTime.Now - pulseStart).TotalSeconds < 5)
+    {
+        await Task.Delay(50).ConfigureAwait(false); // Reduced from 300ms to 50ms
                 // Bail if a newer navigation has started
                 if (_lastNavigationTime != token) break;
                 if (!_running) break;
@@ -1695,6 +1691,7 @@ public class BrowserIntegration
     }
     
     public bool NeedsRender => _needsRepaint;
+    public bool HasViewport => _hasReceivedViewportSize && _lastViewportSize.Width > 1 && _lastViewportSize.Height > 1;
     
     /// <summary>
     /// Get the current scroll position.
@@ -1724,9 +1721,28 @@ public class BrowserIntegration
         }
 
         EngineLogBridge.Info($"[BrowserIntegration] UpdateViewport: {size}", LogCategory.General);
+        _browser.UpdateViewportHint(size.Width, size.Height);
+        var previousViewport = _lastViewportSize;
         _hasReceivedViewportSize = true;
         if (_lastViewportSize != size)
         {
+            bool hadBootstrapViewport = previousViewport.Width <= 1 || previousViewport.Height <= 1;
+            if (hadBootstrapViewport || !_hasFirstStyledRender)
+            {
+                lock (_frameLock)
+                {
+                    _currentFrame?.Dispose();
+                    _currentFrame = null;
+                    _currentFrameSeedImage?.Dispose();
+                    _currentFrameSeedImage = null;
+                    _currentOverlays = new List<InputOverlayData>();
+                    _lastCommittedFrameViewport = SKSize.Empty;
+                    _lastCommittedFrameScrollY = 0f;
+                    _currentFrameSeedCreatedUtc = DateTime.MinValue;
+                    _consecutiveBaseFrameReuseCount = 0;
+                }
+            }
+
             _lastViewportSize = size;
             RequestFrame(RenderFrameInvalidationReason.Viewport, "BrowserIntegration.UpdateViewport");
         }

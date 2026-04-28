@@ -11,6 +11,9 @@ namespace FenBrowser.Host.Tabs;
 public class BrowserTab
 {
     private static int _nextId = 1;
+    private readonly object _initialNavigationLock = new();
+    private string _pendingInitialNavigationUrl;
+    private bool _initialNavigationDispatched;
     
     /// <summary>
     /// Unique tab identifier.
@@ -132,6 +135,58 @@ public class BrowserTab
         IsCrashed = false; // Reset crash state on new navigation
         ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: false);
         await Browser.NavigateProgrammaticAsync(url);
+    }
+
+    public void StartInitialNavigation(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        bool navigateNow;
+        lock (_initialNavigationLock)
+        {
+            if (_initialNavigationDispatched)
+            {
+                return;
+            }
+
+            navigateNow = Browser.HasViewport;
+            if (navigateNow)
+            {
+                _initialNavigationDispatched = true;
+                _pendingInitialNavigationUrl = null;
+            }
+            else
+            {
+                _pendingInitialNavigationUrl = url;
+            }
+        }
+
+        if (navigateNow)
+        {
+            _ = NavigateAsync(url);
+        }
+    }
+
+    public void NotifyViewportReady()
+    {
+        string pendingUrl = null;
+
+        lock (_initialNavigationLock)
+        {
+            if (_initialNavigationDispatched || !Browser.HasViewport || string.IsNullOrWhiteSpace(_pendingInitialNavigationUrl))
+            {
+                return;
+            }
+
+            pendingUrl = _pendingInitialNavigationUrl;
+            _pendingInitialNavigationUrl = null;
+            _initialNavigationDispatched = true;
+        }
+
+        _ = NavigateAsync(pendingUrl);
     }
     
     /// <summary>

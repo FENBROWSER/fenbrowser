@@ -29,6 +29,7 @@ public class AddressBarWidget : Widget
             {
                 _text = value ?? "";
                 _caretPosition = Math.Min(_caretPosition, _text.Length);
+                _scrollOffset = 0;
                 ClearSelection();
                 InvalidateTextLayout();
             }
@@ -116,6 +117,23 @@ public class AddressBarWidget : Widget
             FontSize = FontSize,
             TextColor = SKColors.Gray,
         };
+    }
+
+    public override void OnFocus()
+    {
+        base.OnFocus();
+        _caretVisible = true;
+        _lastBlink = DateTime.Now;
+        EnsureCaretVisible();
+        InvalidateTextLayout();
+    }
+
+    public override void OnBlur()
+    {
+        base.OnBlur();
+        _caretVisible = false;
+        ClearSelection();
+        InvalidateTextLayout();
     }
 
     private void InvalidateTextLayout()
