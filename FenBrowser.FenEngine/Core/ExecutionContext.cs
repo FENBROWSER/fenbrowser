@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Threading;
-using System.Threading.Tasks;
+using FenBrowser.FenEngine.Configuration;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -20,6 +19,8 @@ namespace FenBrowser.FenEngine.Core
 
         public IPermissionManager Permissions { get; }
         public IResourceLimits Limits { get; }
+        public FenEngineOptions Options { get; set; } = FenEngineOptions.Default;
+        public Uri DocumentUrl { get; set; }
         public int CallStackDepth => _callStack.Count;
         public DateTime ExecutionStart { get; private set; }
         public bool ShouldContinue => _executionTimer.Elapsed < Limits.MaxExecutionTime;
@@ -33,19 +34,11 @@ namespace FenBrowser.FenEngine.Core
                 return;
             }
 
-            var safeDelay = Math.Max(0, delay);
-            _ = RunDetachedAsync(async () =>
-            {
-                if (safeDelay > 0)
-                {
-                    await Task.Delay(safeDelay).ConfigureAwait(false);
-                }
-
-                EventLoopCoordinator.Instance.ScheduleTask(
-                    action,
-                    TaskSource.Timer,
-                    "ExecutionContext.ScheduleCallback");
-            });
+            EventLoopCoordinator.Instance.ScheduleDelayedTask(
+                action,
+                Math.Max(0, delay),
+                TaskSource.Timer,
+                "ExecutionContext.ScheduleCallback");
         };
 
         public Action<Action> ScheduleMicrotask { get; set; } = (action) =>
@@ -71,37 +64,6 @@ namespace FenBrowser.FenEngine.Core
         public bool StrictMode { get; set; }
 
         public Func<FenBrowser.FenEngine.Rendering.Core.ILayoutEngine> LayoutEngineProvider { get; set; }
-
-
-        private static Task RunDetachedAsync(Func<Task> operation)
-        {
-            return Task.Factory.StartNew(async () =>
-            {
-                try
-                {
-                    await operation().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[ExecutionContext] Detached async operation failed: {ex.Message}");
-                }
-            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
-        }
-
-        private static Task RunDetached(Action operation)
-        {
-            return Task.Factory.StartNew(() =>
-            {
-                try
-                {
-                    operation();
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[ExecutionContext] Detached operation failed: {ex.Message}");
-                }
-            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
-        }
 
         public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine()
         {

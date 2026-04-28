@@ -790,7 +790,9 @@ namespace FenBrowser.FenEngine.Core
             var leftExp = prefix();
 
             // Console.WriteLine($"[DEBUG] ParseExpression StartLoop: prec={precedence}, Peek={_peekToken}, PeekPrec={PeekPrecedence()}");
-            while (!PeekTokenIs(TokenType.Semicolon) && precedence < PeekPrecedence())
+            while (!PeekTokenIs(TokenType.Semicolon) &&
+                   (precedence < PeekPrecedence() ||
+                    (precedence == PeekPrecedence() && PeekTokenIs(TokenType.Arrow))))
             {
                 // Debug assignment (disabled for perf)
                 // if (_peekToken.Type == TokenType.Assign)
@@ -1663,11 +1665,11 @@ namespace FenBrowser.FenEngine.Core
                             break;
                         }
 
-                        if (!_allowRecovery && stmtMayLeaveTrailingInnerBrace)
+                        if (stmt is TryStatement)
                         {
-                            // The parsed statement can leave us on an inner '}'.
-                            // In strict runtime mode, consume it so parsing continues at
-                            // the current block boundary instead of desyncing delimiters.
+                            // Try/catch/finally statements always end on their own closing brace.
+                            // Advance once so the surrounding block can decide ownership on the
+                            // next delimiter token.
                             NextToken();
                             continue;
                         }
@@ -1675,6 +1677,15 @@ namespace FenBrowser.FenEngine.Core
                         if (IsCurrentTokenClosingCurrentBlock(block.Token))
                         {
                             break;
+                        }
+
+                        if (!_allowRecovery && stmtMayLeaveTrailingInnerBrace)
+                        {
+                            // The parsed statement can leave us on an inner '}'.
+                            // In strict runtime mode, consume it so parsing continues at
+                            // the current block boundary instead of desyncing delimiters.
+                            NextToken();
+                            continue;
                         }
 
                         // Unknown ownership for this brace. Consume it and continue
@@ -2658,10 +2669,28 @@ namespace FenBrowser.FenEngine.Core
                     return null;
                 }
 
+                // Value parsing can legitimately leave us on the object's closing brace
+                // when the object literal is immediately followed by an outer closer.
+                // Example: `({a:1})` or `var x={a:1};`
+                bool endedObjectDuringValueParse = CurTokenIs(TokenType.RBrace) &&
+                                                   (PeekTokenIs(TokenType.RParen) ||
+                                                    PeekTokenIs(TokenType.Semicolon) ||
+                                                    PeekTokenIs(TokenType.RBracket) ||
+                                                    PeekTokenIs(TokenType.Eof));
+                if (endedObjectDuringValueParse)
+                {
+                    break;
+                }
+
                 if (!PeekTokenIs(TokenType.RBrace) && !ExpectPeek(TokenType.Comma))
                 {
                     return null;
                 }
+            }
+
+            if (CurTokenIs(TokenType.RBrace) && !PeekTokenIs(TokenType.RBrace))
+            {
+                return obj;
             }
 
             if (!ExpectPeek(TokenType.RBrace))
@@ -3753,14 +3782,7 @@ namespace FenBrowser.FenEngine.Core
                 NextToken(); // extends
                 NextToken(); // superClassExpression
                 var superClassExpr = ParseExpression(Precedence.Lowest);
-                if (superClassExpr is Identifier superIdent)
-                {
-                    exp.SuperClass = superIdent;
-                }
-                else
-                {
-                    exp.SuperClass = new Identifier(_curToken, superClassExpr?.String() ?? _curToken.Literal);
-                }
+                exp.SuperClass = superClassExpr;
             }
 
             if (!ExpectPeek(TokenType.LBrace))
@@ -3768,7 +3790,7 @@ namespace FenBrowser.FenEngine.Core
                 return null;
             }
 
-            // Parse class body ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â advance past { then parse members
+            // Parse class body — advance past { then parse members
             bool prevStrictMode = _isStrictMode;
             var inheritedPrivateScope = _privateNameScopeStack.Count > 0
                 ? new HashSet<string>(_privateNameScopeStack.Peek(), StringComparer.Ordinal)
@@ -3835,14 +3857,7 @@ namespace FenBrowser.FenEngine.Core
                 NextToken();
                 NextToken();
                 var superClassExpr = ParseExpression(Precedence.Lowest);
-                if (superClassExpr is Identifier superIdent)
-                {
-                    stmt.SuperClass = superIdent;
-                }
-                else
-                {
-                    stmt.SuperClass = new Identifier(_curToken, superClassExpr?.String() ?? _curToken.Literal);
-                }
+                stmt.SuperClass = superClassExpr;
             }
 
             if (!ExpectPeek(TokenType.LBrace))

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Core.Types;
@@ -3355,21 +3355,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             var constructorFunction = BuildClassConstructorFunction(classStatement);
             Visit(constructorFunction);
-            if (classStatement.SuperClass != null && !string.IsNullOrEmpty(classStatement.SuperClass.Value))
+            if (classStatement.SuperClass != null)
             {
                 // Preserve direct super-constructor binding for derived class constructor calls (super()).
                 Emit(OpCode.Dup);
                 int superCtorKeyIdx = AddConstant(FenValue.FromString("__super_ctor__"));
                 Emit(OpCode.LoadConst);
                 EmitInt32(superCtorKeyIdx);
-                EmitLoadVarByName(classStatement.SuperClass.Value);
+                Visit(classStatement.SuperClass);
                 Emit(OpCode.StoreProp);
                 Emit(OpCode.Pop);
             }
             EmitStoreVarByName(className);
             Emit(OpCode.Pop);
 
-            if (classStatement.SuperClass != null && !string.IsNullOrEmpty(classStatement.SuperClass.Value))
+            if (classStatement.SuperClass != null)
             {
                 // Basic inheritance wiring: class.prototype = superClass.prototype
                 // (does not yet preserve a distinct prototype object chain).
@@ -3377,7 +3377,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 int prototypeKeyIdx = AddConstant(FenValue.FromString("prototype"));
                 Emit(OpCode.LoadConst);
                 EmitInt32(prototypeKeyIdx);
-                EmitLoadVarByName(classStatement.SuperClass.Value);
+                Visit(classStatement.SuperClass);
                 Emit(OpCode.LoadConst);
                 EmitInt32(prototypeKeyIdx);
                 Emit(OpCode.LoadProp);

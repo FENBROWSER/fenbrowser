@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.FenEngine.Configuration;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.Core.Dom.V2; // MutationRecord
@@ -20,6 +21,16 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         /// Resource limits configuration
         /// </summary>
         IResourceLimits Limits { get; }
+
+        /// <summary>
+        /// Engine-wide options for security, performance, and compatibility
+        /// </summary>
+        FenEngineOptions Options { get; }
+
+        /// <summary>
+        /// The document's base URL for resolving relative URLs
+        /// </summary>
+        Uri DocumentUrl { get; }
 
         /// <summary>
         /// Current call stack depth

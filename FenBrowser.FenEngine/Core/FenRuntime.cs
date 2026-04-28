@@ -4910,6 +4910,21 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 }
             })));
 
+            // Date.prototype.toUTCString() — ES5 §15.9.5.42
+            dateProto.SetBuiltin("toUTCString", FenValue.FromFunction(new FenFunction("toUTCString", (args, thisVal) =>
+            {
+                try
+                {
+                    var dt = GetDate(thisVal);
+                    if (dt == DateTime.MinValue) return FenValue.FromString("Invalid Date");
+                    return FenValue.FromString(dt.ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                catch
+                {
+                    return FenValue.FromString("Invalid Date");
+                }
+            })));
+
             // Annex B: Date.prototype.getYear() ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â returns year - 1900 for years in range
             {
                 var fn = new FenFunction("getYear", (args, thisVal) =>
@@ -4951,7 +4966,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 {
                     var dt = GetDate(thisVal); // throws TypeError if not a Date
                     if (dt == DateTime.MinValue) return FenValue.FromString("Invalid Date");
-                    return FenValue.FromString(dt.ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'"));
+                    return FenValue.FromString(dt.ToUniversalTime().ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture));
                 });
                 fn.IsConstructor = false;
                 dateProto.SetBuiltin("toGMTString", FenValue.FromFunction(fn));
@@ -9256,6 +9271,19 @@ window.Set("navigation", FenValue.FromObject(navigation));
                 return ctorValue;
             }
 
+            FenValue CreateIllegalInterfaceConstructor(string name, FenObject prototype)
+            {
+                var ctorFn = new FenFunction(name, (args, thisVal) =>
+                {
+                    throw new FenTypeError($"Failed to construct '{name}': Illegal constructor.");
+                });
+                ctorFn.Prototype = prototype;
+                ctorFn.Set("prototype", FenValue.FromObject(prototype));
+                var ctorValue = FenValue.FromFunction(ctorFn);
+                prototype.SetBuiltin("constructor", ctorValue);
+                return ctorValue;
+            }
+
             FenValue CreatePlaceholderInterface(string name, FenObject parentPrototype = null)
             {
                 var prototype = new FenObject();
@@ -9315,8 +9343,22 @@ window.Set("navigation", FenValue.FromObject(navigation));
             SetGlobal("Attr", attrCtorVal);
             DefineWindowInterface(window, "Attr", attrCtorVal);
 
+            var characterDataPrototype = new FenObject();
+            characterDataPrototype.InternalClass = "CharacterDataPrototype";
+            characterDataPrototype.SetPrototype(nodePrototype);
+            characterDataPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("CharacterData"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var characterDataCtorVal = CreateIllegalInterfaceConstructor("CharacterData", characterDataPrototype);
+            SetGlobal("CharacterData", characterDataCtorVal);
+            DefineWindowInterface(window, "CharacterData", characterDataCtorVal);
+
             var textPrototype = new FenObject();
-            textPrototype.SetPrototype(nodePrototype);
+            textPrototype.SetPrototype(characterDataPrototype);
             var textCtorFn = new FenFunction("Text", (FenValue[] args, FenValue thisVal) =>
             {
                 var data = args.Length > 0 ? args[0].ToString() : string.Empty;
@@ -9335,7 +9377,7 @@ window.Set("navigation", FenValue.FromObject(navigation));
             DefineWindowInterface(window, "Text", textCtorVal);
 
             var commentPrototype = new FenObject();
-            commentPrototype.SetPrototype(nodePrototype);
+            commentPrototype.SetPrototype(characterDataPrototype);
             var commentCtorFn = new FenFunction("Comment", (FenValue[] args, FenValue thisVal) =>
             {
                 var data = args.Length > 0 ? args[0].ToString() : string.Empty;
@@ -9352,6 +9394,57 @@ window.Set("navigation", FenValue.FromObject(navigation));
             _domCommentPrototype = commentPrototype;
             SetGlobal("Comment", commentCtorVal);
             DefineWindowInterface(window, "Comment", commentCtorVal);
+
+            var documentFragmentPrototype = new FenObject();
+            documentFragmentPrototype.InternalClass = "DocumentFragmentPrototype";
+            documentFragmentPrototype.SetPrototype(nodePrototype);
+            documentFragmentPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("DocumentFragment"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var documentFragmentCtorVal = CreateInterfaceConstructor("DocumentFragment", documentFragmentPrototype, (args, thisVal) =>
+            {
+                var wrapperVal = DomWrapperFactory.Wrap(new DocumentFragment(), _context);
+                if (wrapperVal.IsObject)
+                {
+                    wrapperVal.AsObject().SetPrototype(documentFragmentPrototype);
+                }
+
+                return wrapperVal;
+            });
+            SetGlobal("DocumentFragment", documentFragmentCtorVal);
+            DefineWindowInterface(window, "DocumentFragment", documentFragmentCtorVal);
+
+            var nodeListPrototype = new FenObject();
+            nodeListPrototype.InternalClass = "NodeListPrototype";
+            nodeListPrototype.SetPrototype(ResolveIntrinsicPrototypeFromGlobal("Object") ?? FenObject.DefaultPrototype);
+            nodeListPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("NodeList"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var nodeListCtorVal = CreateIllegalInterfaceConstructor("NodeList", nodeListPrototype);
+            SetGlobal("NodeList", nodeListCtorVal);
+            DefineWindowInterface(window, "NodeList", nodeListCtorVal);
+
+            var htmlCollectionPrototype = new FenObject();
+            htmlCollectionPrototype.InternalClass = "HTMLCollectionPrototype";
+            htmlCollectionPrototype.SetPrototype(ResolveIntrinsicPrototypeFromGlobal("Object") ?? FenObject.DefaultPrototype);
+            htmlCollectionPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("HTMLCollection"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var htmlCollectionCtorVal = CreateIllegalInterfaceConstructor("HTMLCollection", htmlCollectionPrototype);
+            SetGlobal("HTMLCollection", htmlCollectionCtorVal);
+            DefineWindowInterface(window, "HTMLCollection", htmlCollectionCtorVal);
 
             var elementPrototype = new FenObject();
             elementPrototype.InternalClass = "ElementPrototype";
@@ -11134,7 +11227,12 @@ window.Set("navigation", FenValue.FromObject(navigation));
                     }
                     else
                     {
-                        EnsureDocumentComputedStyles(nativeEl);
+                        var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl);
+                        if (computedStyle == null)
+                        {
+                            EnsureDocumentComputedStyles(nativeEl);
+                            computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl);
+                        }
 
                         FenObject CreateComputedStyleObject(IReadOnlyDictionary<string, string> values)
                         {
@@ -11194,7 +11292,7 @@ window.Set("navigation", FenValue.FromObject(navigation));
                             return FenValue.FromObject(CreateComputedStyleObject(pseudoValues));
                         }
 
-                        var computedStyle = FenBrowser.Core.Css.NodeStyleExtensions.GetComputedStyle(nativeEl) ?? new FenBrowser.Core.Css.CssComputed();
+                        computedStyle ??= new FenBrowser.Core.Css.CssComputed();
                         var inlineStyles = ParseInlineStyleMap(nativeEl.GetAttribute("style") ?? string.Empty);
                         var resolvedValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 

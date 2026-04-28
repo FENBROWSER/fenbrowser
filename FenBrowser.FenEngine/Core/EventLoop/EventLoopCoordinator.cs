@@ -4,6 +4,7 @@
 // FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
@@ -29,15 +30,32 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private static EventLoopCoordinator _instance;
         public static EventLoopCoordinator Instance => _instance ??= new EventLoopCoordinator();
 
+        private sealed class DelayedTaskEntry
+        {
+            public DelayedTaskEntry(ScheduledTask task, long dueTimeMs, long sequence)
+            {
+                Task = task;
+                DueTimeMs = dueTimeMs;
+                Sequence = sequence;
+            }
+
+            public ScheduledTask Task { get; }
+            public long DueTimeMs { get; }
+            public long Sequence { get; }
+        }
+
         private readonly TaskQueue _taskQueue = new();
         private readonly MicrotaskQueue _microtaskQueue = new();
         private readonly Queue<Action> _animationFrameCallbacks = new();
         private readonly object _animationLock = new();
         private readonly Queue<Action> _mutationObserverCallbacks = new();
         private readonly object _moLock = new object();
+        private readonly List<DelayedTaskEntry> _delayedTasks = new();
+        private readonly object _delayedTaskLock = new();
 
         private bool _layoutDirty = false;
         private long _lastRenderTime = 0;
+        private long _nextDelayedTaskSequence = 0;
         private Action _renderCallback = null;
         private Action _observerCallback = null;
 
@@ -51,6 +69,33 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             if (callback == null) return;
             _taskQueue.Enqueue(callback, source, description);
+            OnWorkEnqueued?.Invoke();
+        }
+
+        public void ScheduleDelayedTask(Action callback, int delayMs, TaskSource source, string description = null)
+        {
+            if (callback == null)
+            {
+                return;
+            }
+
+            var safeDelay = Math.Max(0, delayMs);
+            if (safeDelay == 0)
+            {
+                ScheduleTask(callback, source, description);
+                return;
+            }
+
+            var delayedTask = new DelayedTaskEntry(
+                new ScheduledTask(callback, source, description),
+                Environment.TickCount64 + safeDelay,
+                Interlocked.Increment(ref _nextDelayedTaskSequence));
+
+            lock (_delayedTaskLock)
+            {
+                _delayedTasks.Add(delayedTask);
+            }
+
             OnWorkEnqueued?.Invoke();
         }
 
@@ -172,6 +217,8 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         public TaskProcessingResult ProcessNextTaskDetailed(bool prioritizeInteractive = false)
         {
+            PromoteDueDelayedTasks();
+
             var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
             if (task == null)
             {
@@ -354,12 +401,21 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public void RunUntilEmpty()
         {
             while (_taskQueue.HasPendingTasks ||
+                   HasPendingDelayedTasks ||
                    _animationFrameCallbacks.Count > 0 ||
                    _microtaskQueue.HasPendingMicrotasks)
             {
+                PromoteDueDelayedTasks();
+
                 if (_taskQueue.HasPendingTasks || _animationFrameCallbacks.Count > 0)
                 {
                     ProcessNextTask();
+                    continue;
+                }
+
+                if (HasPendingDelayedTasks)
+                {
+                    WaitUntilNextDelayedTaskDue();
                     continue;
                 }
 
@@ -383,8 +439,13 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             {
                 _mutationObserverCallbacks.Clear();
             }
+            lock (_delayedTaskLock)
+            {
+                _delayedTasks.Clear();
+            }
             _layoutDirty = false;
             _lastRenderTime = 0;
+            _nextDelayedTaskSequence = 0;
             EngineLogCompat.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
         }
 
@@ -397,10 +458,90 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public int MicrotaskCount => _microtaskQueue.Count;
         public bool HasPendingTasks => _taskQueue.HasPendingTasks;
         public bool HasPendingMicrotasks => _microtaskQueue.HasPendingMicrotasks;
+        public bool HasPendingDelayedTasks
+        {
+            get
+            {
+                lock (_delayedTaskLock)
+                {
+                    return _delayedTasks.Count > 0;
+                }
+            }
+        }
         public TaskQueueSnapshot GetTaskSnapshot() => _taskQueue.GetSnapshot();
         public bool HasPendingTasksFor(TaskSource source) => _taskQueue.HasPendingTasksFor(source);
         public bool HasPendingTasksFor(TaskPriorityGroup group) => _taskQueue.HasPendingTasksFor(group);
 
         #endregion
+
+        private void PromoteDueDelayedTasks()
+        {
+            List<DelayedTaskEntry> dueTasks = null;
+            var now = Environment.TickCount64;
+
+            lock (_delayedTaskLock)
+            {
+                for (int index = _delayedTasks.Count - 1; index >= 0; index--)
+                {
+                    var delayedTask = _delayedTasks[index];
+                    if (delayedTask.DueTimeMs > now)
+                    {
+                        continue;
+                    }
+
+                    dueTasks ??= new List<DelayedTaskEntry>();
+                    dueTasks.Add(delayedTask);
+                    _delayedTasks.RemoveAt(index);
+                }
+            }
+
+            if (dueTasks == null || dueTasks.Count == 0)
+            {
+                return;
+            }
+
+            dueTasks.Sort((left, right) =>
+            {
+                var dueComparison = left.DueTimeMs.CompareTo(right.DueTimeMs);
+                return dueComparison != 0 ? dueComparison : left.Sequence.CompareTo(right.Sequence);
+            });
+
+            foreach (var delayedTask in dueTasks)
+            {
+                _taskQueue.Enqueue(delayedTask.Task);
+            }
+        }
+
+        private void WaitUntilNextDelayedTaskDue()
+        {
+            long waitMs = 0;
+            var now = Environment.TickCount64;
+
+            lock (_delayedTaskLock)
+            {
+                if (_delayedTasks.Count == 0)
+                {
+                    return;
+                }
+
+                var nextDueTime = long.MaxValue;
+                foreach (var delayedTask in _delayedTasks)
+                {
+                    if (delayedTask.DueTimeMs < nextDueTime)
+                    {
+                        nextDueTime = delayedTask.DueTimeMs;
+                    }
+                }
+
+                waitMs = Math.Max(0, nextDueTime - now);
+            }
+
+            if (waitMs <= 0)
+            {
+                return;
+            }
+
+            Thread.Sleep((int)Math.Min(waitMs, 50));
+        }
     }
 }

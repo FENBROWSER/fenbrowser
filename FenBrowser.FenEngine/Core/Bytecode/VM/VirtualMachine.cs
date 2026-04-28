@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using FenBrowser.FenEngine.Configuration;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Types;
@@ -21,6 +22,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
     /// </summary>
     public class VirtualMachine
     {
+        /// <summary>
+        /// Engine-wide options for VM behavior (security, performance, compatibility).
+        /// </summary>
+        public FenEngineOptions Options { get; set; } = FenEngineOptions.Default;
+
         private const int CachedIndexKeyCount = 2048;
         private const int DirectEvalAllowNewTargetFlag = 0x1;
         private const int DirectEvalForceUndefinedNewTargetFlag = 0x2;
@@ -917,9 +923,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return index.ToString(CultureInfo.InvariantCulture);
         }
 
+        private static readonly string[] _lastAccessedProps = new string[10];
+        private static int _lastAccessedPropIdx = 0;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ThrowJsError(string errorType, string message)
         {
+            if (errorType == "TypeError" && message.Contains("is not a function"))
+            {
+                var orderedProps = new string[10];
+                for (int i = 0; i < 10; i++) orderedProps[i] = _lastAccessedProps[(int)((_lastAccessedPropIdx - 10 + i) % 10 + 10) % 10];
+                message += $" [Recent prop accesses (oldest to newest): {string.Join(", ", orderedProps)}]";
+            }
+
+            FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText("js_debug.log", $"[VM_Throw] {errorType}: {message}\n");
+
             throw errorType switch
             {
                 "TypeError" => new FenTypeError($"{errorType}: {message}"),
@@ -1203,11 +1221,36 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return evalResult;
         }
 
+        /// <summary>
+        /// Checks if a value is object-coercible for property access operations.
+        /// In strict mode (default), throws TypeError for null/undefined.
+        /// In lenient mode (VmLenientPropertyAccess), returns false and allows caller to return undefined.
+        /// </summary>
+        /// <param name="v">The value to check</param>
+        /// <param name="opName">Operation name for error messages</param>
+        /// <param name="propertyKey">Optional property key for logging</param>
+        /// <returns>True if the value is object-coercible, false if lenient mode and value is null/undefined</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void RequireObjectCoercible(FenValue v, string opName)
+        private bool RequireObjectCoercible(FenValue v, string opName, string propertyKey = null)
         {
-            if (v.IsNull || v.IsUndefined)
-                ThrowTypeError($"{opName} on {(v.IsNull ? "null" : "undefined")}");
+            if (!v.IsNull && !v.IsUndefined)
+                return true;
+
+            // In lenient mode, log warning and return false to allow graceful handling
+            if (Options?.VmLenientPropertyAccess == true)
+            {
+                if (Options?.VmLogLenientAccessWarnings == true)
+                {
+                    var propInfo = propertyKey != null ? $" property='{propertyKey}'" : "";
+                    FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText("js_debug.log", 
+                        $"[VM_Warn] Lenient mode: {opName} on {(v.IsNull ? "null" : "undefined")}{propInfo}\n");
+                }
+                return false;
+            }
+
+            // Strict mode: throw TypeError
+            ThrowTypeError($"{opName} on {(v.IsNull ? "null" : "undefined")}");
+            return false; // Unreachable, but satisfies compiler
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -2749,13 +2792,21 @@ run_loop_restart:
                                 _stack[_sp++] = FenValue.FromObject(obj);
                                 break;
                             }
-                            case OpCode.LoadProp:
-                            {
-                                var prop = _stack[--_sp];
-                                var obj = _stack[--_sp];
-                                var propertyKey = PropertyKey(prop);
-                                RequireObjectCoercible(obj, $"LoadProp '{propertyKey}'");
-                                var objectRef = obj.AsObject();
+                case OpCode.LoadProp:
+                {
+                    var prop = _stack[--_sp];
+                    var obj = _stack[--_sp];
+                    var propertyKey = PropertyKey(prop);
+                    
+                    // Check object-coercibility with lenient mode support
+                    if (!RequireObjectCoercible(obj, $"LoadProp '{propertyKey}'", propertyKey))
+                    {
+                        // Lenient mode: return undefined instead of throwing
+                        _stack[_sp++] = FenValue.Undefined;
+                        break;
+                    }
+                    
+                    var objectRef = obj.AsObject();
                                 if (objectRef != null)
                                 {
                                     var key = propertyKey;
@@ -2782,7 +2833,7 @@ run_loop_restart:
                                             _stack[_sp++] = cachedValue;
                                             break;
                                         }
-
+                                        _lastAccessedProps[_lastAccessedPropIdx++ % 10] = key;
                                         var value = fenObj.GetWithReceiver(key, obj);
                                         _stack[_sp++] = value;
                                         if (!mustUseDynamicEventGetter)
@@ -2792,6 +2843,7 @@ run_loop_restart:
                                     }
                                     else
                                     {
+                                        _lastAccessedProps[_lastAccessedPropIdx++ % 10] = key;
                                         _stack[_sp++] = objectRef.Get(key);
                                     }
                                 }
@@ -3475,6 +3527,7 @@ run_loop_restart:
             }
             catch (Exception ex)
             {
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText("js_debug.log", $"[VM_CatchNative] {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}\n");
                 if (ex is FenError fenError)
                 {
                     var thrownValue = CreateHostExceptionValue(fenError);

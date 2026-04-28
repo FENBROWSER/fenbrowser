@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -723,7 +723,7 @@ namespace FenBrowser.FenEngine.Core
     public class ClassStatement : Statement
     {
         public Identifier Name { get; set; }
-        public Identifier SuperClass { get; set; }
+        public Expression SuperClass { get; set; }
         public BlockStatement Body { get; set; } // Contains MethodDefinitions
         public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
         public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>(); // Class fields (including private)
@@ -762,7 +762,7 @@ namespace FenBrowser.FenEngine.Core
     public class ClassExpression : Expression
     {
         public Identifier Name { get; set; }
-        public Identifier SuperClass { get; set; }
+        public Expression SuperClass { get; set; }
         public List<MethodDefinition> Methods { get; set; } = new List<MethodDefinition>();
         public List<ClassProperty> Properties { get; set; } = new List<ClassProperty>();
         public List<StaticBlock> StaticBlocks { get; set; } = new List<StaticBlock>();
