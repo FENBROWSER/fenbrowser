@@ -120,7 +120,7 @@ namespace FenBrowser.FenEngine.Layout
                     style.AlignItems = mapAlign;
                 if (string.IsNullOrEmpty(style.AlignContent) && style.Map.TryGetValue("align-content", out var mapAlignContent))
                     style.AlignContent = mapAlignContent;
-                if (style.Position == null && style.Map.TryGetValue("position", out var mapPos))
+                if (string.IsNullOrEmpty(style.Position) && style.Map.TryGetValue("position", out var mapPos))
                     style.Position = mapPos;
                     
                 if (style.Overflow == null && style.Map.TryGetValue("overflow", out var mapOverflow))
@@ -2948,7 +2948,7 @@ namespace FenBrowser.FenEngine.Layout
             height = 0f;
             if (elem == null) return false;
 
-            string src = elem.GetAttribute("src");
+            string src = ResponsiveImageSourceSelector.PickCurrentImageSource(elem, _viewportWidth, _viewportHeight);
             if (string.IsNullOrWhiteSpace(src)) return false;
 
             string resolved = ResolveResourceUrl(src);

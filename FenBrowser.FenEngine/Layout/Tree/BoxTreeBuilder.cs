@@ -65,6 +65,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             // For text nodes, inherit from parent
             if (style == null && node is Text) style = parentStyle ?? new CssComputed();
 
+            LayoutStyleResolver.NormalizeForLayout(style);
+
             var display = ResolveDisplay(node, style);
 
             // 1. Handle Display: None and Hidden Tags

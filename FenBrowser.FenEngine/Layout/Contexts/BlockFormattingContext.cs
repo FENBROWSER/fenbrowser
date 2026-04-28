@@ -775,6 +775,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             Thickness padding = style?.Padding ?? new Thickness();
             Thickness border = style?.BorderThickness ?? new Thickness();
             Thickness margin = style?.Margin ?? new Thickness();
+            float horizontalExtras = (float)(padding.Left + padding.Right + border.Left + border.Right);
+            bool isBorderBox = string.Equals(style?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
 
             string tag = (box.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName ?? "?";
             string id = (box.SourceNode as FenBrowser.Core.Dom.V2.Element)?.GetAttribute("id") ?? "";
@@ -783,23 +785,56 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float? width = null;
             if (style != null)
             {
-                if (style.Width.HasValue) width = (float)style.Width.Value;
-                else if (style.WidthPercent.HasValue) width = (float)(style.WidthPercent.Value / 100.0 * available);
+                if (style.Width.HasValue)
+                {
+                    width = (float)style.Width.Value;
+                }
+                else if (style.WidthPercent.HasValue)
+                {
+                    width = (float)(style.WidthPercent.Value / 100.0 * available);
+                }
+
+                if (width.HasValue && isBorderBox)
+                {
+                    width = Math.Max(0f, width.Value - horizontalExtras);
+                }
             }
 
             // 3. Resolve Max/Min constraints
             float? maxWidth = null;
             if (style != null)
             {
-                if (style.MaxWidth.HasValue) maxWidth = (float)style.MaxWidth.Value;
-                else if (style.MaxWidthPercent.HasValue) maxWidth = (float)(style.MaxWidthPercent.Value / 100.0 * available);
+                if (style.MaxWidth.HasValue)
+                {
+                    maxWidth = (float)style.MaxWidth.Value;
+                }
+                else if (style.MaxWidthPercent.HasValue)
+                {
+                    maxWidth = (float)(style.MaxWidthPercent.Value / 100.0 * available);
+                }
+
+                if (maxWidth.HasValue && isBorderBox)
+                {
+                    maxWidth = Math.Max(0f, maxWidth.Value - horizontalExtras);
+                }
             }
 
             float minWidth = 0;
             if (style != null)
             {
-                if (style.MinWidth.HasValue) minWidth = (float)style.MinWidth.Value;
-                else if (style.MinWidthPercent.HasValue) minWidth = (float)(style.MinWidthPercent.Value / 100.0 * available);
+                if (style.MinWidth.HasValue)
+                {
+                    minWidth = (float)style.MinWidth.Value;
+                }
+                else if (style.MinWidthPercent.HasValue)
+                {
+                    minWidth = (float)(style.MinWidthPercent.Value / 100.0 * available);
+                }
+
+                if (isBorderBox)
+                {
+                    minWidth = Math.Max(0f, minWidth - horizontalExtras);
+                }
             }
 
             if (DebugConfig.EnableDeepDebug && DebugConfig.LogLayoutConstraints)
@@ -809,7 +844,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // 4. Calculate content width before margins
             float resolvedContentWidth;
-            float horizontalExtras = (float)(padding.Left + padding.Right + border.Left + border.Right);
             float marginExtras = (float)(margin.Left + margin.Right);
 
             if (width.HasValue)

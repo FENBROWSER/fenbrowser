@@ -196,9 +196,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 childState.ContainingBlockWidth = float.IsFinite(container.Geometry.ContentBox.Width) && container.Geometry.ContentBox.Width > 0
                     ? container.Geometry.ContentBox.Width
                     : state.ViewportWidth;
+                // When the flex container cross-size is auto/indefinite, do not fall back to
+                // viewport height. Doing so makes percent/auto heights inside controls (e.g.
+                // Google search textarea wrapper) expand to viewport scale.
                 childState.ContainingBlockHeight = float.IsFinite(container.Geometry.ContentBox.Height) && container.Geometry.ContentBox.Height > 0
                     ? container.Geometry.ContentBox.Height
-                    : state.ViewportHeight;
+                    : 0f;
 
                 // Run Layout on child (will trigger shrink-to-fit if width is auto & avail is infinity)
                 FormattingContext.Resolve(item).Layout(item, childState);

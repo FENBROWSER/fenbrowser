@@ -154,6 +154,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         continue;
                     }
 
+                    bool suppressSoftWrap = UsesNoWrapWhiteSpace(textBox.ComputedStyle ?? box.ComputedStyle);
+
                     if (!textBoxLines.ContainsKey(textBox))
                         textBoxLines[textBox] = new List<TextLineInfo>();
 
@@ -162,6 +164,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float lineHeight = metrics.LineHeight;
                     float baseline = metrics.Baseline;
                     float descent = metrics.Descent;
+
+                    if (suppressSoftWrap)
+                    {
+                        float segmentWidth = MeasureString(fullText, textBox.ComputedStyle).Width;
+                        if (curX + segmentWidth > contentLimit && curX > 0)
+                        {
+                            currentLine.Height = Math.Max(currentLine.Height, lineHeight);
+                            currentLine = new LineBox();
+                            lines.Add(currentLine);
+                            curX = 0;
+                        }
+
+                        textBoxLines[textBox].Add(new TextLineInfo
+                        {
+                            Text = fullText,
+                            X = curX,
+                            Width = segmentWidth,
+                            Height = lineHeight,
+                            Baseline = baseline,
+                            LineIndex = lines.Count - 1
+                        });
+
+                        currentLine.Width = curX + segmentWidth;
+                        currentLine.IncludeMetrics(baseline, descent);
+                        curX += segmentWidth;
+                        previousEndedWithSpace = fullText.EndsWith(" ", StringComparison.Ordinal);
+                        continue;
+                    }
 
                     // WORD FLOW - track segments for this textBox
                     int startIdx = 0;
@@ -409,12 +439,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             itemW = Math.Max(0f, contentLimit);
                         }
 
-                        float itemH = item.Geometry.ContentBox.Height;
+                        float itemH = Math.Max(0f, item.Geometry.MarginBox.Height);
                         if (!float.IsFinite(itemH) || itemH <= 0f)
                         {
-                            itemH = float.IsFinite(state.AvailableSize.Height) && state.AvailableSize.Height > 0
-                                ? state.AvailableSize.Height
-                                : state.ViewportHeight;
+                            itemH = Math.Max(0f, item.Geometry.BorderBox.Height);
+                        }
+                        if (!float.IsFinite(itemH) || itemH <= 0f)
+                        {
+                            itemH = Math.Max(0f, item.Geometry.ContentBox.Height);
+                        }
+                        if (!float.IsFinite(itemH) || itemH <= 0f)
+                        {
+                            itemH = Math.Max(1f, line.Height);
+                        }
+                        if ((!float.IsFinite(itemH) || itemH <= 0f) &&
+                            float.IsFinite(state.AvailableSize.Height) &&
+                            state.AvailableSize.Height > 0f)
+                        {
+                            itemH = state.AvailableSize.Height;
                         }
 
                         itemState.AvailableSize = new SKSize(itemW, itemH);
@@ -453,7 +495,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float itemLeft = item.Geometry.MarginBox.Left;
                     if (float.IsFinite(runningRight) && itemLeft < runningRight)
                     {
-                        LayoutBoxOps.PositionSubtree(item, runningRight, item.Geometry.MarginBox.Top, state);
+                        float shiftX = runningRight - itemLeft;
+                        if (float.IsFinite(shiftX) && shiftX > 0f)
+                        {
+                            // Keep Y unchanged so relative-inset adjustments are not re-applied.
+                            LayoutBoxOps.ShiftSubtree(item, shiftX, 0f);
+                        }
                     }
 
                     if (float.IsFinite(item.Geometry.MarginBox.Right))
@@ -883,6 +930,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return CollapseWhitespace(text).Trim(' ');
         }
 
+        private static bool UsesNoWrapWhiteSpace(CssComputed style)
+        {
+            return string.Equals(style?.WhiteSpace?.Trim(), "nowrap", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static float ComputeVerticalAlignOffset(LineBox line, float itemHeight, float itemAscent, CssComputed style)
         {
             float safeHeight = float.IsFinite(itemHeight) && itemHeight > 0f ? itemHeight : 0f;
@@ -891,6 +943,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 safeAscent = Math.Min(safeAscent, safeHeight);
             }
+
             float safeDescent = Math.Max(0f, safeHeight - safeAscent);
             float lineAscent = Math.Max(0f, line?.Ascent ?? 0f);
             float lineDescent = Math.Max(0f, line?.Descent ?? 0f);
@@ -911,9 +964,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     break;
                 case "super":
                     verticalOffset = -safeHeight * 0.3f;
-                    break;
-                case "baseline":
-                    verticalOffset = 0f;
                     break;
                 case "middle":
                     verticalOffset = ((lineAscent + lineDescent - safeHeight) / 2f) - baseOffset;

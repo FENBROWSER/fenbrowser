@@ -820,12 +820,29 @@ namespace FenBrowser.FenEngine.Layout
                 float itemH = trackH;
                 
                 // If not stretching, we need intrinsic size.
-                // Since we don't have measure callback, use fixed size if available, specific override, or fallback.
+                // Explicit sizes win. Otherwise use measured intrinsic size so justify/align
+                // can position content-sized items instead of leaving them track-stretched.
                 bool hasExplicitW = itemStyle.Width.HasValue;
                 bool hasExplicitH = itemStyle.Height.HasValue;
                 
                 if (justify != "stretch" && hasExplicitW) itemW = (float)itemStyle.Width.Value;
                 if (align != "stretch" && hasExplicitH) itemH = (float)itemStyle.Height.Value;
+
+                bool needsIntrinsicW = justify != "stretch" && !hasExplicitW;
+                bool needsIntrinsicH = align != "stretch" && !hasExplicitH;
+                if (needsIntrinsicW || needsIntrinsicH)
+                {
+                    var intrinsic = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
+                    if (needsIntrinsicW && intrinsic.MaxChildWidth > 0)
+                    {
+                        itemW = Math.Min(trackW, intrinsic.MaxChildWidth);
+                    }
+
+                    if (needsIntrinsicH && intrinsic.ContentHeight > 0)
+                    {
+                        itemH = Math.Min(trackH, intrinsic.ContentHeight);
+                    }
+                }
 
                 // Track starts already include content alignment offsets.
                 // Adding them again here double-shifts items for align/justify-content.
