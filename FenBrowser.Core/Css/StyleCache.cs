@@ -22,6 +22,7 @@ namespace FenBrowser.Core.Css
     {
         // Use ConditionalWeakTable to allow nodes to be GC'd without manual cleanup
         private readonly ConditionalWeakTable<Dom.V2.Node, CssComputed> _cache = new();
+        private readonly object _styledElementsLock = new();
 
         // Optional: Track elements with styles for iteration
         private readonly HashSet<WeakReference<Dom.V2.Element>> _styledElements = new();
@@ -56,7 +57,10 @@ namespace FenBrowser.Core.Css
             // Track styled elements
             if (node is Dom.V2.Element element)
             {
-                _styledElements.Add(new WeakReference<Dom.V2.Element>(element));
+                lock (_styledElementsLock)
+                {
+                    _styledElements.Add(new WeakReference<Dom.V2.Element>(element));
+                }
             }
         }
 
@@ -84,7 +88,10 @@ namespace FenBrowser.Core.Css
         /// </summary>
         public void Clear()
         {
-            _styledElements.Clear();
+            lock (_styledElementsLock)
+            {
+                _styledElements.Clear();
+            }
             // ConditionalWeakTable entries are cleared when keys are GC'd
             // For immediate clear, caller should create a new StyleCache
         }
@@ -92,7 +99,16 @@ namespace FenBrowser.Core.Css
         /// <summary>
         /// Gets the number of cached styles (approximate, may include GC'd entries).
         /// </summary>
-        public int Count => _styledElements.Count;
+        public int Count
+        {
+            get
+            {
+                lock (_styledElementsLock)
+                {
+                    return _styledElements.Count;
+                }
+            }
+        }
 
         /// <summary>
         /// Cleans up dead weak references.
@@ -100,7 +116,10 @@ namespace FenBrowser.Core.Css
         /// </summary>
         public void Cleanup()
         {
-            _styledElements.RemoveWhere(wr => !wr.TryGetTarget(out _));
+            lock (_styledElementsLock)
+            {
+                _styledElements.RemoveWhere(wr => !wr.TryGetTarget(out _));
+            }
         }
     }
 
@@ -110,10 +129,10 @@ namespace FenBrowser.Core.Css
     /// </summary>
     public static class NodeStyleExtensions
     {
-        // Thread-local default cache for convenience
-        // In production, prefer passing StyleCache explicitly
-        [ThreadStatic]
-        private static StyleCache _defaultCache;
+        // Shared default cache for convenience.
+        // CSS computation runs on worker threads while layout, paint, and JS bridges
+        // may read styles from different threads, so the default cache cannot be thread-local.
+        private static StyleCache _defaultCache = new StyleCache();
 
         private static StyleCache DefaultCache => _defaultCache ??= new StyleCache();
 

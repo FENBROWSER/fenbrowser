@@ -207,7 +207,7 @@ namespace FenBrowser.Core
 
             if (!normalized.Contains(':'))
             {
-                return true;
+                return false;
             }
 
             if (TryMatchDimension(normalized, surface.Viewport?.WindowWidth ?? 0d, "width"))
