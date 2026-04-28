@@ -991,6 +991,9 @@ namespace FenBrowser.FenEngine.DOM
             public void CheckCallStackLimit() => _inner.CheckCallStackLimit();
             public void CheckExecutionTimeLimit() => _inner.CheckExecutionTimeLimit();
             public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => _inner.GetLayoutEngine();
+            
+            public FenBrowser.FenEngine.Configuration.FenEngineOptions Options => _inner.Options;
+            public System.Uri DocumentUrl => _inner.DocumentUrl;
         }
     }
 }

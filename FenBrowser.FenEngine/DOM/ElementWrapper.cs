@@ -441,6 +441,19 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.Undefined;
                 
                 
+                // Popover API
+                case "popover":
+                    return FenValue.FromString(_element.GetAttribute("popover") ?? string.Empty);
+
+                case "showpopover":
+                    return FenValue.FromFunction(new FenFunction("showPopover", ShowPopoverMethod));
+
+                case "hidepopover":
+                    return FenValue.FromFunction(new FenFunction("hidePopover", HidePopoverMethod));
+
+                case "togglepopover":
+                    return FenValue.FromFunction(new FenFunction("togglePopover", TogglePopoverMethod));
+
                 // Shadow DOM
                 case "attachshadow":
                     return FenValue.FromFunction(new FenFunction("attachShadow", AttachShadow));
@@ -1566,7 +1579,7 @@ namespace FenBrowser.FenEngine.DOM
             // 2D Canvas Context
             if (type == "2d")
             {
-                return FenValue.FromObject(new FenBrowser.FenEngine.Scripting.CanvasRenderingContext2D(_element, null));
+                return FenValue.FromObject(new FenBrowser.FenEngine.Scripting.CanvasRenderingContext2D(_element, _context));
             }
             
             // WebGL Context
@@ -2947,7 +2960,7 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
             }
 
-            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetListedFormControls(_element), _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetListedFormControls(_element), _context, returnNullForMissingNamedProperties: true));
         }
 
         private FenValue GetElementLengthOrUndefined()
@@ -4061,6 +4074,151 @@ namespace FenBrowser.FenEngine.DOM
             return FenValue.Undefined;
         }
 
+        // ── Popover API (public C# surface for dynamic binding dispatch) ──
+
+        /// <summary>
+        /// Called by HTMLElementBinding via dynamic dispatch: native.ShowPopover()
+        /// </summary>
+        public void ShowPopover()
+        {
+            ShowPopoverMethod(Array.Empty<FenValue>(), FenValue.Undefined);
+        }
+
+        /// <summary>
+        /// Called by HTMLElementBinding via dynamic dispatch: native.HidePopover()
+        /// </summary>
+        public void HidePopover()
+        {
+            HidePopoverMethod(Array.Empty<FenValue>(), FenValue.Undefined);
+        }
+
+        /// <summary>
+        /// Called by HTMLElementBinding via dynamic dispatch: native.TogglePopover(force)
+        /// </summary>
+        public bool TogglePopover(bool force)
+        {
+            var result = TogglePopoverMethod(new[] { FenValue.FromBoolean(force) }, FenValue.Undefined);
+            return result.ToBoolean();
+        }
+
+        // ── Popover API ──
+
+        /// <summary>
+        /// HTMLElement.showPopover() — show an element with the popover attribute.
+        /// Per HTML spec: sets the :popover-open pseudo-class and moves the element
+        /// into the top layer, dispatching a "toggle" event.
+        /// </summary>
+        private FenValue ShowPopoverMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "showPopover"))
+                throw new FenSecurityError("DOM write permission required");
+
+            var popoverAttr = _element.GetAttribute("popover");
+            if (popoverAttr == null)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenDOMException("InvalidStateError: Element does not have the popover attribute");
+            }
+
+            if (_element.HasAttribute("data-popover-open"))
+            {
+                throw new FenBrowser.FenEngine.Errors.FenDOMException("InvalidStateError: Popover is already showing");
+            }
+
+            _element.SetAttribute("data-popover-open", "");
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "data-popover-open",
+                null,
+                ""
+            ));
+
+            // Dispatch "toggle" event (per spec: { oldState: "closed", newState: "open" })
+            var toggleEvent = new DomEvent("toggle", bubbles: false, cancelable: false, composed: false, context: _context);
+            toggleEvent.Set("oldState", FenValue.FromString("closed"));
+            toggleEvent.Set("newState", FenValue.FromString("open"));
+            EventTarget.DispatchEvent(_element, toggleEvent, _context);
+
+            return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// HTMLElement.hidePopover() — hide an element with the popover attribute.
+        /// </summary>
+        private FenValue HidePopoverMethod(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "hidePopover"))
+                throw new FenSecurityError("DOM write permission required");
+
+            var popoverAttr = _element.GetAttribute("popover");
+            if (popoverAttr == null)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenDOMException("InvalidStateError: Element does not have the popover attribute");
+            }
+
+            if (!_element.HasAttribute("data-popover-open"))
+            {
+                throw new FenBrowser.FenEngine.Errors.FenDOMException("InvalidStateError: Popover is not showing");
+            }
+
+            _element.RemoveAttribute("data-popover-open");
+            DomMutationQueue.Instance.EnqueueMutation(new DomMutation(
+                MutationType.AttributeChange,
+                InvalidationKind.Style | InvalidationKind.Layout,
+                _element,
+                "data-popover-open",
+                "",
+                null
+            ));
+
+            // Dispatch "toggle" event (per spec: { oldState: "open", newState: "closed" })
+            var toggleEvent = new DomEvent("toggle", bubbles: false, cancelable: false, composed: false, context: _context);
+            toggleEvent.Set("oldState", FenValue.FromString("open"));
+            toggleEvent.Set("newState", FenValue.FromString("closed"));
+            EventTarget.DispatchEvent(_element, toggleEvent, _context);
+
+            return FenValue.Undefined;
+        }
+
+        /// <summary>
+        /// HTMLElement.togglePopover(force?) — toggle a popover element's visibility.
+        /// Returns true if the popover is now showing, false otherwise.
+        /// </summary>
+        private FenValue TogglePopoverMethod(FenValue[] args, FenValue thisVal)
+        {
+            var popoverAttr = _element.GetAttribute("popover");
+            if (popoverAttr == null)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenDOMException("InvalidStateError: Element does not have the popover attribute");
+            }
+
+            bool isCurrentlyOpen = _element.HasAttribute("data-popover-open");
+            bool shouldShow;
+
+            if (args.Length > 0 && !args[0].IsUndefined)
+            {
+                shouldShow = args[0].ToBoolean();
+            }
+            else
+            {
+                shouldShow = !isCurrentlyOpen;
+            }
+
+            if (shouldShow && !isCurrentlyOpen)
+            {
+                ShowPopoverMethod(Array.Empty<FenValue>(), thisVal);
+                return FenValue.FromBoolean(true);
+            }
+            else if (!shouldShow && isCurrentlyOpen)
+            {
+                HidePopoverMethod(Array.Empty<FenValue>(), thisVal);
+                return FenValue.FromBoolean(false);
+            }
+
+            return FenValue.FromBoolean(isCurrentlyOpen);
+        }
+
         private FenValue AttachShadow(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0 || !args[0].IsObject) return FenValue.Null; // Needs {mode: 'open'|'closed'}
@@ -4296,6 +4454,16 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             var ownerDocument = _element.OwnerDocument;
+            if (ownerDocument != null && ReferenceEquals(ownerDocument.ActiveElement, _element))
+            {
+                if (!ElementStateManager.Instance.IsFocused(_element))
+                {
+                    ElementStateManager.Instance.SetFocusedElement(_element);
+                }
+
+                return FenValue.Undefined;
+            }
+
             if (ownerDocument != null)
             {
                 var previous = ownerDocument.ActiveElement;

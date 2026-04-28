@@ -25,6 +25,12 @@ namespace FenBrowser.FenEngine.DOM
         {
             _source = source ?? Array.Empty<Node>();
             _context = context;
+
+            var prototype = DomWrapperFactory.GetConstructorPrototype(context, "NodeList");
+            if (prototype != null)
+            {
+                SetPrototype(prototype);
+            }
         }
 
         public object NativeObject { get; set; }

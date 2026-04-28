@@ -13,18 +13,31 @@ namespace FenBrowser.FenEngine.DOM
     {
         private readonly Func<IEnumerable<Element>> _sourceProvider;
         private readonly IExecutionContext _context;
+        private readonly bool _returnNullForMissingNamedProperties;
         private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
         private readonly List<string> _expandoOrder = new();
 
         public HTMLCollectionWrapper(IEnumerable<Element> source, IExecutionContext context)
-            : this(() => source ?? Array.Empty<Element>(), context)
+            : this(() => source ?? Array.Empty<Element>(), context, false)
         {
         }
 
         public HTMLCollectionWrapper(Func<IEnumerable<Element>> sourceProvider, IExecutionContext context)
+            : this(sourceProvider, context, false)
+        {
+        }
+
+        public HTMLCollectionWrapper(Func<IEnumerable<Element>> sourceProvider, IExecutionContext context, bool returnNullForMissingNamedProperties)
         {
             _sourceProvider = sourceProvider ?? (() => Array.Empty<Element>());
             _context = context;
+            _returnNullForMissingNamedProperties = returnNullForMissingNamedProperties;
+
+            var prototype = DomWrapperFactory.GetConstructorPrototype(context, "HTMLCollection");
+            if (prototype != null)
+            {
+                SetPrototype(prototype);
+            }
         }
 
         public object NativeObject { get; set; }
@@ -121,6 +134,11 @@ namespace FenBrowser.FenEngine.DOM
                         }
                         return FenValue.FromNumber(-1);
                     }));
+            }
+
+            if (_returnNullForMissingNamedProperties && !string.IsNullOrEmpty(key))
+            {
+                return FenValue.Null;
             }
 
             return FenValue.Undefined;

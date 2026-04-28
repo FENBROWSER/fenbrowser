@@ -85,6 +85,11 @@ namespace FenBrowser.FenEngine.DOM
                 return GetConstructorPrototype(context, "DocumentType") ?? GetConstructorPrototype(context, "Node");
             }
 
+            if (node is DocumentFragment)
+            {
+                return GetConstructorPrototype(context, "DocumentFragment") ?? GetConstructorPrototype(context, "Node");
+            }
+
             if (node is Comment)
             {
                 return GetConstructorPrototype(context, "Comment") ?? GetConstructorPrototype(context, "Node");
@@ -108,7 +113,7 @@ namespace FenBrowser.FenEngine.DOM
             return GetConstructorPrototype(context, "Node");
         }
 
-        private static IObject GetConstructorPrototype(IExecutionContext context, string constructorName)
+        internal static IObject GetConstructorPrototype(IExecutionContext context, string constructorName)
         {
             if (context?.Environment == null || string.IsNullOrWhiteSpace(constructorName))
             {
