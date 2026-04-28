@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.FenEngine.Configuration;
 
 namespace FenBrowser.FenEngine.Scripting
 {
@@ -25,6 +26,12 @@ namespace FenBrowser.FenEngine.Scripting
         public TimeSpan MaxExecutionTime { get; init; } = TimeSpan.FromSeconds(15);
         public long MaxInstructionCount { get; init; } = 100_000_000;
 
+        /// <summary>
+        /// Engine-wide options for rendering, CSS, security, and resource loading.
+        /// If null, FenEngineOptions.Default is used.
+        /// </summary>
+        public FenEngineOptions EngineOptions { get; init; } = null;
+
         public static JavaScriptRuntimeProfile CreateLockedDown()
         {
             return new JavaScriptRuntimeProfile
@@ -40,8 +47,37 @@ namespace FenBrowser.FenEngine.Scripting
                 DeferOversizedExternalPageScripts = true,
                 OversizedExternalPageScriptBytes = 64 * 1024,
                 MaxExecutionTime = TimeSpan.FromSeconds(1),
-                MaxInstructionCount = 10_000_000
+                MaxInstructionCount = 10_000_000,
+                EngineOptions = FenEngineOptions.CreateLockedDown()
             };
         }
+
+        /// <summary>
+        /// Creates a development profile with lenient settings for debugging.
+        /// </summary>
+        public static JavaScriptRuntimeProfile CreateDevelopment()
+        {
+            return new JavaScriptRuntimeProfile
+            {
+                Name = "development",
+                EnableExecutionLogging = true,
+                EnableStructuredExecutionLogs = true,
+                WriteExecutionArtifacts = true,
+                FreezeIntrinsicPrototypes = false,
+                UseSandboxedResourceLimits = false,
+                AllowDynamicCodeEvaluation = true,
+                LargeScriptWarningBytes = 256 * 1024,
+                DeferOversizedExternalPageScripts = false,
+                OversizedExternalPageScriptBytes = 1024 * 1024,
+                MaxExecutionTime = TimeSpan.FromSeconds(60),
+                MaxInstructionCount = 500_000_000,
+                EngineOptions = FenEngineOptions.Development
+            };
+        }
+
+        /// <summary>
+        /// Gets the effective engine options, falling back to default if not set.
+        /// </summary>
+        public FenEngineOptions GetEffectiveOptions() => EngineOptions ?? FenEngineOptions.Default;
     }
 }

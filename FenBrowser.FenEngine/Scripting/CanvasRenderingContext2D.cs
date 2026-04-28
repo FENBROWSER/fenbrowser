@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.Scripting
     public class CanvasRenderingContext2D : IObject
     {
         private readonly Element _element;
-        private readonly JavaScriptEngine _engine;
+        private readonly Action _requestRender;
         // private object _imageControl; // Removed legacy control ref
         private SKBitmap _bitmap;
         private IObject _prototype;
@@ -28,9 +28,19 @@ namespace FenBrowser.FenEngine.Scripting
         private SKPath _currentPath;
 
         public CanvasRenderingContext2D(Element element, JavaScriptEngine engine)
+            : this(element, engine?.RequestRender)
         {
-            _element = element;
-            _engine = engine;
+        }
+
+        public CanvasRenderingContext2D(Element element, IExecutionContext context)
+            : this(element, context?.RequestRender)
+        {
+        }
+
+        private CanvasRenderingContext2D(Element element, Action requestRender)
+        {
+            _element = element ?? throw new ArgumentNullException(nameof(element));
+            _requestRender = requestRender;
             _currentPath = new SKPath();
             _stateStack = new Stack<CanvasState>();
             _state = new CanvasState();
@@ -450,7 +460,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
             
             // Notify engine of repaint if needed
-            _engine.RequestRender?.Invoke();
+            _requestRender?.Invoke();
         }
         
         #endregion

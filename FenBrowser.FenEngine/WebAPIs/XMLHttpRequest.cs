@@ -9,12 +9,17 @@ using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
+using FenBrowser.FenEngine.Configuration;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
+    /// <summary>
+    /// XMLHttpRequest implementation with support for relative URL resolution.
+    /// Resolves relative URLs against the document base URI when allowed by FenEngineOptions.
+    /// </summary>
     public class XMLHttpRequest : FenObject
     {
         private const int UNSENT = 0;
@@ -236,14 +241,15 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
 
             var rawUrl = args[1].ToString();
-            if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var parsedUri) ||
-                (parsedUri.Scheme != Uri.UriSchemeHttp && parsedUri.Scheme != Uri.UriSchemeHttps))
+            
+            // Try to resolve the URL - supports absolute and relative URLs
+            if (!TryResolveUrl(rawUrl, out var resolvedUri, out var errorMessage))
             {
-                return FenValue.FromError($"SecurityError: URL scheme not allowed for '{rawUrl}'.");
+                return FenValue.FromError($"SecurityError: {errorMessage}");
             }
 
             _method = rawMethod;
-            _url = parsedUri.ToString();
+            _url = resolvedUri.ToString();
             _async = args.Length <= 2 || args[2].ToBoolean();
             ResetForOpen();
             SetReadyState(OPENED, scheduleCallbacks: true);
@@ -659,6 +665,155 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
 
             return FenValue.Null;
+        }
+
+        /// <summary>
+        /// Attempts to resolve a URL string to an absolute URI.
+        /// Supports absolute URLs, relative URLs, and protocol-relative URLs.
+        /// </summary>
+        /// <param name="rawUrl">The URL string to resolve</param>
+        /// <param name="resolvedUri">The resolved absolute URI if successful</param>
+        /// <param name="errorMessage">Error message if resolution fails</param>
+        /// <returns>True if the URL was successfully resolved and validated</returns>
+        private bool TryResolveUrl(string rawUrl, out Uri resolvedUri, out string errorMessage)
+        {
+            resolvedUri = null;
+            errorMessage = null;
+
+            // Get options from context if available
+            var options = (_context as FenBrowser.FenEngine.Core.ExecutionContext)?.Options 
+                ?? FenEngineOptions.Default;
+
+            // First, try to parse as an absolute URI
+            if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var absoluteUri))
+            {
+                // Validate scheme
+                if (!IsAllowedScheme(absoluteUri.Scheme, options))
+                {
+                    errorMessage = $"URL scheme '{absoluteUri.Scheme}' is not allowed for '{rawUrl}'. Allowed schemes: http, https";
+                    if (options.AdditionalAllowedSchemes?.Length > 0)
+                        errorMessage += ", " + string.Join(", ", options.AdditionalAllowedSchemes);
+                    return false;
+                }
+
+                // Check for private network access if enabled
+                if (options.BlockPrivateNetworkAccess && IsPrivateNetworkHost(absoluteUri.Host))
+                {
+                    errorMessage = $"Requests to private network addresses are blocked: '{rawUrl}'";
+                    return false;
+                }
+
+                resolvedUri = absoluteUri;
+                return true;
+            }
+
+            // If not absolute, check if relative URLs are allowed
+            if (!options.AllowRelativeUrls)
+            {
+                errorMessage = $"Relative URLs are not allowed: '{rawUrl}'";
+                return false;
+            }
+
+            // Try to resolve relative URL against document base URI
+            if (options.AutoResolveRelativeUrls && _context?.DocumentUrl != null)
+            {
+                // Handle protocol-relative URLs (//example.com/path)
+                if (rawUrl.StartsWith("//"))
+                {
+                    var scheme = _context.DocumentUrl.Scheme;
+                    var protocolRelativeUrl = scheme + ":" + rawUrl;
+                    if (Uri.TryCreate(protocolRelativeUrl, UriKind.Absolute, out var protocolRelativeUri))
+                    {
+                        resolvedUri = protocolRelativeUri;
+                        return true;
+                    }
+                }
+                // Handle root-relative URLs (/path/to/resource)
+                else if (rawUrl.StartsWith("/"))
+                {
+                    var builder = new UriBuilder(_context.DocumentUrl)
+                    {
+                        Path = rawUrl,
+                        Query = null,
+                        Fragment = null
+                    };
+                    resolvedUri = builder.Uri;
+                    return true;
+                }
+                // Handle other relative URLs (path/to/resource, ./resource, ../resource)
+                else
+                {
+                    if (Uri.TryCreate(_context.DocumentUrl, rawUrl, out var relativeUri))
+                    {
+                        resolvedUri = relativeUri;
+                        return true;
+                    }
+                }
+            }
+
+            // Fallback: Try any UriKind
+            if (Uri.TryCreate(rawUrl, UriKind.RelativeOrAbsolute, out resolvedUri) && resolvedUri.IsAbsoluteUri)
+            {
+                return true;
+            }
+
+            errorMessage = $"Unable to resolve URL: '{rawUrl}'";
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if a URL scheme is allowed.
+        /// </summary>
+        private bool IsAllowedScheme(string scheme, FenEngineOptions options)
+        {
+            var lowerScheme = scheme?.ToLowerInvariant();
+            if (lowerScheme == "http" || lowerScheme == "https")
+                return true;
+            
+            if (options.AdditionalAllowedSchemes != null)
+            {
+                foreach (var allowedScheme in options.AdditionalAllowedSchemes)
+                {
+                    if (string.Equals(allowedScheme, lowerScheme, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if a host is a private/reserved network address.
+        /// </summary>
+        private bool IsPrivateNetworkHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+                return false;
+
+            var lowerHost = host.ToLowerInvariant();
+            
+            // Check for localhost variants
+            if (lowerHost == "localhost" || lowerHost == "127.0.0.1" || lowerHost.StartsWith("127."))
+                return true;
+
+            // Check for private IPv4 ranges
+            if (System.Net.IPAddress.TryParse(host, out var ip))
+            {
+                var bytes = ip.GetAddressBytes();
+                if (bytes.Length == 4)
+                {
+                    // 10.0.0.0/8
+                    if (bytes[0] == 10) return true;
+                    // 172.16.0.0/12
+                    if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+                    // 192.168.0.0/16
+                    if (bytes[0] == 192 && bytes[1] == 168) return true;
+                    // 169.254.0.0/16 (link-local)
+                    if (bytes[0] == 169 && bytes[1] == 254) return true;
+                }
+            }
+
+            return false;
         }
     }
 }

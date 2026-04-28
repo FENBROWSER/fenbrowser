@@ -269,8 +269,11 @@ namespace FenBrowser.FenEngine.Scripting
             public void PopCallFrame() { }
             public void CheckCallStackLimit() { }
             public void CheckExecutionTimeLimit() { }
-            
+
             public FenBrowser.FenEngine.Rendering.Core.ILayoutEngine GetLayoutEngine() => null;
+            
+            public FenBrowser.FenEngine.Configuration.FenEngineOptions Options { get; set; } = FenBrowser.FenEngine.Configuration.FenEngineOptions.Default;
+            public System.Uri DocumentUrl { get; set; } = new System.Uri("about:blank");
         }
     }
 }

@@ -151,8 +151,19 @@ namespace FenBrowser.FenEngine.Scripting
             context.ScheduleCallback = (action, delay) =>
             {
                 EngineLogCompat.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
+                var safeDelay = Math.Max(0, delay);
+                FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.ScheduleDelayedTask(
+                    () =>
+                    {
+                        EngineLogCompat.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
+                        action?.Invoke();
+                    },
+                    safeDelay,
+                    FenBrowser.FenEngine.Core.EventLoop.TaskSource.Timer,
+                    "JavaScriptEngine.ScheduleCallback");
+
                 _ = ObserveBackgroundTaskFailureAsync(
-                    ScheduleCallbackAsync(action, delay),
+                    WakeScheduledCallbackAsync(safeDelay),
                     message => EngineLogCompat.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {message}", LogCategory.JavaScript));
             };
 
@@ -298,20 +309,47 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        private static async Task ScheduleCallbackAsync(Action action, int delay)
+        private static async Task WakeScheduledCallbackAsync(int delay)
         {
-            await Task.Delay(delay).ConfigureAwait(false);
-            var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
-            eventLoop.EnqueueTask(() =>
+            if (delay > 0)
             {
-                EngineLogCompat.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
-                action?.Invoke();
-            });
+                await Task.Delay(delay).ConfigureAwait(false);
+            }
+            else
+            {
+                await Task.Yield();
+            }
 
-            // Timer callbacks must become observable even when the host is not
-            // actively pumping the engine loop (for example in focused runtime
-            // tests or simple page-script execution paths).
-            eventLoop.ProcessNextTask();
+            var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+
+            void DrainReadyWork()
+            {
+                while (eventLoop.HasPendingTasks || eventLoop.HasPendingMicrotasks)
+                {
+                    if (eventLoop.HasPendingTasks)
+                    {
+                        eventLoop.ProcessNextTask();
+                        continue;
+                    }
+
+                    eventLoop.PerformMicrotaskCheckpoint();
+                }
+            }
+
+            // Hostless focused tests still need a wake-up after the delay expires.
+            // The callback itself stays owned by the coordinator's timer queue.
+            var wakeResult = eventLoop.ProcessNextTaskDetailed();
+            DrainReadyWork();
+
+            // Some hostless paths still have older queued work ahead of timer delivery.
+            // Give the wake one bounded second chance only when the first turn did not
+            // actually process timer work and a delayed task is still pending.
+            if (eventLoop.HasPendingDelayedTasks && (!wakeResult.Processed || wakeResult.Source != FenBrowser.FenEngine.Core.EventLoop.TaskSource.Timer))
+            {
+                await Task.Delay(1).ConfigureAwait(false);
+                eventLoop.ProcessNextTask();
+                DrainReadyWork();
+            }
         }
         // IDomBridge Implementation
         public FenValue GetElementById(string id)
@@ -528,6 +566,7 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: false, atTargetPhase: true);
                 }
+                InvokeEventPropertyHandler(target, eventName, domEvent);
                 InvokeInlineEventAttributeHandler(target, eventName, domEvent);
                 return;
             }
@@ -582,7 +621,50 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
+            InvokeEventPropertyHandler(target, eventName, eventArgs);
             InvokeInlineEventAttributeHandler(target, eventName, eventArgs);
+        }
+
+        private void InvokeEventPropertyHandler(object target, string eventName, FenObject eventArgs = null)
+        {
+            if (_fenRuntime == null || string.IsNullOrWhiteSpace(eventName))
+            {
+                return;
+            }
+
+            IObject thisBinding = target as IObject;
+            if (thisBinding == null && target is Node domNode)
+            {
+                var wrappedTarget = DomWrapperFactory.Wrap(domNode, _fenRuntime.Context);
+                if (wrappedTarget.IsObject)
+                {
+                    thisBinding = wrappedTarget.AsObject();
+                }
+            }
+
+            if (thisBinding == null)
+            {
+                return;
+            }
+
+            var propertyName = "on" + eventName.ToLowerInvariant();
+            var handler = thisBinding.Get(propertyName, _fenRuntime.Context);
+            if (!handler.IsFunction)
+            {
+                return;
+            }
+
+            var domEvent = eventArgs as DomEvent ?? new DomEvent(eventName, false, false, false, _fenRuntime.Context);
+            SetEventCurrentTargetForObject(domEvent, thisBinding, target, _fenRuntime.Context);
+
+            try
+            {
+                handler.AsFunction().Invoke(new[] { FenValue.FromObject(domEvent) }, _fenRuntime.Context, FenValue.FromObject(thisBinding));
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[DispatchEvent] Error in property handler for {eventName}: {ex}", LogCategory.JavaScript);
+            }
         }
 
         private void InvokeInlineEventAttributeHandler(object target, string eventName, FenObject eventArgs = null)
