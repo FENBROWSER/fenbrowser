@@ -1254,6 +1254,145 @@ namespace FenBrowser.FenEngine.Rendering
             return outSb.ToString().Trim();
         }
 
+        private static int NormalizeNoJsFallbackClasses(Element root)
+        {
+            if (root == null)
+            {
+                return 0;
+            }
+
+            static bool ContainsClassToken(string classValue, string token)
+            {
+                if (string.IsNullOrWhiteSpace(classValue) || string.IsNullOrWhiteSpace(token))
+                {
+                    return false;
+                }
+
+                var parts = classValue.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    if (string.Equals(parts[i], token, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            static bool RemoveClassToken(Element element, string token)
+            {
+                var classValue = element?.GetAttribute("class");
+                if (string.IsNullOrWhiteSpace(classValue))
+                {
+                    return false;
+                }
+
+                var parts = classValue.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0)
+                {
+                    return false;
+                }
+
+                var kept = new List<string>(parts.Length);
+                bool removed = false;
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    var part = parts[i];
+                    if (string.Equals(part, token, StringComparison.Ordinal))
+                    {
+                        removed = true;
+                        continue;
+                    }
+
+                    kept.Add(part);
+                }
+
+                if (!removed)
+                {
+                    return false;
+                }
+
+                if (kept.Count == 0)
+                {
+                    element.RemoveAttribute("class");
+                }
+                else
+                {
+                    element.SetAttribute("class", string.Join(" ", kept));
+                }
+
+                return true;
+            }
+
+            static bool AddClassToken(Element element, string token)
+            {
+                if (element == null || string.IsNullOrWhiteSpace(token))
+                {
+                    return false;
+                }
+
+                var classValue = element.GetAttribute("class");
+                if (ContainsClassToken(classValue, token))
+                {
+                    return false;
+                }
+
+                if (string.IsNullOrWhiteSpace(classValue))
+                {
+                    element.SetAttribute("class", token);
+                }
+                else
+                {
+                    element.SetAttribute("class", classValue.Trim() + " " + token);
+                }
+
+                return true;
+            }
+
+            int changes = 0;
+            var stack = new Stack<Element>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                var element = stack.Pop();
+                if (element == null)
+                {
+                    continue;
+                }
+
+                if (RemoveClassToken(element, "no-js"))
+                {
+                    changes++;
+                }
+
+                if (string.Equals(element.TagName, "html", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (AddClassToken(element, "js"))
+                    {
+                        changes++;
+                    }
+                }
+
+                var children = element.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                foreach (var child in children)
+                {
+                    if (child is Element childElement)
+                    {
+                        stack.Push(childElement);
+                    }
+                }
+            }
+
+            return changes;
+        }
+
         private async Task CaptureActiveContextAsync(
             Element dom,
             Uri baseUri,
@@ -1343,6 +1482,15 @@ namespace FenBrowser.FenEngine.Rendering
                 CssParser.MediaAnyPointer = CssParser.MediaPointer;
                 CssParser.MediaScripting = EnableJavaScript ? "enabled" : "none";
                 CssParser.MediaDisplayMode = "browser";
+                try
+                {
+                    var mediaDiag = $"ConfigureMedia: input={viewportWidth?.ToString() ?? "null"}x{viewportHeight?.ToString() ?? "null"} resolved={CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"} dppx={CssParser.MediaDppx?.ToString() ?? "null"}";
+                    File.AppendAllText(DiagnosticPaths.GetRootArtifactPath("debug_render_start.txt"), mediaDiag + Environment.NewLine);
+                }
+                catch
+                {
+                    // Best-effort diagnostics only.
+                }
             }
             catch (Exception ex)
             {
@@ -1606,20 +1754,14 @@ namespace FenBrowser.FenEngine.Rendering
             EventLoopCoordinator.Instance.NotifyLayoutDirty();
         }
 
-        private async Task<DomParseResult> RunDomParseAsync(string html)
+        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri)
         {
             var parseInput = html ?? string.Empty;
-            // CRITICAL FIX: Use production HtmlTreeBuilder from Core.Parsing
-            // The FenEngine version doesn't properly implement RAWTEXT state for style/script,
-            // causing CSS content to leak as visible text nodes
-            var builder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(parseInput);
-            builder.ParseCheckpointTokenInterval = 512;
-            builder.InterleavedTokenBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
+            var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
             var parseCheckpointState = new ParseCheckpointState();
             var streamingPreparseMs = 0L;
             var streamingPreparseCheckpointCount = 0;
             var streamingPreparseRepaintCount = 0;
-            AttachParseDocumentCheckpointCallback(builder, parseCheckpointState);
             try
             {
                 if (ShouldRunStreamingParsePrepass(EnableStreamingParsePrepass, parseInput.Length))
@@ -1632,57 +1774,105 @@ namespace FenBrowser.FenEngine.Rendering
 
                 EngineLogCompat.Debug("[RenderAsync] Starting parse (Production Parser)...", LogCategory.Rendering);
                 var interleavedFallbackUsed = false;
-                var doc = await Task.Run<Node>(() =>
+                var parseOptions = new HtmlParserOptions
                 {
-                    try
+                    BaseUri = baseUri,
+                    ParseCheckpointTokenInterval = 512,
+                    InterleavedTokenBatchSize = interleavedBatchSize
+                };
+                AttachParseDocumentCheckpointCallback(parseOptions, parseCheckpointState);
+
+                HtmlParseDocumentResult parseResult;
+                try
+                {
+                    parseResult = await Task.Run(() =>
                     {
-                        return builder.BuildWithPipelineStages(PipelineContext.Current);
-                    }
-                    catch (Exception pex)
+                        parseOptions.PipelineContext = PipelineContext.Current;
+                        return HtmlParser.ParseDocumentDetailed(parseInput, parseOptions);
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception pex)
+                {
+                    EngineLogCompat.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
+                    if (interleavedBatchSize > 0)
                     {
-                        EngineLogCompat.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
-                        if (builder.InterleavedTokenBatchSize > 0)
+                        try
                         {
-                            try
-                            {
-                                EngineLogCompat.Warn("[RenderAsync] Retrying parse with interleaved mode disabled", LogCategory.Rendering);
-                                parseCheckpointState.ParsingDocumentCheckpointCount = 0;
-                                parseCheckpointState.ParsingCheckpointOrdinal = 0;
-                                parseCheckpointState.IncrementalRepaintCount = 0;
+                            EngineLogCompat.Warn("[RenderAsync] Retrying parse with interleaved mode disabled", LogCategory.Rendering);
+                            parseCheckpointState.ParsingDocumentCheckpointCount = 0;
+                            parseCheckpointState.ParsingCheckpointOrdinal = 0;
+                            parseCheckpointState.IncrementalRepaintCount = 0;
 
-                                var fallbackBuilder = new FenBrowser.Core.Parsing.HtmlTreeBuilder(parseInput);
-                                fallbackBuilder.ParseCheckpointTokenInterval = builder.ParseCheckpointTokenInterval;
-                                fallbackBuilder.InterleavedTokenBatchSize = 0;
-                                AttachParseDocumentCheckpointCallback(fallbackBuilder, parseCheckpointState);
-                                var fallbackDoc = fallbackBuilder.BuildWithPipelineStages(PipelineContext.Current);
-                                builder = fallbackBuilder;
-                                interleavedFallbackUsed = true;
-                                return fallbackDoc;
-                            }
-                            catch (Exception fallbackEx)
+                            var fallbackOptions = new HtmlParserOptions
                             {
-                                EngineLogCompat.Error($"[RenderAsync] Fallback parse exception: {fallbackEx.Message}", LogCategory.Rendering);
-                            }
+                                BaseUri = baseUri,
+                                ParseCheckpointTokenInterval = 512,
+                                InterleavedTokenBatchSize = 0
+                            };
+                            AttachParseDocumentCheckpointCallback(fallbackOptions, parseCheckpointState);
+                            parseResult = await Task.Run(() =>
+                            {
+                                fallbackOptions.PipelineContext = PipelineContext.Current;
+                                return HtmlParser.ParseDocumentDetailed(parseInput, fallbackOptions);
+                            }).ConfigureAwait(false);
+                            interleavedFallbackUsed = true;
                         }
-
-                        return new FenBrowser.Core.Dom.V2.Document();
+                        catch (Exception fallbackEx)
+                        {
+                            EngineLogCompat.Error($"[RenderAsync] Fallback parse exception: {fallbackEx.Message}", LogCategory.Rendering);
+                            parseResult = new HtmlParseDocumentResult
+                            {
+                                Document = new Document(),
+                                Outcome = new HtmlParsingOutcome
+                                {
+                                    OutcomeClass = HtmlParsingOutcomeClass.Failed,
+                                    ReasonCode = HtmlParsingReasonCode.Exception,
+                                    Detail = fallbackEx.Message
+                                },
+                                Metrics = new HtmlParseBuildMetrics()
+                            };
+                        }
                     }
-                });
-                
+                    else
+                    {
+                        parseResult = new HtmlParseDocumentResult
+                        {
+                            Document = new Document(),
+                            Outcome = new HtmlParsingOutcome
+                            {
+                                OutcomeClass = HtmlParsingOutcomeClass.Failed,
+                                ReasonCode = HtmlParsingReasonCode.Exception,
+                                Detail = pex.Message
+                            },
+                            Metrics = new HtmlParseBuildMetrics()
+                        };
+                    }
+                }
+
+                var parsedDocument = parseResult?.Document ?? new Document();
                 EngineLogCompat.Debug("[RenderAsync] Parse complete", LogCategory.Rendering);
+
+                if (baseUri != null)
+                {
+                    string absoluteBase = baseUri.AbsoluteUri;
+                    parsedDocument.URL = absoluteBase;
+                    parsedDocument.BaseURI = absoluteBase;
+                }
+
+                Node parsedRoot = (Node)parsedDocument.DocumentElement ?? parsedDocument;
                 
                 // DEBUG: Dump DOM
                 try {
                      var sb = new StringBuilder();
-                     DumpTree((doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc, sb, 0);
+                     DumpTree(parsedRoot, sb, 0);
                      System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
                 } catch (Exception ex) { EngineLogCompat.Warn($"[RenderAsync] Failed writing dom_dump.txt: {ex.Message}", LogCategory.Rendering); }
 
-                var metrics = builder.LastBuildMetrics ?? new FenBrowser.Core.Parsing.HtmlParseBuildMetrics();
+                var metrics = parseResult?.Metrics ?? new HtmlParseBuildMetrics();
                 return new DomParseResult
                 {
                     // Return DocumentElement (the HTML element), not the Document wrapper
-                    Dom = (doc as FenBrowser.Core.Dom.V2.Document)?.DocumentElement ?? doc,
+                    Dom = parsedRoot,
                     TokenizingMs = Math.Max(0, metrics.TokenizingMs),
                     ParsingMs = Math.Max(0, metrics.ParsingMs),
                     TokenCount = Math.Max(0, metrics.TokenCount),
@@ -2342,7 +2532,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // 1. Helper: Parse DOM
-                var parseResult = await RunDomParseAsync(html);
+                var parseResult = await RunDomParseAsync(html, baseUri);
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;
                 SetActiveDom(dom, markSnapshotUnstable: true);
@@ -2361,6 +2551,19 @@ namespace FenBrowser.FenEngine.Rendering
                 interleavedTokenBatchSize = Math.Max(0, parseResult?.InterleavedTokenBatchSize ?? 0);
                 interleavedBatchCount = Math.Max(0, parseResult?.InterleavedBatchCount ?? 0);
                 interleavedFallbackUsed = parseResult?.InterleavedFallbackUsed ?? false;
+
+                bool shouldNormalizeNoJsFallback = !preferFallbackDom;
+                if (shouldNormalizeNoJsFallback)
+                {
+                    var normalizeRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
+                    var normalizedNoJsClassCount = NormalizeNoJsFallbackClasses(normalizeRoot);
+                    if (normalizedNoJsClassCount > 0)
+                    {
+                        EngineLogCompat.Debug(
+                            $"[RenderAsync] Normalized no-js fallback classes on {normalizedNoJsClassCount} node(s)",
+                            LogCategory.Rendering);
+                    }
+                }
                 
         // PROGRESSIVE RENDERING: Fire first paint immediately with DOM.
         // This ensures the page appears as soon as HTML is parsed.
@@ -2417,6 +2620,18 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                if (shouldNormalizeNoJsFallback)
+                {
+                    var normalizeRootAfterCss = (dom as Element) ?? (dom as Document)?.DocumentElement;
+                    var normalizedAfterCss = NormalizeNoJsFallbackClasses(normalizeRootAfterCss);
+                    if (normalizedAfterCss > 0)
+                    {
+                        EngineLogCompat.Debug(
+                            $"[RenderAsync] Recomputing CSS after late no-js normalization on {normalizedAfterCss} node(s)",
+                            LogCategory.Rendering);
+                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                    }
+                }
                 elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 cssAndStyleMs = Math.Max(0, elapsed - lastStageMarkMs);
                 lastStageMarkMs = elapsed;
@@ -2581,6 +2796,11 @@ namespace FenBrowser.FenEngine.Rendering
                     try
                     {
                         await RunScriptsAsync(_activeJs, dom as Element, baseUri);
+                        if (shouldNormalizeNoJsFallback)
+                        {
+                            var normalizeRootAfterScripts = (dom as Element) ?? (dom as Document)?.DocumentElement;
+                            NormalizeNoJsFallbackClasses(normalizeRootAfterScripts);
+                        }
                         var postScriptGoogleSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: false);
                         if (postScriptGoogleSanitized > 0)
                         {
@@ -2840,15 +3060,15 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private void AttachParseDocumentCheckpointCallback(
-            FenBrowser.Core.Parsing.HtmlTreeBuilder builder,
+            HtmlParserOptions options,
             ParseCheckpointState parseCheckpointState)
         {
-            if (builder == null || parseCheckpointState == null)
+            if (options == null || parseCheckpointState == null)
             {
                 return;
             }
 
-            builder.ParseDocumentCheckpointCallback = (document, checkpoint) =>
+            options.ParseDocumentCheckpointCallback = (document, checkpoint) =>
             {
                 if (checkpoint != null && checkpoint.Phase == HtmlParseBuildPhase.Parsing)
                 {
