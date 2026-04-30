@@ -25,7 +25,7 @@ namespace FenBrowser.Tests.WebAPIs
         }
 
         [Fact]
-        public void JavaScriptEngine_DoesNotExpose_WebAudioOrAudio_Simulation_Constructors()
+        public void JavaScriptEngine_DoesNotExpose_WebAudioSimulation_Constructors_ButKeepsHtmlAudio()
         {
             var engine = new JavaScriptEngine(CreateHost());
             engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
@@ -33,25 +33,25 @@ namespace FenBrowser.Tests.WebAPIs
             var runtime = GetRuntime(engine);
             var window = Assert.IsAssignableFrom<FenObject>(runtime.GetGlobal("window").AsObject());
 
-            Assert.True(runtime.GetGlobal("Audio").IsUndefined);
+            Assert.False(runtime.GetGlobal("Audio").IsUndefined);
             Assert.True(runtime.GetGlobal("AudioContext").IsUndefined);
             Assert.True(runtime.GetGlobal("webkitAudioContext").IsUndefined);
 
-            Assert.True(window.Get("Audio").IsUndefined);
+            Assert.False(window.Get("Audio").IsUndefined);
             Assert.True(window.Get("AudioContext").IsUndefined);
             Assert.True(window.Get("webkitAudioContext").IsUndefined);
 
             engine.Evaluate("""
-                var __audioSurfaceAbsent =
-                    (typeof Audio === 'undefined') &&
+                var __audioSurfaceShapeValid =
+                    (typeof Audio === 'function') &&
                     (typeof AudioContext === 'undefined') &&
                     (typeof webkitAudioContext === 'undefined') &&
-                    (typeof window.Audio === 'undefined') &&
+                    (typeof window.Audio === 'function') &&
                     (typeof window.AudioContext === 'undefined') &&
                     (typeof window.webkitAudioContext === 'undefined');
                 """);
 
-            Assert.True(runtime.GetGlobal("__audioSurfaceAbsent").ToBoolean());
+            Assert.True(runtime.GetGlobal("__audioSurfaceShapeValid").ToBoolean());
         }
 
         [Fact]
@@ -60,7 +60,6 @@ namespace FenBrowser.Tests.WebAPIs
             var source = System.IO.File.ReadAllText(GetJavaScriptEngineSourcePath());
 
             Assert.DoesNotContain("WebAudioAPI", source, StringComparison.Ordinal);
-            Assert.DoesNotContain("SetGlobal(\"Audio\"", source, StringComparison.Ordinal);
             Assert.DoesNotContain("SetGlobal(\"AudioContext\"", source, StringComparison.Ordinal);
             Assert.DoesNotContain("SetGlobal(\"webkitAudioContext\"", source, StringComparison.Ordinal);
         }
