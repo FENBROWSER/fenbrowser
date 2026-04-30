@@ -752,13 +752,14 @@ namespace FenBrowser.Tests.Engine
             var runtime = runtimeField.GetValue(engine) as FenRuntime;
             Assert.NotNull(runtime);
 
-            Assert.True(runtime.GetGlobal("Audio").IsUndefined);
+            // `Audio` is a spec HTML constructor (HTMLAudioElement), not a WebAudio context API.
+            Assert.False(runtime.GetGlobal("Audio").IsUndefined);
             Assert.True(runtime.GetGlobal("AudioContext").IsUndefined);
             Assert.True(runtime.GetGlobal("webkitAudioContext").IsUndefined);
 
             var window = runtime.GetGlobal("window").AsObject();
             Assert.NotNull(window);
-            Assert.True(window.Get("Audio").IsUndefined);
+            Assert.False(window.Get("Audio").IsUndefined);
             Assert.True(window.Get("AudioContext").IsUndefined);
             Assert.True(window.Get("webkitAudioContext").IsUndefined);
         }
