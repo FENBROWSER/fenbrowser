@@ -232,5 +232,67 @@ namespace FenBrowser.Tests.DOM
             Assert.Equal(string.Empty, runtime.GetGlobal("__stringIndexErr").ToString());
             Assert.Equal("1", runtime.GetGlobal("__stringIndexValue").ToString());
         }
+
+        [Fact]
+        public void FormAndSelectCollections_ExposeHtmlSpecificInterfaces_And_RadioNodeListValue()
+        {
+            var runtime = new FenRuntime();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var form = document.createElement('form');
+                var first = document.createElement('input');
+                first.type = 'radio';
+                first.name = 'group';
+                first.value = 'one';
+
+                var second = document.createElement('input');
+                second.type = 'radio';
+                second.name = 'group';
+                second.value = 'two';
+
+                form.appendChild(first);
+                form.appendChild(second);
+                document.body.appendChild(form);
+
+                var select = document.createElement('select');
+                var optA = new Option('A', 'a');
+                var optB = new Option('B', 'b');
+                select.appendChild(optA);
+                select.appendChild(optB);
+                document.body.appendChild(select);
+
+                var controls = form.elements;
+                var named = controls.namedItem('group');
+                second.checked = true;
+
+                globalThis.__hasHtmlFormControlsCollectionCtor = typeof HTMLFormControlsCollection;
+                globalThis.__hasHtmlOptionsCollectionCtor = typeof HTMLOptionsCollection;
+                globalThis.__hasRadioNodeListCtor = typeof RadioNodeList;
+
+                globalThis.__controlsInstanceof = String(controls instanceof HTMLFormControlsCollection);
+                globalThis.__namedInstanceofRadioNodeList = String(named instanceof RadioNodeList);
+                globalThis.__indexedRadioCount = String(named.length);
+                globalThis.__radioValue = named.value;
+                globalThis.__firstChecked = String(first.checked);
+                globalThis.__secondChecked = String(second.checked);
+
+                globalThis.__optionsInstanceof = String(select.options instanceof HTMLOptionsCollection);
+                globalThis.__optionsLength = String(select.options.length);
+            ");
+
+            Assert.Equal("function", runtime.GetGlobal("__hasHtmlFormControlsCollectionCtor").ToString());
+            Assert.Equal("function", runtime.GetGlobal("__hasHtmlOptionsCollectionCtor").ToString());
+            Assert.Equal("function", runtime.GetGlobal("__hasRadioNodeListCtor").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__controlsInstanceof").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__namedInstanceofRadioNodeList").ToString());
+            Assert.Equal("2", runtime.GetGlobal("__indexedRadioCount").ToString());
+            Assert.Equal("two", runtime.GetGlobal("__radioValue").ToString());
+            Assert.Equal("false", runtime.GetGlobal("__firstChecked").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__secondChecked").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__optionsInstanceof").ToString());
+            Assert.Equal("2", runtime.GetGlobal("__optionsLength").ToString());
+        }
     }
 }
