@@ -723,11 +723,7 @@ namespace FenBrowser.FenEngine.Scripting
             var key = NormalizeEventTargetKey(target);
             if (key == null) return;
 
-            var thisBinding = target as IObject;
-            if (thisBinding == null && key is Element domEl)
-            {
-                thisBinding = new JsDomElement(this, domEl);
-            }
+            var thisBinding = ResolveEventCurrentTargetBinding(target, key, context);
 
             SetEventCurrentTargetForObject(evt, thisBinding, target, context);
 
@@ -778,6 +774,30 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             InvokeFenTargetListenersForDomEvent(thisBinding, evt, context, isCapturePhase);
+        }
+
+        private IObject ResolveEventCurrentTargetBinding(object target, object normalizedKey, IExecutionContext context)
+        {
+            if (target is IObject directTarget)
+            {
+                return directTarget;
+            }
+
+            if (normalizedKey is Node domNode)
+            {
+                var wrapped = DomWrapperFactory.Wrap(domNode, context);
+                if (wrapped.IsObject)
+                {
+                    return wrapped.AsObject();
+                }
+            }
+
+            if (normalizedKey is Element domElement)
+            {
+                return new JsDomElement(this, domElement);
+            }
+
+            return null;
         }
 
         private void InvokeFenTargetListenersForDomEvent(IObject targetObj, DomEvent evt, IExecutionContext context, bool isCapturePhase)
@@ -880,16 +900,45 @@ namespace FenBrowser.FenEngine.Scripting
 
         private object ResolveDocumentEventTarget(Element target)
         {
-            var doc = _fenRuntime?.GetGlobal("document") ?? FenValue.Undefined;
-            if (!doc.IsObject) return null;
-            return doc.AsObject();
+            var envDoc = _fenRuntime?.Context?.Environment?.Get("document") ?? FenValue.Undefined;
+            var sourceDocument = target?.OwnerDocument;
+            if (sourceDocument != null)
+            {
+                if (envDoc.IsObject && envDoc.AsObject() is DocumentWrapper envDocumentWrapper &&
+                    ReferenceEquals(envDocumentWrapper.Node, sourceDocument))
+                {
+                    return envDoc.AsObject();
+                }
+
+                if (_fenRuntime?.Context != null)
+                {
+                    var wrappedDocument = DomWrapperFactory.Wrap(sourceDocument, _fenRuntime.Context);
+                    if (wrappedDocument.IsObject)
+                    {
+                        return wrappedDocument.AsObject();
+                    }
+                }
+            }
+
+            if (envDoc.IsObject)
+            {
+                return envDoc.AsObject();
+            }
+
+            var globalDoc = _fenRuntime?.GetGlobal("document") ?? FenValue.Undefined;
+            return globalDoc.IsObject ? globalDoc.AsObject() : null;
         }
 
         private object ResolveWindowEventTarget(Element target)
         {
-            var win = _fenRuntime?.GetGlobal("window") ?? FenValue.Undefined;
-            if (!win.IsObject) return null;
-            return win.AsObject();
+            var envWindow = _fenRuntime?.Context?.Environment?.Get("window") ?? FenValue.Undefined;
+            if (envWindow.IsObject)
+            {
+                return envWindow.AsObject();
+            }
+
+            var globalWindow = _fenRuntime?.GetGlobal("window") ?? FenValue.Undefined;
+            return globalWindow.IsObject ? globalWindow.AsObject() : null;
         }
 
         private static object NormalizeEventTargetKey(object target)

@@ -155,8 +155,8 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeListeners(ancestor, evt, context, true);
                     if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        SetLegacyEventForElement(ancestor);
-                        ExternalListenerInvoker(ancestor, evt, context, true, false);
+                        // Element listeners are owned by the DOM listener registry in this dispatcher.
+                        // External invocation is reserved for top-level/document/window targets.
                     }
                 }
 
@@ -170,16 +170,16 @@ namespace FenBrowser.FenEngine.DOM
                     InvokeListeners(target, evt, context, true);
                     if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        SetLegacyEventForElement(target);
-                        ExternalListenerInvoker(target, evt, context, true, true);
+                        // Element listeners are owned by the DOM listener registry in this dispatcher.
+                        // External invocation is reserved for top-level/document/window targets.
                     }
 
                     SetLegacyEventForElement(target);
                     InvokeListeners(target, evt, context, false);
                     if (!evt.PropagationStopped && useExternalInvoker)
                     {
-                        SetLegacyEventForElement(target);
-                        ExternalListenerInvoker(target, evt, context, false, true);
+                        // Element listeners are owned by the DOM listener registry in this dispatcher.
+                        // External invocation is reserved for top-level/document/window targets.
                     }
                 }
 
@@ -197,8 +197,8 @@ namespace FenBrowser.FenEngine.DOM
                         InvokeListeners(ancestor, evt, context, false);
                         if (!evt.PropagationStopped && useExternalInvoker)
                         {
-                            SetLegacyEventForElement(ancestor);
-                            ExternalListenerInvoker(ancestor, evt, context, false, false);
+                            // Element listeners are owned by the DOM listener registry in this dispatcher.
+                            // External invocation is reserved for top-level/document/window targets.
                         }
                     }
 
