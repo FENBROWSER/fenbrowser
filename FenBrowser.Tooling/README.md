@@ -75,6 +75,23 @@ Run render performance benchmark suite.
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- render-perf
 ```
 
+### `capability-ledger`
+
+Generate a machine-readable capability ledger by reconciling:
+- `docs/COMPLIANCE_MATRIX.md` capabilities
+- `docs/spec_governance_map.json` governed files + required IDs
+- live source headers (`SpecRef`, `CapabilityId`, `Determinism`, `FallbackPolicy`)
+
+Outputs:
+- timestamped snapshot in `Results/`
+- latest alias at `Results/capability_ledger_latest.json` (or custom output path)
+
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- capability-ledger
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- capability-ledger C:\Users\udayk\Videos\fenbrowser-test\Results\capability_ledger_custom.json
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- capability-ledger --require-live-evidence
+```
+
 ### `debug-css`
 
 Run CSS parser debug routine and write `css_debug.txt`.
@@ -106,6 +123,32 @@ Main options:
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --workers 20 --max 1000 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json
+```
+
+### Staged Recovery Baseline Bundle
+
+Run staged Stage 0-3 baseline slices and emit a JSON result bundle under `Results/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.ps1
+```
+
+Focused run for Stage 0 + Stage 1 only:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.ps1 -Slices stage0-governance,stage1-pipeline -SkipBuild
+```
+
+Disable strict live-artifact evidence requirement (keeps reporting but does not fail on missing artifacts):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.ps1 -RequireLiveArtifactEvidence:$false
+```
+
+Use a custom logs directory for live-artifact gates:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.ps1 -LogsDir C:\custom\logs
 ```
 
 #### Test262 Notes

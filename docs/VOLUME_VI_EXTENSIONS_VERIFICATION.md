@@ -114,6 +114,22 @@ Standard xUnit tests covering internal components:
     - both test guard (`SpecGovernanceTests`) and CLI validator consume this map to avoid dual-list drift.
   - CI wiring:
     - `.github/workflows/build-fenbrowser-exe.yml` now runs `scripts/validate_spec_headers.ps1` in all active jobs (`build-windows`, `unit-tests`, `test262-regression`) before build/test execution.
+  - Stage recovery baseline workflow (2026-04-29):
+    - `FenBrowser.Tooling` adds `capability-ledger` to materialize a machine-readable Stage 0 ledger under `Results/` by reconciling:
+      - `docs/COMPLIANCE_MATRIX.md` capability rows
+      - `docs/spec_governance_map.json` governed file + required capability mappings
+      - governed source header truth (`SpecRef`, `CapabilityId`, `Determinism`, `FallbackPolicy`)
+      - promotion contract fields (`owner path`, `spec reference`, `gate tests`, `live artifact evidence id`) for every capability row
+    - Added `scripts/run_stage_recovery_baseline.ps1` to execute staged gate slices and emit a versioned baseline bundle:
+      - `Results/stage_recovery_baseline_<timestamp>.json`
+      - `Results/stage_recovery_baseline_latest.json`
+    - Baseline bundle now reports totals first per stage category (`stage0..stage3`) as `total/passed/failed/skipped`, then failure groups by step/path with parsed capability IDs when present.
+    - Live-artifact gate steps are part of stage execution for runtime tranches (`stage1+`), validating `logs/debug_screenshot.png`, `logs/dom_dump.txt`, and `logs/js_debug.log` presence and generating `evidenceId` metadata in bundle output.
+    - Baseline script slices:
+      - Stage 0 governance checks
+      - Stage 1 pipeline/event-loop invariants
+      - Stage 2 HTML parser-focused tranche
+      - Stage 3 CSS/JS focused tranche
   - P0 hardening CI gate (2026-04-21):
     - `unit-tests` now includes a dedicated blocking "P0 Hardening Gates" step before the full suite.
     - The gate runs focused filters covering event loop ordering, paint/damage invariants, CSP/CORS enforcement, and IPC envelope validation:
@@ -2344,3 +2360,15 @@ _End of Volume VI_
 - Focused verification:
   - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 1000 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json`
   - Result: `391 pass / 163 fail / 713 skip` across `1267` scenarios (run completed without runner crash).
+
+## 6.76 HTML Element Interface Coverage Regression Slice (2026-04-29)
+
+- Added coverage:
+  - `FenBrowser.Tests/Engine/HtmlElementInterfaceCoverageTests.cs` (new)
+    - validates constructor publication + `instanceof` prototype chains for catalog-mapped HTML element interfaces
+    - validates unknown vs custom-element fallback behavior (`HTMLUnknownElement` vs `HTMLElement`)
+    - validates concrete constructor behaviors for `Image`, `Audio`, and `Option`
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~HtmlElementInterfaceCoverageTests" -v minimal`
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~HtmlElementInterfaceCoverageTests" -v minimal`
+  - Result: `2 passed / 0 failed / 0 skipped`.

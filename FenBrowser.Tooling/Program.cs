@@ -52,6 +52,9 @@ namespace FenBrowser.Tooling
                 case "render-perf":
                     await RunRenderPerfAsync().ConfigureAwait(false);
                     return;
+                case "capability-ledger":
+                    RunCapabilityLedger(args);
+                    return;
                 case "debug-css":
                     RunCssDebug();
                     return;
@@ -374,6 +377,16 @@ namespace FenBrowser.Tooling
             File.WriteAllText("css_debug.txt", sb.ToString());
         }
 
+        private static void RunCapabilityLedger(string[] args)
+        {
+            var result = CapabilityLedgerCommand.Run(args);
+            Console.WriteLine($"Capability ledger latest: {result.LatestPath}");
+            Console.WriteLine($"Capability ledger snapshot: {result.SnapshotPath}");
+            Console.WriteLine($"Capability count: {result.CapabilityCount}");
+            Console.WriteLine($"failureGatePassed={result.FailureGatePassed}");
+            Console.WriteLine($"liveArtifactEvidenceId={result.LiveArtifactEvidenceId}");
+        }
+
         private static async Task RunRenderPerfAsync()
         {
             var runner = new RenderPerformanceBenchmarkRunner();
@@ -412,6 +425,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  acid2-layout-html [output_html]");
             Console.WriteLine("  webdriver [--port=4444] [--headless]");
             Console.WriteLine("  render-perf");
+            Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
             Console.WriteLine("  test262 --root <path> [--workers N] [--max N] [--filter <substring>] [--output <json_path>]");

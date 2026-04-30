@@ -145,6 +145,12 @@ flowchart TD
   - before: first `RenderAsync CSS loading complete` at ~`22s` after navigation start (plus an observed single-script parse block of ~`10s` in prior run),
   - after: first rendered output at ~`4.8s` with CSS parse budget warning at `3500ms`, and oversized Google external script deferred instead of blocking initial render.
 
+### 2.6.2.1 Parser Contract Routing Hardening (2026-04-29)
+
+- `CustomHtmlEngine.RunDomParseAsync(...)` now routes primary document parsing through canonical `FenBrowser.Core.Parsing.HtmlParser.ParseDocumentDetailed(...)` rather than directly constructing `HtmlTreeBuilder` in-engine.
+- Parser checkpoint telemetry and pipeline-stage execution remain available through the canonical parser options contract (`PipelineContext`, checkpoint callbacks, interleaved batch size), so stage ordering/invariant gates no longer require parser bypass paths.
+- Base URI assignment stays deterministic on parsed documents before layout/script phases, preserving relative URL resolution for post-parse resource handling and intrinsic image probing.
+
 ### 2.6.3 Acid2 Cascade/Layout Corrections (2026-04-13)
 
 - `CssLoader.ResolveStyle(...)` now treats `font: inherit` as inherited computed font data (absolute `px` + inherited family) instead of re-applying relative shorthand units against the child `em` base; this prevents inherited intro text from compounding to oversized multi-line blocks (`FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`).
@@ -7204,3 +7210,16 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - concrete box creation (`Box created type=...`).
   - Navigation-settle path now emits dedup suppression summary and a rate-limited unsupported-feature aggregate (`unsupportedHtml/unsupportedCss/unsupportedJs`).
   - First-layout/first-paint milestones and per-frame summary logs remain part of the render-pipeline diagnostics contract.
+
+## 2.243 HTML Element Interface Catalog And Constructor Surface Expansion (2026-04-29)
+
+- `FenBrowser.Core/Dom/V2/HtmlElementInterfaceCatalog.cs` (new)
+  - Added canonical HTML tag-to-interface mapping and namespace-aware resolution for runtime wrapper/prototype binding.
+  - Added `HTMLUnknownElement` fallback for unknown non-custom tags and `HTMLElement` fallback for unresolved custom elements.
+- `FenBrowser.FenEngine/DOM/DomWrapperFactory.cs`
+  - Replaced one-off `img` prototype special-casing with catalog-driven interface resolution, so wrapped HTML nodes bind to tag-correct `HTML*Element` prototypes.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Expanded global/window `HTML*Element` constructor surface from a tiny subset to catalog coverage.
+  - Added constructor factories for `Audio`/`HTMLAudioElement` and `Option`/`HTMLOptionElement`.
+  - Added `HTMLMediaElement` intermediate prototype so `HTMLAudioElement`/`HTMLVideoElement` chain through media semantics.
+  - Refactored element-constructor creation through shared HTML element creation path for consistent document ownership and wrapper assignment.
