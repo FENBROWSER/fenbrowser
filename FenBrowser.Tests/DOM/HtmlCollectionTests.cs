@@ -294,5 +294,79 @@ namespace FenBrowser.Tests.DOM
             Assert.Equal("true", runtime.GetGlobal("__optionsInstanceof").ToString());
             Assert.Equal("2", runtime.GetGlobal("__optionsLength").ToString());
         }
+
+        [Fact]
+        public void DocumentCollections_And_GetElementsByName_ExposeExpectedHtmlApis()
+        {
+            var runtime = new FenRuntime();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var img = document.createElement('img');
+                img.id = 'hero';
+                document.body.appendChild(img);
+
+                var form = document.createElement('form');
+                form.id = 'checkout-form';
+                form.name = 'checkout';
+                var namedA = document.createElement('input');
+                namedA.name = 'group';
+                var namedB = document.createElement('input');
+                namedB.name = 'group';
+                form.appendChild(namedA);
+                form.appendChild(namedB);
+                document.body.appendChild(form);
+
+                var script = document.createElement('script');
+                script.src = '/app.js';
+                document.body.appendChild(script);
+
+                var embed = document.createElement('embed');
+                embed.id = 'plugin';
+                document.body.appendChild(embed);
+
+                var applet = document.createElement('applet');
+                applet.name = 'legacy';
+                document.body.appendChild(applet);
+
+                var namedAnchor = document.createElement('a');
+                namedAnchor.name = 'toc';
+                namedAnchor.href = '#toc';
+                document.body.appendChild(namedAnchor);
+
+                var regularAnchor = document.createElement('a');
+                regularAnchor.href = '#regular';
+                document.body.appendChild(regularAnchor);
+
+                var byName = document.getElementsByName('group');
+
+                globalThis.__imagesLength = String(document.images.length);
+                globalThis.__formsLength = String(document.forms.length);
+                globalThis.__scriptsLength = String(document.scripts.length);
+                globalThis.__embedsLength = String(document.embeds.length);
+                globalThis.__pluginsLength = String(document.plugins.length);
+                globalThis.__appletsLength = String(document.applets.length);
+                globalThis.__anchorsLength = String(document.anchors.length);
+                globalThis.__allLength = String(document.all.length);
+                globalThis.__imagesNamed = String(document.images.namedItem('hero') === img);
+                globalThis.__formsNamed = String(document.forms.namedItem('checkout-form') === form);
+                globalThis.__getByNameLength = String(byName.length);
+                globalThis.__getByNameFirst = byName.item(0) ? byName.item(0).name : '';
+            ");
+
+            Assert.Equal("1", runtime.GetGlobal("__imagesLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__formsLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__scriptsLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__embedsLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__pluginsLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__appletsLength").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__anchorsLength").ToString());
+            Assert.True(runtime.GetGlobal("__allLength").ToNumber() >= 9);
+            Assert.Equal("true", runtime.GetGlobal("__imagesNamed").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__formsNamed").ToString());
+            Assert.Equal("2", runtime.GetGlobal("__getByNameLength").ToString());
+            Assert.Equal("group", runtime.GetGlobal("__getByNameFirst").ToString());
+        }
     }
 }

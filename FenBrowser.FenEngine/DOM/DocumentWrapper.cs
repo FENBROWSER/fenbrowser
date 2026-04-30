@@ -166,6 +166,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "getelementsbytagnamens":
                     return FenValue.FromFunction(new FenFunction("getElementsByTagNameNS", GetElementsByTagNameNS));
 
+                case "getelementsbyname":
+                    return FenValue.FromFunction(new FenFunction("getElementsByName", GetElementsByName));
+
                 case "body":
                     var body = (_root as Document)?.Body ?? FindElementByTag(_root, "body");
                     return body != null ? DomWrapperFactory.Wrap(body, _context) : FenValue.Null;
@@ -176,6 +179,31 @@ namespace FenBrowser.FenEngine.DOM
 
                 case "links":
                     return FenValue.FromObject(new HTMLCollectionWrapper(() => GetDocumentLinks(), _context));
+
+                case "all":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => EnumerateDocumentElements(), _context));
+
+                case "images":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("img"), _context));
+
+                case "forms":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("form"), _context));
+
+                case "scripts":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("script"), _context));
+
+                case "embeds":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("embed"), _context));
+
+                case "plugins":
+                    // HTML defines plugins as a legacy alias of embeds.
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("embed"), _context));
+
+                case "applets":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetElementsByTagNames("applet"), _context));
+
+                case "anchors":
+                    return FenValue.FromObject(new HTMLCollectionWrapper(() => GetDocumentAnchors(), _context));
 
                 case "title":
                     var documentTitle = (_root as Document)?.Title;
@@ -998,6 +1026,22 @@ namespace FenBrowser.FenEngine.DOM
             }, _context));
         }
 
+        private FenValue GetElementsByName(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length == 0)
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
+
+            var requestedName = args[0].ToString() ?? string.Empty;
+            var matchedNodes = EnumerateDocumentElements()
+                .Where(element => string.Equals(element.GetAttribute("name"), requestedName, StringComparison.Ordinal))
+                .Cast<Node>()
+                .ToList();
+
+            return FenValue.FromObject(new NodeListWrapper(matchedNodes, _context));
+        }
+
         private FenValue CreateElementNS(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2)
@@ -1168,11 +1212,40 @@ namespace FenBrowser.FenEngine.DOM
 
         private IEnumerable<Element> GetDocumentLinks()
         {
+            return EnumerateDocumentElements().Where(IsHyperlinkElement);
+        }
+
+        private IEnumerable<Element> GetElementsByTagNames(params string[] tagNames)
+        {
+            if (tagNames == null || tagNames.Length == 0)
+            {
+                return Enumerable.Empty<Element>();
+            }
+
+            var tagSet = new HashSet<string>(
+                tagNames.Where(name => !string.IsNullOrWhiteSpace(name)),
+                StringComparer.OrdinalIgnoreCase);
+
+            return EnumerateDocumentElements()
+                .Where(element =>
+                    HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri) &&
+                    tagSet.Contains(element.TagName ?? string.Empty));
+        }
+
+        private IEnumerable<Element> GetDocumentAnchors()
+        {
+            return EnumerateDocumentElements()
+                .Where(element =>
+                    HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri) &&
+                    string.Equals(element.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(element.GetAttribute("name")));
+        }
+
+        private IEnumerable<Element> EnumerateDocumentElements()
+        {
             var nodes = new List<Node>();
             CollectNodes(_root, nodes);
-            return nodes
-                .OfType<Element>()
-                .Where(IsHyperlinkElement);
+            return nodes.OfType<Element>();
         }
 
         private static bool IsHyperlinkElement(Element element)

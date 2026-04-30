@@ -7223,3 +7223,20 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Added constructor factories for `Audio`/`HTMLAudioElement` and `Option`/`HTMLOptionElement`.
   - Added `HTMLMediaElement` intermediate prototype so `HTMLAudioElement`/`HTMLVideoElement` chain through media semantics.
   - Refactored element-constructor creation through shared HTML element creation path for consistent document ownership and wrapper assignment.
+
+## 2.244 Document HTML Collections And Name Lookup Surface (2026-04-30)
+
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - Added legacy/interop collection properties backed by live `HTMLCollection` providers:
+    - `document.all`
+    - `document.images`
+    - `document.forms`
+    - `document.scripts`
+    - `document.embeds`
+    - `document.plugins` (legacy alias of embeds)
+    - `document.applets`
+    - `document.anchors`
+  - Added `document.getElementsByName(name)` returning a `NodeList` filtered by `name` attribute.
+  - Normalized internal document-element enumeration so `document.links` and the new collection APIs share a consistent traversal source.
+- `FenBrowser.Tests/DOM/HtmlCollectionTests.cs`
+  - Added `DocumentCollections_And_GetElementsByName_ExposeExpectedHtmlApis` to lock collection lengths, named-item lookups, and `getElementsByName` behavior.
