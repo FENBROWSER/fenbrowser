@@ -368,5 +368,44 @@ namespace FenBrowser.Tests.DOM
             Assert.Equal("2", runtime.GetGlobal("__getByNameLength").ToString());
             Assert.Equal("group", runtime.GetGlobal("__getByNameFirst").ToString());
         }
+
+        [Fact]
+        public void DocumentStyleSheets_ExposesInlineAndLinkedStylesheetEntries()
+        {
+            var runtime = new FenRuntime();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var style = document.createElement('style');
+                style.textContent = 'body { color: red; }';
+                document.head.appendChild(style);
+
+                var link = document.createElement('link');
+                link.setAttribute('rel', 'stylesheet preload');
+                link.setAttribute('href', '/assets/site.css');
+                document.head.appendChild(link);
+
+                var sheets = document.styleSheets;
+                var inlineSheet = sheets.item(0);
+                var linkedSheet = sheets.item(1);
+
+                globalThis.__styleSheetsLength = String(sheets.length);
+                globalThis.__inlineOwnerTag = inlineSheet && inlineSheet.ownerNode ? inlineSheet.ownerNode.tagName : '';
+                globalThis.__inlineRulesLength = inlineSheet && inlineSheet.cssRules ? String(inlineSheet.cssRules.length) : '';
+                globalThis.__linkedOwnerTag = linkedSheet && linkedSheet.ownerNode ? linkedSheet.ownerNode.tagName : '';
+                globalThis.__linkedHref = linkedSheet && linkedSheet.href ? String(linkedSheet.href) : '';
+                globalThis.__linkedRulesLength = linkedSheet && linkedSheet.cssRules ? String(linkedSheet.cssRules.length) : '';
+                globalThis.__missingSheetIsNull = String(sheets.item(10) === null);
+            ");
+
+            Assert.Equal("2", runtime.GetGlobal("__styleSheetsLength").ToString());
+            Assert.Equal("STYLE", runtime.GetGlobal("__inlineOwnerTag").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__inlineRulesLength").ToString());
+            Assert.Equal("LINK", runtime.GetGlobal("__linkedOwnerTag").ToString());
+            Assert.Contains("/assets/site.css", runtime.GetGlobal("__linkedHref").ToString());
+            Assert.Equal("0", runtime.GetGlobal("__linkedRulesLength").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__missingSheetIsNull").ToString());
+        }
     }
 }

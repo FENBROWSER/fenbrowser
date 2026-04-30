@@ -7236,7 +7236,9 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `document.plugins` (legacy alias of embeds)
     - `document.applets`
     - `document.anchors`
+  - Added `document.styleSheets` to expose stylesheet list entries for inline `<style>` and linked `<link rel="stylesheet">` nodes.
   - Added `document.getElementsByName(name)` returning a `NodeList` filtered by `name` attribute.
   - Normalized internal document-element enumeration so `document.links` and the new collection APIs share a consistent traversal source.
 - `FenBrowser.Tests/DOM/HtmlCollectionTests.cs`
   - Added `DocumentCollections_And_GetElementsByName_ExposeExpectedHtmlApis` to lock collection lengths, named-item lookups, and `getElementsByName` behavior.
+  - Added `DocumentStyleSheets_ExposesInlineAndLinkedStylesheetEntries` to lock stylesheet-list shape and linked stylesheet metadata exposure.

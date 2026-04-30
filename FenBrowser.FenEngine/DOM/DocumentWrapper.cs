@@ -180,6 +180,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "links":
                     return FenValue.FromObject(new HTMLCollectionWrapper(() => GetDocumentLinks(), _context));
 
+                case "stylesheets":
+                    return FenValue.FromObject(BuildStyleSheetListObject());
+
                 case "all":
                     return FenValue.FromObject(new HTMLCollectionWrapper(() => EnumerateDocumentElements(), _context));
 
@@ -461,7 +464,7 @@ namespace FenBrowser.FenEngine.DOM
         public bool Has(string key, IExecutionContext context = null) => !Get(key, context).IsUndefined;
         public bool Delete(string key, IExecutionContext context = null) => _expando.Remove(key);
         public IEnumerable<string> Keys(IExecutionContext context = null)
-            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createAttribute", "createAttributeNS", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "write", "writeln", "evaluate", "getElementsByClassName", "getElementsByTagName", "body", "head", "title", "documentElement", "readyState", "currentScript", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation", "importNode", "prepend", "replaceChildren" }
+            => new[] { "getElementById", "querySelector", "querySelectorAll", "createElement", "createAttribute", "createAttributeNS", "createDocumentFragment", "createTextNode", "createComment", "createProcessingInstruction", "createEvent", "write", "writeln", "evaluate", "getElementsByClassName", "getElementsByTagName", "getElementsByName", "body", "head", "title", "documentElement", "readyState", "currentScript", "styleSheets", "links", "images", "forms", "scripts", "embeds", "plugins", "applets", "anchors", "all", "addEventListener", "removeEventListener", "dispatchEvent", "cookie", "domain", "fonts", "implementation", "importNode", "prepend", "replaceChildren" }
                 .Concat(_expando.Keys)
                 .Distinct();
         public IObject GetPrototype() => _prototype;
@@ -1213,6 +1216,133 @@ namespace FenBrowser.FenEngine.DOM
         private IEnumerable<Element> GetDocumentLinks()
         {
             return EnumerateDocumentElements().Where(IsHyperlinkElement);
+        }
+
+        private FenObject BuildStyleSheetListObject()
+        {
+            var sheets = CollectStyleSheetValues();
+            var list = FenObject.CreateArray();
+
+            for (var index = 0; index < sheets.Count; index++)
+            {
+                list.Set(index.ToString(), sheets[index]);
+            }
+
+            list.Set("length", FenValue.FromNumber(sheets.Count));
+            list.Set("item", FenValue.FromFunction(new FenFunction("item", (args, thisVal) =>
+            {
+                var idx = args.Length > 0 ? (int)args[0].ToNumber() : -1;
+                if (idx < 0 || idx >= sheets.Count)
+                {
+                    return FenValue.Null;
+                }
+
+                return sheets[idx];
+            })));
+
+            return list;
+        }
+
+        private List<FenValue> CollectStyleSheetValues()
+        {
+            var results = new List<FenValue>();
+            foreach (var element in EnumerateDocumentElements())
+            {
+                if (!HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri))
+                {
+                    continue;
+                }
+
+                if (string.Equals(element.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                {
+                    var inlineSheet = ResolveInlineStyleSheetValue(element);
+                    if (!inlineSheet.IsNull && !inlineSheet.IsUndefined)
+                    {
+                        results.Add(inlineSheet);
+                    }
+
+                    continue;
+                }
+
+                if (IsStyleLinkElement(element))
+                {
+                    results.Add(CreateLinkedStyleSheetValue(element));
+                }
+            }
+
+            return results;
+        }
+
+        private FenValue ResolveInlineStyleSheetValue(Element styleElement)
+        {
+            var wrapped = DomWrapperFactory.Wrap(styleElement, _context);
+            if (!wrapped.IsObject)
+            {
+                return FenValue.Null;
+            }
+
+            var sheet = wrapped.AsObject().Get("sheet", _context);
+            if (!sheet.IsUndefined)
+            {
+                return sheet;
+            }
+
+            var stylesheet = wrapped.AsObject().Get("stylesheet", _context);
+            return stylesheet.IsUndefined ? FenValue.Null : stylesheet;
+        }
+
+        private FenValue CreateLinkedStyleSheetValue(Element linkElement)
+        {
+            var sheet = new FenObject();
+            sheet.Set("ownerNode", DomWrapperFactory.Wrap(linkElement, _context));
+            sheet.Set("href", FenValue.FromString(ResolveLinkHref(linkElement)));
+            sheet.Set("media", FenValue.FromString(linkElement.GetAttribute("media") ?? string.Empty));
+            sheet.Set("type", FenValue.FromString(linkElement.GetAttribute("type") ?? "text/css"));
+            sheet.Set("disabled", FenValue.FromBoolean(linkElement.HasAttribute("disabled")));
+
+            var rules = FenObject.CreateArray();
+            rules.Set("length", FenValue.FromNumber(0));
+            sheet.Set("cssRules", FenValue.FromObject(rules));
+
+            return FenValue.FromObject(sheet);
+        }
+
+        private string ResolveLinkHref(Element linkElement)
+        {
+            var href = linkElement?.GetAttribute("href");
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                return string.Empty;
+            }
+
+            return ResourceUrlResolver.Resolve(href, GetDocumentBaseUri()) ?? href;
+        }
+
+        private static bool IsStyleLinkElement(Element element)
+        {
+            if (element == null ||
+                !string.Equals(element.TagName, "link", StringComparison.OrdinalIgnoreCase) ||
+                !HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri))
+            {
+                return false;
+            }
+
+            var rel = element.GetAttribute("rel");
+            if (string.IsNullOrWhiteSpace(rel))
+            {
+                return false;
+            }
+
+            var relTokens = rel.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < relTokens.Length; i++)
+            {
+                if (string.Equals(relTokens[i], "stylesheet", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private IEnumerable<Element> GetElementsByTagNames(params string[] tagNames)
