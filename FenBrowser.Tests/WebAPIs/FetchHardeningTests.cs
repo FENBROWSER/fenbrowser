@@ -26,7 +26,7 @@ namespace FenBrowser.Tests.WebAPIs
 
             var request = new JsRequest("https://example.com", FenValue.FromObject(options));
 
-            Assert.Equal("https://example.com", request.Url);
+            Assert.Equal("https://example.com/", request.Url);
             Assert.Equal("POST", request.Method);
             Assert.Equal("test-body", request.Body);
             Assert.Equal("application/json", request.Headers.GetHeader("content-type"));

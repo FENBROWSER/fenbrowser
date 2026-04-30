@@ -34,14 +34,17 @@ namespace FenBrowser.FenEngine.WebAPIs
                 FenValue.FromObject(new JsFileReader(context)))));
 
             FenObject urlObject;
+            FenValue urlValue;
             var existing = global.Get("URL");
             if ((existing.IsObject || existing.IsFunction) && existing.AsObject() is FenObject existingObject)
             {
                 urlObject = existingObject;
+                urlValue = existing;
             }
             else
             {
                 urlObject = new FenObject();
+                urlValue = FenValue.FromObject(urlObject);
             }
 
             urlObject.Set("createObjectURL", FenValue.FromFunction(new FenFunction("createObjectURL", (args, thisVal) =>
@@ -70,7 +73,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return FenValue.Undefined;
             })));
 
-            global.Set("URL", FenValue.FromObject(urlObject));
+            global.Set("URL", urlValue);
         }
 
         public static bool TryResolveBlobUrl(string url, out HttpResponseMessage response)
