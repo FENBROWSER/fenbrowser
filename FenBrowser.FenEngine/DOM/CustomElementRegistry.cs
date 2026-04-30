@@ -622,9 +622,24 @@ namespace FenBrowser.FenEngine.DOM
                     return FenValue.Undefined;
                 });
                 var jsPromise = new Core.Types.JsPromise(FenValue.FromFunction(executor), _context);
+                SetPromiseTrackingState(jsPromise, "pending", FenValue.Undefined, string.Empty);
                 _ = ObserveWhenDefinedPromiseAsync(name,
-                    value => { if (capturedResolve.IsFunction) capturedResolve.AsFunction().Invoke(new[] { value }, _context); },
-                    reason => { if (capturedReject.IsFunction) capturedReject.AsFunction().Invoke(new[] { FenValue.FromString(reason) }, _context); });
+                    value =>
+                    {
+                        SetPromiseTrackingState(jsPromise, "fulfilled", value, string.Empty);
+                        if (capturedResolve.IsFunction)
+                        {
+                            capturedResolve.AsFunction().Invoke(new[] { value }, _context);
+                        }
+                    },
+                    reason =>
+                    {
+                        SetPromiseTrackingState(jsPromise, "rejected", FenValue.Undefined, reason);
+                        if (capturedReject.IsFunction)
+                        {
+                            capturedReject.AsFunction().Invoke(new[] { FenValue.FromString(reason) }, _context);
+                        }
+                    });
                 return FenValue.FromObject(jsPromise);
             }
 
@@ -638,15 +653,50 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue CreateResolvedPromise(FenValue value)
         {
             if (_context != null)
-                return FenValue.FromObject(Core.Types.JsPromise.Resolve(value, _context));
+            {
+                var promise = Core.Types.JsPromise.Resolve(value, _context);
+                SetPromiseTrackingState(promise, "fulfilled", value, string.Empty);
+                return FenValue.FromObject(promise);
+            }
             return CreatePromise("fulfilled", value, string.Empty);
         }
 
         private FenValue CreateRejectedPromise(string reason)
         {
             if (_context != null)
-                return FenValue.FromObject(Core.Types.JsPromise.Reject(FenValue.FromString(reason ?? string.Empty), _context));
+            {
+                var promise = Core.Types.JsPromise.Reject(FenValue.FromString(reason ?? string.Empty), _context);
+                SetPromiseTrackingState(promise, "rejected", FenValue.Undefined, reason ?? string.Empty);
+                return FenValue.FromObject(promise);
+            }
             return CreatePromise("rejected", FenValue.Undefined, reason ?? string.Empty);
+        }
+
+        private static void SetPromiseTrackingState(Core.Types.JsPromise promise, string state, FenValue value, string reason)
+        {
+            if (promise == null)
+            {
+                return;
+            }
+
+            promise.Set("__isPromise__", FenValue.FromBoolean(true));
+            promise.Set("__state__", FenValue.FromString(state ?? string.Empty));
+
+            if (string.Equals(state, "fulfilled", StringComparison.Ordinal))
+            {
+                promise.Set("__value__", value);
+                promise.Delete("__reason__");
+            }
+            else if (string.Equals(state, "rejected", StringComparison.Ordinal))
+            {
+                promise.Set("__reason__", FenValue.FromString(reason ?? string.Empty));
+                promise.Delete("__value__");
+            }
+            else
+            {
+                promise.Delete("__value__");
+                promise.Delete("__reason__");
+            }
         }
 
         private FenValue CreatePromise(
