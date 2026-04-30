@@ -97,16 +97,19 @@ namespace FenBrowser.FenEngine.DOM
 
             if (node is Element element)
             {
-                if (string.Equals(element.TagName, "img", System.StringComparison.OrdinalIgnoreCase))
+                if (HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri))
                 {
-                    return GetConstructorPrototype(context, "HTMLImageElement")
-                        ?? GetConstructorPrototype(context, "HTMLElement")
-                        ?? GetConstructorPrototype(context, "Element")
-                        ?? GetConstructorPrototype(context, "Node");
+                    var interfaceName = HtmlElementInterfaceCatalog.ResolveInterfaceName(element.LocalName, element.NamespaceUri);
+                    if (!string.IsNullOrWhiteSpace(interfaceName))
+                    {
+                        return GetConstructorPrototype(context, interfaceName)
+                            ?? GetConstructorPrototype(context, "HTMLElement")
+                            ?? GetConstructorPrototype(context, "Element")
+                            ?? GetConstructorPrototype(context, "Node");
+                    }
                 }
 
-                return GetConstructorPrototype(context, "HTMLElement")
-                    ?? GetConstructorPrototype(context, "Element")
+                return GetConstructorPrototype(context, "Element")
                     ?? GetConstructorPrototype(context, "Node");
             }
 

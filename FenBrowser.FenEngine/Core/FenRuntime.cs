@@ -9304,6 +9304,22 @@ window.Set("navigation", FenValue.FromObject(navigation));
                 return FenValue.FromFunction(ctor);
             }
 
+            FenValue CreateAudioConstructorValue(FenObject prototype)
+            {
+                var ctor = new FenFunction("Audio", (args, thisVal) => CreateAudioElementValue(args));
+                ctor.Prototype = prototype;
+                ctor.Set("prototype", FenValue.FromObject(prototype));
+                return FenValue.FromFunction(ctor);
+            }
+
+            FenValue CreateOptionConstructorValue(FenObject prototype)
+            {
+                var ctor = new FenFunction("Option", (args, thisVal) => CreateOptionElementValue(args));
+                ctor.Prototype = prototype;
+                ctor.Set("prototype", FenValue.FromObject(prototype));
+                return FenValue.FromFunction(ctor);
+            }
+
             // Provide minimal constructor interfaces required by baseline DOM WPT files.
             var nodePrototype = new FenObject();
             nodePrototype.InternalClass = "NodePrototype";
@@ -9446,6 +9462,48 @@ window.Set("navigation", FenValue.FromObject(navigation));
             SetGlobal("HTMLCollection", htmlCollectionCtorVal);
             DefineWindowInterface(window, "HTMLCollection", htmlCollectionCtorVal);
 
+            var radioNodeListPrototype = new FenObject();
+            radioNodeListPrototype.InternalClass = "RadioNodeListPrototype";
+            radioNodeListPrototype.SetPrototype(nodeListPrototype);
+            radioNodeListPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("RadioNodeList"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var radioNodeListCtorVal = CreateIllegalInterfaceConstructor("RadioNodeList", radioNodeListPrototype);
+            SetGlobal("RadioNodeList", radioNodeListCtorVal);
+            DefineWindowInterface(window, "RadioNodeList", radioNodeListCtorVal);
+
+            var htmlFormControlsCollectionPrototype = new FenObject();
+            htmlFormControlsCollectionPrototype.InternalClass = "HTMLFormControlsCollectionPrototype";
+            htmlFormControlsCollectionPrototype.SetPrototype(htmlCollectionPrototype);
+            htmlFormControlsCollectionPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("HTMLFormControlsCollection"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var htmlFormControlsCollectionCtorVal = CreateIllegalInterfaceConstructor("HTMLFormControlsCollection", htmlFormControlsCollectionPrototype);
+            SetGlobal("HTMLFormControlsCollection", htmlFormControlsCollectionCtorVal);
+            DefineWindowInterface(window, "HTMLFormControlsCollection", htmlFormControlsCollectionCtorVal);
+
+            var htmlOptionsCollectionPrototype = new FenObject();
+            htmlOptionsCollectionPrototype.InternalClass = "HTMLOptionsCollectionPrototype";
+            htmlOptionsCollectionPrototype.SetPrototype(htmlCollectionPrototype);
+            htmlOptionsCollectionPrototype.DefineOwnProperty(JsSymbol.ToStringTag.ToPropertyKey(), new PropertyDescriptor
+            {
+                Value = FenValue.FromString("HTMLOptionsCollection"),
+                Writable = false,
+                Enumerable = false,
+                Configurable = true
+            });
+            var htmlOptionsCollectionCtorVal = CreateIllegalInterfaceConstructor("HTMLOptionsCollection", htmlOptionsCollectionPrototype);
+            SetGlobal("HTMLOptionsCollection", htmlOptionsCollectionCtorVal);
+            DefineWindowInterface(window, "HTMLOptionsCollection", htmlOptionsCollectionCtorVal);
+
             var elementPrototype = new FenObject();
             elementPrototype.InternalClass = "ElementPrototype";
             elementPrototype.SetPrototype(nodePrototype);
@@ -9475,26 +9533,31 @@ window.Set("navigation", FenValue.FromObject(navigation));
             SetGlobal("HTMLElement", htmlElementCtorVal);
             DefineWindowInterface(window, "HTMLElement", htmlElementCtorVal);
 
+            var htmlElementInterfacePrototypes = new Dictionary<string, FenObject>(StringComparer.Ordinal);
+            void RegisterHtmlElementInterface(string interfaceName, FenObject prototype, FenValue constructorValue)
+            {
+                htmlElementInterfacePrototypes[interfaceName] = prototype;
+                SetGlobal(interfaceName, constructorValue);
+                DefineWindowInterface(window, interfaceName, constructorValue);
+            }
+
             var htmlHtmlElementPrototype = new FenObject();
             htmlHtmlElementPrototype.InternalClass = "HTMLHtmlElementPrototype";
             htmlHtmlElementPrototype.SetPrototype(htmlElementPrototype);
             var htmlHtmlElementCtorVal = CreateInterfaceConstructor("HTMLHtmlElement", htmlHtmlElementPrototype);
-            SetGlobal("HTMLHtmlElement", htmlHtmlElementCtorVal);
-            DefineWindowInterface(window, "HTMLHtmlElement", htmlHtmlElementCtorVal);
+            RegisterHtmlElementInterface("HTMLHtmlElement", htmlHtmlElementPrototype, htmlHtmlElementCtorVal);
 
             var htmlBodyElementPrototype = new FenObject();
             htmlBodyElementPrototype.InternalClass = "HTMLBodyElementPrototype";
             htmlBodyElementPrototype.SetPrototype(htmlElementPrototype);
             var htmlBodyElementCtorVal = CreateInterfaceConstructor("HTMLBodyElement", htmlBodyElementPrototype);
-            SetGlobal("HTMLBodyElement", htmlBodyElementCtorVal);
-            DefineWindowInterface(window, "HTMLBodyElement", htmlBodyElementCtorVal);
+            RegisterHtmlElementInterface("HTMLBodyElement", htmlBodyElementPrototype, htmlBodyElementCtorVal);
 
             var htmlFrameSetElementPrototype = new FenObject();
             htmlFrameSetElementPrototype.InternalClass = "HTMLFrameSetElementPrototype";
             htmlFrameSetElementPrototype.SetPrototype(htmlElementPrototype);
             var htmlFrameSetElementCtorVal = CreateInterfaceConstructor("HTMLFrameSetElement", htmlFrameSetElementPrototype);
-            SetGlobal("HTMLFrameSetElement", htmlFrameSetElementCtorVal);
-            DefineWindowInterface(window, "HTMLFrameSetElement", htmlFrameSetElementCtorVal);
+            RegisterHtmlElementInterface("HTMLFrameSetElement", htmlFrameSetElementPrototype, htmlFrameSetElementCtorVal);
 
             var htmlImageElementPrototype = new FenObject();
             htmlImageElementPrototype.InternalClass = "HTMLImageElementPrototype";
@@ -9502,10 +9565,68 @@ window.Set("navigation", FenValue.FromObject(navigation));
             _domHtmlImageElementPrototype = htmlImageElementPrototype;
             var imageCtorVal = CreateImageConstructorValue(htmlImageElementPrototype);
             htmlImageElementPrototype.SetBuiltin("constructor", imageCtorVal);
+            RegisterHtmlElementInterface("HTMLImageElement", htmlImageElementPrototype, imageCtorVal);
             SetGlobal("Image", imageCtorVal);
-            SetGlobal("HTMLImageElement", imageCtorVal);
             DefineWindowInterface(window, "Image", imageCtorVal);
-            DefineWindowInterface(window, "HTMLImageElement", imageCtorVal);
+
+            foreach (var interfaceName in HtmlElementInterfaceCatalog.GetInterfaceNames()
+                .OrderBy(name =>
+                {
+                    if (string.Equals(name, "HTMLMediaElement", StringComparison.Ordinal))
+                    {
+                        return 0;
+                    }
+
+                    if (string.Equals(name, "HTMLAudioElement", StringComparison.Ordinal) ||
+                        string.Equals(name, "HTMLVideoElement", StringComparison.Ordinal))
+                    {
+                        return 1;
+                    }
+
+                    return 2;
+                })
+                .ThenBy(name => name, StringComparer.Ordinal))
+            {
+                if (string.Equals(interfaceName, "HTMLElement", StringComparison.Ordinal) ||
+                    htmlElementInterfacePrototypes.ContainsKey(interfaceName))
+                {
+                    continue;
+                }
+
+                var prototype = new FenObject();
+                prototype.InternalClass = interfaceName + "Prototype";
+
+                if ((string.Equals(interfaceName, "HTMLAudioElement", StringComparison.Ordinal) ||
+                     string.Equals(interfaceName, "HTMLVideoElement", StringComparison.Ordinal)) &&
+                    htmlElementInterfacePrototypes.TryGetValue("HTMLMediaElement", out var mediaPrototype))
+                {
+                    prototype.SetPrototype(mediaPrototype);
+                }
+                else
+                {
+                    prototype.SetPrototype(htmlElementPrototype);
+                }
+
+                FenValue constructorValue;
+                if (string.Equals(interfaceName, "HTMLAudioElement", StringComparison.Ordinal))
+                {
+                    constructorValue = CreateAudioConstructorValue(prototype);
+                    SetGlobal("Audio", constructorValue);
+                    DefineWindowInterface(window, "Audio", constructorValue);
+                }
+                else if (string.Equals(interfaceName, "HTMLOptionElement", StringComparison.Ordinal))
+                {
+                    constructorValue = CreateOptionConstructorValue(prototype);
+                    SetGlobal("Option", constructorValue);
+                    DefineWindowInterface(window, "Option", constructorValue);
+                }
+                else
+                {
+                    constructorValue = CreateIllegalInterfaceConstructor(interfaceName, prototype);
+                }
+
+                RegisterHtmlElementInterface(interfaceName, prototype, constructorValue);
+            }
 
             var documentPrototype = new FenObject();
             documentPrototype.InternalClass = "DocumentPrototype";
@@ -9550,7 +9671,9 @@ window.Set("navigation", FenValue.FromObject(navigation));
             {
                 "AbortController", "AbortSignal", "Document", "DOMImplementation", "DocumentFragment",
                 "ProcessingInstruction", "DocumentType", "Element", "CharacterData", "Text", "Comment",
-                "NodeIterator", "TreeWalker", "NodeFilter", "NodeList", "HTMLCollection", "DOMTokenList", "HTMLElement"
+                "NodeIterator", "TreeWalker", "NodeFilter", "NodeList", "RadioNodeList",
+                "HTMLCollection", "HTMLFormControlsCollection", "HTMLOptionsCollection",
+                "DOMTokenList", "HTMLElement"
             };
 
             foreach (var ifaceName in requiredInterfaces)
@@ -18037,27 +18160,29 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
         }
 
-        private FenValue CreateImageElementValue(FenValue[] args)
+        private FenValue CreateHtmlElementValue(string localName)
         {
-            FenValue imageValue = FenValue.Null;
-
             if (GetGlobal("document") is FenValue documentValue &&
                 documentValue.IsObject &&
                 documentValue.AsObject() is DocumentWrapper documentWrapper)
             {
                 var currentNode = documentWrapper.Node;
                 var ownerDocument = currentNode as Document ?? currentNode.OwnerDocument;
-                var imageElement = ownerDocument != null ? ownerDocument.CreateElement("img") : new Element("img");
-                imageValue = DomWrapperFactory.Wrap(imageElement, _context);
+                var element = ownerDocument != null ? ownerDocument.CreateElement(localName) : new Element(localName);
+                return DomWrapperFactory.Wrap(element, _context);
             }
-            else if (_domBridge != null)
+
+            if (_domBridge != null)
             {
-                imageValue = _domBridge.CreateElement("img");
+                return _domBridge.CreateElement(localName);
             }
-            else
-            {
-                imageValue = DomWrapperFactory.Wrap(new Element("img"), _context);
-            }
+
+            return DomWrapperFactory.Wrap(new Element(localName), _context);
+        }
+
+        private FenValue CreateImageElementValue(FenValue[] args)
+        {
+            var imageValue = CreateHtmlElementValue("img");
 
             if (imageValue.IsObject)
             {
@@ -18079,6 +18204,54 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
 
             return imageValue;
+        }
+
+        private FenValue CreateAudioElementValue(FenValue[] args)
+        {
+            var audioValue = CreateHtmlElementValue("audio");
+            if (!audioValue.IsObject)
+            {
+                return audioValue;
+            }
+
+            if (args != null && args.Length > 0 && !args[0].IsUndefined && !args[0].IsNull)
+            {
+                audioValue.AsObject().Set("src", FenValue.FromString(args[0].ToString() ?? string.Empty), _context);
+            }
+
+            return audioValue;
+        }
+
+        private FenValue CreateOptionElementValue(FenValue[] args)
+        {
+            var optionValue = CreateHtmlElementValue("option");
+            if (!optionValue.IsObject)
+            {
+                return optionValue;
+            }
+
+            var optionObject = optionValue.AsObject();
+            if (args != null && args.Length > 0 && !args[0].IsUndefined)
+            {
+                optionObject.Set("textContent", FenValue.FromString(args[0].ToString() ?? string.Empty), _context);
+            }
+
+            if (args != null && args.Length > 1 && !args[1].IsUndefined)
+            {
+                optionObject.Set("value", FenValue.FromString(args[1].ToString() ?? string.Empty), _context);
+            }
+
+            if (args != null && args.Length > 2 && !args[2].IsUndefined)
+            {
+                optionObject.Set("defaultSelected", FenValue.FromBoolean(args[2].ToBoolean()), _context);
+            }
+
+            if (args != null && args.Length > 3 && !args[3].IsUndefined)
+            {
+                optionObject.Set("selected", FenValue.FromBoolean(args[3].ToBoolean()), _context);
+            }
+
+            return optionValue;
         }
 
         private bool TryGetPrimaryGlobalObject(out FenObject globalObject)
