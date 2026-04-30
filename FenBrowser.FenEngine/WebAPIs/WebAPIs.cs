@@ -379,7 +379,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     TryInvokeNotificationHandler(args[0], new[] { FenValue.FromString(resolvedPermission) }, execContext, "Notification.requestPermission.callback");
                 }
 
-                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(resolvedPermission), execContext));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString(resolvedPermission), context));
             })));
 
             RegisterConstructor(ctor);
