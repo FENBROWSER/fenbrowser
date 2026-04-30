@@ -234,7 +234,9 @@ namespace FenBrowser.FenEngine.Rendering
             th = new Thickness(0);
             if (string.IsNullOrWhiteSpace(s)) return false;
 
-            var parts = s.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            // Tokenize with function-awareness so calc()/min()/max() values that contain
+            // internal whitespace stay intact as a single thickness component.
+            var parts = SplitCssValues(s);
             double a = 0, b = 0, c = 0, d = 0;
 
             bool ParsePart(string p, out double val) {
@@ -242,25 +244,25 @@ namespace FenBrowser.FenEngine.Rendering
                 return TryPx(p, out val, emBase);
             }
 
-            if (parts.Length == 1)
+            if (parts.Count == 1)
             {
                 if (!ParsePart(parts[0], out a)) return false;
                 th = new Thickness(a);
                 return true;
             }
-            if (parts.Length == 2)
+            if (parts.Count == 2)
             {
                 if (!ParsePart(parts[0], out a) || !ParsePart(parts[1], out b)) return false;
                 th = new Thickness(b, a, b, a);
                 return true;
             }
-            if (parts.Length == 3)
+            if (parts.Count == 3)
             {
                 if (!ParsePart(parts[0], out a) || !ParsePart(parts[1], out b) || !ParsePart(parts[2], out c)) return false;
                 th = new Thickness(b, a, b, c);
                 return true;
             }
-            if (parts.Length != 4)
+            if (parts.Count != 4)
             {
                 return false;
             }

@@ -1887,6 +1887,7 @@ namespace FenBrowser.FenEngine.Rendering
                 "image-rendering", "rendering-intent", "image-orientation",
                 // 3D Transforms
                 "transform-origin", "transform-style", "backface-visibility", "perspective", "perspective-origin",
+                "translate", "rotate", "scale",
                 // Multi-column layout
                 "columns", "column-count", "column-width", "column-gap", "column-rule",
                 "column-rule-width", "column-rule-style", "column-rule-color", "column-span",
@@ -3347,6 +3348,8 @@ private static double? ExtractPx(string text, string prop)
             css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
             css.BackgroundSize = Safe(DictGet(css.Map, "background-size"))?.ToLowerInvariant();
             css.BackgroundPosition = Safe(DictGet(css.Map, "background-position"))?.ToLowerInvariant();
+            css.ObjectFit = Safe(DictGet(css.Map, "object-fit"))?.ToLowerInvariant();
+            css.ObjectPosition = Safe(DictGet(css.Map, "object-position"));
 
             double cssFlexVal;
             if (TryDouble(DictGet(css.Map, "flex-grow"), out cssFlexVal)) css.FlexGrow = cssFlexVal;
@@ -4361,7 +4364,7 @@ private static double? ExtractPx(string text, string prop)
             css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
 
             // Transform & Opacity
-            css.Transform = Safe(DictGet(css.Map, "transform"));
+            css.Transform = ComposeEffectiveTransform(css.Map);
             css.TransformOrigin = Safe(DictGet(css.Map, "transform-origin"));
             css.WillChange = Safe(DictGet(css.Map, "will-change"));
 
@@ -6230,6 +6233,74 @@ private static double? ExtractPx(string text, string prop)
                    s.StartsWith("clamp(") || 
                    s.StartsWith("env(") || 
                    s.StartsWith("var(");
+        }
+
+        private static string ComposeEffectiveTransform(IDictionary<string, string> map)
+        {
+            if (map == null)
+            {
+                return null;
+            }
+
+            var translate = NormalizeTransformLonghandValue(Safe(DictGet(map, "translate")), "translate");
+            var rotate = NormalizeTransformLonghandValue(Safe(DictGet(map, "rotate")), "rotate");
+            var scale = NormalizeTransformLonghandValue(Safe(DictGet(map, "scale")), "scale");
+            var transform = Safe(DictGet(map, "transform"));
+
+            var segments = new List<string>(4);
+            if (!string.IsNullOrEmpty(translate))
+            {
+                segments.Add(translate);
+            }
+
+            if (!string.IsNullOrEmpty(rotate))
+            {
+                segments.Add(rotate);
+            }
+
+            if (!string.IsNullOrEmpty(scale))
+            {
+                segments.Add(scale);
+            }
+
+            if (!string.IsNullOrWhiteSpace(transform) &&
+                !string.Equals(transform.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                segments.Add(transform.Trim());
+            }
+
+            if (segments.Count > 0)
+            {
+                return string.Join(" ", segments);
+            }
+
+            if (string.Equals(transform?.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return "none";
+            }
+
+            return null;
+        }
+
+        private static string NormalizeTransformLonghandValue(string rawValue, string functionName)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
+            {
+                return null;
+            }
+
+            var value = rawValue.Trim();
+            if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (Regex.IsMatch(value, @"^[a-zA-Z][a-zA-Z0-9-]*\s*\("))
+            {
+                return value;
+            }
+
+            return $"{functionName}({value})";
         }
 
         private static void ApplyGridTemplateShorthand(CssComputed css)

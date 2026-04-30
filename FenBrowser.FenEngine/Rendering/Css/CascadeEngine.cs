@@ -40,6 +40,28 @@ namespace FenBrowser.FenEngine.Rendering
             "placeholder",
             "selection"
         };
+        private static readonly HashSet<string> SupportedDisplayKeywords = new(StringComparer.Ordinal)
+        {
+            "none",
+            "contents",
+            "block",
+            "inline",
+            "inline-block",
+            "flow-root",
+            "list-item",
+            "flex",
+            "inline-flex",
+            "grid",
+            "inline-grid",
+            "table",
+            "inline-table",
+            "table-row-group",
+            "table-header-group",
+            "table-footer-group",
+            "table-row",
+            "table-cell",
+            "table-caption"
+        };
 
         public CascadeEngine(StyleSet styleSet)
         {
@@ -532,12 +554,20 @@ namespace FenBrowser.FenEngine.Rendering
 
             var property = NormalizePropertyKey(declaration.Property);
             var value = declaration.Value?.Trim() ?? string.Empty;
+            if (string.Equals(property, "display", StringComparison.Ordinal) &&
+                !TryNormalizeDisplayValue(value, out value))
+            {
+                // Invalid/unsupported display values must be ignored so they
+                // cannot override an earlier valid declaration in the cascade.
+                return;
+            }
+
             if (!IsValidDeclarationValue(property, value))
             {
                 return;
             }
 
-            computed[property] = CloneDeclaration(declaration, property, declaration.Value);
+            computed[property] = CloneDeclaration(declaration, property, value);
 
             switch (property)
             {
@@ -581,6 +611,38 @@ namespace FenBrowser.FenEngine.Rendering
                     ApplyInsetShorthand(computed, declaration, value);
                     break;
             }
+        }
+
+        private static bool TryNormalizeDisplayValue(string rawValue, out string normalized)
+        {
+            normalized = null;
+            if (string.IsNullOrWhiteSpace(rawValue))
+            {
+                return false;
+            }
+
+            string value = rawValue.Trim().ToLowerInvariant();
+            switch (value)
+            {
+                case "-webkit-box":
+                case "-webkit-flex":
+                case "-ms-flexbox":
+                    normalized = "flex";
+                    return true;
+                case "-webkit-inline-box":
+                case "-webkit-inline-flex":
+                case "-ms-inline-flexbox":
+                    normalized = "inline-flex";
+                    return true;
+            }
+
+            if (SupportedDisplayKeywords.Contains(value))
+            {
+                normalized = value;
+                return true;
+            }
+
+            return false;
         }
 
         private static string NormalizePropertyKey(string property)

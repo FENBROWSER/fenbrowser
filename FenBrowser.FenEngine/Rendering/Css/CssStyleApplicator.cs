@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using SkiaSharp;
@@ -135,7 +136,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     break;
 
                 case "transform":
-                    style.Transform = value;
+                case "translate":
+                case "rotate":
+                case "scale":
+                    style.Transform = ComposeEffectiveTransform(style.Map);
+                    break;
+
+                case "object-fit":
+                    style.ObjectFit = value?.Trim()?.ToLowerInvariant();
+                    break;
+
+                case "object-position":
+                    style.ObjectPosition = value?.Trim();
                     break;
                     
                 case "font-size":
@@ -167,6 +179,81 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     style.OverflowY = value;
                     break;
             }
+        }
+
+        private static string ComposeEffectiveTransform(IDictionary<string, string> map)
+        {
+            if (map == null)
+            {
+                return null;
+            }
+
+            var translate = NormalizeTransformLonghand(GetMapValue(map, "translate"), "translate");
+            var rotate = NormalizeTransformLonghand(GetMapValue(map, "rotate"), "rotate");
+            var scale = NormalizeTransformLonghand(GetMapValue(map, "scale"), "scale");
+            var transform = GetMapValue(map, "transform")?.Trim();
+
+            var segments = new List<string>(4);
+            if (!string.IsNullOrEmpty(translate)) segments.Add(translate);
+            if (!string.IsNullOrEmpty(rotate)) segments.Add(rotate);
+            if (!string.IsNullOrEmpty(scale)) segments.Add(scale);
+            if (!string.IsNullOrWhiteSpace(transform) &&
+                !string.Equals(transform, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                segments.Add(transform);
+            }
+
+            if (segments.Count > 0)
+            {
+                return string.Join(" ", segments);
+            }
+
+            return string.Equals(transform, "none", StringComparison.OrdinalIgnoreCase) ? "none" : null;
+        }
+
+        private static string NormalizeTransformLonghand(string value, string functionName)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var trimmed = value.Trim();
+            if (string.Equals(trimmed, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            int openParenIndex = trimmed.IndexOf('(');
+            if (openParenIndex > 0)
+            {
+                return trimmed;
+            }
+
+            return $"{functionName}({trimmed})";
+        }
+
+        private static string GetMapValue(IDictionary<string, string> map, string key)
+        {
+            if (map == null || string.IsNullOrEmpty(key))
+            {
+                return null;
+            }
+
+            if (map.TryGetValue(key, out var direct))
+            {
+                return direct;
+            }
+
+            foreach (var entry in map)
+            {
+                if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry.Value;
+                }
+            }
+
+            return null;
         }
     }
 }

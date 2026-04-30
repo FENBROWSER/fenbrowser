@@ -686,7 +686,11 @@ namespace FenBrowser.FenEngine.Rendering
             double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
             double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
 
-            if (token.EndsWith("rem"))
+            if (token.EndsWith("px"))
+            {
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v;
+            }
+            else if (token.EndsWith("rem"))
             {
                 if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
             }

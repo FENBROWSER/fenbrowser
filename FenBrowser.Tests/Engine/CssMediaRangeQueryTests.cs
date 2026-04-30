@@ -26,6 +26,34 @@ namespace FenBrowser.Tests.Engine
             Assert.False(EvaluateMediaQuery("(1200px > width)", 1200));
         }
 
+        [Fact]
+        public void MediaQuery_MaxWidth_DoesNotApplyOnDesktopViewport()
+        {
+            Assert.False(EvaluateMediaQuery("(max-width: 833px)", 1920));
+            Assert.True(EvaluateMediaQuery("(max-width: 833px)", 800));
+        }
+
+        [Fact]
+        public void MediaQuery_OnlyScreenAnd_MaxWidth_IsEvaluated()
+        {
+            Assert.False(EvaluateMediaQuery("only screen and (max-width: 833px)", 1920));
+            Assert.True(EvaluateMediaQuery("only screen and (max-width: 833px)", 800));
+        }
+
+        [Fact]
+        public void MediaQuery_MinMaxConjunction_WithCompactAnd_IsEvaluated()
+        {
+            Assert.True(EvaluateMediaQuery("(min-width:736px)and (max-width:1069px)", 900));
+            Assert.False(EvaluateMediaQuery("(min-width:736px)and (max-width:1069px)", 1280));
+        }
+
+        [Fact]
+        public void MediaQuery_WithAtMediaPrefix_IsEvaluated()
+        {
+            Assert.False(EvaluateMediaQuery("@media (max-width: 833px)", 1920));
+            Assert.True(EvaluateMediaQuery("@media (max-width: 833px)", 720));
+        }
+
         private static bool EvaluateMediaQuery(string query, double viewportWidth)
         {
             var method = typeof(CssLoader).GetMethod("EvaluateMediaQuery", BindingFlags.NonPublic | BindingFlags.Static);
