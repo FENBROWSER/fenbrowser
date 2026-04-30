@@ -78,15 +78,16 @@ namespace FenBrowser.FenEngine.Layout
             CssComputed style,
             ContainingBlock containingBlock,
             float intrinsicWidth = 0,
-            float intrinsicHeight = 0)
+            float intrinsicHeight = 0,
+            bool preserveIntrinsicAutoSize = false)
         {
             var result = new AbsoluteLayoutResult();
 
             // Solve horizontal axis
-            SolveHorizontal(style, containingBlock.Width, intrinsicWidth, ref result);
+            SolveHorizontal(style, containingBlock.Width, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
 
             // Solve vertical axis
-            SolveVertical(style, containingBlock.Height, intrinsicHeight, ref result);
+            SolveVertical(style, containingBlock.Height, intrinsicHeight, preserveIntrinsicAutoSize, ref result);
 
             // Apply min/max constraints
             ApplyConstraints(style, containingBlock, ref result);
@@ -98,6 +99,7 @@ namespace FenBrowser.FenEngine.Layout
             CssComputed style,
             float cbWidth,
             float intrinsicWidth,
+            bool preserveIntrinsicAutoSize,
             ref AbsoluteLayoutResult result)
         {
             // Parse position values
@@ -150,7 +152,9 @@ namespace FenBrowser.FenEngine.Layout
             else if (!width.HasValue && !left.HasValue && !right.HasValue)
             {
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr);
-                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
+                w = intrinsicWidth > 0
+                    ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
+                    : availableWidth;
                 l = 0;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
@@ -158,14 +162,18 @@ namespace FenBrowser.FenEngine.Layout
             else if (!width.HasValue && !left.HasValue)
             {
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr - r);
-                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
+                w = intrinsicWidth > 0
+                    ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
+                    : availableWidth;
                 l = cbWidth - ml - fixedSpace - w - mr - r;
                 result.WidthWasAuto = true;
             }
             else if (!width.HasValue && !right.HasValue)
             {
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - l - ml - mr);
-                w = intrinsicWidth > 0 ? Math.Min(intrinsicWidth, availableWidth) : availableWidth;
+                w = intrinsicWidth > 0
+                    ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
+                    : availableWidth;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }
@@ -213,6 +221,7 @@ namespace FenBrowser.FenEngine.Layout
             CssComputed style,
             float cbHeight,
             float intrinsicHeight,
+            bool preserveIntrinsicAutoSize,
             ref AbsoluteLayoutResult result)
         {
             // Parse position values
@@ -283,13 +292,17 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (!height.HasValue && !top.HasValue)
             {
-                h = intrinsicHeight > 0 ? intrinsicHeight : Math.Max(0, cbHeight - fixedSpace - mt - mb - b);
+                h = intrinsicHeight > 0
+                    ? (preserveIntrinsicAutoSize ? intrinsicHeight : Math.Max(0, Math.Min(intrinsicHeight, cbHeight - fixedSpace - mt - mb - b)))
+                    : Math.Max(0, cbHeight - fixedSpace - mt - mb - b);
                 t = cbHeight - mt - fixedSpace - h - mb - b;
                 result.HeightWasAuto = true;
             }
             else if (!height.HasValue && !bottom.HasValue)
             {
-                h = intrinsicHeight > 0 ? intrinsicHeight : Math.Max(0, cbHeight - fixedSpace - t - mt - mb);
+                h = intrinsicHeight > 0
+                    ? (preserveIntrinsicAutoSize ? intrinsicHeight : Math.Max(0, Math.Min(intrinsicHeight, cbHeight - fixedSpace - t - mt - mb)))
+                    : Math.Max(0, cbHeight - fixedSpace - t - mt - mb);
                 b = cbHeight - t - mt - fixedSpace - h - mb;
                 result.HeightWasAuto = true;
             }

@@ -473,5 +473,49 @@ namespace FenBrowser.Tests.Layout
             var gc0 = computer.GetBox(childContainer.Children[0]);
             Assert.Equal(100, gc0.ContentBox.Left);
         }
+
+        [Fact]
+        public void FlexRow_AutoWidthBlockItem_DoesNotKeepInfiniteProbeWidth()
+        {
+            var container = new Element("div");
+            var item = new Element("div");
+            var headline = new Element("h2");
+            headline.AppendChild(new Text("MacBook Air"));
+            item.AppendChild(headline);
+            container.AppendChild(item);
+
+            var styles = CreateStyles(container, new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                Width = 1920,
+                Height = 804
+            });
+
+            styles[item] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column"
+            };
+            styles[headline] = new CssComputed
+            {
+                Display = "block",
+                TextAlign = SKTextAlign.Center
+            };
+
+            var computer = CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(1920, 804));
+            computer.Arrange(container, new SKRect(0, 0, 1920, 804));
+
+            var itemBox = computer.GetBox(item);
+            var headlineBox = computer.GetBox(headline);
+
+            Assert.True(
+                itemBox.ContentBox.Width <= 1921f,
+                $"Expected flex item width to remain bounded by container; got {itemBox.ContentBox.Width}");
+            Assert.True(
+                headlineBox.ContentBox.Left < 5000f,
+                $"Expected headline geometry to remain finite; got left={headlineBox.ContentBox.Left}");
+        }
     }
 }

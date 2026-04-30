@@ -190,7 +190,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             floatHeight = GetFloatOuterHeight(child);
                         }
 
-                        if (floatWidth <= 0f || availableBand + floatEpsilon >= floatWidth)
+                        // If no prior floats intrude on this line, place the float at the current
+                        // band even when it is wider than the available inline size. Moving it down
+                        // by its own height in that case incorrectly stacks single floats vertically
+                        // (seen on Google header controls) instead of allowing normal overflow.
+                        if (floatWidth <= 0f ||
+                            availableBand + floatEpsilon >= floatWidth ||
+                            !floatManager.HasFloats)
                         {
                             if (floatStyle == "right")
                             {
@@ -984,7 +990,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static float ResolvePercentageHeightContainingBlock(LayoutBox box, LayoutState state)
         {
-            if (box?.Parent == null || !HasDefiniteContainingBlockHeight(box.Parent))
+            if (box?.Parent == null)
+            {
+                return float.NaN;
+            }
+
+            if (TryResolveOutOfFlowContainingBlockHeight(box.Parent, state, out float resolvedOutOfFlowHeight))
+            {
+                return resolvedOutOfFlowHeight;
+            }
+
+            if (!HasDefiniteContainingBlockHeight(box.Parent))
             {
                 return float.NaN;
             }
@@ -1021,6 +1037,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return true;
             }
 
+            if (IsResolvedOutOfFlowHeightDefinite(box))
+            {
+                return true;
+            }
+
             var style = box.ComputedStyle;
             if (style == null)
             {
@@ -1043,6 +1064,39 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return false;
+        }
+
+        private static bool TryResolveOutOfFlowContainingBlockHeight(LayoutBox parent, LayoutState state, out float resolvedHeight)
+        {
+            resolvedHeight = float.NaN;
+            if (!IsResolvedOutOfFlowHeightDefinite(parent))
+            {
+                return false;
+            }
+
+            resolvedHeight = state.ContainingBlockHeight;
+            if (!float.IsFinite(resolvedHeight) || resolvedHeight <= 0f)
+            {
+                resolvedHeight = state.AvailableSize.Height;
+            }
+
+            if (!float.IsFinite(resolvedHeight) || resolvedHeight <= 0f)
+            {
+                resolvedHeight = parent.Geometry?.ContentBox.Height ?? float.NaN;
+            }
+
+            return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
+        }
+
+        private static bool IsResolvedOutOfFlowHeightDefinite(LayoutBox box)
+        {
+            if (box == null || !box.IsOutOfFlow || box.Geometry == null)
+            {
+                return false;
+            }
+
+            float resolvedHeight = box.Geometry.ContentBox.Height;
+            return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
         }
 
         private static bool TryResolveCollapsedThroughMargin(LayoutBox box, out float collapsedMargin)

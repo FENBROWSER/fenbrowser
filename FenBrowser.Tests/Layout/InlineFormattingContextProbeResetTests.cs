@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core;
 using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
@@ -58,6 +59,94 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(0f, imageBox.Geometry.MarginBox.Left, 1);
             Assert.Equal(120f, imageBox.Geometry.MarginBox.Width, 1);
             Assert.Equal(162f, imageBox.Geometry.MarginBox.Height, 1);
+        }
+
+        [Fact]
+        public void InlineBlockFlow_LongUnbreakableText_DoesNotExpandFiniteUsedWidth()
+        {
+            var root = new Element("div");
+            var headline = new Element("h3");
+            var tileContent = new Element("div");
+            var longUnbreakableToken = new Text(new string('A', 1024));
+
+            headline.AppendChild(longUnbreakableToken);
+            tileContent.AppendChild(headline);
+            root.AppendChild(tileContent);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 320, Height = 300 },
+                [tileContent] = new CssComputed { Display = "block", Width = 320 },
+                [headline] = new CssComputed { Display = "block" }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 320, 300);
+            var tileContentBox = FindBox(rootBox, tileContent);
+            var headlineBox = FindBox(rootBox, headline);
+
+            Assert.NotNull(tileContentBox);
+            Assert.NotNull(headlineBox);
+
+            Assert.True(
+                tileContentBox.Geometry.MarginBox.Width <= 321f,
+                $"Expected finite block width to remain bounded; got {tileContentBox.Geometry.MarginBox.Width}");
+            Assert.True(
+                headlineBox.Geometry.MarginBox.Width <= 321f,
+                $"Expected inline formatting not to expand finite used width; got {headlineBox.Geometry.MarginBox.Width}");
+        }
+
+        [Fact]
+        public void InlineButtons_AutoWidth_DoNotOverlap_AndRetainIntrinsicLabelWidth()
+        {
+            var root = new Element("div");
+            var ctas = new Element("div");
+            var primary = new Element("a");
+            var secondary = new Element("a");
+            primary.AppendChild(new Text("Learn more"));
+            secondary.AppendChild(new Text("Buy"));
+            ctas.AppendChild(primary);
+            ctas.AppendChild(secondary);
+            root.AppendChild(ctas);
+
+            var buttonPadding = new Thickness(15, 8, 15, 8);
+            var buttonBorder = new Thickness(1);
+            var buttonMinContentWidth = 28d;
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 942, Height = 200 },
+                [ctas] = new CssComputed { Display = "block", Width = 942, TextAlign = SKTextAlign.Center },
+                [primary] = new CssComputed
+                {
+                    Display = "inline-block",
+                    WhiteSpace = "nowrap",
+                    MinWidth = buttonMinContentWidth,
+                    Padding = buttonPadding,
+                    BorderThickness = buttonBorder
+                },
+                [secondary] = new CssComputed
+                {
+                    Display = "inline-block",
+                    WhiteSpace = "nowrap",
+                    MinWidth = buttonMinContentWidth,
+                    Padding = buttonPadding,
+                    BorderThickness = buttonBorder,
+                    Margin = new Thickness(14, 0, 0, 0)
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 942, 200);
+            var primaryBox = FindBox(rootBox, primary);
+            var secondaryBox = FindBox(rootBox, secondary);
+
+            Assert.NotNull(primaryBox);
+            Assert.NotNull(secondaryBox);
+            Assert.True(
+                primaryBox.Geometry.MarginBox.Width > 70f,
+                $"Expected primary button to grow for label width; got {primaryBox.Geometry.MarginBox.Width}");
+            Assert.True(
+                secondaryBox.Geometry.MarginBox.Left >= primaryBox.Geometry.MarginBox.Right - 0.5f,
+                $"Expected secondary button to not overlap primary. primary={primaryBox.Geometry.MarginBox} secondary={secondaryBox.Geometry.MarginBox}");
         }
 
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)

@@ -104,6 +104,39 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void Solver_AutoWidthWithLeftPercent_PreservesIntrinsicForReplacedElements()
+        {
+            var cb = new ContainingBlock { Width = 1920, Height = 804 };
+
+            var style = new CssComputed
+            {
+                Position = "absolute",
+                LeftPercent = 50,
+                Bottom = 0,
+                HeightPercent = 100
+            };
+
+            var withoutPreserve = AbsolutePositionSolver.Solve(
+                style,
+                cb,
+                intrinsicWidth: 1920,
+                intrinsicHeight: 804,
+                preserveIntrinsicAutoSize: false);
+
+            var withPreserve = AbsolutePositionSolver.Solve(
+                style,
+                cb,
+                intrinsicWidth: 1920,
+                intrinsicHeight: 804,
+                preserveIntrinsicAutoSize: true);
+
+            Assert.Equal(960f, withoutPreserve.Width);
+            Assert.Equal(1920f, withPreserve.Width);
+            Assert.Equal(960f, withPreserve.X);
+            Assert.Equal(804f, withPreserve.Height);
+        }
+
+        [Fact]
         public void ResolvePositionedBox_FixedInsetUsesViewportContainingBlock()
         {
             var parentStyle = new CssComputed { Display = "block" };

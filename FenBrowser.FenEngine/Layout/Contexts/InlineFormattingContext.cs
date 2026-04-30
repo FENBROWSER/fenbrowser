@@ -550,17 +550,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float maxLineWidth = 0f;
             foreach (var line in lines) maxLineWidth = Math.Max(maxLineWidth, line.Width);
             
-            // SHRINK-TO-FIT: If width was auto and available was infinity, we shrink to widest line.
-            // Also guard against relayouts that pass a finite available width that is smaller than
-            // the line width; keep the box wide enough to contain the measured text.
+            // SHRINK-TO-FIT: only unconstrained probes should adopt measured line width.
+            // In finite layout, block/inline containers must keep their resolved content width
+            // and let long inline content overflow/wrap instead of widening the container.
             float finalContentWidth = box.Geometry.ContentBox.Width;
             if (box.ComputedStyle != null && !box.ComputedStyle.Width.HasValue)
             {
                 if (float.IsInfinity(state.AvailableSize.Width))
-                {
-                    finalContentWidth = maxLineWidth;
-                }
-                else if (maxLineWidth > finalContentWidth)
                 {
                     finalContentWidth = maxLineWidth;
                 }
@@ -722,10 +718,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                         float probedWidth = inlineBox.Geometry.MarginBox.Width;
                         float probedHeight = inlineBox.Geometry.MarginBox.Height;
-                        if (probedWidth > 0 && probedHeight >= 0)
+                        float nonContentWidth = GetNonContentWidth(inlineBox.ComputedStyle);
+                        bool hasRenderableLabel = TryMeasureInlineLabelContent(inlineBox, out _, out _);
+                        bool collapsedToChromeOnly = hasRenderableLabel && probedWidth <= nonContentWidth + 0.5f;
+                        if (probedWidth > 0 && probedHeight > 0 && !collapsedToChromeOnly)
                         {
                             return new SKSize(probedWidth, Math.Max(probedHeight, 0f));
                         }
+                    }
+
+                    if (TryMeasureInlineLabelContent(inlineBox, out float labelContentWidth, out float labelContentHeight))
+                    {
+                        float fallbackWidth = labelContentWidth;
+                        float fallbackHeight = labelContentHeight;
+                        ApplyMinMaxConstraints(inlineBox.ComputedStyle, state, ref fallbackWidth, ref fallbackHeight);
+                        return AddNonContentSpacing(new SKSize(Math.Max(0f, fallbackWidth), Math.Max(0f, fallbackHeight)), inlineBox.ComputedStyle);
                     }
 
                     float cw = (float)(inlineBox.ComputedStyle?.Width ?? 0);
@@ -883,6 +890,37 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return false;
+        }
+
+        private bool TryMeasureInlineLabelContent(LayoutBox box, out float contentWidth, out float contentHeight)
+        {
+            contentWidth = 0f;
+            contentHeight = 0f;
+
+            if (box?.SourceNode is not Element element)
+            {
+                return false;
+            }
+
+            string label = LayoutHelper.GetRenderableTextContentTrimmed(element);
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                return false;
+            }
+
+            var labelSize = MeasureString(label, box.ComputedStyle);
+            float lineHeight = Math.Max(0f, MeasureTextMetrics("Hg", box.ComputedStyle).LineHeight);
+            contentWidth = Math.Max(0f, labelSize.Width);
+            contentHeight = Math.Max(lineHeight, Math.Max(0f, labelSize.Height));
+            return contentWidth > 0f || contentHeight > 0f;
+        }
+
+        private static float GetNonContentWidth(CssComputed style)
+        {
+            var p = style?.Padding ?? new Thickness();
+            var b = style?.BorderThickness ?? new Thickness();
+            var m = style?.Margin ?? new Thickness();
+            return (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
         }
 
         private static void ResetInlineProbeOrigin(LayoutBox box)

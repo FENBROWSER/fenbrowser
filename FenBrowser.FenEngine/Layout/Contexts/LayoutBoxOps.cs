@@ -4,6 +4,8 @@ using FenBrowser.FenEngine.Layout.Tree;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 {
@@ -127,6 +129,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             var anchor = GetPositionAnchor(box.Geometry);
             float dx = targetX - anchor.X;
             float dy = targetY - anchor.Y;
+
             ShiftSubtree(box, dx, dy);
         }
 

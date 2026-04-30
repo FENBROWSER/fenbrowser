@@ -60,8 +60,10 @@ namespace FenBrowser.FenEngine.Layout
 
             float intrinsicWidth = box.Geometry.ContentBox.Width;
             float intrinsicHeight = box.Geometry.ContentBox.Height;
-            EnsureIntrinsicSize(box, style, ref intrinsicWidth, ref intrinsicHeight);
+            EnsureIntrinsicSize(box, style, cbRect, ref intrinsicWidth, ref intrinsicHeight);
             NormalizeIntrinsicSizeForAutoPositionedBox(box, style, cbRect, ref intrinsicWidth, ref intrinsicHeight);
+            bool preserveIntrinsicAutoSize = box.SourceNode is Element sourceElement &&
+                                             ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(sourceElement);
 
             var cb = new ContainingBlock
             {
@@ -76,7 +78,8 @@ namespace FenBrowser.FenEngine.Layout
                 style,
                 cb,
                 Math.Max(0f, intrinsicWidth),
-                Math.Max(0f, intrinsicHeight));
+                Math.Max(0f, intrinsicHeight),
+                preserveIntrinsicAutoSize);
 
             if (isFixed && box.SourceNode is Element element)
             {
@@ -124,7 +127,7 @@ namespace FenBrowser.FenEngine.Layout
             }
         }
 
-        private static void EnsureIntrinsicSize(LayoutBox box, CssComputed style, ref float width, ref float height)
+        private static void EnsureIntrinsicSize(LayoutBox box, CssComputed style, SKRect containingBlockRect, ref float width, ref float height)
         {
             if (!float.IsFinite(width) || width < 0f) width = 0f;
             if (!float.IsFinite(height) || height < 0f) height = 0f;
@@ -170,7 +173,9 @@ namespace FenBrowser.FenEngine.Layout
                 var resolved = ReplacedElementSizing.ResolveReplacedSize(
                     tag,
                     style,
-                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    new SKSize(
+                        Math.Max(0f, containingBlockRect.Width),
+                        Math.Max(0f, containingBlockRect.Height)),
                     intrinsicW,
                     intrinsicH,
                     attrW,

@@ -167,8 +167,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                                              !string.IsNullOrWhiteSpace(flexShorthand) &&
                                              flexShorthand.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Length >= 3));
                 bool isFlexBasisAuto = !hasFlexBasisExplicit && (itemStyle?.FlexBasis == null);
+                // Flex items with auto main-size should measure from intrinsic content width,
+                // not from the full container width, regardless of inline/block display.
                 bool preferIntrinsicWidth = isRow && !hasExplicitWidth && (isFlexBasisAuto || !hasFlexGrow);
-                bool preferIntrinsicCrossInColumn = !isRow && alignItems != "stretch" && !hasExplicitWidth;
+                bool preferIntrinsicCrossInColumn = !isRow && inlineLike && alignItems != "stretch" && !hasExplicitWidth;
 
                 // Use intrinsic probing for inline-like items without flex-grow/width,
                 // otherwise constrain to container width to avoid collapse.
@@ -1360,6 +1362,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return basis;
             }
 
+            if (TryResolveOutOfFlowContainingBlockHeight(box.Parent, state, out float resolvedOutOfFlowHeight))
+            {
+                return resolvedOutOfFlowHeight;
+            }
+
             if (!HasDefiniteContainingBlockHeight(box.Parent))
             {
                 return float.NaN;
@@ -1377,6 +1384,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static bool HasDefiniteContainingBlockHeight(LayoutBox box)
         {
             if (box == null)
+            {
+                return true;
+            }
+
+            if (IsResolvedOutOfFlowHeightDefinite(box))
             {
                 return true;
             }
@@ -1403,6 +1415,39 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return false;
+        }
+
+        private static bool TryResolveOutOfFlowContainingBlockHeight(LayoutBox parent, LayoutState state, out float resolvedHeight)
+        {
+            resolvedHeight = float.NaN;
+            if (!IsResolvedOutOfFlowHeightDefinite(parent))
+            {
+                return false;
+            }
+
+            resolvedHeight = state.ContainingBlockHeight;
+            if (!float.IsFinite(resolvedHeight) || resolvedHeight <= 0f)
+            {
+                resolvedHeight = state.AvailableSize.Height;
+            }
+
+            if (!float.IsFinite(resolvedHeight) || resolvedHeight <= 0f)
+            {
+                resolvedHeight = parent.Geometry?.ContentBox.Height ?? float.NaN;
+            }
+
+            return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
+        }
+
+        private static bool IsResolvedOutOfFlowHeightDefinite(LayoutBox box)
+        {
+            if (box == null || !box.IsOutOfFlow || box.Geometry == null)
+            {
+                return false;
+            }
+
+            float resolvedHeight = box.Geometry.ContentBox.Height;
+            return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
         }
 
         private static float GetColumnMainSize(LayoutBox item)
