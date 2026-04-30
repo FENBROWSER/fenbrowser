@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
+using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.WebAPIs;
 using FenBrowser.FenEngine.Storage;
 using Xunit;
@@ -137,13 +138,14 @@ namespace FenBrowser.Tests.WebAPIs
 
             await AwaitPromise(cache.Get("put").AsFunction().Invoke(new[] { request, FenValue.FromObject(response) }, null).AsObject() as FenObject);
 
-            var cached = (await AwaitPromise(cache.Get("match").AsFunction().Invoke(new[] { request }, null).AsObject() as FenObject)).AsObject();
-            Assert.Equal("{\"ok\":true,\"count\":3}", cached.Get("body").AsString());
+            var cachedForText = (await AwaitPromise(cache.Get("match").AsFunction().Invoke(new[] { request }, null).AsObject() as FenObject)).AsObject();
+            Assert.Equal("{\"ok\":true,\"count\":3}", cachedForText.Get("body").AsString());
 
-            var textValue = await AwaitPromise(cached.Get("text").AsFunction().Invoke(Array.Empty<FenValue>(), null).AsObject() as FenObject);
+            var textValue = await AwaitPromise(cachedForText.Get("text").AsFunction().Invoke(Array.Empty<FenValue>(), null).AsObject() as FenObject);
             Assert.Equal("{\"ok\":true,\"count\":3}", textValue.AsString());
 
-            var jsonValue = await AwaitPromise(cached.Get("json").AsFunction().Invoke(Array.Empty<FenValue>(), null).AsObject() as FenObject);
+            var cachedForJson = (await AwaitPromise(cache.Get("match").AsFunction().Invoke(new[] { request }, null).AsObject() as FenObject)).AsObject();
+            var jsonValue = await AwaitPromise(cachedForJson.Get("json").AsFunction().Invoke(Array.Empty<FenValue>(), null).AsObject() as FenObject);
             Assert.True(jsonValue.IsObject);
             Assert.True(jsonValue.AsObject().Get("ok").AsBoolean());
             Assert.Equal(3, jsonValue.AsObject().Get("count").AsNumber());
@@ -165,6 +167,19 @@ namespace FenBrowser.Tests.WebAPIs
         {
             for (var i = 0; i < 80; i++)
             {
+                if (promise is JsPromise jsPromise)
+                {
+                    if (jsPromise.IsFulfilled)
+                    {
+                        return jsPromise.Result;
+                    }
+
+                    if (jsPromise.IsRejected)
+                    {
+                        throw new Exception($"Promise rejected: {jsPromise.Result.ToString()}");
+                    }
+                }
+
                 var state = promise.Get("__state").AsString();
                 if (state == "fulfilled")
                 {
@@ -186,6 +201,19 @@ namespace FenBrowser.Tests.WebAPIs
         {
             for (var i = 0; i < 80; i++)
             {
+                if (promise is JsPromise jsPromise)
+                {
+                    if (jsPromise.IsRejected)
+                    {
+                        return jsPromise.Result.ToString();
+                    }
+
+                    if (jsPromise.IsFulfilled)
+                    {
+                        throw new Exception("Expected promise rejection but it was fulfilled.");
+                    }
+                }
+
                 var state = promise.Get("__state").AsString();
                 if (state == "rejected")
                 {
