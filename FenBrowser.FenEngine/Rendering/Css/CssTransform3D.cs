@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text.RegularExpressions;
+using System.Text;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -24,17 +24,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(value) || value.Equals("none", StringComparison.OrdinalIgnoreCase))
                 return transform;
 
-            // Match all transform functions: name(args)
-            var funcMatches = Regex.Matches(value, @"(\w+)\s*\(([^)]+)\)");
-            
-            foreach (Match m in funcMatches)
+            foreach (var fn in ExtractTransformFunctions(value))
             {
-                string func = m.Groups[1].Value.ToLowerInvariant();
-                string args = m.Groups[2].Value;
-                var rawValues = SplitArgs(args);
+                var rawValues = SplitArgs(fn.Args);
                 var values = ParseArgs(rawValues);
 
-                var tf = new TransformFunction { Name = func, Values = values, RawValues = rawValues };
+                var tf = new TransformFunction { Name = fn.Name, Values = values, RawValues = rawValues };
                 transform._functions.Add(tf);
             }
 
@@ -291,7 +286,119 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static List<string> SplitArgs(string args)
         {
-            return new List<string>(args.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries));
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(args))
+            {
+                return result;
+            }
+
+            bool hasTopLevelComma = false;
+            int scanDepth = 0;
+            bool scanInString = false;
+            char scanStringChar = '\0';
+            for (int i = 0; i < args.Length; i++)
+            {
+                char ch = args[i];
+                if (scanInString)
+                {
+                    if (ch == scanStringChar) scanInString = false;
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    scanInString = true;
+                    scanStringChar = ch;
+                    continue;
+                }
+
+                if (ch == '(') { scanDepth++; continue; }
+                if (ch == ')') { scanDepth = Math.Max(0, scanDepth - 1); continue; }
+                if (ch == ',' && scanDepth == 0)
+                {
+                    hasTopLevelComma = true;
+                    break;
+                }
+            }
+
+            var current = new StringBuilder();
+            int depth = 0;
+            bool inString = false;
+            char stringChar = '\0';
+            for (int i = 0; i < args.Length; i++)
+            {
+                char ch = args[i];
+                if (inString)
+                {
+                    current.Append(ch);
+                    if (ch == stringChar) inString = false;
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    stringChar = ch;
+                    current.Append(ch);
+                    continue;
+                }
+
+                if (ch == '(')
+                {
+                    depth++;
+                    current.Append(ch);
+                    continue;
+                }
+
+                if (ch == ')')
+                {
+                    depth = Math.Max(0, depth - 1);
+                    current.Append(ch);
+                    continue;
+                }
+
+                bool shouldSplit = false;
+                if (depth == 0)
+                {
+                    if (hasTopLevelComma)
+                    {
+                        shouldSplit = ch == ',';
+                    }
+                    else
+                    {
+                        shouldSplit = char.IsWhiteSpace(ch);
+                    }
+                }
+
+                if (shouldSplit)
+                {
+                    if (current.Length > 0)
+                    {
+                        var token = current.ToString().Trim();
+                        if (token.Length > 0)
+                        {
+                            result.Add(token);
+                        }
+
+                        current.Clear();
+                    }
+
+                    continue;
+                }
+
+                current.Append(ch);
+            }
+
+            if (current.Length > 0)
+            {
+                var token = current.ToString().Trim();
+                if (token.Length > 0)
+                {
+                    result.Add(token);
+                }
+            }
+
+            return result;
         }
 
         private static List<float> ParseArgs(IEnumerable<string> parts)
@@ -301,48 +408,15 @@ namespace FenBrowser.FenEngine.Rendering
             foreach (var part in parts)
             {
                 var clean = part.Trim().ToLowerInvariant();
-                
-                // Handle various units
-                float value = 0;
-                if (clean.EndsWith("deg"))
+
+                if (TryParseTransformValue(clean, out var parsed))
                 {
-                    float.TryParse(clean.Replace("deg", ""), out value);
-                }
-                else if (clean.EndsWith("rad"))
-                {
-                    float.TryParse(clean.Replace("rad", ""), out var rad);
-                    value = (float)(rad * 180 / Math.PI);
-                }
-                else if (clean.EndsWith("turn"))
-                {
-                    float.TryParse(clean.Replace("turn", ""), out var turn);
-                    value = turn * 360;
-                }
-                else if (clean.EndsWith("grad"))
-                {
-                    float.TryParse(clean.Replace("grad", ""), out var grad);
-                    value = grad * 0.9f;
-                }
-                else if (clean.EndsWith("px"))
-                {
-                    float.TryParse(clean.Replace("px", ""), out value);
-                }
-                else if (clean.EndsWith("%"))
-                {
-                    float.TryParse(clean.Replace("%", ""), out value);
-                    value /= 100f;
-                }
-                else if (clean.EndsWith("em") || clean.EndsWith("rem"))
-                {
-                    float.TryParse(clean.Replace("em", "").Replace("r", ""), out value);
-                    value *= 16; // Approximate 1em = 16px
+                    result.Add(parsed);
                 }
                 else
                 {
-                    float.TryParse(clean, out value);
+                    result.Add(0f);
                 }
-
-                result.Add(value);
             }
 
             return result;
@@ -352,15 +426,260 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (func.RawValues != null && index < func.RawValues.Count)
             {
-                var raw = func.RawValues[index].Trim().ToLowerInvariant();
-                if (raw.EndsWith("%", StringComparison.Ordinal) &&
-                    float.TryParse(raw.Substring(0, raw.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+                var raw = func.RawValues[index].Trim();
+                var resolvedRaw = ResolveVarFallbackLiterals(raw);
+                if (CssLoader.TryPx(resolvedRaw, out var px, emBase: 16.0, percentBase: referenceLength, allowUnitless: true))
+                {
+                    return (float)px;
+                }
+
+                var lower = resolvedRaw.ToLowerInvariant();
+                if (resolvedRaw.EndsWith("%", StringComparison.Ordinal) &&
+                    float.TryParse(lower.Substring(0, lower.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
                 {
                     return referenceLength * (percent / 100f);
                 }
             }
 
             return index < func.Values.Count ? func.Values[index] : 0f;
+        }
+
+        private static bool TryParseTransformValue(string raw, out float value)
+        {
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            raw = ResolveVarFallbackLiterals(raw).Trim();
+
+            if (raw.EndsWith("deg", StringComparison.Ordinal))
+            {
+                return float.TryParse(raw[..^3], NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+            }
+
+            if (raw.EndsWith("rad", StringComparison.Ordinal))
+            {
+                if (float.TryParse(raw[..^3], NumberStyles.Float, CultureInfo.InvariantCulture, out var radians))
+                {
+                    value = (float)(radians * 180 / Math.PI);
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (raw.EndsWith("turn", StringComparison.Ordinal))
+            {
+                if (float.TryParse(raw[..^4], NumberStyles.Float, CultureInfo.InvariantCulture, out var turns))
+                {
+                    value = turns * 360f;
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (raw.EndsWith("grad", StringComparison.Ordinal))
+            {
+                if (float.TryParse(raw[..^4], NumberStyles.Float, CultureInfo.InvariantCulture, out var grads))
+                {
+                    value = grads * 0.9f;
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (raw.EndsWith("%", StringComparison.Ordinal) &&
+                float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var percent))
+            {
+                value = percent / 100f;
+                return true;
+            }
+
+            if (CssLoader.TryPx(raw, out var px, emBase: 16.0, percentBase: 0, allowUnitless: true))
+            {
+                value = (float)px;
+                return true;
+            }
+
+            if (raw.StartsWith("var(", StringComparison.OrdinalIgnoreCase) &&
+                TryExtractVarFallback(raw, out var fallback))
+            {
+                return TryParseTransformValue(fallback, out value);
+            }
+
+            return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool TryExtractVarFallback(string raw, out string fallback)
+        {
+            fallback = null;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            int open = raw.IndexOf('(');
+            int close = raw.LastIndexOf(')');
+            if (open < 0 || close <= open + 1)
+            {
+                return false;
+            }
+
+            var inner = raw.Substring(open + 1, close - open - 1);
+            int depth = 0;
+            bool inString = false;
+            char stringChar = '\0';
+            for (int i = 0; i < inner.Length; i++)
+            {
+                char ch = inner[i];
+                if (inString)
+                {
+                    if (ch == stringChar) inString = false;
+                    continue;
+                }
+
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    stringChar = ch;
+                    continue;
+                }
+
+                if (ch == '(') { depth++; continue; }
+                if (ch == ')') { depth = Math.Max(0, depth - 1); continue; }
+                if (ch == ',' && depth == 0)
+                {
+                    fallback = inner[(i + 1)..].Trim();
+                    return !string.IsNullOrWhiteSpace(fallback);
+                }
+            }
+
+            return false;
+        }
+
+        private static string ResolveVarFallbackLiterals(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw) ||
+                raw.IndexOf("var(", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return raw;
+            }
+
+            var sb = new StringBuilder(raw.Length);
+            int idx = 0;
+            while (idx < raw.Length)
+            {
+                int pos = raw.IndexOf("var(", idx, StringComparison.OrdinalIgnoreCase);
+                if (pos < 0)
+                {
+                    sb.Append(raw.Substring(idx));
+                    break;
+                }
+
+                sb.Append(raw.Substring(idx, pos - idx));
+
+                int argsStart = pos + 4;
+                int depth = 1;
+                int i = argsStart;
+                while (i < raw.Length && depth > 0)
+                {
+                    if (raw[i] == '(') depth++;
+                    else if (raw[i] == ')') depth--;
+                    i++;
+                }
+
+                if (depth != 0)
+                {
+                    sb.Append(raw.Substring(pos));
+                    break;
+                }
+
+                int argsLength = (i - 1) - argsStart;
+                string inner = argsLength > 0 ? raw.Substring(argsStart, argsLength) : string.Empty;
+                string replacement = "0";
+                if (TryExtractVarFallback("var(" + inner + ")", out var fallback) && !string.IsNullOrWhiteSpace(fallback))
+                {
+                    replacement = ResolveVarFallbackLiterals(fallback);
+                }
+
+                sb.Append(replacement);
+                idx = i;
+            }
+
+            return sb.ToString();
+        }
+
+        private static List<(string Name, string Args)> ExtractTransformFunctions(string input)
+        {
+            var result = new List<(string Name, string Args)>();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return result;
+            }
+
+            int i = 0;
+            while (i < input.Length)
+            {
+                while (i < input.Length && char.IsWhiteSpace(input[i]))
+                {
+                    i++;
+                }
+
+                if (i >= input.Length)
+                {
+                    break;
+                }
+
+                int nameStart = i;
+                while (i < input.Length && (char.IsLetterOrDigit(input[i]) || input[i] == '-' || input[i] == '_'))
+                {
+                    i++;
+                }
+
+                if (i <= nameStart)
+                {
+                    i++;
+                    continue;
+                }
+
+                string name = input.Substring(nameStart, i - nameStart).Trim().ToLowerInvariant();
+                while (i < input.Length && char.IsWhiteSpace(input[i]))
+                {
+                    i++;
+                }
+
+                if (i >= input.Length || input[i] != '(')
+                {
+                    continue;
+                }
+
+                int argsStart = i + 1;
+                int depth = 1;
+                i++;
+                while (i < input.Length && depth > 0)
+                {
+                    if (input[i] == '(') depth++;
+                    else if (input[i] == ')') depth--;
+                    i++;
+                }
+
+                if (depth != 0)
+                {
+                    break;
+                }
+
+                int argsEnd = i - 1;
+                if (argsEnd >= argsStart)
+                {
+                    result.Add((name, input.Substring(argsStart, argsEnd - argsStart)));
+                }
+            }
+
+            return result;
         }
 
         private class TransformFunction
