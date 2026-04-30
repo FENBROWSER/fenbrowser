@@ -412,26 +412,35 @@ namespace FenBrowser.FenEngine.Rendering
                         var matrix = cssTransform.ToSKMatrix(box.BorderBox);
                         if (matrix != SKMatrix.Identity)
                         {
-                            // Determine transform-origin (default is center of border box per CSS spec)
-                            float ox = box.BorderBox.MidX;
-                            float oy = box.BorderBox.MidY;
-
-                            if (!string.IsNullOrEmpty(style.TransformOrigin))
+                            // Translation-only transforms are origin-independent; applying
+                            // transform-origin wrapping introduces drift on hero media.
+                            if (IsPureTranslationMatrix(matrix))
                             {
-                                ParseTransformOrigin(style.TransformOrigin, box.BorderBox, out ox, out oy);
+                                childContext.TransformMatrix = matrix;
                             }
+                            else
+                            {
+                                // Determine transform-origin (default is center of border box per CSS spec)
+                                float ox = box.BorderBox.MidX;
+                                float oy = box.BorderBox.MidY;
 
-                            // Build full matrix with transform-origin:
-                            // Effect: translate(ox,oy) * transform * translate(-ox,-oy) * point
-                            // PreConcat is right-multiply, so we build: origin * matrix * inverseOrigin
-                            var origin = SKMatrix.CreateTranslation(ox, oy);
-                            var inverseOrigin = SKMatrix.CreateTranslation(-ox, -oy);
-                            var full = SKMatrix.CreateIdentity();
-                            full = full.PreConcat(origin);
-                            full = full.PreConcat(matrix);
-                            full = full.PreConcat(inverseOrigin);
+                                if (!string.IsNullOrEmpty(style.TransformOrigin))
+                                {
+                                    ParseTransformOrigin(style.TransformOrigin, box.BorderBox, out ox, out oy);
+                                }
 
-                            childContext.TransformMatrix = full;
+                                // Build full matrix with transform-origin:
+                                // Effect: translate(ox,oy) * transform * translate(-ox,-oy) * point
+                                // PreConcat is right-multiply, so we build: origin * matrix * inverseOrigin
+                                var origin = SKMatrix.CreateTranslation(ox, oy);
+                                var inverseOrigin = SKMatrix.CreateTranslation(-ox, -oy);
+                                var full = SKMatrix.CreateIdentity();
+                                full = full.PreConcat(origin);
+                                full = full.PreConcat(matrix);
+                                full = full.PreConcat(inverseOrigin);
+
+                                childContext.TransformMatrix = full;
+                            }
                         }
                     }
                 }
@@ -2792,7 +2801,8 @@ namespace FenBrowser.FenEngine.Rendering
                     Bounds = box.ContentBox,
                     SourceNode = elem,
                     Bitmap = bitmap,
-                    ObjectFit = style?.ObjectFit ?? "fill"
+                    ObjectFit = style?.ObjectFit ?? "fill",
+                    ObjectPosition = style?.ObjectPosition ?? "50% 50%"
                 };
             }
             else if (tag == "OBJECT")
@@ -2820,7 +2830,8 @@ namespace FenBrowser.FenEngine.Rendering
                     Bounds = box.ContentBox,
                     SourceNode = elem,
                     Bitmap = bitmap,
-                    ObjectFit = style?.ObjectFit ?? "fill"
+                    ObjectFit = style?.ObjectFit ?? "fill",
+                    ObjectPosition = style?.ObjectPosition ?? "50% 50%"
                 };
             }
             else if (tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal))
@@ -2922,7 +2933,8 @@ namespace FenBrowser.FenEngine.Rendering
                     Bounds = box.ContentBox,
                     SourceNode = elem,
                     Bitmap = bitmap,
-                    ObjectFit = style?.ObjectFit ?? "fill"
+                    ObjectFit = style?.ObjectFit ?? "fill",
+                    ObjectPosition = style?.ObjectPosition ?? "50% 50%"
                 };
             }
 
@@ -3984,6 +3996,7 @@ namespace FenBrowser.FenEngine.Rendering
                         Bounds = new SKRect(markerX, markerY - markerSize, markerX + markerSize, markerY),
                         Bitmap = bitmap,
                         ObjectFit = "contain",
+                        ObjectPosition = "50% 50%",
                         IsFocused = isFocused,
                         IsHovered = isHovered
                     };
@@ -4416,6 +4429,18 @@ namespace FenBrowser.FenEngine.Rendering
             if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float raw))
                 return start + raw;
             return start + size / 2; // fallback to center
+        }
+
+        private static bool IsPureTranslationMatrix(SKMatrix matrix)
+        {
+            const float epsilon = 0.0001f;
+            return Math.Abs(matrix.ScaleX - 1f) <= epsilon &&
+                   Math.Abs(matrix.ScaleY - 1f) <= epsilon &&
+                   Math.Abs(matrix.SkewX) <= epsilon &&
+                   Math.Abs(matrix.SkewY) <= epsilon &&
+                   Math.Abs(matrix.Persp0) <= epsilon &&
+                   Math.Abs(matrix.Persp1) <= epsilon &&
+                   Math.Abs(matrix.Persp2 - 1f) <= epsilon;
         }
 
         /// <summary>

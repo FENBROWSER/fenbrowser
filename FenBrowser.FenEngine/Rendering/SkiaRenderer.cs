@@ -1060,7 +1060,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 SKRect srcRect = node.SourceRect ?? new SKRect(0, 0, node.Bitmap.Width, node.Bitmap.Height);
-                SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit);
+                SKRect destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit, node.ObjectPosition);
                 
                 EngineLogCompat.Debug($"[SkiaRenderer] DrawImage destRect={destRect}");
                 
@@ -1112,7 +1112,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Removed DrawDiagnosticPlaceholder
         
-        private static SKRect CalculateDestRect(SKRect bounds, SKRect srcRect, string objectFit)
+        private static SKRect CalculateDestRect(SKRect bounds, SKRect srcRect, string objectFit, string objectPosition)
         {
             if (string.IsNullOrEmpty(objectFit) || objectFit == "fill")
             {
@@ -1183,11 +1183,180 @@ namespace FenBrowser.FenEngine.Rendering
                     return bounds;
             }
             
-            // Center the image in bounds
-            float x = bounds.Left + (bounds.Width - destWidth) / 2;
-            float y = bounds.Top + (bounds.Height - destHeight) / 2;
+            var (xOffset, yOffset) = ResolveObjectPositionOffsets(bounds, destWidth, destHeight, objectPosition);
+            float x = bounds.Left + xOffset;
+            float y = bounds.Top + yOffset;
             
             return new SKRect(x, y, x + destWidth, y + destHeight);
+        }
+
+        private static (float xOffset, float yOffset) ResolveObjectPositionOffsets(SKRect bounds, float destWidth, float destHeight, string objectPosition)
+        {
+            var (xPosition, yPosition) = ParseObjectPosition(objectPosition);
+            float availableX = bounds.Width - destWidth;
+            float availableY = bounds.Height - destHeight;
+            return (ResolveObjectPositionAxis(xPosition, availableX), ResolveObjectPositionAxis(yPosition, availableY));
+        }
+
+        private static float ResolveObjectPositionAxis(ObjectPositionAxis axis, float availableSpace)
+        {
+            return axis.IsPercent
+                ? availableSpace * (axis.Value / 100f)
+                : axis.Value;
+        }
+
+        private static (ObjectPositionAxis x, ObjectPositionAxis y) ParseObjectPosition(string objectPosition)
+        {
+            var center = ObjectPositionAxis.Percent(50f);
+            if (string.IsNullOrWhiteSpace(objectPosition))
+            {
+                return (center, center);
+            }
+
+            var tokens = objectPosition
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim())
+                .Where(t => t.Length > 0)
+                .ToArray();
+
+            if (tokens.Length == 0)
+            {
+                return (center, center);
+            }
+
+            if (tokens.Length == 1)
+            {
+                if (TryParseVerticalKeyword(tokens[0], out var vertical))
+                {
+                    return (center, vertical);
+                }
+
+                if (TryParseHorizontalKeyword(tokens[0], out var horizontal))
+                {
+                    return (horizontal, center);
+                }
+
+                if (TryParseObjectPositionAxis(tokens[0], out var single))
+                {
+                    return (single, center);
+                }
+
+                return (center, center);
+            }
+
+            ObjectPositionAxis? x = null;
+            ObjectPositionAxis? y = null;
+
+            foreach (var token in tokens)
+            {
+                if (!x.HasValue && TryParseHorizontalKeyword(token, out var horizontal))
+                {
+                    x = horizontal;
+                    continue;
+                }
+
+                if (!y.HasValue && TryParseVerticalKeyword(token, out var vertical))
+                {
+                    y = vertical;
+                    continue;
+                }
+
+                if (!x.HasValue && TryParseObjectPositionAxis(token, out var axis))
+                {
+                    x = axis;
+                    continue;
+                }
+
+                if (!y.HasValue && TryParseObjectPositionAxis(token, out axis))
+                {
+                    y = axis;
+                }
+            }
+
+            return (x ?? center, y ?? center);
+        }
+
+        private static bool TryParseObjectPositionAxis(string token, out ObjectPositionAxis axis)
+        {
+            if (TryParseHorizontalKeyword(token, out var horizontal))
+            {
+                axis = horizontal;
+                return true;
+            }
+
+            if (TryParseVerticalKeyword(token, out var vertical))
+            {
+                axis = vertical;
+                return true;
+            }
+
+            if (CssLoader.TryPercent(token, out var percent))
+            {
+                axis = ObjectPositionAxis.Percent((float)percent);
+                return true;
+            }
+
+            if (CssLoader.TryPx(token, out var px))
+            {
+                axis = ObjectPositionAxis.Pixels((float)px);
+                return true;
+            }
+
+            axis = default;
+            return false;
+        }
+
+        private static bool TryParseHorizontalKeyword(string token, out ObjectPositionAxis axis)
+        {
+            switch (token?.Trim().ToLowerInvariant())
+            {
+                case "left":
+                    axis = ObjectPositionAxis.Percent(0f);
+                    return true;
+                case "center":
+                    axis = ObjectPositionAxis.Percent(50f);
+                    return true;
+                case "right":
+                    axis = ObjectPositionAxis.Percent(100f);
+                    return true;
+                default:
+                    axis = default;
+                    return false;
+            }
+        }
+
+        private static bool TryParseVerticalKeyword(string token, out ObjectPositionAxis axis)
+        {
+            switch (token?.Trim().ToLowerInvariant())
+            {
+                case "top":
+                    axis = ObjectPositionAxis.Percent(0f);
+                    return true;
+                case "center":
+                    axis = ObjectPositionAxis.Percent(50f);
+                    return true;
+                case "bottom":
+                    axis = ObjectPositionAxis.Percent(100f);
+                    return true;
+                default:
+                    axis = default;
+                    return false;
+            }
+        }
+
+        private readonly struct ObjectPositionAxis
+        {
+            public ObjectPositionAxis(bool isPercent, float value)
+            {
+                IsPercent = isPercent;
+                Value = value;
+            }
+
+            public bool IsPercent { get; }
+            public float Value { get; }
+
+            public static ObjectPositionAxis Percent(float value) => new ObjectPositionAxis(true, value);
+            public static ObjectPositionAxis Pixels(float value) => new ObjectPositionAxis(false, value);
         }
         
         private void ApplyClipPath(IRenderBackend backend, ClipPaintNode node)

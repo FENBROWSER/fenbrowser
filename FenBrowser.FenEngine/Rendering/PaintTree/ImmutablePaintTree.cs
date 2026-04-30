@@ -204,7 +204,8 @@ namespace FenBrowser.FenEngine.Rendering
                     && HaveEqualStrings(a.TextDecorations, b.TextDecorations),
                 (ImagePaintNode a, ImagePaintNode b) => ReferenceEquals(a.Bitmap, b.Bitmap)
                     && Nullable.Equals(a.SourceRect, b.SourceRect)
-                    && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal),
+                    && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal)
+                    && string.Equals(a.ObjectPosition, b.ObjectPosition, StringComparison.Ordinal),
                 (BoxShadowPaintNode a, BoxShadowPaintNode b) => a.Blur.Equals(b.Blur)
                     && a.Spread.Equals(b.Spread)
                     && a.Offset == b.Offset

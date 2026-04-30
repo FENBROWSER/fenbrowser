@@ -209,6 +209,11 @@ namespace FenBrowser.FenEngine.Rendering
         public string ObjectFit { get; init; } = "fill";
 
         /// <summary>
+        /// Object-position value used for replaced-element image alignment.
+        /// </summary>
+        public string ObjectPosition { get; init; } = "50% 50%";
+
+        /// <summary>
         /// Whether this image node represents a CSS background image rather than a replaced element.
         /// Background images can tile and anchor to the viewport.
         /// </summary>
