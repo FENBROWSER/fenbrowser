@@ -2960,7 +2960,12 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
             }
 
-            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetListedFormControls(_element), _context, returnNullForMissingNamedProperties: true));
+            return FenValue.FromObject(new HTMLCollectionWrapper(
+                () => GetListedFormControls(_element),
+                _context,
+                returnNullForMissingNamedProperties: true,
+                constructorName: "HTMLFormControlsCollection",
+                namedItemResolver: ResolveFormControlsNamedItem));
         }
 
         private FenValue GetElementLengthOrUndefined()
@@ -2985,7 +2990,40 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
             }
 
-            return FenValue.FromObject(new HTMLCollectionWrapper(() => GetSelectOptions(_element), _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(
+                () => GetSelectOptions(_element),
+                _context,
+                returnNullForMissingNamedProperties: false,
+                constructorName: "HTMLOptionsCollection",
+                namedItemResolver: null));
+        }
+
+        private FenValue ResolveFormControlsNamedItem(IReadOnlyList<Element> snapshot, string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return FenValue.Null;
+            }
+
+            var matches = snapshot
+                .Where(element =>
+                    element != null &&
+                    (string.Equals(element.Id, name, StringComparison.Ordinal) ||
+                     (string.Equals(element.GetAttribute("name"), name, StringComparison.Ordinal) &&
+                      string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))))
+                .ToList();
+
+            if (matches.Count == 0)
+            {
+                return FenValue.Null;
+            }
+
+            if (matches.Count == 1)
+            {
+                return DomWrapperFactory.Wrap(matches[0], _context);
+            }
+
+            return FenValue.FromObject(new RadioNodeListWrapper(() => matches, _context));
         }
 
         private FenValue GetSelectedIndexOrUndefined()

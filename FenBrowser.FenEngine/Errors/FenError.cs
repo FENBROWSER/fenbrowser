@@ -54,7 +54,8 @@ namespace FenBrowser.FenEngine.Errors
         Security,
         Resource,
         Timeout,
-        Internal
+        Internal,
+        DOM
     }
 
     /// <summary>
@@ -132,5 +133,15 @@ namespace FenBrowser.FenEngine.Errors
             : base(message, innerException) { }
         public override ErrorType Type => ErrorType.Internal;
         public override string SafeMessage => "Internal error";
+    }
+
+    /// <summary>
+    /// DOM exceptions (e.g., InvalidStateError, NotSupportedError)
+    /// Maps to DOMException in the Web API spec.
+    /// </summary>
+    public class FenDOMException : FenError
+    {
+        public FenDOMException(string message) : base(message) { }
+        public override ErrorType Type => ErrorType.DOM;
     }
 }

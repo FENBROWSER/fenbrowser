@@ -14,26 +14,41 @@ namespace FenBrowser.FenEngine.DOM
         private readonly Func<IEnumerable<Element>> _sourceProvider;
         private readonly IExecutionContext _context;
         private readonly bool _returnNullForMissingNamedProperties;
+        private readonly string _constructorName;
+        private readonly Func<IReadOnlyList<Element>, string, FenValue> _namedItemResolver;
         private readonly Dictionary<string, PropertyDescriptor> _expandos = new(StringComparer.Ordinal);
         private readonly List<string> _expandoOrder = new();
 
         public HTMLCollectionWrapper(IEnumerable<Element> source, IExecutionContext context)
-            : this(() => source ?? Array.Empty<Element>(), context, false)
+            : this(() => source ?? Array.Empty<Element>(), context, false, "HTMLCollection", null)
         {
         }
 
         public HTMLCollectionWrapper(Func<IEnumerable<Element>> sourceProvider, IExecutionContext context)
-            : this(sourceProvider, context, false)
+            : this(sourceProvider, context, false, "HTMLCollection", null)
         {
         }
 
         public HTMLCollectionWrapper(Func<IEnumerable<Element>> sourceProvider, IExecutionContext context, bool returnNullForMissingNamedProperties)
+            : this(sourceProvider, context, returnNullForMissingNamedProperties, "HTMLCollection", null)
+        {
+        }
+
+        public HTMLCollectionWrapper(
+            Func<IEnumerable<Element>> sourceProvider,
+            IExecutionContext context,
+            bool returnNullForMissingNamedProperties,
+            string constructorName,
+            Func<IReadOnlyList<Element>, string, FenValue> namedItemResolver)
         {
             _sourceProvider = sourceProvider ?? (() => Array.Empty<Element>());
             _context = context;
             _returnNullForMissingNamedProperties = returnNullForMissingNamedProperties;
+            _constructorName = string.IsNullOrWhiteSpace(constructorName) ? "HTMLCollection" : constructorName;
+            _namedItemResolver = namedItemResolver;
 
-            var prototype = DomWrapperFactory.GetConstructorPrototype(context, "HTMLCollection");
+            var prototype = DomWrapperFactory.GetConstructorPrototype(context, _constructorName)
+                ?? DomWrapperFactory.GetConstructorPrototype(context, "HTMLCollection");
             if (prototype != null)
             {
                 SetPrototype(prototype);
@@ -78,7 +93,7 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.Undefined;
             }
 
-            var named = NamedItem(snapshot, key);
+            var named = ResolveNamedItem(snapshot, key);
             if (!named.IsNull)
             {
                 return named;
@@ -105,7 +120,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         if (args.Length > 0)
                         {
-                            return NamedItem(GetSnapshot(), args[0].ToString());
+                            return ResolveNamedItem(GetSnapshot(), args[0].ToString());
                         }
 
                         return FenValue.Null;
@@ -146,7 +161,7 @@ namespace FenBrowser.FenEngine.DOM
 
         public bool IsSupportedNamedProperty(string key)
         {
-            return !string.IsNullOrEmpty(key) && !NamedItem(GetSnapshot(), key).IsNull;
+            return !string.IsNullOrEmpty(key) && !ResolveNamedItem(GetSnapshot(), key).IsNull;
         }
 
         private FenValue Item(uint index)
@@ -175,6 +190,16 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return WrapElement(el);
+        }
+
+        private FenValue ResolveNamedItem(IReadOnlyList<Element> snapshot, string name)
+        {
+            if (_namedItemResolver != null)
+            {
+                return _namedItemResolver(snapshot, name);
+            }
+
+            return NamedItem(snapshot, name);
         }
 
         private IEnumerable<string> EnumerateNamedProperties(IReadOnlyList<Element> snapshot)
@@ -441,7 +466,7 @@ namespace FenBrowser.FenEngine.DOM
                 return index >= (uint)snapshot.Count;
             }
 
-            if (!string.IsNullOrEmpty(key) && !NamedItem(snapshot, key).IsNull)
+            if (!string.IsNullOrEmpty(key) && !ResolveNamedItem(snapshot, key).IsNull)
             {
                 return false;
             }
@@ -462,7 +487,7 @@ namespace FenBrowser.FenEngine.DOM
                 return new PropertyDescriptor { Value = Get(key), Writable = false, Enumerable = true, Configurable = true, Getter = null, Setter = null };
             }
 
-            if (!string.IsNullOrEmpty(key) && !NamedItem(snapshot, key).IsNull)
+            if (!string.IsNullOrEmpty(key) && !ResolveNamedItem(snapshot, key).IsNull)
             {
                 return new PropertyDescriptor { Value = Get(key), Writable = false, Enumerable = false, Configurable = true, Getter = null, Setter = null };
             }
