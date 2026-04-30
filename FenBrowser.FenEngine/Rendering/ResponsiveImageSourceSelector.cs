@@ -89,24 +89,63 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     }
 
-                    var candidate = PickBestImageCandidate(
+                    var sourceSrc = FirstNonEmpty(
                         sibling.GetAttribute("src"),
+                        sibling.GetAttribute("data-src"),
+                        sibling.GetAttribute("data-lazy"));
+                    var sourceSrcset = FirstNonEmpty(
                         sibling.GetAttribute("srcset"),
+                        sibling.GetAttribute("data-srcset"));
+                    if (IsPlaceholderOnlyPictureSource(sibling, sourceSrc, sourceSrcset))
+                    {
+                        continue;
+                    }
+
+                    var candidate = PickBestImageCandidate(
+                        sourceSrc,
+                        sourceSrcset,
                         viewportWidth,
                         devicePixelRatio);
 
-                    if (!string.IsNullOrWhiteSpace(candidate))
+                    if (!string.IsNullOrWhiteSpace(candidate) && !IsKnownPlaceholderImageUrl(candidate))
                     {
                         return candidate;
                     }
                 }
             }
 
-            return PickBestImageCandidate(
+            var imageSrc = FirstNonEmpty(
                 image.GetAttribute("src"),
+                image.GetAttribute("data-src"),
+                image.GetAttribute("data-lazy"));
+            var imageSrcset = FirstNonEmpty(
                 image.GetAttribute("srcset"),
+                image.GetAttribute("data-srcset"));
+
+            return PickBestImageCandidate(
+                imageSrc,
+                imageSrcset,
                 viewportWidth,
                 devicePixelRatio);
+        }
+
+        private static string FirstNonEmpty(params string[] candidates)
+        {
+            if (candidates == null)
+            {
+                return null;
+            }
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                var candidate = candidates[i];
+                if (!string.IsNullOrWhiteSpace(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
         }
 
         private static List<Candidate> ParseCandidates(string srcset)
@@ -162,6 +201,51 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return candidates;
+        }
+
+        private static bool IsPlaceholderOnlyPictureSource(Element sourceElement, string src, string srcset)
+        {
+            if (sourceElement?.HasAttribute("data-empty") == true)
+            {
+                return true;
+            }
+
+            bool hasNonPlaceholder = false;
+
+            if (!string.IsNullOrWhiteSpace(src) && !IsKnownPlaceholderImageUrl(src))
+            {
+                hasNonPlaceholder = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(srcset))
+            {
+                foreach (var candidate in ParseCandidates(srcset))
+                {
+                    if (!IsKnownPlaceholderImageUrl(candidate.Url))
+                    {
+                        hasNonPlaceholder = true;
+                        break;
+                    }
+                }
+            }
+
+            return !hasNonPlaceholder;
+        }
+
+        private static bool IsKnownPlaceholderImageUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return true;
+            }
+
+            var trimmed = url.Trim();
+            if (!trimmed.StartsWith("data:image/gif", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return trimmed.IndexOf("R0lGODlhAQAB", StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 }

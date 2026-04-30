@@ -193,6 +193,58 @@ namespace FenBrowser.Tests.Rendering
             }
         }
 
+        [Fact]
+        public void Selector_PictureDataEmptyPlaceholder_FallsBackToImgSrc()
+        {
+            var picture = new Element("picture");
+            picture.SetAttribute("data-anim-lazy-image", string.Empty);
+
+            var placeholderSource = new Element("source");
+            placeholderSource.SetAttribute("data-empty", string.Empty);
+            placeholderSource.SetAttribute("media", "(min-width:0px)");
+            placeholderSource.SetAttribute("srcset", "data:image/gif;base64,R0lGODlhAQABAHAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==");
+
+            const string fallbackUrl = "/images/hero-real.png";
+            var image = new Element("img");
+            image.SetAttribute("src", fallbackUrl);
+
+            picture.AppendChild(placeholderSource);
+            picture.AppendChild(image);
+
+            var selectorType = typeof(SkiaDomRenderer).Assembly.GetType("FenBrowser.FenEngine.Rendering.ResponsiveImageSourceSelector");
+            Assert.NotNull(selectorType);
+
+            var method = selectorType!.GetMethod(
+                "PickCurrentImageSource",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            var selected = method!.Invoke(null, new object[] { image, 1280d, 720d, 1d }) as string;
+            Assert.Equal(fallbackUrl, selected);
+        }
+
+        [Fact]
+        public void Selector_ImgDataSrcAndDataSrcSet_AreUsedWhenStandardAttrsMissing()
+        {
+            const string dataSrc = "https://example.test/fallback-data-src.png";
+            const string dataSrcSet = "https://example.test/hero-640.png 640w, https://example.test/hero-1280.png 1280w";
+
+            var image = new Element("img");
+            image.SetAttribute("data-src", dataSrc);
+            image.SetAttribute("data-srcset", dataSrcSet);
+
+            var selectorType = typeof(SkiaDomRenderer).Assembly.GetType("FenBrowser.FenEngine.Rendering.ResponsiveImageSourceSelector");
+            Assert.NotNull(selectorType);
+
+            var method = selectorType!.GetMethod(
+                "PickCurrentImageSource",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            var selected = method!.Invoke(null, new object[] { image, 1100d, 700d, 1d }) as string;
+            Assert.Equal("https://example.test/hero-1280.png", selected);
+        }
+
         private static MemoryStream CreatePngStream(int width, int height, SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(width, height));
