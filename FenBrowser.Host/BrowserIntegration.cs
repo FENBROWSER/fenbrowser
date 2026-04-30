@@ -1455,12 +1455,23 @@ public class BrowserIntegration
     }
 
     /// <summary>
-    /// Scroll the viewport to bring a target element near center and request repaint.
+    /// Scroll the viewport to bring a target element into view using a
+    /// browser-like nearest/start policy (instead of always centering).
     /// </summary>
     public void ScrollToElement(Element element)
     {
         if (element == null)
         {
+            return;
+        }
+
+        // Keep initial navigation deterministic: script-driven scrollIntoView calls that fire
+        // before first styled paint can yank the viewport away from first fold.
+        if (IsLoading || !_hasFirstStyledRender)
+        {
+            EngineLogBridge.Info(
+                $"[ScrollToElement] Ignored during startup: loading={IsLoading} firstStyled={_hasFirstStyledRender} tag={element.TagName} id={element.Id ?? "<none>"}",
+                LogCategory.Navigation);
             return;
         }
 
@@ -1471,10 +1482,43 @@ public class BrowserIntegration
         }
 
         var viewportHeight = Math.Max(1f, _lastViewportSize.Height);
-        var desiredScroll = rect.Value.MidY - (viewportHeight * 0.5f);
+        var viewportTop = _scrollY;
+        var viewportBottom = viewportTop + viewportHeight;
+
+        // Already fully visible -> no-op.
+        if (rect.Value.Top >= viewportTop && rect.Value.Bottom <= viewportBottom)
+        {
+            return;
+        }
+
+        // If target is above viewport, align top to target top.
+        // If target is below viewport, align bottom edge unless target is taller than viewport.
+        float desiredScroll;
+        if (rect.Value.Top < viewportTop)
+        {
+            desiredScroll = rect.Value.Top;
+        }
+        else
+        {
+            desiredScroll = rect.Value.Height > viewportHeight
+                ? rect.Value.Top
+                : rect.Value.Bottom - viewportHeight;
+        }
+
         var maxScroll = Math.Max(0f, _contentHeight - viewportHeight);
-        _scrollY = Math.Max(0f, Math.Min(maxScroll, desiredScroll));
+        var nextScroll = Math.Max(0f, Math.Min(maxScroll, desiredScroll));
+        if (Math.Abs(nextScroll - _scrollY) <= 0.5f)
+        {
+            return;
+        }
+
+        EngineLogBridge.Info(
+            $"[ScrollToElement] tag={element.TagName} id={element.Id ?? "<none>"} oldY={_scrollY:F1} newY={nextScroll:F1} rectTop={rect.Value.Top:F1} rectBottom={rect.Value.Bottom:F1} vh={viewportHeight:F1}",
+            LogCategory.Navigation);
+
+        _scrollY = nextScroll;
         _scrollPhysics.SetPosition(_scrollY);
+        ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
         _highlightedElement = element;
         RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Overlay, "BrowserIntegration.ScrollToElement", notifyUi: true);
