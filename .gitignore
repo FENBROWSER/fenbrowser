@@ -34,6 +34,7 @@ bld/
 !scripts/ci/run-test262-ci.ps1
 !scripts/clean_test262.ps1
 !scripts/run_test262_chunk_parallel.ps1
+!scripts/run_stage_recovery_baseline.ps1
 *.py
 *.log
 *.png
