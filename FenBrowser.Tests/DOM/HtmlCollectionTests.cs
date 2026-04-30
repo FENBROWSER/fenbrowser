@@ -167,12 +167,12 @@ namespace FenBrowser.Tests.DOM
 
             runtime.ExecuteSimple(@"
                 'use strict';
-                const paragraphs = document.getElementsByTagName('p');
+                const paragraphsForArrow = document.getElementsByTagName('p');
                 var __arrowIds = '';
                 var __arrowErr = '';
                 const run = () => {
                     try {
-                        for (const element of paragraphs) {
+                        for (const element of paragraphsForArrow) {
                             __arrowIds += element.getAttribute('id');
                         }
                     } catch (e) {
@@ -193,14 +193,14 @@ namespace FenBrowser.Tests.DOM
                         throw new Error(message || ('assert_equals failed: ' + actual + ' !== ' + expected));
                     }
                 }
-                const paragraphs = document.getElementsByTagName('p');
+                const paragraphsForHarness = document.getElementsByTagName('p');
                 var __harnessIds = '';
                 var __harnessErr = '';
                 try {
                     test(() => {
                         const ids = '123';
                         let idx = 0;
-                        for (const element of paragraphs) {
+                        for (const element of paragraphsForHarness) {
                             __harnessIds += element.getAttribute('id');
                             assert_equals(element.getAttribute('id'), ids[idx++]);
                         }
