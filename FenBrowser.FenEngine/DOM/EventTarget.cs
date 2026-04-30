@@ -238,7 +238,6 @@ namespace FenBrowser.FenEngine.DOM
                 evt.EventPhase = DomEvent.NONE;
                 evt.CurrentTarget = null;
                 evt.Path.Clear();
-                evt.ClearPropagationFlags();
                 evt.UpdateJsProperties(context);
                 return !evt.DefaultPrevented;
             }
@@ -356,16 +355,22 @@ namespace FenBrowser.FenEngine.DOM
                     if (listener.Passive) evt.IsPassiveContext = true;
                     try
                     {
+                        FenValue listenerResult;
                         if (context.ExecuteFunction != null && callback.IsFunction)
                         {
                             context.ThisBinding = callbackThis;
-                            context.ExecuteFunction(callback, args);
+                            listenerResult = context.ExecuteFunction(callback, args);
                         }
                         else
                         {
                             context.CheckCallStackLimit();
                             context.CheckExecutionTimeLimit();
-                            callbackFn.Invoke(args, context, callbackThis);
+                            listenerResult = callbackFn.Invoke(args, context, callbackThis);
+                        }
+
+                        if (listenerResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+                        {
+                            throw new JsThrownValueException(listenerResult.GetThrownValue());
                         }
                     }
                     finally
@@ -438,16 +443,22 @@ namespace FenBrowser.FenEngine.DOM
                         if (listener.Passive) evt.IsPassiveContext = true;
                         try
                         {
+                            FenValue listenerResult;
                             if (context.ExecuteFunction != null && callback.IsFunction)
                             {
                                 context.ThisBinding = callbackThis;
-                                context.ExecuteFunction(callback, args);
+                                listenerResult = context.ExecuteFunction(callback, args);
                             }
                             else
                             {
                                 context.CheckCallStackLimit();
                                 context.CheckExecutionTimeLimit();
-                                callbackFn.Invoke(args, context, callbackThis);
+                                listenerResult = callbackFn.Invoke(args, context, callbackThis);
+                            }
+
+                            if (listenerResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+                            {
+                                throw new JsThrownValueException(listenerResult.GetThrownValue());
                             }
                         }
                         finally
@@ -546,18 +557,6 @@ namespace FenBrowser.FenEngine.DOM
         {
             try
             {
-                var winVal = ResolveWindowValue(sourceElement, context);
-                if (!winVal.IsObject)
-                {
-                    return;
-                }
-
-                var onerrorVal = winVal.AsObject().Get("onerror", context);
-                if (!TryResolveCallable(onerrorVal, winVal, context, out var callback, out var callbackThis))
-                {
-                    return;
-                }
-
                 var errorValue = CreateReportedErrorValue(ex);
                 var message = GetReportedErrorMessage(ex, errorValue);
                 var args = new FenValue[]
@@ -568,7 +567,29 @@ namespace FenBrowser.FenEngine.DOM
                     FenValue.FromNumber(0),
                     errorValue
                 };
-                InvokeCallback(callback, args, context, callbackThis);
+
+                if (TryInvokeWindowOnError(ResolveWindowCandidate(sourceElement, context), args, context))
+                {
+                    return;
+                }
+
+                var env = context?.Environment;
+                if (env == null)
+                {
+                    return;
+                }
+
+                if (TryInvokeWindowOnError(env.Get("window"), args, context))
+                {
+                    return;
+                }
+
+                if (TryInvokeWindowOnError(env.Get("globalThis"), args, context))
+                {
+                    return;
+                }
+
+                TryInvokeWindowOnError(env.Get("self"), args, context);
             }
             catch (Exception reportingException)
             {
@@ -576,7 +597,7 @@ namespace FenBrowser.FenEngine.DOM
             }
         }
 
-        private static FenValue ResolveWindowValue(Element sourceElement, IExecutionContext context)
+        private static FenValue ResolveWindowCandidate(Element sourceElement, IExecutionContext context)
         {
             if (sourceElement != null && ResolveWindowTarget != null)
             {
@@ -592,26 +613,24 @@ namespace FenBrowser.FenEngine.DOM
                 }
             }
 
-            var env = context?.Environment;
-            if (env == null)
+            return FenValue.Undefined;
+        }
+
+        private static bool TryInvokeWindowOnError(FenValue candidateWindow, FenValue[] args, IExecutionContext context)
+        {
+            if (!candidateWindow.IsObject)
             {
-                return FenValue.Undefined;
+                return false;
             }
 
-            var globalThis = env.Get("globalThis");
-            if (globalThis.IsObject)
+            var onerrorVal = candidateWindow.AsObject().Get("onerror", context);
+            if (!TryResolveCallable(onerrorVal, candidateWindow, context, out var callback, out var callbackThis))
             {
-                return globalThis;
+                return false;
             }
 
-            var window = env.Get("window");
-            if (window.IsObject)
-            {
-                return window;
-            }
-
-            var self = env.Get("self");
-            return self.IsObject ? self : FenValue.Undefined;
+            InvokeCallback(callback, args, context, callbackThis);
+            return true;
         }
 
         private static bool TryResolveCallable(FenValue candidate, FenValue defaultThis, IExecutionContext context, out FenValue callback, out FenValue callbackThis)
@@ -793,7 +812,11 @@ namespace FenBrowser.FenEngine.DOM
                 if (isPassive) evt.IsPassiveContext = true;
                 try
                 {
-                    callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
+                    var listenerResult = callbackFn.Invoke(new[] { FenValue.FromObject(evt) }, context, callbackThis);
+                    if (listenerResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+                    {
+                        throw new JsThrownValueException(listenerResult.GetThrownValue());
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -841,6 +864,10 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     var handlerArgs = BuildEventHandlerArguments(targetObj, evt, context);
                     var handlerResult = unprefixedHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
+                    if (handlerResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+                    {
+                        throw new JsThrownValueException(handlerResult.GetThrownValue());
+                    }
                     if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
                     {
                         evt.PreventDefault();
@@ -864,6 +891,10 @@ namespace FenBrowser.FenEngine.DOM
                         try
                         {
                             var handlerResult = prefixedHandler.AsFunction().Invoke(handlerArgs, context, thisArg);
+                            if (handlerResult.Type == FenBrowser.FenEngine.Core.Interfaces.ValueType.Throw)
+                            {
+                                throw new JsThrownValueException(handlerResult.GetThrownValue());
+                            }
                             if (handlerResult.IsBoolean && !handlerResult.ToBoolean())
                             {
                                 evt.PreventDefault();
