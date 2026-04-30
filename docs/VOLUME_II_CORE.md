@@ -111,11 +111,13 @@ Based strictly on the **HTML5 Parsing Specification**.
     - `ParseDocument(...)`
     - `ParseFragment(contextElement, markup, ...)`
     - `ParseStream(...)`
+    - `ParseDocumentDetailed(...)` (returns document + parsing outcome + build metrics)
   - Unified entrypoints on a single tokenizer/tree-builder contract with shared `HtmlParsingOutcome` propagation.
-  - Added `HtmlParserOptions` for shared base-URI/security policy wiring across document/fragment/stream callers.
+  - Expanded `HtmlParserOptions` so document callers can optionally route through `PipelineContext` and parse checkpoint callbacks without bypassing the canonical parser API.
+  - `ParseFragment(...)` now inherits base URI from the owner document when no explicit parser base is supplied, keeping fragment URL resolution consistent.
   - Removed non-spec SVG void/self-closing shortcuts from `HtmlParser.IsVoid(...)`.
 - `FenBrowser.Core/StreamingHtmlParser.cs`
-  - Primary async/incremental APIs now route through canonical `HtmlParser.ParseDocument(...)` instead of the legacy simplified token/tag path.
+  - Primary async/incremental APIs now route through canonical parser entrypoints (`ParseDocument` / `ParseStream`) instead of bypass instance parsing paths.
 - `FenBrowser.Core/Dom/V2/Element.cs`
   - `Element.InnerHTML` now uses canonical `HtmlParser.ParseFragment(...)` (no `<html><body>` wrapper parse path).
 - `FenBrowser.Core/Dom/V2/ShadowRoot.cs`

@@ -185,8 +185,13 @@ namespace FenBrowser.Core.Engine
             if (to == PipelineStage.Idle)
                 return;
 
-            // Allow forward transitions only (or same stage for re-entry)
-            if (to >= from)
+            // Allow re-entry into the same stage (used by long-lived interleaved flows)
+            if (to == from)
+                return;
+
+            // Allow only immediate forward transitions.
+            var nextStage = from.GetNextStage();
+            if (nextStage.HasValue && nextStage.Value == to)
                 return;
 
             // HTML spec requires tokenizer and tree builder to interleave:
@@ -195,10 +200,10 @@ namespace FenBrowser.Core.Engine
             if (from == PipelineStage.Parsing && to == PipelineStage.Tokenizing)
                 return;
 
-            // Backward transitions are forbidden
+            // Any other transition is invalid: skips, backward jumps, or cross-phase reads.
             throw new PipelineStageException(
                 $"Invalid pipeline stage transition: {from} -> {to}. " +
-                $"Pipeline stages must proceed forward only.");
+                $"Pipeline stages must proceed in strict sequential order.");
         }
 
         #endregion

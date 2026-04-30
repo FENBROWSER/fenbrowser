@@ -101,10 +101,9 @@ namespace FenBrowser.Core
         {
             // Read all content first
             var content = _reader.ReadToEnd();
-            
-            // Use the regular parser for full content
-            var parser = new HtmlParser(content);
-            return parser.Parse();
+
+            using var reader = new StringReader(content);
+            return HtmlParser.ParseStream(reader, options: null, out _);
         }
 
         /// <summary>
