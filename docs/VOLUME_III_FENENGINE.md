@@ -252,14 +252,21 @@ flowchart TD
   - `createCaption()` / `deleteCaption()`, `createTHead()` / `deleteTHead()`, `createTFoot()` / `deleteTFoot()`, and `insertRow(...)`
   - table-section insertion now follows table-ordering rules closely enough to materialize `thead`/`tbody`/`tfoot` structure instead of leaving the table API surface absent.
   - Dynamic `setAttribute('checked', ...)` / `removeAttribute('checked')` on checkable inputs now preserve the current checked state tracked by `ElementStateManager` instead of incorrectly flipping the live `checked` property and `:checked` matching through content-attribute mutation alone.
-  - `ElementWrapper` now exposes the next HTML form/control compatibility tranche used by Acid3:
-    - `name`, `form`, `elements`, and `length` for form-associated controls and `<form>`
-    - live property-vs-content-attribute separation for input `value`
-    - normalized `type` reflection for `<input>` and `<button>` with default `button.type === "submit"`
-    - `select.options`, `select.selectedIndex`, `select.add(...)`, and `option.defaultSelected` / `selected`
-    - DOM aliases `label.htmlFor` and `meta.httpEquiv`
-  - `<object>.data` now resolves relative URLs against the owning document URL/base URL instead of staying undefined or reflecting raw relative strings.
-- `document.createElement(...)` / `createTextNode(...)` now preserve the owning document when creating detached nodes, which fixes URL-reflecting property surfaces on dynamically created elements.
+	  - `ElementWrapper` now exposes the next HTML form/control compatibility tranche used by Acid3:
+	    - `name`, `form`, `elements`, and `length` for form-associated controls and `<form>`
+	    - live property-vs-content-attribute separation for input `value`
+	    - normalized `type` reflection for `<input>` and `<button>` with default `button.type === "submit"`
+	    - `select.options`, `select.selectedIndex`, `select.add(...)`, and `option.defaultSelected` / `selected`
+	    - `details.open` and `dialog.open` boolean reflection now map to the `open` content attribute on their respective interfaces
+	    - DOM aliases `label.htmlFor` and `meta.httpEquiv`
+	  - `<object>.data` now resolves relative URLs against the owning document URL/base URL instead of staying undefined or reflecting raw relative strings.
+	  - `ElementWrapper` now applies inventory-driven reflected IDL semantics for the current 144 non-event HTML attribute inventory in the HTML namespace:
+	    - property-to-content-attribute aliasing for hyphenated names (e.g. `acceptcharset` -> `accept-charset`) and legacy aliases (`className`, `htmlFor`, `httpEquiv`)
+	    - typed reflection for boolean and non-negative-integer attributes
+	    - `translate` reflection with inherited translation-mode semantics
+	    - `hidden` reflection supporting `true` / `false` and `"until-found"`
+	    - focused verification added in `FenBrowser.Tests/Engine/HtmlAttributeInventoryCoverageTests.cs`
+	- `document.createElement(...)` / `createTextNode(...)` now preserve the owning document when creating detached nodes, which fixes URL-reflecting property surfaces on dynamically created elements.
 - `JavaScriptEngine.DispatchEvent(...)` now executes inline element event attributes such as `onload` in the same runtime path as registered listeners, instead of only special-casing `body.onload`.
 - `JavaScriptEngine.SetDomAsync(...)` now dispatches initial iframe `load` events during document boot, which unblocks Acid3's selector iframe from leaving `#linktest` stuck in the `pending` state.
 - `ElementWrapper.UpdateIframeSource(...)` now schedules iframe `load` back through the shared JS event-dispatch bridge after `iframe.src = ...` mutations, so later Acid3 selector navigations execute the same inline `onload` path as the initial document boot.
@@ -7242,3 +7249,84 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
 - `FenBrowser.Tests/DOM/HtmlCollectionTests.cs`
   - Added `DocumentCollections_And_GetElementsByName_ExposeExpectedHtmlApis` to lock collection lengths, named-item lookups, and `getElementsByName` behavior.
   - Added `DocumentStyleSheets_ExposesInlineAndLinkedStylesheetEntries` to lock stylesheet-list shape and linked stylesheet metadata exposure.
+
+## 2.245 CSSOM Inline Stylesheet Mutation Hardening + CSS Capability Binding Expansion (2026-04-30)
+
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - Hardened `style.sheet.insertRule(...)` and `style.sheet.deleteRule(...)`:
+    - out-of-range indexes now throw `IndexSizeError` (`RangeError`) instead of silently clamping/ignoring.
+    - `insertRule(...)` now enforces "exactly one rule" and rejects invalid rule payloads with `SyntaxError`.
+  - Replaced naive `}` splitting with top-level CSS rule segmentation that tracks nesting, strings, and comments before rebuilding `cssRules`.
+  - Added `cssRules.item(index)` exposure on the inline stylesheet bridge object.
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - Bound `document.styleSheets` ownership to explicit CSSOM capability governance header metadata.
+- Governance-header expansion across CSS execution surfaces:
+  - `FenBrowser.FenEngine/Rendering/Css/CssTokenizer.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssLoaderValueParsing.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CascadeKey.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssSelectorAdvanced.cs`
+  - `FenBrowser.FenEngine/Layout/TableLayoutComputer.cs`
+  - `FenBrowser.FenEngine/Layout/MultiColumnLayoutComputer.cs`
+  - `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - `FenBrowser.FenEngine/Rendering/Css/CssAnimationEngine.cs`
+  - These files now carry `SpecRef/CapabilityId/Determinism/FallbackPolicy` headers to support expanded CSS capability governance gates.
+
+## 2.246 CSS Cascade Inline-Origin Closure + Live CSSOM Stylesheet Lists (2026-04-30)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - Integrated `style=""...""` declarations into the same cascade key pipeline as stylesheet rules instead of post-cascade blind override.
+  - Inline declarations now respect `!important` semantics against author rules while keeping inline specificity precedence for normal declarations.
+  - Inline shorthand declarations now participate in declaration-by-declaration expansion (`margin`, `padding`, `background`, etc.) consistently with stylesheet declarations.
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Removed legacy post-cascade inline merge path (`MergeInlineStyle`) from the main style resolution loop; cascade authority is now centralized in `CascadeEngine`.
+- `FenBrowser.FenEngine/DOM/DocumentWrapper.cs`
+  - Replaced snapshot `document.styleSheets` object with a live `StyleSheetList` implementation:
+    - stable object identity across repeated `document.styleSheets` access
+    - live `length`, indexed access, and `item(index)` behavior under DOM mutations
+    - linked stylesheet entries cached per `<link>` element for stable identity and updated metadata (`href/media/type/disabled`).
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - Added stable identity caching for inline `style.sheet`.
+  - Replaced snapshot `cssRules` arrays with a live `CSSRuleList` object:
+    - live `length`, indexed access, and `item(index)` behavior
+    - consistent object identity before/after `insertRule`/`deleteRule`
+    - `insertRule(rule)` now defaults to index `0` and enforces range/syntax validation.
+
+## 2.247 CSS Property Family Expansion For Core Layout/Typography/Flex/Transition Surfaces (2026-04-30)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - Expanded shorthand/longhand handling for high-frequency property families:
+    - `transition` shorthand now expands into `transition-property`, `transition-duration`, `transition-timing-function`, `transition-delay`, and `transition-behavior`.
+    - `background` shorthand expansion now includes `background-position-x`, `background-position-y`, `background-size`, `background-origin`, and `background-clip` in addition to existing color/image/repeat/attachment/position handling.
+  - Added tokenization safeguards so slash parsing in `background` does not break `url(...)` payloads that include `/`.
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Expanded `@supports` property allowlist coverage for requested core families and related longhands/logical children, including:
+    - logical inset and logical sizing children (`inset-*`, `min/max-inline/block-size`)
+    - logical overflow children (`overflow-inline`, `overflow-block`)
+    - logical border family longhands (`border-block/*`, `border-inline/*`)
+    - background axis children (`background-position-x`, `background-position-y`)
+    - transition child (`transition-behavior`).
+  - Added typed resolution fallbacks for:
+    - logical overflow to physical `OverflowX/OverflowY`
+    - logical size children with percent and function expressions
+    - `background` shorthand-derived `size/origin/clip` and axis position tokens.
+- `FenBrowser.Tests/Engine/CssPropertyFamilyCoverageTests.cs`
+  - Added family-level `@supports` coverage gates for:
+    - `display`, `position`, `width`, `height`, `margin`, `padding`, `color`, `background`, `border`, `font-size`, `font-family`, `font-weight`, `line-height`, `text-align`, `overflow`, `box-sizing`, `justify-content`, `align-items`, `gap`, `transition`
+    - plus related child/logical longhand properties under each family.
+
+## 2.248 HTML Event Attribute + CSS Runtime Gates (2026-05-01)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - Expanded runtime `on*` handler registration surfaces to include the full 89-name HTML inventory set, including newer handlers (`onbeforeinput`, `onbeforematch`, `onbeforetoggle`, `onauxclick`, `oncontextlost`, `oncontextrestored`, `onscrollend`, `oncommand`, `onpagereveal`, `onpageswap`).
+  - Extended body/frameset window-forwarded handler coverage for `onpagereveal` and `onpageswap`.
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `@supports` property recognition accepts syntactically valid property identifiers and custom properties (`--*`) so declarations are preserved for downstream resolution.
+  - Added runtime alias/logical normalization for inventory properties that previously only parsed as names:
+    - `word-wrap` -> `overflow-wrap`
+    - `font-width` -> `font-stretch`
+    - `background-position-inline/block` -> `background-position-x/y`
+    - `background-repeat-inline/block` -> canonical `background-repeat`
+  - Added direction-aware logical border side projection (`border-inline-start/end`, `border-block-start/end` plus width/style/color longhands and block/inline axis shorthands) into physical border values used by layout/paint.
