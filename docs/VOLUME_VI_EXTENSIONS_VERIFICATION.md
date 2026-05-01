@@ -2452,3 +2452,22 @@ _End of Volume VI_
 - Verification run:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_css_inventory_coverage.ps1`
     - Result: `raw_entry_count=414`, `normalized_property_count=414`, `missing_property_count=0`.
+
+## 6.81 HTML Inventory Event-Handler Closure (2026-05-01)
+
+- Added coverage:
+  - `FenBrowser.Tests/Engine/HtmlEventHandlerInventoryCoverageTests.cs` (new)
+    - materializes all `89` WHATWG HTML event-handler content attributes from `html_css_spec_inventory_2026-05-01.md`.
+    - verifies DOM attribute roundtrip and parser preservation for all inventory `on*` names.
+    - verifies all inventory `on*` names exist across runtime registration sets (`FenRuntime` + `ElementWrapper` sets).
+    - verifies `window.on*` EventHandler IDL normalization for callable vs non-callable assignments.
+- Added machine-readable verifier:
+  - `scripts/verify_html_inventory_coverage.ps1`
+    - parses inventory sections for `113` named elements, `144` non-event attributes, and `89` event-handler attributes.
+    - cross-checks inventory lists against test inventories and runtime registration/canonical catalog surfaces.
+    - writes report to `Results/html_inventory_coverage_2026-05-01.json`.
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~HtmlElementInterfaceCoverageTests|FullyQualifiedName~HtmlAttributeInventoryCoverageTests|FullyQualifiedName~HtmlEventHandlerInventoryCoverageTests" -v minimal`
+    - Result: `13 passed / 0 failed / 0 skipped`.
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_html_inventory_coverage.ps1`
+    - Result: `inventory_elements=113`, `inventory_non_event_attributes=144`, `inventory_event_handlers=89`, all missing lists empty.

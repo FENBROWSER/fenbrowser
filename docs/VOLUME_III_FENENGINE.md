@@ -7357,3 +7357,10 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
       - canonical pass-through normalization for advanced inventory properties (anchor, ruby, mask, SVG paint/detail, position-try, transform-box, view-transition, and related longhands) so values are preserved under stable lowercase keys.
 - Runtime effect:
   - inventory aliases now resolve deterministically into the same canonical map keys consumed by layout/paint, reducing behavior drift between logical syntax and physical execution paths.
+
+## 2.250 Window EventHandler IDL Normalization (2026-05-01)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Replaced raw `window.on*` data-slot initialization with accessor-backed properties for the default window event-handler set.
+  - Setter semantics now normalize non-callable assignments to `null` and preserve callable assignments, aligning with EventHandler IDL behavior.
+  - Getter semantics return the current normalized handler value (`function` or `null`) for all registered window `on*` handlers.
