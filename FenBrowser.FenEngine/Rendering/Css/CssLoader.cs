@@ -4563,7 +4563,31 @@ private static double? ExtractPx(string text, string prop)
             css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
             css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
             css.Cursor = Safe(DictGet(css.Map, "cursor"));
-            
+            css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
+            css.TextRendering = Safe(DictGet(css.Map, "text-rendering"));
+            css.FontVariant = Safe(DictGet(css.Map, "font-variant"));
+            css.FontFeatureSettings = Safe(DictGet(css.Map, "font-feature-settings"));
+            css.TabSize = Safe(DictGet(css.Map, "tab-size"));
+            css.TextUnderlineOffset = Safe(DictGet(css.Map, "text-underline-offset"));
+            css.TextDecorationStyle = Safe(DictGet(css.Map, "text-decoration-style"));
+            css.TextDecorationThickness = Safe(DictGet(css.Map, "text-decoration-thickness"));
+            css.PageBreakBefore = Safe(DictGet(css.Map, "page-break-before"));
+            css.PageBreakAfter = Safe(DictGet(css.Map, "page-break-after"));
+            css.PageBreakInside = Safe(DictGet(css.Map, "page-break-inside"));
+            css.ScrollBehavior = Safe(DictGet(css.Map, "scroll-behavior"));
+            css.UserSelect = Safe(DictGet(css.Map, "user-select"));
+            css.TouchAction = Safe(DictGet(css.Map, "touch-action"));
+            css.Resize = Safe(DictGet(css.Map, "resize"));
+            css.ColorScheme = Safe(DictGet(css.Map, "color-scheme"));
+            css.AccentColor = Safe(DictGet(css.Map, "accent-color"));
+            css.CaretColor = Safe(DictGet(css.Map, "caret-color"));
+            css.Isolation = Safe(DictGet(css.Map, "isolation"));
+            css.MixBlendMode = Safe(DictGet(css.Map, "mix-blend-mode"));
+            if (TryPx(DictGet(css.Map, "text-indent"), out var parsedTextIndent, currentEmBase))
+            {
+                css.TextIndent = parsedTextIndent;
+            }
+
             // Removed duplicate flex property assignments (already handled above)
 
 
@@ -7615,36 +7639,32 @@ private static double? ExtractPx(string text, string prop)
             return;
         }
 
-        if (map.TryGetValue("word-wrap", out var wordWrapAlias) &&
-            !string.IsNullOrWhiteSpace(wordWrapAlias) &&
+        if (TryGetNonEmptyMapValue(map, "word-wrap", out var wordWrapAlias) &&
             !map.ContainsKey("overflow-wrap"))
         {
-            map["overflow-wrap"] = wordWrapAlias.Trim().ToLowerInvariant();
+            map["overflow-wrap"] = wordWrapAlias;
         }
 
-        if (map.TryGetValue("font-width", out var fontWidthAlias) &&
-            !string.IsNullOrWhiteSpace(fontWidthAlias) &&
+        if (TryGetNonEmptyMapValue(map, "font-width", out var fontWidthAlias) &&
             !map.ContainsKey("font-stretch"))
         {
-            map["font-stretch"] = fontWidthAlias.Trim().ToLowerInvariant();
+            map["font-stretch"] = fontWidthAlias;
         }
 
-        if (map.TryGetValue("background-position-inline", out var backgroundPositionInline) &&
-            !string.IsNullOrWhiteSpace(backgroundPositionInline) &&
+        if (TryGetNonEmptyMapValue(map, "background-position-inline", out var backgroundPositionInline) &&
             !map.ContainsKey("background-position-x"))
         {
-            map["background-position-x"] = backgroundPositionInline.Trim().ToLowerInvariant();
+            map["background-position-x"] = backgroundPositionInline;
         }
 
-        if (map.TryGetValue("background-position-block", out var backgroundPositionBlock) &&
-            !string.IsNullOrWhiteSpace(backgroundPositionBlock) &&
+        if (TryGetNonEmptyMapValue(map, "background-position-block", out var backgroundPositionBlock) &&
             !map.ContainsKey("background-position-y"))
         {
-            map["background-position-y"] = backgroundPositionBlock.Trim().ToLowerInvariant();
+            map["background-position-y"] = backgroundPositionBlock;
         }
 
-        var posX = map.TryGetValue("background-position-x", out var xValue) ? xValue?.Trim() : null;
-        var posY = map.TryGetValue("background-position-y", out var yValue) ? yValue?.Trim() : null;
+        var posX = map.TryGetValue("background-position-x", out var xValue) ? xValue?.Trim().ToLowerInvariant() : null;
+        var posY = map.TryGetValue("background-position-y", out var yValue) ? yValue?.Trim().ToLowerInvariant() : null;
         if (!string.IsNullOrWhiteSpace(posX) &&
             !string.IsNullOrWhiteSpace(posY) &&
             !map.ContainsKey("background-position"))
@@ -7652,16 +7672,14 @@ private static double? ExtractPx(string text, string prop)
             map["background-position"] = $"{posX} {posY}";
         }
 
-        if (map.TryGetValue("background-repeat-inline", out var repeatInline) &&
-            !string.IsNullOrWhiteSpace(repeatInline))
+        if (TryGetNonEmptyMapValue(map, "background-repeat-inline", out var repeatInline))
         {
-            map["background-repeat-x"] = repeatInline.Trim().ToLowerInvariant();
+            map["background-repeat-x"] = repeatInline;
         }
 
-        if (map.TryGetValue("background-repeat-block", out var repeatBlock) &&
-            !string.IsNullOrWhiteSpace(repeatBlock))
+        if (TryGetNonEmptyMapValue(map, "background-repeat-block", out var repeatBlock))
         {
-            map["background-repeat-y"] = repeatBlock.Trim().ToLowerInvariant();
+            map["background-repeat-y"] = repeatBlock;
         }
 
         var repeatX = map.TryGetValue("background-repeat-x", out var repeatXValue) ? repeatXValue?.Trim().ToLowerInvariant() : null;
@@ -7689,6 +7707,1027 @@ private static double? ExtractPx(string text, string prop)
                 map["background-repeat"] = $"{repeatX} {repeatY}";
             }
         }
+
+        ApplyFlexFlowAlias(map);
+        ApplyContainerShorthandAlias(map);
+        ApplyLogicalScrollSpacingAliases(map);
+        ApplyLogicalBorderRadiusAliases(map);
+        ApplyBreakAliases(map);
+        ApplyTextWrapAliases(map);
+        ApplyTimelineAliases(map);
+        ApplyOffsetAliases(map);
+        ApplyBorderImageAliases(map);
+        ApplyMaskBorderAliases(map);
+        ApplyContainIntrinsicAliases(map);
+        ApplyFontAndTextAliases(map);
+        ApplyAnimationRangeAliases(map);
+        ApplyAdvancedInventoryPassThrough(map);
+    }
+
+    private static void ApplyFlexFlowAlias(Dictionary<string, string> map)
+    {
+        if (!TryGetNonEmptyMapValue(map, "flex-flow", out var flexFlowRaw))
+        {
+            return;
+        }
+
+        var tokens = SplitCssValues(flexFlowRaw)
+            .Select(t => t?.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+
+        string direction = null;
+        string wrap = null;
+        foreach (var token in tokens)
+        {
+            switch (token)
+            {
+                case "row":
+                case "row-reverse":
+                case "column":
+                case "column-reverse":
+                    direction ??= token;
+                    break;
+                case "nowrap":
+                case "wrap":
+                case "wrap-reverse":
+                    wrap ??= token;
+                    break;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(direction) && !map.ContainsKey("flex-direction"))
+        {
+            map["flex-direction"] = direction;
+        }
+
+        if (!string.IsNullOrWhiteSpace(wrap) && !map.ContainsKey("flex-wrap"))
+        {
+            map["flex-wrap"] = wrap;
+        }
+    }
+
+    private static void ApplyContainerShorthandAlias(Dictionary<string, string> map)
+    {
+        if (!TryGetNonEmptyMapValue(map, "container", out var containerRaw))
+        {
+            return;
+        }
+
+        if (string.Equals(containerRaw, "normal", StringComparison.Ordinal))
+        {
+            if (!map.ContainsKey("container-name"))
+            {
+                map["container-name"] = "none";
+            }
+            if (!map.ContainsKey("container-type"))
+            {
+                map["container-type"] = "normal";
+            }
+            return;
+        }
+
+        if (string.Equals(containerRaw, "none", StringComparison.Ordinal))
+        {
+            if (!map.ContainsKey("container-name"))
+            {
+                map["container-name"] = "none";
+            }
+            return;
+        }
+
+        var slashIndex = containerRaw.IndexOf('/');
+        if (slashIndex >= 0)
+        {
+            var namePart = containerRaw.Substring(0, slashIndex).Trim().ToLowerInvariant();
+            var typePart = containerRaw.Substring(slashIndex + 1).Trim().ToLowerInvariant();
+
+            if (!string.IsNullOrWhiteSpace(namePart) && !map.ContainsKey("container-name"))
+            {
+                map["container-name"] = namePart;
+            }
+            if (!string.IsNullOrWhiteSpace(typePart) && !map.ContainsKey("container-type"))
+            {
+                map["container-type"] = typePart;
+            }
+            return;
+        }
+
+        if (containerRaw == "size" || containerRaw == "inline-size" || containerRaw == "normal")
+        {
+            if (!map.ContainsKey("container-type"))
+            {
+                map["container-type"] = containerRaw;
+            }
+            if (!map.ContainsKey("container-name"))
+            {
+                map["container-name"] = "none";
+            }
+            return;
+        }
+
+        if (!map.ContainsKey("container-name"))
+        {
+            map["container-name"] = containerRaw;
+        }
+    }
+
+    private static void ApplyLogicalScrollSpacingAliases(Dictionary<string, string> map)
+    {
+        var direction = map.TryGetValue("direction", out var dirRaw) ? dirRaw?.Trim().ToLowerInvariant() : "ltr";
+        var inlineStart = string.Equals(direction, "rtl", StringComparison.Ordinal) ? "right" : "left";
+        var inlineEnd = inlineStart == "left" ? "right" : "left";
+
+        ApplyPhysicalBoxShorthand("scroll-margin", "scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left");
+        ApplyPhysicalBoxShorthand("scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left");
+
+        ApplyLogicalAxis("scroll-margin-inline", "scroll-margin-inline-start", "scroll-margin-inline-end");
+        ApplyLogicalAxis("scroll-margin-block", "scroll-margin-block-start", "scroll-margin-block-end");
+        ApplyLogicalAxis("scroll-padding-inline", "scroll-padding-inline-start", "scroll-padding-inline-end");
+        ApplyLogicalAxis("scroll-padding-block", "scroll-padding-block-start", "scroll-padding-block-end");
+
+        ProjectLogicalToPhysical("scroll-margin-inline-start", $"scroll-margin-{inlineStart}");
+        ProjectLogicalToPhysical("scroll-margin-inline-end", $"scroll-margin-{inlineEnd}");
+        ProjectLogicalToPhysical("scroll-margin-block-start", "scroll-margin-top");
+        ProjectLogicalToPhysical("scroll-margin-block-end", "scroll-margin-bottom");
+
+        ProjectLogicalToPhysical("scroll-padding-inline-start", $"scroll-padding-{inlineStart}");
+        ProjectLogicalToPhysical("scroll-padding-inline-end", $"scroll-padding-{inlineEnd}");
+        ProjectLogicalToPhysical("scroll-padding-block-start", "scroll-padding-top");
+        ProjectLogicalToPhysical("scroll-padding-block-end", "scroll-padding-bottom");
+
+        void ApplyPhysicalBoxShorthand(string shorthand, string topKey, string rightKey, string bottomKey, string leftKey)
+        {
+            if (!TryGetNonEmptyMapValue(map, shorthand, out var raw))
+            {
+                return;
+            }
+
+            if (!TryExpandPhysicalBoxShorthand(raw, out var top, out var right, out var bottom, out var left))
+            {
+                return;
+            }
+
+            if (!map.ContainsKey(topKey)) map[topKey] = top;
+            if (!map.ContainsKey(rightKey)) map[rightKey] = right;
+            if (!map.ContainsKey(bottomKey)) map[bottomKey] = bottom;
+            if (!map.ContainsKey(leftKey)) map[leftKey] = left;
+        }
+
+        void ApplyLogicalAxis(string axisShorthand, string startKey, string endKey)
+        {
+            if (!TryGetNonEmptyMapValue(map, axisShorthand, out var raw))
+            {
+                return;
+            }
+
+            if (!TryParseLogicalAxisPair(raw, out var start, out var end))
+            {
+                return;
+            }
+
+            if (!map.ContainsKey(startKey)) map[startKey] = start;
+            if (!map.ContainsKey(endKey)) map[endKey] = end;
+        }
+
+        void ProjectLogicalToPhysical(string logicalKey, string physicalKey)
+        {
+            if (TryGetNonEmptyMapValue(map, logicalKey, out var value) && !map.ContainsKey(physicalKey))
+            {
+                map[physicalKey] = value;
+            }
+        }
+    }
+
+    private static void ApplyLogicalBorderRadiusAliases(Dictionary<string, string> map)
+    {
+        var direction = map.TryGetValue("direction", out var dirRaw) ? dirRaw?.Trim().ToLowerInvariant() : "ltr";
+        var inlineStart = string.Equals(direction, "rtl", StringComparison.Ordinal) ? "right" : "left";
+        var inlineEnd = inlineStart == "left" ? "right" : "left";
+
+        string startStartCorner = ResolveCornerKey("top", inlineStart);
+        string startEndCorner = ResolveCornerKey("top", inlineEnd);
+        string endStartCorner = ResolveCornerKey("bottom", inlineStart);
+        string endEndCorner = ResolveCornerKey("bottom", inlineEnd);
+
+        ApplyDirectCornerAlias("border-start-start-radius", startStartCorner);
+        ApplyDirectCornerAlias("border-start-end-radius", startEndCorner);
+        ApplyDirectCornerAlias("border-end-start-radius", endStartCorner);
+        ApplyDirectCornerAlias("border-end-end-radius", endEndCorner);
+
+        ApplyBlockAxisRadiusShorthand("border-block-start-radius", startStartCorner, startEndCorner);
+        ApplyBlockAxisRadiusShorthand("border-block-end-radius", endStartCorner, endEndCorner);
+
+        void ApplyDirectCornerAlias(string logicalKey, string physicalKey)
+        {
+            if (TryGetNonEmptyMapValue(map, logicalKey, out var value) && !map.ContainsKey(physicalKey))
+            {
+                map[physicalKey] = value;
+            }
+        }
+
+        void ApplyBlockAxisRadiusShorthand(string logicalKey, string firstCorner, string secondCorner)
+        {
+            if (!TryGetNonEmptyMapValue(map, logicalKey, out var raw))
+            {
+                return;
+            }
+
+            var tokens = SplitCssValues(raw)
+                .Select(t => t?.Trim().ToLowerInvariant())
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .ToList();
+            if (tokens.Count == 0)
+            {
+                return;
+            }
+
+            var first = tokens[0];
+            var second = tokens.Count > 1 ? tokens[1] : tokens[0];
+
+            if (!map.ContainsKey(firstCorner))
+            {
+                map[firstCorner] = first;
+            }
+            if (!map.ContainsKey(secondCorner))
+            {
+                map[secondCorner] = second;
+            }
+        }
+    }
+
+    private static void ApplyBreakAliases(Dictionary<string, string> map)
+    {
+        ApplyBreakAlias("break-before", "page-break-before");
+        ApplyBreakAlias("break-after", "page-break-after");
+        ApplyBreakAlias("break-inside", "page-break-inside");
+
+        void ApplyBreakAlias(string breakKey, string pageBreakKey)
+        {
+            if (!TryGetNonEmptyMapValue(map, breakKey, out var breakValue))
+            {
+                return;
+            }
+
+            if (map.ContainsKey(pageBreakKey))
+            {
+                return;
+            }
+
+            var normalized = breakValue switch
+            {
+                "avoid-page" => "avoid",
+                "page" => "always",
+                "left" => "always",
+                "right" => "always",
+                "recto" => "always",
+                "verso" => "always",
+                _ => breakValue
+            };
+
+            map[pageBreakKey] = normalized;
+        }
+    }
+
+    private static void ApplyTextWrapAliases(Dictionary<string, string> map)
+    {
+        if (TryGetNonEmptyMapValue(map, "text-wrap", out var textWrap))
+        {
+            if (!map.ContainsKey("text-wrap-mode"))
+            {
+                map["text-wrap-mode"] = string.Equals(textWrap, "nowrap", StringComparison.Ordinal)
+                    ? "nowrap"
+                    : "wrap";
+            }
+
+            if (!map.ContainsKey("text-wrap-style"))
+            {
+                map["text-wrap-style"] = textWrap switch
+                {
+                    "balance" => "balance",
+                    "pretty" => "pretty",
+                    "stable" => "stable",
+                    _ => "auto"
+                };
+            }
+        }
+
+        if (TryGetNonEmptyMapValue(map, "text-wrap-mode", out var textWrapMode))
+        {
+            if (!map.ContainsKey("white-space"))
+            {
+                map["white-space"] = string.Equals(textWrapMode, "nowrap", StringComparison.Ordinal)
+                    ? "nowrap"
+                    : "normal";
+            }
+        }
+
+        if (TryGetNonEmptyMapValue(map, "white-space-collapse", out var whiteSpaceCollapse) &&
+            !map.ContainsKey("white-space"))
+        {
+            map["white-space"] = whiteSpaceCollapse switch
+            {
+                "preserve" => "pre",
+                "preserve-breaks" => "pre-wrap",
+                "preserve-spaces" => "pre",
+                "break-spaces" => "break-spaces",
+                _ => "normal"
+            };
+        }
+
+        if (TryGetNonEmptyMapValue(map, "text-align-all", out var textAlignAll) &&
+            !map.ContainsKey("text-align"))
+        {
+            map["text-align"] = textAlignAll;
+        }
+    }
+
+    private static void ApplyTimelineAliases(Dictionary<string, string> map)
+    {
+        ApplyNameAxisShorthand("scroll-timeline", "scroll-timeline-name", "scroll-timeline-axis", null);
+        ApplyNameAxisShorthand("view-timeline", "view-timeline-name", "view-timeline-axis", "view-timeline-inset");
+
+        if (TryGetNonEmptyMapValue(map, "animation-timeline", out var animationTimeline))
+        {
+            if (string.Equals(animationTimeline, "auto", StringComparison.Ordinal) &&
+                map.TryGetValue("scroll-timeline-name", out var scrollTimelineName) &&
+                !string.IsNullOrWhiteSpace(scrollTimelineName))
+            {
+                map["animation-timeline"] = scrollTimelineName.Trim().ToLowerInvariant();
+            }
+        }
+
+        void ApplyNameAxisShorthand(string shorthandKey, string nameKey, string axisKey, string insetKey)
+        {
+            if (!TryGetNonEmptyMapValue(map, shorthandKey, out var shorthand))
+            {
+                return;
+            }
+
+            var shorthandParts = SplitTopLevelByChar(shorthand, '/');
+            var beforeSlash = shorthandParts.Count > 0 ? shorthandParts[0] : shorthand;
+            var afterSlash = shorthandParts.Count > 1 ? shorthandParts[1]?.Trim().ToLowerInvariant() : null;
+
+            var tokens = SplitCssValues(beforeSlash)
+                .Select(t => t?.Trim().ToLowerInvariant())
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .ToList();
+            if (tokens.Count == 0)
+            {
+                return;
+            }
+
+            string name = null;
+            string axis = null;
+
+            foreach (var token in tokens)
+            {
+                if (token is "x" or "y" or "block" or "inline")
+                {
+                    axis ??= token;
+                }
+                else
+                {
+                    name ??= token;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(name) && !map.ContainsKey(nameKey))
+            {
+                map[nameKey] = name;
+            }
+            if (!string.IsNullOrWhiteSpace(axis) && !map.ContainsKey(axisKey))
+            {
+                map[axisKey] = axis;
+            }
+
+            if (!string.IsNullOrWhiteSpace(insetKey) &&
+                !string.IsNullOrWhiteSpace(afterSlash) &&
+                !map.ContainsKey(insetKey))
+            {
+                map[insetKey] = afterSlash;
+            }
+        }
+    }
+
+    private static void ApplyOffsetAliases(Dictionary<string, string> map)
+    {
+        if (!TryGetNonEmptyMapValue(map, "offset", out var offsetRaw))
+        {
+            return;
+        }
+
+        var parts = SplitTopLevelByChar(offsetRaw, '/');
+        var beforeSlash = parts.Count > 0 ? parts[0].Trim() : string.Empty;
+        var afterSlash = parts.Count > 1 ? parts[1].Trim().ToLowerInvariant() : null;
+
+        var tokens = SplitCssValues(beforeSlash)
+            .Select(t => t?.Trim())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+
+        string inferredPath = null;
+        string inferredDistance = null;
+        string inferredRotate = null;
+        var inferredPositionTokens = new List<string>();
+
+        foreach (var rawToken in tokens)
+        {
+            var token = rawToken.Trim();
+            var lower = token.ToLowerInvariant();
+
+            if (inferredPath == null &&
+                (lower.StartsWith("path(", StringComparison.Ordinal) ||
+                 lower.StartsWith("ray(", StringComparison.Ordinal) ||
+                 lower.StartsWith("url(", StringComparison.Ordinal) ||
+                 lower == "none"))
+            {
+                inferredPath = lower;
+                continue;
+            }
+
+            if (inferredDistance == null &&
+                Regex.IsMatch(lower, @"^[+-]?(\d+(\.\d+)?|\.\d+)(px|em|rem|vw|vh|vmin|vmax|cm|mm|in|pt|pc|q|%)$"))
+            {
+                inferredDistance = lower;
+                continue;
+            }
+
+            if (lower == "auto" || lower == "reverse" || lower.StartsWith("auto ", StringComparison.Ordinal))
+            {
+                inferredRotate = inferredRotate == null ? lower : inferredRotate + " " + lower;
+                continue;
+            }
+
+            inferredPositionTokens.Add(lower);
+        }
+
+        if (!string.IsNullOrWhiteSpace(inferredPath) && !map.ContainsKey("offset-path"))
+        {
+            map["offset-path"] = inferredPath;
+        }
+
+        if (!string.IsNullOrWhiteSpace(inferredDistance) && !map.ContainsKey("offset-distance"))
+        {
+            map["offset-distance"] = inferredDistance;
+        }
+
+        if (!string.IsNullOrWhiteSpace(inferredRotate) && !map.ContainsKey("offset-rotate"))
+        {
+            map["offset-rotate"] = inferredRotate;
+        }
+
+        if (inferredPositionTokens.Count > 0 && !map.ContainsKey("offset-position"))
+        {
+            map["offset-position"] = string.Join(" ", inferredPositionTokens);
+        }
+
+        if (!string.IsNullOrWhiteSpace(afterSlash) && !map.ContainsKey("offset-anchor"))
+        {
+            map["offset-anchor"] = afterSlash;
+        }
+    }
+
+    private static void ApplyBorderImageAliases(Dictionary<string, string> map)
+    {
+        if (!TryGetNonEmptyMapValue(map, "border-image", out var borderImageRaw))
+        {
+            return;
+        }
+
+        var slashParts = SplitTopLevelByChar(borderImageRaw, '/');
+        var head = slashParts.Count > 0 ? slashParts[0].Trim() : string.Empty;
+
+        var tokens = SplitCssValues(head).Select(t => t?.Trim().ToLowerInvariant()).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+        var repeatTokens = new List<string>();
+        var sliceTokens = new List<string>();
+        string source = null;
+
+        foreach (var token in tokens)
+        {
+            if (source == null &&
+                (token.StartsWith("url(", StringComparison.Ordinal) ||
+                 token.StartsWith("image(", StringComparison.Ordinal) ||
+                 token.StartsWith("linear-gradient(", StringComparison.Ordinal) ||
+                 token.StartsWith("radial-gradient(", StringComparison.Ordinal) ||
+                 token == "none"))
+            {
+                source = token;
+                continue;
+            }
+
+            if (token is "stretch" or "repeat" or "round" or "space")
+            {
+                repeatTokens.Add(token);
+                continue;
+            }
+
+            sliceTokens.Add(token);
+        }
+
+        var width = slashParts.Count > 1 ? ExtractNonRepeatSegment(slashParts[1], repeatTokens) : null;
+        var outset = slashParts.Count > 2 ? ExtractNonRepeatSegment(slashParts[2], repeatTokens) : null;
+
+        if (!string.IsNullOrWhiteSpace(source) && !map.ContainsKey("border-image-source"))
+        {
+            map["border-image-source"] = source;
+        }
+        if (sliceTokens.Count > 0 && !map.ContainsKey("border-image-slice"))
+        {
+            map["border-image-slice"] = string.Join(" ", sliceTokens);
+        }
+        if (!string.IsNullOrWhiteSpace(width) && !map.ContainsKey("border-image-width"))
+        {
+            map["border-image-width"] = width;
+        }
+        if (!string.IsNullOrWhiteSpace(outset) && !map.ContainsKey("border-image-outset"))
+        {
+            map["border-image-outset"] = outset;
+        }
+        if (repeatTokens.Count > 0 && !map.ContainsKey("border-image-repeat"))
+        {
+            map["border-image-repeat"] = string.Join(" ", repeatTokens);
+        }
+    }
+
+    private static void ApplyMaskBorderAliases(Dictionary<string, string> map)
+    {
+        if (!TryGetNonEmptyMapValue(map, "mask-border", out var maskBorderRaw))
+        {
+            return;
+        }
+
+        var slashParts = SplitTopLevelByChar(maskBorderRaw, '/');
+        var head = slashParts.Count > 0 ? slashParts[0].Trim() : string.Empty;
+
+        var tokens = SplitCssValues(head).Select(t => t?.Trim().ToLowerInvariant()).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+        var repeatTokens = new List<string>();
+        var sliceTokens = new List<string>();
+        string source = null;
+
+        foreach (var token in tokens)
+        {
+            if (source == null &&
+                (token.StartsWith("url(", StringComparison.Ordinal) ||
+                 token.StartsWith("image(", StringComparison.Ordinal) ||
+                 token.StartsWith("linear-gradient(", StringComparison.Ordinal) ||
+                 token.StartsWith("radial-gradient(", StringComparison.Ordinal) ||
+                 token == "none"))
+            {
+                source = token;
+                continue;
+            }
+
+            if (token is "stretch" or "repeat" or "round" or "space")
+            {
+                repeatTokens.Add(token);
+                continue;
+            }
+
+            sliceTokens.Add(token);
+        }
+
+        var width = slashParts.Count > 1 ? ExtractNonRepeatSegment(slashParts[1], repeatTokens) : null;
+        var outset = slashParts.Count > 2 ? ExtractNonRepeatSegment(slashParts[2], repeatTokens) : null;
+
+        if (!string.IsNullOrWhiteSpace(source) && !map.ContainsKey("mask-border-source"))
+        {
+            map["mask-border-source"] = source;
+        }
+        if (sliceTokens.Count > 0 && !map.ContainsKey("mask-border-slice"))
+        {
+            map["mask-border-slice"] = string.Join(" ", sliceTokens);
+        }
+        if (!string.IsNullOrWhiteSpace(width) && !map.ContainsKey("mask-border-width"))
+        {
+            map["mask-border-width"] = width;
+        }
+        if (!string.IsNullOrWhiteSpace(outset) && !map.ContainsKey("mask-border-outset"))
+        {
+            map["mask-border-outset"] = outset;
+        }
+        if (repeatTokens.Count > 0 && !map.ContainsKey("mask-border-repeat"))
+        {
+            map["mask-border-repeat"] = string.Join(" ", repeatTokens);
+        }
+    }
+
+    private static void ApplyContainIntrinsicAliases(Dictionary<string, string> map)
+    {
+        var explicitInline = TryGetNonEmptyMapValue(map, "contain-intrinsic-inline-size", out var inlineRaw)
+            ? inlineRaw
+            : (TryGetNonEmptyMapValue(map, "contain-intrinsic-width", out var widthRaw) ? widthRaw : null);
+        var explicitBlock = TryGetNonEmptyMapValue(map, "contain-intrinsic-block-size", out var blockRaw)
+            ? blockRaw
+            : (TryGetNonEmptyMapValue(map, "contain-intrinsic-height", out var heightRaw) ? heightRaw : null);
+
+        if (!map.ContainsKey("contain-intrinsic-size"))
+        {
+            if (!string.IsNullOrWhiteSpace(explicitInline) && !string.IsNullOrWhiteSpace(explicitBlock))
+            {
+                map["contain-intrinsic-size"] = $"{explicitInline} {explicitBlock}";
+            }
+            else if (!string.IsNullOrWhiteSpace(explicitInline))
+            {
+                map["contain-intrinsic-size"] = explicitInline;
+            }
+            else if (!string.IsNullOrWhiteSpace(explicitBlock))
+            {
+                map["contain-intrinsic-size"] = explicitBlock;
+            }
+        }
+
+        if (TryGetNonEmptyMapValue(map, "contain-intrinsic-size", out var containIntrinsicSizeRaw))
+        {
+            var tokens = SplitCssValues(containIntrinsicSizeRaw)
+                .Select(t => t?.Trim().ToLowerInvariant())
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .ToList();
+            if (tokens.Count > 0)
+            {
+                var inline = tokens[0];
+                var block = tokens.Count > 1 ? tokens[1] : tokens[0];
+
+                if (!map.ContainsKey("contain-intrinsic-inline-size"))
+                {
+                    map["contain-intrinsic-inline-size"] = inline;
+                }
+                if (!map.ContainsKey("contain-intrinsic-block-size"))
+                {
+                    map["contain-intrinsic-block-size"] = block;
+                }
+                if (!map.ContainsKey("contain-intrinsic-width"))
+                {
+                    map["contain-intrinsic-width"] = inline;
+                }
+                if (!map.ContainsKey("contain-intrinsic-height"))
+                {
+                    map["contain-intrinsic-height"] = block;
+                }
+            }
+        }
+    }
+
+    private static void ApplyFontAndTextAliases(Dictionary<string, string> map)
+    {
+        ApplyTokenAggregator(
+            "font-synthesis",
+            "font-synthesis-weight",
+            "font-synthesis-style",
+            "font-synthesis-small-caps",
+            "font-synthesis-position");
+
+        ApplyTokenAggregator(
+            "font-variant",
+            "font-variant-ligatures",
+            "font-variant-caps",
+            "font-variant-numeric",
+            "font-variant-east-asian",
+            "font-variant-alternates",
+            "font-variant-position",
+            "font-variant-emoji");
+
+        if (TryGetNonEmptyMapValue(map, "text-align-last", out var textAlignLast) &&
+            !map.ContainsKey("text-align") &&
+            !string.Equals(textAlignLast, "auto", StringComparison.Ordinal))
+        {
+            map["text-align"] = textAlignLast;
+        }
+
+        void ApplyTokenAggregator(string targetKey, params string[] sourceKeys)
+        {
+            if (map.ContainsKey(targetKey))
+            {
+                return;
+            }
+
+            var tokens = new List<string>();
+            foreach (var key in sourceKeys)
+            {
+                if (!TryGetNonEmptyMapValue(map, key, out var raw))
+                {
+                    continue;
+                }
+
+                foreach (var token in SplitCssValues(raw)
+                    .Select(t => t?.Trim().ToLowerInvariant())
+                    .Where(t => !string.IsNullOrWhiteSpace(t)))
+                {
+                    if (!tokens.Contains(token, StringComparer.OrdinalIgnoreCase))
+                    {
+                        tokens.Add(token);
+                    }
+                }
+            }
+
+            if (tokens.Count > 0)
+            {
+                map[targetKey] = string.Join(" ", tokens);
+            }
+        }
+    }
+
+    private static void ApplyAnimationRangeAliases(Dictionary<string, string> map)
+    {
+        if (TryGetNonEmptyMapValue(map, "animation-range", out var animationRangeRaw))
+        {
+            var tokens = SplitCssValues(animationRangeRaw)
+                .Select(t => t?.Trim().ToLowerInvariant())
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .ToList();
+
+            if (tokens.Count == 1)
+            {
+                if (!map.ContainsKey("animation-range-start"))
+                {
+                    map["animation-range-start"] = tokens[0];
+                }
+                if (!map.ContainsKey("animation-range-end"))
+                {
+                    map["animation-range-end"] = tokens[0];
+                }
+            }
+            else if (tokens.Count > 1)
+            {
+                if (!map.ContainsKey("animation-range-start"))
+                {
+                    map["animation-range-start"] = tokens[0];
+                }
+                if (!map.ContainsKey("animation-range-end"))
+                {
+                    map["animation-range-end"] = string.Join(" ", tokens.Skip(1));
+                }
+            }
+        }
+
+        if (!map.ContainsKey("animation-range") &&
+            TryGetNonEmptyMapValue(map, "animation-range-start", out var rangeStart) &&
+            TryGetNonEmptyMapValue(map, "animation-range-end", out var rangeEnd))
+        {
+            map["animation-range"] = string.Equals(rangeStart, rangeEnd, StringComparison.Ordinal)
+                ? rangeStart
+                : $"{rangeStart} {rangeEnd}";
+        }
+    }
+
+    private static void ApplyAdvancedInventoryPassThrough(Dictionary<string, string> map)
+    {
+        NormalizeIfPresent("anchor-name");
+        NormalizeIfPresent("anchor-scope");
+        NormalizeIfPresent("animation-composition");
+        NormalizeIfPresent("azimuth");
+        NormalizeIfPresent("background-blend-mode");
+        NormalizeIfPresent("box-decoration-break");
+        NormalizeIfPresent("clip");
+        NormalizeIfPresent("color-interpolation");
+        NormalizeIfPresent("color-interpolation-filters");
+        NormalizeIfPresent("color-rendering");
+        NormalizeIfPresent("column-fill");
+        NormalizeIfPresent("content-visibility");
+        NormalizeIfPresent("fill-opacity");
+        NormalizeIfPresent("fill-rule");
+        NormalizeIfPresent("flood-color");
+        NormalizeIfPresent("flood-opacity");
+        NormalizeIfPresent("font-kerning");
+        NormalizeIfPresent("font-language-override");
+        NormalizeIfPresent("font-optical-sizing");
+        NormalizeIfPresent("font-palette");
+        NormalizeIfPresent("font-size-adjust");
+        NormalizeIfPresent("hanging-punctuation");
+        NormalizeIfPresent("hyphenate-character");
+        NormalizeIfPresent("hyphenate-limit-chars");
+        NormalizeIfPresent("lighting-color");
+        NormalizeIfPresent("line-break");
+        NormalizeIfPresent("mask-border-mode");
+        NormalizeIfPresent("mask-clip");
+        NormalizeIfPresent("mask-composite");
+        NormalizeIfPresent("mask-origin");
+        NormalizeIfPresent("mask-type");
+        NormalizeIfPresent("overflow-clip-margin");
+        NormalizeIfPresent("paint-order");
+        NormalizeIfPresent("position-anchor");
+        NormalizeIfPresent("position-area");
+        NormalizeIfPresent("position-try");
+        NormalizeIfPresent("position-try-fallbacks");
+        NormalizeIfPresent("position-try-order");
+        NormalizeIfPresent("position-visibility");
+        NormalizeIfPresent("quotes");
+        NormalizeIfPresent("ruby-align");
+        NormalizeIfPresent("ruby-merge");
+        NormalizeIfPresent("ruby-position");
+        NormalizeIfPresent("scroll-snap-stop");
+        NormalizeIfPresent("stop-color");
+        NormalizeIfPresent("stop-opacity");
+        NormalizeIfPresent("stroke-dasharray");
+        NormalizeIfPresent("stroke-dashoffset");
+        NormalizeIfPresent("stroke-linecap");
+        NormalizeIfPresent("stroke-linejoin");
+        NormalizeIfPresent("stroke-miterlimit");
+        NormalizeIfPresent("stroke-opacity");
+        NormalizeIfPresent("stroke-width");
+        NormalizeIfPresent("text-autospace");
+        NormalizeIfPresent("text-combine-upright");
+        NormalizeIfPresent("text-emphasis-position");
+        NormalizeIfPresent("text-emphasis-skip");
+        NormalizeIfPresent("text-justify");
+        NormalizeIfPresent("text-spacing");
+        NormalizeIfPresent("text-spacing-trim");
+        NormalizeIfPresent("text-underline-position");
+        NormalizeIfPresent("timeline-scope");
+        NormalizeIfPresent("transform-box");
+        NormalizeIfPresent("view-transition-name");
+
+        void NormalizeIfPresent(string key)
+        {
+            if (TryGetNonEmptyMapValue(map, key, out var value))
+            {
+                map[key] = value;
+            }
+        }
+    }
+
+    private static string ResolveCornerKey(string blockSide, string inlineSide)
+    {
+        if (string.Equals(blockSide, "top", StringComparison.Ordinal))
+        {
+            return string.Equals(inlineSide, "left", StringComparison.Ordinal)
+                ? "border-top-left-radius"
+                : "border-top-right-radius";
+        }
+
+        return string.Equals(inlineSide, "left", StringComparison.Ordinal)
+            ? "border-bottom-left-radius"
+            : "border-bottom-right-radius";
+    }
+
+    private static bool TryGetNonEmptyMapValue(Dictionary<string, string> map, string key, out string normalized)
+    {
+        normalized = null;
+        if (map == null || string.IsNullOrWhiteSpace(key))
+        {
+            return false;
+        }
+
+        if (!map.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        normalized = raw.Trim().ToLowerInvariant();
+        return normalized.Length > 0;
+    }
+
+    private static bool TryParseLogicalAxisPair(string raw, out string start, out string end)
+    {
+        start = null;
+        end = null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var tokens = SplitCssValues(raw)
+            .Select(t => t?.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        start = tokens[0];
+        end = tokens.Count > 1 ? tokens[1] : tokens[0];
+        return true;
+    }
+
+    private static bool TryExpandPhysicalBoxShorthand(string raw, out string top, out string right, out string bottom, out string left)
+    {
+        top = null;
+        right = null;
+        bottom = null;
+        left = null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var tokens = SplitCssValues(raw)
+            .Select(t => t?.Trim().ToLowerInvariant())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+
+        if (tokens.Count == 0 || tokens.Count > 4)
+        {
+            return false;
+        }
+
+        switch (tokens.Count)
+        {
+            case 1:
+                top = right = bottom = left = tokens[0];
+                break;
+            case 2:
+                top = bottom = tokens[0];
+                right = left = tokens[1];
+                break;
+            case 3:
+                top = tokens[0];
+                right = left = tokens[1];
+                bottom = tokens[2];
+                break;
+            default:
+                top = tokens[0];
+                right = tokens[1];
+                bottom = tokens[2];
+                left = tokens[3];
+                break;
+        }
+
+        return true;
+    }
+
+    private static List<string> SplitTopLevelByChar(string raw, char separator)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return result;
+        }
+
+        var current = new StringBuilder();
+        int parenDepth = 0;
+        int bracketDepth = 0;
+        bool inString = false;
+        char quote = '\0';
+
+        foreach (var ch in raw)
+        {
+            if ((ch == '"' || ch == '\'') && (quote == '\0' || quote == ch))
+            {
+                if (inString && quote == ch)
+                {
+                    inString = false;
+                    quote = '\0';
+                }
+                else if (!inString)
+                {
+                    inString = true;
+                    quote = ch;
+                }
+                current.Append(ch);
+                continue;
+            }
+
+            if (!inString)
+            {
+                if (ch == '(') parenDepth++;
+                else if (ch == ')' && parenDepth > 0) parenDepth--;
+                else if (ch == '[') bracketDepth++;
+                else if (ch == ']' && bracketDepth > 0) bracketDepth--;
+            }
+
+            if (!inString && parenDepth == 0 && bracketDepth == 0 && ch == separator)
+            {
+                result.Add(current.ToString().Trim());
+                current.Clear();
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        if (current.Length > 0)
+        {
+            result.Add(current.ToString().Trim());
+        }
+
+        return result;
+    }
+
+    private static string ExtractNonRepeatSegment(string raw, List<string> repeatTokens)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var kept = new List<string>();
+        var tokens = SplitCssValues(raw)
+            .Select(token => token?.Trim().ToLowerInvariant())
+            .Where(token => !string.IsNullOrWhiteSpace(token));
+
+        foreach (var token in tokens)
+        {
+            if (token is "stretch" or "repeat" or "round" or "space")
+            {
+                repeatTokens.Add(token);
+                continue;
+            }
+
+            kept.Add(token);
+        }
+
+        return kept.Count > 0 ? string.Join(" ", kept) : null;
     }
 
     private static bool TryParseBorderWidthToken(string raw, double emBase, out double width)
