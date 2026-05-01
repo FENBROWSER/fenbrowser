@@ -7575,7 +7575,31 @@ window.Set("event", FenValue.Undefined);
 window.Set("origin", FenValue.FromString(GetCurrentOrigin()));
 foreach (var eventHandlerName in s_windowDefaultEventHandlerNames)
 {
-window.Set(eventHandlerName, FenValue.Null);
+    var handlerValue = FenValue.Null;
+    var propertyName = eventHandlerName;
+    window.DefineOwnProperty(propertyName, PropertyDescriptor.Accessor(
+        new FenFunction($"get {propertyName}", (args, thisVal) => handlerValue),
+        new FenFunction($"set {propertyName}", (args, thisVal) =>
+        {
+            var incoming = args != null && args.Length > 0 ? args[0] : FenValue.Null;
+            if (incoming.IsUndefined || incoming.IsNull)
+            {
+                handlerValue = FenValue.Null;
+            }
+            else if (incoming.IsFunction)
+            {
+                handlerValue = incoming;
+            }
+            else
+            {
+                // EventHandler IDL setters normalize non-callable values to null.
+                handlerValue = FenValue.Null;
+            }
+
+            return FenValue.Undefined;
+        }),
+        enumerable: true,
+        configurable: true));
 }
 
 // createImageBitmap - ImageBitmap API - https://www.w3.org/TR/2dcontext/#imagebitmap
