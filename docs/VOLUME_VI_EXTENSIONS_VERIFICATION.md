@@ -2438,3 +2438,17 @@ _End of Volume VI_
     - Result: `11 passed / 0 failed / 0 skipped`.
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssPropertyFamilyCoverageTests|FullyQualifiedName~CssSpecInventoryCoverageTests" -v minimal`
     - Result: `59 passed / 0 failed / 0 skipped`.
+
+## 6.80 CSS Inventory Closure Verifier (2026-05-01)
+
+- Added script:
+  - `scripts/verify_css_inventory_coverage.ps1`
+    - parses the CSS checklist sections from `html_css_spec_inventory_2026-05-01.md`
+    - normalizes checklist prose rows into runtime property probes:
+      - `--* (custom properties)` -> `--inventory-probe`
+      - `overflow-wrap alias` -> `overflow-wrap`
+    - verifies normalized properties are represented in `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+    - emits a machine-readable report at `Results/css_inventory_coverage_2026-05-01.json`.
+- Verification run:
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_css_inventory_coverage.ps1`
+    - Result: `raw_entry_count=414`, `normalized_property_count=414`, `missing_property_count=0`.
