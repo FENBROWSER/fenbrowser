@@ -7330,3 +7330,30 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `background-position-inline/block` -> `background-position-x/y`
     - `background-repeat-inline/block` -> canonical `background-repeat`
   - Added direction-aware logical border side projection (`border-inline-start/end`, `border-block-start/end` plus width/style/color longhands and block/inline axis shorthands) into physical border values used by layout/paint.
+
+## 2.249 CSS Inventory Alias Projection Expansion (2026-05-01)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Expanded inventory-driven canonicalization so CSS checklist properties from the 2026-05-01 spec inventory map to stable runtime keys before typed projection:
+    - `flex-flow` -> `flex-direction` + `flex-wrap`
+    - `container` shorthand -> `container-name` + `container-type`
+    - logical scroll spacing expansion/projection:
+      - `scroll-margin-inline/block` and `scroll-padding-inline/block`
+      - projection into physical longhands (`top/right/bottom/left`) with direction-aware inline mapping
+    - logical border radius projection:
+      - `border-start-start/end-start/start-end/end-end-radius`
+      - `border-block-start/end-radius`
+      - projection into physical corner keys (`border-top-left-radius`, etc.) with direction-aware inline corner selection.
+    - break/text wrapping/timeline/offset/image-border canonicalization:
+      - `break-before/after/inside` -> `page-break-before/after/inside`
+      - `text-wrap` + `text-wrap-mode` + `white-space-collapse` + `text-align-all` projection
+      - `scroll-timeline`/`view-timeline` name-axis parsing with `view-timeline-inset` extraction and `animation-timeline:auto` fallback to `scroll-timeline-name`
+      - `offset` shorthand expansion to `offset-path`/`offset-distance`/`offset-rotate`/`offset-position`/`offset-anchor`
+      - `border-image` and `mask-border` shorthand expansion to source/slice/width/outset/repeat longhands
+    - additional semantic bridges:
+      - `contain-intrinsic-*` longhand/shorthand cross-projection into `contain-intrinsic-size` and width/height/inline/block variants
+      - `font-synthesis-*` and `font-variant-*` aggregation into parent keys
+      - `animation-range` <-> `animation-range-start/end` projection
+      - canonical pass-through normalization for advanced inventory properties (anchor, ruby, mask, SVG paint/detail, position-try, transform-box, view-transition, and related longhands) so values are preserved under stable lowercase keys.
+- Runtime effect:
+  - inventory aliases now resolve deterministically into the same canonical map keys consumed by layout/paint, reducing behavior drift between logical syntax and physical execution paths.

@@ -2416,3 +2416,25 @@ _End of Volume VI_
   - Added nested functional pseudo-class coverage for `:is`, `:where`, and `:not(:is(...))`.
 - `scripts/run_stage_recovery_baseline.ps1`
   - Stage3 CSS/JS tranche now includes `HtmlCollectionTests` alongside selector/cascade/mutation slices.
+
+## 6.79 HTML/CSS Spec Inventory Coverage Gate (2026-05-01)
+
+- Added coverage:
+  - `FenBrowser.Tests/Engine/CssSpecInventoryCoverageTests.cs` (new)
+    - materializes the CSS property inventory derived from `html_css_spec_inventory_2026-05-01.md` (normalized to 414 runtime-check entries, including alias split rows and a custom-property probe token).
+    - verifies every inventory property is accepted by the runtime `@supports` property-check path.
+    - verifies logical inventory aliases project to canonical runtime keys for:
+      - `flex-flow`
+      - `container`
+      - logical scroll-margin/scroll-padding axes
+      - logical border radius corner aliases.
+      - `break-*`, `text-wrap*`, `white-space-collapse`, `text-align-all`
+      - `scroll-timeline` / `view-timeline` / `animation-timeline:auto`
+      - `offset`, `border-image`, and `mask-border` shorthands
+      - `contain-intrinsic-*`, `font-synthesis-*`, `font-variant-*`, and `animation-range*` bridges
+    - verifies block-axis logical border radius shorthand projection into physical corner keys.
+- Focused verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~CssSpecInventoryCoverageTests" -v minimal`
+    - Result: `11 passed / 0 failed / 0 skipped`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~CssPropertyFamilyCoverageTests|FullyQualifiedName~CssSpecInventoryCoverageTests" -v minimal`
+    - Result: `59 passed / 0 failed / 0 skipped`.
