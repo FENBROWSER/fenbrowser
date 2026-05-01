@@ -653,29 +653,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var toRemove = new List<Element>();
-            var promoted = 0;
             foreach (var element in domRoot.Descendants().OfType<Element>())
             {
                 var tag = element.TagName?.ToLowerInvariant();
                 if (tag == "div" && string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
                 {
-                    var inlineStyle = element.GetAttribute("style");
-                    if (!string.IsNullOrWhiteSpace(inlineStyle) &&
-                        inlineStyle.IndexOf("display", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                        inlineStyle.IndexOf("none", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        var updatedStyle = RemoveInlineDisplayNone(inlineStyle);
-                        if (string.IsNullOrWhiteSpace(updatedStyle))
-                        {
-                            element.RemoveAttribute("style");
-                        }
-                        else
-                        {
-                            element.SetAttribute("style", updatedStyle);
-                        }
-                    }
-
-                    promoted++;
+                    toRemove.Add(element);
                     continue;
                 }
 
@@ -698,7 +681,7 @@ namespace FenBrowser.FenEngine.Rendering
                 element.Remove();
             }
 
-            return toRemove.Count + promoted;
+            return toRemove.Count;
         }
 
         private static bool IsGoogleSearchChallengeDocument(Node domRoot, Uri baseUri)
