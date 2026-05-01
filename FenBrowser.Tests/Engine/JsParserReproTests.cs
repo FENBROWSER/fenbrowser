@@ -465,6 +465,43 @@ var hj=function(a){(a=_.L(a.i,_.Gg,5))?(a=_.S(a,5),a=/^\d+$/.test(a)?parseInt(a,
         }
 
         [Fact]
+        public void Parse_LocalGoogleOgBundle_MainTrySegment_RuntimeParser_NoErrors_WhenArtifactPresent()
+        {
+            string probe = AppContext.BaseDirectory;
+            string path = null;
+            for (int i = 0; i < 12 && !string.IsNullOrWhiteSpace(probe); i++)
+            {
+                var candidate = Path.Combine(probe, "logs", "google_og_bundle.js");
+                if (File.Exists(candidate))
+                {
+                    path = candidate;
+                    break;
+                }
+
+                probe = Path.GetDirectoryName(probe);
+            }
+
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            var lines = File.ReadAllLines(path);
+            if (lines.Length < 521)
+            {
+                return;
+            }
+
+            // Keep a complete `try { ... } catch(e) { ... }` segment so the slice is syntactically valid.
+            var slice = string.Join("\n", lines.Skip(310).Take(210));
+            var parser = CreateRuntimeParser(slice);
+            var program = parser.ParseProgram();
+
+            AssertNoErrors(parser);
+            Assert.True(program.Statements.Count >= 1);
+        }
+
+        [Fact]
         public void Parse_ForLoop_CommaSequenceBody_NoErrors()
         {
             var input = "for(var e,t,n,i=\"\",r=this.array(),o=0;o<15;)e=r[o++],t=r[o++],n=r[o++],i+=BASE64_ENCODE_CHAR[e>>2]+BASE64_ENCODE_CHAR[(3&e)<<4|t>>4]+BASE64_ENCODE_CHAR[(15&t)<<2|n>>6]+BASE64_ENCODE_CHAR[63&n];";

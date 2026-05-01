@@ -83,9 +83,11 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
         };
         private static readonly string[] s_windowDefaultEventHandlerNames =
         {
-            "onabort", "onblur", "oncancel", "oncanplay", "oncanplaythrough",
-            "onchange", "onclick", "onclose", "oncontextmenu", "oncopy",
-            "oncuechange", "oncut", "ondblclick", "ondrag", "ondragend",
+            "onabort", "onauxclick", "onbeforeinput", "onbeforematch", "onbeforetoggle",
+            "onblur", "oncancel", "oncanplay", "oncanplaythrough", "onchange",
+            "onclick", "onclose", "oncommand", "oncontextlost", "oncontextmenu",
+            "oncontextrestored", "oncopy", "oncuechange", "oncut", "ondblclick",
+            "ondrag", "ondragend",
             "ondragenter", "ondragleave", "ondragover", "ondragstart", "ondrop",
             "ondurationchange", "onemptied", "onended", "onerror", "onfocus",
             "onfocusin", "onfocusout", "onformdata", "ongotpointercapture",
@@ -107,7 +109,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             "onafterprint", "onbeforeprint", "onbeforeunload", "onhashchange", "onlanguagechange",
             "onmessage", "onmessageerror", "onoffline", "ononline", "onpagehide",
             "onpagereveal", "onpageshow", "onpageswap", "onpopstate",
-            "onrejectionhandled", "onstorage", "onunhandledrejection", "onunload"
+            "onrejectionhandled", "onscrollend", "onstorage", "onunhandledrejection",
+            "onunload"
         };
 
         private int _timerIdCounter = 1;

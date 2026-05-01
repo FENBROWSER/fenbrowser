@@ -1210,3 +1210,7 @@ _End of Volume II_
     - request/navigation timeout from policy
     - text-body and binary/image body-size ceilings with explicit fail-closed outcomes/logging
   - This keeps malformed or high-cost payloads bounded while preserving deterministic failure classification for runtime diagnostics.
+
+### 1.59 Strict-Mode `srcdoc` Sanitization Control (2026-05-01)
+- `FenBrowser.Core/Dom/V2/Security/AttributeSanitizer.cs`
+  - `srcdoc` sanitization is opt-in under strict mode via `AttributeSanitizer.BlockSrcdocInStrictMode`; default behavior preserves `srcdoc` values for standards coverage and compatibility.

@@ -1582,6 +1582,13 @@ namespace FenBrowser.FenEngine.Core
                 return CurTokenIs(TokenType.RBrace);
             }
 
+            // In minified bundles, `...};` often closes an inner declaration/expression
+            // inside the current block, not the block itself.
+            if (PeekTokenIs(TokenType.Semicolon))
+            {
+                return false;
+            }
+
             int length = (_curToken.Position - blockToken.Position) + Math.Max(_curToken.Literal?.Length ?? 0, 1);
             if (length <= 0 || blockToken.Position + length > _lexer.Source.Length)
             {
@@ -2980,6 +2987,51 @@ namespace FenBrowser.FenEngine.Core
 
             stmt.Block = ParseBlockStatement(consumeTerminator: false);
             // _curToken is now on '}' of the try block.
+
+            bool AtCatchOrFinallyBoundary() =>
+                CurTokenIs(TokenType.Catch) ||
+                PeekTokenIs(TokenType.Catch) ||
+                CurTokenIs(TokenType.Finally) ||
+                PeekTokenIs(TokenType.Finally);
+
+            // Recovery for minified bundles: the try-block parser can stop on an inner
+            // `...};` boundary. Continue consuming statements inside this try until the
+            // real `} catch/finally` boundary is reached.
+            if (!AtCatchOrFinallyBoundary() && CurTokenIs(TokenType.RBrace) && PeekTokenIs(TokenType.Semicolon))
+            {
+                int safety = 0;
+                while (!CurTokenIs(TokenType.Eof) && safety++ < 8192)
+                {
+                    if (CurTokenIs(TokenType.RBrace) &&
+                        (PeekTokenIs(TokenType.Catch) || PeekTokenIs(TokenType.Finally)))
+                    {
+                        break;
+                    }
+
+                    if (CurTokenIs(TokenType.RBrace))
+                    {
+                        NextToken();
+                        continue;
+                    }
+
+                    var recovered = ParseStatement();
+                    if (recovered != null)
+                    {
+                        stmt.Block.Statements.Add(recovered);
+                    }
+
+                    if (CurTokenIs(TokenType.RBrace) &&
+                        (PeekTokenIs(TokenType.Catch) || PeekTokenIs(TokenType.Finally)))
+                    {
+                        break;
+                    }
+
+                    if (!CurTokenIs(TokenType.Eof))
+                    {
+                        NextToken();
+                    }
+                }
+            }
 
             if (CurTokenIs(TokenType.Catch) || PeekTokenIs(TokenType.Catch))
             {

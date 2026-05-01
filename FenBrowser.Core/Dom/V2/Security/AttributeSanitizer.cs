@@ -34,6 +34,12 @@ namespace FenBrowser.Core.Dom.V2.Security
         /// </summary>
         public static bool BlockInlineEventHandlersInStrictMode { get; set; } = false;
 
+        /// <summary>
+        /// Set to true to clear srcdoc values while in strict mode.
+        /// Default is false for browser-compatibility and standards coverage.
+        /// </summary>
+        public static bool BlockSrcdocInStrictMode { get; set; } = false;
+
         // --- Dangerous URL Schemes ---
 
         private static readonly HashSet<string> DangerousSchemes = new(StringComparer.OrdinalIgnoreCase)
@@ -177,8 +183,9 @@ namespace FenBrowser.Core.Dom.V2.Security
                 return styleResult;
             }
 
-            // Check srcdoc for iframe (dangerous - can contain arbitrary HTML)
-            if (name.Equals("srcdoc", StringComparison.OrdinalIgnoreCase) && StrictMode)
+            // Optional hardening: some deployments block srcdoc payloads in strict mode.
+            if (name.Equals("srcdoc", StringComparison.OrdinalIgnoreCase) &&
+                StrictMode && BlockSrcdocInStrictMode)
             {
                 sanitizedValue = "";
                 return AttributeValidationResult.Sanitize("srcdoc blocked in strict mode");
