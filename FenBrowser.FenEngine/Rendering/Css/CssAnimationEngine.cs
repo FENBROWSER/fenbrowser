@@ -1,3 +1,7 @@
+// SpecRef: CSS Animations Level 1 and CSS Transitions Level 2 runtime timing model
+// CapabilityId: ANIMATION-KEYFRAMES-ENGINE-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;

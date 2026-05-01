@@ -1,3 +1,7 @@
+// SpecRef: CSS Multi-column Layout Module Level 1
+// CapabilityId: LAYOUT-MULTICOL-ALGO-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;

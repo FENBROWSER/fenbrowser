@@ -1,3 +1,7 @@
+// SpecRef: Selectors Level 4 functional pseudo-classes (:is/:where/:not/:has)
+// CapabilityId: CSS-SELECTOR-ADVANCED-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;

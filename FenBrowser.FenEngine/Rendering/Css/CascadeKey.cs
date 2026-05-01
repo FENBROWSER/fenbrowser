@@ -1,3 +1,7 @@
+// SpecRef: CSS Cascade Level 5 layer ordering and importance sorting
+// CapabilityId: CSS-CASCADE-LAYERS-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 
 namespace FenBrowser.FenEngine.Rendering.Css

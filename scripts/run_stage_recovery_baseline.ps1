@@ -342,7 +342,7 @@ if ($Slices -contains "stage2-html")
 
 if ($Slices -contains "stage3-css-js")
 {
-    Add-TestStep -Id "css-js-tranche" -Category "stage3" -Filter "(FullyQualifiedName~SelectorMatcherConformanceTests|FullyQualifiedName~SelectorEngineConformanceTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~JsParserLoopReproTests|FullyQualifiedName~ParserFuzzRegressionTests)"
+    Add-TestStep -Id "css-js-tranche" -Category "stage3" -Filter "(FullyQualifiedName~SelectorMatcherConformanceTests|FullyQualifiedName~SelectorEngineConformanceTests|FullyQualifiedName~CascadeModernTests|FullyQualifiedName~CssContainerQueryTests|FullyQualifiedName~InlineStyleSheetBridgeTests|FullyQualifiedName~HtmlCollectionTests|FullyQualifiedName~TableLayoutIntegrationTests|FullyQualifiedName~JsParserLoopReproTests|FullyQualifiedName~ParserFuzzRegressionTests)"
     Add-LiveArtifactStep -Id "stage3-live-artifacts" -Category "stage3"
 }
 

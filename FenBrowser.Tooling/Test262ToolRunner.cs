@@ -1,3 +1,7 @@
+// SpecRef: Test262 harness execution and deterministic reporting semantics
+// CapabilityId: VERIFY-TEST262-TRUTH-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;

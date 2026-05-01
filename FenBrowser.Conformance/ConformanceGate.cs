@@ -1,3 +1,7 @@
+// SpecRef: WPT verdict classification and deterministic conformance gate policy
+// CapabilityId: VERIFY-WPT-TRUTH-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System.Text;
 using System.Text.Json;
 

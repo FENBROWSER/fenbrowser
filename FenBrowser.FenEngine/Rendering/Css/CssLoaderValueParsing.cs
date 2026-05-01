@@ -1,3 +1,7 @@
+// SpecRef: CSS Values and Units Level 4 value parsing and computation
+// CapabilityId: CSS-VALUES-COMPUTE-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 // CssLoaderValueParsing.cs - CSS Value Parsing Utilities
 // Extracted from CssLoader.cs for modularity
 // Part of CssLoader partial class

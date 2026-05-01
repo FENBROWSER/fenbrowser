@@ -1,3 +1,7 @@
+// SpecRef: CSS 2.2 Tables and table layout algorithms
+// CapabilityId: LAYOUT-TABLE-ALGO-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Collections.Generic;
 using System.Linq;

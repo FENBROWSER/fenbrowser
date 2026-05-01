@@ -113,7 +113,12 @@ Standard xUnit tests covering internal components:
     - `docs/spec_governance_map.json` defines governed file list + required capability IDs.
     - both test guard (`SpecGovernanceTests`) and CLI validator consume this map to avoid dual-list drift.
   - CI wiring:
-    - `.github/workflows/build-fenbrowser-exe.yml` now runs `scripts/validate_spec_headers.ps1` in all active jobs (`build-windows`, `unit-tests`, `test262-regression`) before build/test execution.
+    - `.github/workflows/build-fenbrowser-exe.yml` is now staged as a production pipeline:
+      - `quality-gate` runs on PRs (targeting `main` / `rewrite-history`) and pushes to `main`.
+      - `quality-gate` runs `scripts/validate_spec_headers.ps1`, checks for placeholder test assertions, builds `FenBrowser.WebIdlGen`, builds `FenBrowser.Tests`, and executes blocking P0 hardening test filters.
+      - `full-regression` (full `FenBrowser.Tests` suite) runs only on nightly schedule or explicit manual dispatch.
+      - `full-regression` also runs `scripts/ci/verify-verification-guards.ps1` as advisory output (non-blocking) while legacy volume-reference debt is being paid down.
+      - Windows EXE publish runs only for version tags (`refs/tags/v*`) or explicit manual dispatch input, not on every commit.
   - Stage recovery baseline workflow (2026-04-29):
     - `FenBrowser.Tooling` adds `capability-ledger` to materialize a machine-readable Stage 0 ledger under `Results/` by reconciling:
       - `docs/COMPLIANCE_MATRIX.md` capability rows
@@ -130,8 +135,8 @@ Standard xUnit tests covering internal components:
       - Stage 1 pipeline/event-loop invariants
       - Stage 2 HTML parser-focused tranche
       - Stage 3 CSS/JS focused tranche
-  - P0 hardening CI gate (2026-04-21):
-    - `unit-tests` now includes a dedicated blocking "P0 Hardening Gates" step before the full suite.
+  - P0 hardening CI gate (2026-04-21, retained in staged pipeline):
+    - `quality-gate` includes a dedicated blocking "P0 Hardening Gates" step.
     - The gate runs focused filters covering event loop ordering, paint/damage invariants, CSP/CORS enforcement, and IPC envelope validation:
       - `EventLoopTests`
       - `EventLoopPriorityTests`
@@ -234,14 +239,10 @@ Local operator runbook for FenBrowser's Test262 workflow.
 - Documents the separation between the vendored upstream suite (`/test262`), the CLI runner (`/FenBrowser.Test262`), and output artifacts (`/Results`).
 - Defines the clean-state command, canonical chunk commands, and the difference between logical chunks and full-suite watchdog workers.
 
-#### `scripts/ci/run-test262-ci.ps1`
+#### Test262 CI subset runner status (2026-05-01)
 
-GitHub Actions regression subset runner for Test262.
-
-- Invokes `FenBrowser.Test262.exe run_category ... --format json --output ...` for a bounded stable subset.
-- Resolves the suite root from `TEST262_ROOT` or repo-root `test262/`, and CI now provisions a shallow upstream checkout before the subset run.
-- Uses JSON result artifacts under `Results/ci-regression/` as the runner contract instead of scraping human-readable console text.
-- Writes the job artifact summary to `test262-ci-results.json` and compares pass counts against `docs/test262_ci_baseline.json`.
+- The default GitHub Actions pipeline no longer executes a per-commit Test262 subset job.
+- Test262 execution is intentionally decoupled from the blocking commit gate and should be run through dedicated/manual verification flows (or upstream harness workflows) instead of the default commit pipeline.
 
 #### `scripts/clean_test262.ps1`
 
@@ -2372,3 +2373,46 @@ _End of Volume VI_
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~HtmlElementInterfaceCoverageTests" -v minimal`
   - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --no-build --filter "FullyQualifiedName~HtmlElementInterfaceCoverageTests" -v minimal`
   - Result: `2 passed / 0 failed / 0 skipped`.
+
+## 6.77 CSS Capability-Gate Expansion + Inline Stylesheet Mutation Regression Coverage (2026-04-30)
+
+- Governance scope expansion:
+  - `docs/COMPLIANCE_MATRIX.md` now includes additional CSS capability IDs across:
+    - tokenization/values/cascade layers/selectors/CSSOM
+    - containment queries/layout table+multicol+positioning
+    - paint compositing and animation runtime
+    - Typed OM + Houdini surfaces (explicitly tracked as `Unsupported` until implemented)
+  - `docs/spec_governance_map.json` now binds the new required CSS capabilities to governed source files with header contracts.
+  - `FenBrowser.Tests/Architecture/SpecGovernanceTests.cs` now loads `spec_governance_map.json` with case-insensitive JSON binding so governed-file and required-capability assertions execute against the real map payload.
+- Regression additions:
+  - `FenBrowser.Tests/DOM/InlineStyleSheetBridgeTests.cs`
+    - out-of-range `insertRule` throws `IndexSizeError`
+    - out-of-range `deleteRule` throws `IndexSizeError`
+    - multi-rule `insertRule` payload throws `SyntaxError`
+- Stage baseline wiring:
+  - `scripts/run_stage_recovery_baseline.ps1` stage3 filter now includes:
+    - `CssContainerQueryTests`
+    - `InlineStyleSheetBridgeTests`
+    - `TableLayoutIntegrationTests`
+  - This keeps stage3 CSS/JS baseline aligned with the expanded CSS capability ownership map.
+
+## 6.78 CSSOM Live-List + Inline Cascade Priority Regression Closure (2026-04-30)
+
+- `FenBrowser.Tests/DOM/HtmlCollectionTests.cs`
+  - Added `DocumentStyleSheets_IsLiveAndKeepsStableObjectIdentity`:
+    - verifies `document.styleSheets` same-object semantics
+    - verifies live `length`/`item()` behavior as `<style>`/`<link>` nodes are added/removed
+    - verifies indexed entries remain ordered by document tree order.
+- `FenBrowser.Tests/DOM/InlineStyleSheetBridgeTests.cs`
+  - Added identity + liveness checks for inline `style.sheet.cssRules`:
+    - same `CSSRuleList` object remains observable across mutations
+    - `length` updates after `insertRule`/`deleteRule`
+    - `insertRule(rule)` default index behavior inserts at rule-list start.
+- `FenBrowser.Tests/Engine/CascadeModernTests.cs`
+  - Added cascade authority tests for inline style declarations:
+    - inline normal declarations do not override author `!important` declarations
+    - inline shorthand declarations override lower-priority stylesheet longhands through the same declaration-expansion pipeline.
+- `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
+  - Added nested functional pseudo-class coverage for `:is`, `:where`, and `:not(:is(...))`.
+- `scripts/run_stage_recovery_baseline.ps1`
+  - Stage3 CSS/JS tranche now includes `HtmlCollectionTests` alongside selector/cascade/mutation slices.

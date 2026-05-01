@@ -1,3 +1,7 @@
+// SpecRef: CSS Compositing and Blending Level 1, CSS Masking Level 1
+// CapabilityId: PAINT-COMPOSITING-EFFECTS-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using SkiaSharp;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core;

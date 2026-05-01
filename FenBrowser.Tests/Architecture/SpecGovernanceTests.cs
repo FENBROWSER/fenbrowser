@@ -183,7 +183,12 @@ public class SpecGovernanceTests
     {
         var path = Path.Combine(GetRepoRoot(), "docs", "spec_governance_map.json");
         var json = File.ReadAllText(path);
-        var map = JsonSerializer.Deserialize<GovernanceMap>(json);
+        var map = JsonSerializer.Deserialize<GovernanceMap>(
+            json,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
         return map ?? new GovernanceMap();
     }
 

@@ -1,3 +1,7 @@
+// SpecRef: CSS Syntax Module Level 3 tokenization algorithm
+// CapabilityId: CSS-SYNTAX-TOKENIZATION-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 using System;
 using System.Collections.Generic;
 using System.Text;
