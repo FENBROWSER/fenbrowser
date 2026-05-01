@@ -270,6 +270,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
             CollectMatches(element, results, pseudoElement);
+            CollectInlineStyleMatches(element, results, pseudoElement);
 
             /*
             if (_logCascade && results.Count > 0)
@@ -310,6 +311,80 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return computed;
+        }
+
+        private static void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
+        {
+            if (element == null || results == null || !string.IsNullOrWhiteSpace(pseudoElement))
+            {
+                return;
+            }
+
+            var inlineStyleText = element.GetAttribute("style");
+            if (string.IsNullOrWhiteSpace(inlineStyleText))
+            {
+                return;
+            }
+
+            var inlineDeclarations = ParseInlineStyleDeclarations(inlineStyleText);
+            if (inlineDeclarations.Count == 0)
+            {
+                return;
+            }
+
+            for (var declarationIndex = 0; declarationIndex < inlineDeclarations.Count; declarationIndex++)
+            {
+                var declaration = inlineDeclarations[declarationIndex];
+                if (declaration == null || string.IsNullOrWhiteSpace(declaration.Property))
+                {
+                    continue;
+                }
+
+                var key = new CascadeKey(
+                    CssOrigin.Author,
+                    declaration.IsImportant,
+                    ushort.MaxValue,
+                    0,
+                    0,
+                    0,
+                    0,
+                    int.MaxValue,
+                    int.MaxValue - 1,
+                    declarationIndex);
+
+                results.Add(new MatchedDeclaration
+                {
+                    Declaration = declaration,
+                    Key = key,
+                    SelectorText = "[style]"
+                });
+            }
+        }
+
+        private static IReadOnlyList<CssDeclaration> ParseInlineStyleDeclarations(string styleAttribute)
+        {
+            if (string.IsNullOrWhiteSpace(styleAttribute))
+            {
+                return Array.Empty<CssDeclaration>();
+            }
+
+            try
+            {
+                var tokenizer = new CssTokenizer("*{" + styleAttribute + "}");
+                var parser = new CssSyntaxParser(tokenizer);
+                var stylesheet = parser.ParseStylesheet();
+                var firstStyleRule = stylesheet?.Rules?.OfType<CssStyleRule>().FirstOrDefault();
+                if (firstStyleRule == null || firstStyleRule.Declarations.Count == 0)
+                {
+                    return Array.Empty<CssDeclaration>();
+                }
+
+                return firstStyleRule.Declarations;
+            }
+            catch
+            {
+                return Array.Empty<CssDeclaration>();
+            }
         }
 
         private void LogCascadeWinners(Element element, string pseudoElement, List<MatchedDeclaration> results)
@@ -554,12 +629,25 @@ namespace FenBrowser.FenEngine.Rendering
 
             var property = NormalizePropertyKey(declaration.Property);
             var value = declaration.Value?.Trim() ?? string.Empty;
-            if (string.Equals(property, "display", StringComparison.Ordinal) &&
-                !TryNormalizeDisplayValue(value, out value))
+            if (string.Equals(property, "display", StringComparison.Ordinal))
             {
-                // Invalid/unsupported display values must be ignored so they
-                // cannot override an earlier valid declaration in the cascade.
-                return;
+                // Defer display validation when value resolution is pending.
+                // var() and CSS-wide keywords are resolved during computed-style
+                // resolution in CssLoader.ResolveStyle.
+                bool needsComputedValueResolution =
+                    value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    value.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("revert", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("revert-layer", StringComparison.OrdinalIgnoreCase);
+
+                if (!needsComputedValueResolution && !TryNormalizeDisplayValue(value, out value))
+                {
+                    // Invalid/unsupported display values must be ignored so they
+                    // cannot override an earlier valid declaration in the cascade.
+                    return;
+                }
             }
 
             if (!IsValidDeclarationValue(property, value))
@@ -609,6 +697,9 @@ namespace FenBrowser.FenEngine.Rendering
                     break;
                 case "inset":
                     ApplyInsetShorthand(computed, declaration, value);
+                    break;
+                case "transition":
+                    ApplyTransitionShorthand(computed, declaration, value);
                     break;
             }
         }
@@ -1051,6 +1142,12 @@ namespace FenBrowser.FenEngine.Rendering
             SetExpanded(computed, "left", vLeft, source);
         }
 
+        private static void ApplyTransitionShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            ExpandTransitionShorthandCore(value, (property, shorthandValue) => SetExpanded(computed, property, shorthandValue, source));
+        }
+
         /// <summary>
         /// Expand CSS shorthand properties into their longhand equivalents.
         /// Only sets longhands that weren't explicitly declared with higher specificity.
@@ -1069,6 +1166,7 @@ namespace FenBrowser.FenEngine.Rendering
             ExpandGapShorthand(computed);
             ExpandBorderRadiusShorthand(computed);
             ExpandInsetShorthand(computed);
+            ExpandTransitionShorthand(computed);
         }
 
         /// <summary>
@@ -1222,41 +1320,110 @@ namespace FenBrowser.FenEngine.Rendering
             string image = null;
             string repeat = null;
             string attachment = null;
+            string origin = null;
+            string clip = null;
+            bool parsingSize = false;
             var positionTokens = new List<string>();
+            var sizeTokens = new List<string>();
 
             foreach (var token in SplitCssValue(value))
             {
-                if (string.IsNullOrWhiteSpace(token) || token == "/")
+                if (string.IsNullOrWhiteSpace(token))
                 {
+                    continue;
+                }
+
+                if (token == "/")
+                {
+                    parsingSize = true;
                     continue;
                 }
 
                 if (token.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
                     token.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
                 {
-                    image = token;
+                    ProcessToken(token);
                     continue;
                 }
 
-                if (IsBackgroundRepeat(token))
+                var tokenParts = token.Split('/', 2);
+                var head = tokenParts[0];
+                var tail = tokenParts.Length == 2 ? tokenParts[1] : null;
+                if (tokenParts.Length == 2)
                 {
-                    repeat = token;
-                    continue;
+                    parsingSize = true;
                 }
 
-                if (token == "fixed" || token == "scroll" || token == "local")
+                void ProcessToken(string tokenValue)
                 {
-                    attachment = token;
-                    continue;
+                    if (string.IsNullOrWhiteSpace(tokenValue))
+                    {
+                        return;
+                    }
+
+                    if (tokenValue.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
+                        tokenValue.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
+                    {
+                        image = tokenValue;
+                        return;
+                    }
+
+                    if (parsingSize && IsBackgroundSizeToken(tokenValue))
+                    {
+                        if (sizeTokens.Count < 2)
+                        {
+                            sizeTokens.Add(tokenValue);
+                        }
+                        return;
+                    }
+
+                    if (IsBackgroundRepeat(tokenValue))
+                    {
+                        repeat = tokenValue;
+                        return;
+                    }
+
+                    if (tokenValue == "fixed" || tokenValue == "scroll" || tokenValue == "local")
+                    {
+                        attachment = tokenValue;
+                        return;
+                    }
+
+                    if (IsBackgroundBoxToken(tokenValue))
+                    {
+                        if (origin == null)
+                        {
+                            origin = tokenValue;
+                        }
+                        else
+                        {
+                            clip = tokenValue;
+                        }
+                        return;
+                    }
+
+                    if (IsBackgroundPositionToken(tokenValue))
+                    {
+                        if (positionTokens.Count < 2)
+                        {
+                            positionTokens.Add(tokenValue);
+                        }
+                        return;
+                    }
+
+                    color = tokenValue;
                 }
 
-                if (IsBackgroundPositionToken(token))
+                ProcessToken(head);
+                if (tokenParts.Length == 2)
                 {
-                    positionTokens.Add(token);
-                    continue;
+                    ProcessToken(tail);
                 }
 
-                color = token;
+                if (parsingSize && sizeTokens.Count >= 2)
+                {
+                    parsingSize = false;
+                }
             }
 
             if (color != null)
@@ -1286,6 +1453,28 @@ namespace FenBrowser.FenEngine.Rendering
             if (positionTokens.Count > 0)
             {
                 assign("background-position", string.Join(" ", positionTokens.Take(2)));
+                assign("background-position-x", positionTokens[0]);
+                assign("background-position-y", positionTokens.Count > 1 ? positionTokens[1] : "center");
+            }
+
+            if (sizeTokens.Count > 0)
+            {
+                assign("background-size", string.Join(" ", sizeTokens.Take(2)));
+            }
+
+            if (origin != null)
+            {
+                assign("background-origin", origin);
+            }
+
+            if (clip != null)
+            {
+                assign("background-clip", clip);
+            }
+            else if (origin != null)
+            {
+                // Single background-box token applies to both origin and clip.
+                assign("background-clip", origin);
             }
         }
 
@@ -1406,6 +1595,101 @@ namespace FenBrowser.FenEngine.Rendering
             SetIfNotExplicit(computed, "left", vLeft, decl);
         }
 
+        private static void ExpandTransitionShorthand(Dictionary<string, CssDeclaration> computed)
+        {
+            if (!computed.TryGetValue("transition", out var decl)) return;
+            var value = decl.Value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+            ExpandTransitionShorthandCore(value, (property, shorthandValue) => SetIfNotExplicit(computed, property, shorthandValue, decl));
+        }
+
+        private static void ExpandTransitionShorthandCore(string value, Action<string, string> assign)
+        {
+            if (string.IsNullOrWhiteSpace(value) || assign == null)
+            {
+                return;
+            }
+
+            var items = SplitTopLevel(value, ",");
+            if (items.Count == 0)
+            {
+                return;
+            }
+
+            var properties = new List<string>(items.Count);
+            var durations = new List<string>(items.Count);
+            var timingFunctions = new List<string>(items.Count);
+            var delays = new List<string>(items.Count);
+            var behaviors = new List<string>(items.Count);
+
+            foreach (var item in items)
+            {
+                ParseTransitionComponent(item, out var property, out var duration, out var timingFunction, out var delay, out var behavior);
+                properties.Add(property ?? "all");
+                durations.Add(duration ?? "0s");
+                timingFunctions.Add(timingFunction ?? "ease");
+                delays.Add(delay ?? "0s");
+                behaviors.Add(behavior ?? "normal");
+            }
+
+            assign("transition-property", string.Join(", ", properties));
+            assign("transition-duration", string.Join(", ", durations));
+            assign("transition-timing-function", string.Join(", ", timingFunctions));
+            assign("transition-delay", string.Join(", ", delays));
+
+            if (behaviors.Any(b => !string.Equals(b, "normal", StringComparison.OrdinalIgnoreCase)))
+            {
+                assign("transition-behavior", string.Join(", ", behaviors));
+            }
+        }
+
+        private static void ParseTransitionComponent(
+            string component,
+            out string property,
+            out string duration,
+            out string timingFunction,
+            out string delay,
+            out string behavior)
+        {
+            property = null;
+            duration = null;
+            timingFunction = null;
+            delay = null;
+            behavior = null;
+
+            foreach (var token in SplitCssValue(component ?? string.Empty))
+            {
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    continue;
+                }
+
+                if (IsTransitionTimeToken(token))
+                {
+                    if (duration == null) duration = token;
+                    else if (delay == null) delay = token;
+                    continue;
+                }
+
+                if (IsTransitionTimingFunctionToken(token))
+                {
+                    timingFunction = token;
+                    continue;
+                }
+
+                if (IsTransitionBehaviorToken(token))
+                {
+                    behavior = token;
+                    continue;
+                }
+
+                if (property == null)
+                {
+                    property = token;
+                }
+            }
+        }
+
         /// <summary>
         /// Set a longhand property only if it wasn't explicitly declared (higher specificity wins).
         /// </summary>
@@ -1442,6 +1726,62 @@ namespace FenBrowser.FenEngine.Rendering
             if (start < value.Length)
                 parts.Add(value.Substring(start));
             return parts.ToArray();
+        }
+
+        private static List<string> SplitTopLevel(string value, string separator)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return result;
+            }
+
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i <= value.Length - separator.Length;)
+            {
+                char c = value[i];
+                if (c == '(')
+                {
+                    depth++;
+                    i++;
+                    continue;
+                }
+
+                if (c == ')')
+                {
+                    if (depth > 0) depth--;
+                    i++;
+                    continue;
+                }
+
+                if (depth == 0 &&
+                    value.AsSpan(i, separator.Length).Equals(separator.AsSpan(), StringComparison.Ordinal))
+                {
+                    var part = value.Substring(start, i - start).Trim();
+                    if (part.Length > 0)
+                    {
+                        result.Add(part);
+                    }
+
+                    i += separator.Length;
+                    start = i;
+                    continue;
+                }
+
+                i++;
+            }
+
+            if (start < value.Length)
+            {
+                var tail = value.Substring(start).Trim();
+                if (tail.Length > 0)
+                {
+                    result.Add(tail);
+                }
+            }
+
+            return result;
         }
 
         private static bool IsBorderStyle(string value)
@@ -1483,6 +1823,63 @@ namespace FenBrowser.FenEngine.Rendering
         private static bool IsBackgroundPositionToken(string value)
         {
             return IsBackgroundPosition(value) || IsCssLength(value);
+        }
+
+        private static bool IsBackgroundBoxToken(string value)
+        {
+            return value == "border-box" || value == "padding-box" || value == "content-box";
+        }
+
+        private static bool IsBackgroundSizeToken(string value)
+        {
+            return value == "auto" || value == "cover" || value == "contain" || IsCssLength(value);
+        }
+
+        private static bool IsTransitionTimeToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var token = value.Trim().ToLowerInvariant();
+            if (token.EndsWith("ms", StringComparison.Ordinal))
+            {
+                return double.TryParse(token.Substring(0, token.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _);
+            }
+
+            if (token.EndsWith("s", StringComparison.Ordinal) && token.Length > 1)
+            {
+                return double.TryParse(token.Substring(0, token.Length - 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _);
+            }
+
+            return false;
+        }
+
+        private static bool IsTransitionTimingFunctionToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var token = value.Trim().ToLowerInvariant();
+            return token == "ease" ||
+                   token == "linear" ||
+                   token == "ease-in" ||
+                   token == "ease-out" ||
+                   token == "ease-in-out" ||
+                   token == "step-start" ||
+                   token == "step-end" ||
+                   token.StartsWith("cubic-bezier(", StringComparison.Ordinal) ||
+                   token.StartsWith("steps(", StringComparison.Ordinal) ||
+                   token.StartsWith("linear(", StringComparison.Ordinal);
+        }
+
+        private static bool IsTransitionBehaviorToken(string value)
+        {
+            return string.Equals(value, "normal", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(value, "allow-discrete", StringComparison.OrdinalIgnoreCase);
         }
     }
 

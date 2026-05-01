@@ -386,6 +386,59 @@ html {
         }
 
         [Fact]
+        public async Task InlineStyle_DoesNotOverrideAuthorImportantDeclaration()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .box { color: red !important; }
+    </style>
+</head>
+<body>
+    <div id='probe' class='box' style='color: blue;'>Test</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var probe = doc.GetElementById("probe");
+
+            Assert.Equal("red", computed[probe].Map["color"]);
+        }
+
+        [Fact]
+        public async Task InlineStyle_ShorthandOverridesStylesheetLonghand()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .box { margin-left: 20px; }
+    </style>
+</head>
+<body>
+    <div id='probe' class='box' style='margin: 1px 2px 3px 4px;'>Test</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var probe = doc.GetElementById("probe");
+
+            Assert.Equal("4px", computed[probe].Map["margin-left"]);
+            Assert.Equal("1px", computed[probe].Map["margin-top"]);
+            Assert.Equal("2px", computed[probe].Map["margin-right"]);
+            Assert.Equal("3px", computed[probe].Map["margin-bottom"]);
+        }
+
+        [Fact]
         public async Task TestScopeProximity()
         {
             string html = @"

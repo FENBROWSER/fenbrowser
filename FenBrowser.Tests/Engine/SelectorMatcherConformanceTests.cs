@@ -124,6 +124,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void IsWhereAndNestedNotSelectors_MatchPerSelectorsLevel4Semantics()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <button id='probe' class='primary action'>Go</button>
+</body></html>");
+
+            var probe = ById(doc, "probe");
+
+            Assert.True(SelectorMatcher.Matches(probe, "button:is(.ghost, .primary)"));
+            Assert.True(SelectorMatcher.Matches(probe, "button:where(.primary, .ghost)"));
+            Assert.False(SelectorMatcher.Matches(probe, "button:is(.ghost, .secondary)"));
+            Assert.True(SelectorMatcher.Matches(probe, "button:not(:is(.ghost, .secondary))"));
+            Assert.False(SelectorMatcher.Matches(probe, "button:not(:is(.ghost, .primary))"));
+        }
+
+        [Fact]
         public void DescendantSelector_WithTagAndIdAncestor_DoesNotFastRejectValidMatch()
         {
             var doc = Parse(@"

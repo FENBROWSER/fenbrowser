@@ -1,3 +1,7 @@
+// SpecRef: CSS Conditional Rules Level 5, CSS Containment Level 3 container queries
+// CapabilityId: CSS-CONTAINMENT-QUERY-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
@@ -339,38 +343,30 @@ namespace FenBrowser.FenEngine.Rendering
                 EngineLogCompat.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
             }
 
-            // 1) Inline <style> tags first (DOM order)
+            // 1) Pre-scan inline <style> dedupe keys used by MediaWiki link placeholders.
             const int MAX_INLINE_CSS_SIZE = 300_000; // 300KB per inline style
             var deduplicatedInlineStyles = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var n in root.Descendants().OfType<Element>().Where(n => !n.IsText() && string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase)))
+            var stylesheetNodes = root.Descendants().OfType<Element>()
+                .Where(n => !n.IsText() &&
+                    (string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            foreach (var n in stylesheetNodes.Where(n => string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase)))
             {
                 var text = SafeGatherText(n);
-                if (!string.IsNullOrWhiteSpace(text) && text.Length <= MAX_INLINE_CSS_SIZE)
+                if (!string.IsNullOrWhiteSpace(text))
                 {
                     string dedupeKey = NormalizeMediaWikiDedupeKey(n.GetAttribute("data-mw-deduplicate"));
                     if (!string.IsNullOrWhiteSpace(dedupeKey) && !deduplicatedInlineStyles.ContainsKey(dedupeKey))
                     {
                         deduplicatedInlineStyles[dedupeKey] = text;
                     }
-
-                    // Debug logging disabled for performance
-                    
-                    cssBlobs.Add(new CssSource
-                    {
-                        CssText = text,
-                        Origin = CssOrigin.Inline,
-                        SourceOrder = sourceIndex++,
-                        BaseUri = baseUri
-                    });
-                }
-                else
-                {
-                    // System.Diagnostics.Debug.WriteLine("[CssLoader] Found empty style block");
                 }
             }
 
-            // 2) External <link rel="stylesheet"> (DOM order)
-            // Fetch in parallel with a small concurrency limit to avoid blocking UI
+            // 2) Collect inline <style> and external <link rel=stylesheet> in authored DOM order.
+            // External stylesheets fetch in parallel with a small concurrency limit.
             
             // DEBUG: Dump DOM structure to understand why LINK elements are not found
             if (DEBUG_FILE_LOGGING)
@@ -398,16 +394,31 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // FIX: Cast to Element to access actual Attributes property (Node.Attr returns null)
-            var linkNodes = root.Descendants().OfType<Element>()
-                .Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)).ToList();
-            if (DEBUG_FILE_LOGGING) DebugLog(@"css_debug.txt", $"[LINK] Found {linkNodes.Count} link elements in DOM root\r\n");
+            if (DEBUG_FILE_LOGGING) DebugLog(@"css_debug.txt", $"[LINK] Found {stylesheetNodes.Count(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase))} link elements in DOM root\r\n");
 
 
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
-            foreach (var link in linkNodes)
+            foreach (var node in stylesheetNodes)
             {
+                if (string.Equals(node.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                {
+                    var inlineCssText = SafeGatherText(node);
+                    if (!string.IsNullOrWhiteSpace(inlineCssText) && inlineCssText.Length <= MAX_INLINE_CSS_SIZE)
+                    {
+                        cssBlobs.Add(new CssSource
+                        {
+                            CssText = inlineCssText,
+                            Origin = CssOrigin.Inline,
+                            SourceOrder = sourceIndex++,
+                            BaseUri = baseUri
+                        });
+                    }
+
+                    continue;
+                }
+
+                var link = node;
                 if (!link.HasAttributes()) { DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no attributes\r\n"); continue; }
                 
                 string rel = link.GetAttribute("rel");
@@ -1816,6 +1827,24 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static bool IsSupportedProperty(string property, string value = null)
         {
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return false;
+            }
+
+            var normalizedProperty = property.Trim().ToLowerInvariant();
+            if (normalizedProperty.StartsWith("--", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            // Generic standards-forward acceptance: treat syntactically valid CSS property identifiers
+            // as recognized so the style system can preserve declarations beyond the curated checklist.
+            if (Regex.IsMatch(normalizedProperty, "^[a-z][a-z0-9-]*$"))
+            {
+                return true;
+            }
+
             // List of supported CSS properties
             var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
@@ -1858,24 +1887,29 @@ namespace FenBrowser.FenEngine.Rendering
                 "margin-inline", "margin-inline-start", "margin-inline-end",
                 "padding-block", "padding-block-start", "padding-block-end",
                 "padding-inline", "padding-inline-start", "padding-inline-end",
-                "inset", "inset-block", "inset-inline", "block-size", "inline-size",
+                "inset", "inset-block", "inset-inline", "inset-block-start", "inset-block-end", "inset-inline-start", "inset-inline-end",
+                "block-size", "inline-size", "min-inline-size", "min-block-size", "max-inline-size", "max-block-size",
                 // Interactivity (from gap report)
                 "pointer-events", "touch-action", "user-select", "resize",
                 // Scroll Control (from gap report)
-                "overscroll-behavior", "scroll-behavior", "scroll-margin", "scroll-padding",
+                "overscroll-behavior", "scroll-behavior", "scroll-margin", "scroll-padding", "overflow-inline", "overflow-block",
                 // Animation (from gap report)
                 "animation-name", "animation-duration", "animation-timing-function",
                 "animation-delay", "animation-iteration-count", "animation-direction",
                 "animation-fill-mode", "animation-play-state",
                 // Background enhancements
                 "background-position", "background-size", "background-repeat",
-                "background-attachment", "background-origin", "background-clip",
+                "background-attachment", "background-origin", "background-clip", "background-position-x", "background-position-y",
                 // Border enhancements
                 "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
                 "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
                 "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
                 "border-top-left-radius", "border-top-right-radius",
                 "border-bottom-left-radius", "border-bottom-right-radius",
+                "border-block", "border-inline", "border-block-start", "border-block-end", "border-inline-start", "border-inline-end",
+                "border-block-start-width", "border-block-end-width", "border-inline-start-width", "border-inline-end-width",
+                "border-block-start-style", "border-block-end-style", "border-inline-start-style", "border-inline-end-style",
+                "border-block-start-color", "border-block-end-color", "border-inline-start-color", "border-inline-end-color",
                 // Outline
                 "outline", "outline-width", "outline-style", "outline-color", "outline-offset",
                 // List styles
@@ -1897,31 +1931,33 @@ namespace FenBrowser.FenEngine.Rendering
                 // Tab and line
                 "tab-size", "text-rendering",
                 // Transitions
-                "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+                "transition-property", "transition-duration", "transition-timing-function", "transition-delay", "transition-behavior",
                 // Will-change and containment
                 "will-change", "contain-intrinsic-size",
                 // Print/page
                 "page-break-before", "page-break-after", "page-break-inside", "orphans", "widows",
                 // Object fit
                 "object-position",
+                // SVG presentation properties
+                "fill", "stroke",
                 // Additional flex/grid
                 "place-self", "justify-items", "justify-self",
                 // Shapes
                 "shape-outside", "shape-margin", "shape-image-threshold"
             };
             
-            bool isSupported = supported.Contains(property);
+            bool isSupported = supported.Contains(normalizedProperty);
             
             // Log unsupported properties for debugging (tracks first encounter only)
-            if (!isSupported && !string.IsNullOrEmpty(property))
+            if (!isSupported && !string.IsNullOrEmpty(normalizedProperty))
             {
                 // Skip vendor prefixes and CSS variables - they're expected to be unsupported
-                if (!property.StartsWith("-") && !property.StartsWith("--"))
+                if (!normalizedProperty.StartsWith("-") && !normalizedProperty.StartsWith("--"))
                 {
                     if (FenBrowser.Core.Logging.DebugConfig.LogCssParse)
-                        global::FenBrowser.Core.EngineLogCompat.Log($"[CSS] Ignored Property: '{property}' (Value: '{value ?? ""}')", LogCategory.CssParsing);
+                        global::FenBrowser.Core.EngineLogCompat.Log($"[CSS] Ignored Property: '{normalizedProperty}' (Value: '{value ?? ""}')", LogCategory.CssParsing);
                         
-                    EngineCapabilities.LogUnsupportedCss(property, value, "CSS property not implemented");
+                    EngineCapabilities.LogUnsupportedCss(normalizedProperty, value, "CSS property not implemented");
                 }
             }
             
@@ -3032,8 +3068,17 @@ private static double? ExtractPx(string text, string prop)
                 {
                     // 1. Compute Main Styles
                     var mainProps = engine.ComputeCascadedValues(n, null);
-                    MergeInlineStyle(n, mainProps);
                     var css = ResolveStyle(n, parentCss, mainProps);
+
+                    // Keep rem basis aligned to the computed root font-size, including
+                    // cases where root size comes from `font` shorthand.
+                    if (ReferenceEquals(n, root) &&
+                        css.FontSize.HasValue &&
+                        css.FontSize.Value > 0 &&
+                        double.IsFinite(css.FontSize.Value))
+                    {
+                        _rootFontSize = css.FontSize.Value;
+                    }
 
                     // 2. Compute Pseudo-Element Styles (PERF: Skip if no rules target this pseudo)
                     if (engine.HasPseudoRules("before")) ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
@@ -3233,6 +3278,10 @@ private static double? ExtractPx(string text, string prop)
                     }
                 }
 
+                // Normalize known aliases/logical checklist tokens to canonical longhands
+                // before typed projections parse computed map values.
+                ApplyInventoryPropertyAliasNormalizations(css.Map);
+
                 // DEBUG: Log all cascaded properties for div elements
                 if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
                 {
@@ -3250,6 +3299,11 @@ private static double? ExtractPx(string text, string prop)
                 }
                 
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
+                css.Direction = Safe(DictGet(css.Map, "direction"))?.ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(css.Direction) && parentCss != null)
+                {
+                    css.Direction = parentCss.Direction;
+                }
                 css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant(); // Add Visibility
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
                 css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
@@ -3322,8 +3376,10 @@ private static double? ExtractPx(string text, string prop)
                 
                 // Overflow properties
                 css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
-                css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? css.Overflow;
-                css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? css.Overflow;
+                var logicalOverflowInline = Safe(DictGet(css.Map, "overflow-inline"))?.ToLowerInvariant();
+                var logicalOverflowBlock = Safe(DictGet(css.Map, "overflow-block"))?.ToLowerInvariant();
+                css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? logicalOverflowInline ?? css.Overflow;
+                css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? logicalOverflowBlock ?? css.Overflow;
 
                 // ACID2 FIX: Visibility property - critical for hiding elements
                 css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant();
@@ -3348,6 +3404,12 @@ private static double? ExtractPx(string text, string prop)
             css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
             css.BackgroundSize = Safe(DictGet(css.Map, "background-size"))?.ToLowerInvariant();
             css.BackgroundPosition = Safe(DictGet(css.Map, "background-position"))?.ToLowerInvariant();
+            var explicitBackgroundPositionX = Safe(DictGet(css.Map, "background-position-x"))?.ToLowerInvariant();
+            var explicitBackgroundPositionY = Safe(DictGet(css.Map, "background-position-y"))?.ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(explicitBackgroundPositionX) || !string.IsNullOrWhiteSpace(explicitBackgroundPositionY))
+            {
+                css.BackgroundPosition = $"{(explicitBackgroundPositionX ?? "0%")} {(explicitBackgroundPositionY ?? "0%")}";
+            }
             css.ObjectFit = Safe(DictGet(css.Map, "object-fit"))?.ToLowerInvariant();
             css.ObjectPosition = Safe(DictGet(css.Map, "object-position"));
 
@@ -3380,7 +3442,10 @@ private static double? ExtractPx(string text, string prop)
             string fontShorthand = DictGet(css.Map, "font");
             if (!string.IsNullOrWhiteSpace(fontShorthand) && !fontShorthand.StartsWith("var("))
             {
-                ParseFontShorthand(fontShorthand, css, emBase);
+                // `font` shorthand must not override an already-cascaded explicit
+                // `font-size` longhand from a higher-priority declaration.
+                bool preserveExplicitFontSize = css.Map.ContainsKey("font-size");
+                ParseFontShorthand(fontShorthand, css, emBase, preserveExplicitFontSize);
             }
             
             // Explicit font-family overrides shorthand
@@ -3477,16 +3542,16 @@ private static double? ExtractPx(string text, string prop)
                 css.Left = insetTh.Left;
             }
             // inset-block: shorthand for top, bottom (in horizontal-tb)
-            if (TryThickness(DictGet(css.Map, "inset-block"), out insetTh, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "inset-block"), currentEmBase, out var insetBlockStart, out var insetBlockEnd))
             {
-                css.Top = insetTh.Top;
-                css.Bottom = insetTh.Bottom;
+                css.Top = insetBlockStart;
+                css.Bottom = insetBlockEnd;
             }
             // inset-inline: shorthand for left, right (in horizontal-tb)
-            if (TryThickness(DictGet(css.Map, "inset-inline"), out insetTh, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "inset-inline"), currentEmBase, out var insetInlineStart, out var insetInlineEnd))
             {
-                css.Left = insetTh.Left;
-                css.Right = insetTh.Right;
+                css.Left = insetInlineStart;
+                css.Right = insetInlineEnd;
             }
 
             double sizeVal;
@@ -3496,35 +3561,35 @@ private static double? ExtractPx(string text, string prop)
             string wStr = DictGet(css.Map, "width");
             if (tag == "BODY") {
             }
-            if (TryPx(wStr, out sizeVal, currentEmBase)) {
+            if (IsCssFunction(wStr)) {
+                css.WidthExpression = wStr;
+            }
+            else if (TryPx(wStr, out sizeVal, currentEmBase)) {
                 css.Width = sizeVal;
             }
             else if (TryPercent(wStr, out sizeVal)) {
                 css.WidthPercent = sizeVal;
             }
-            else if (IsCssFunction(wStr)) {
-                css.WidthExpression = wStr;
-            }
 
             string hStr = DictGet(css.Map, "height");
-            if (TryPx(hStr, out sizeVal, currentEmBase)) css.Height = sizeVal;
+            if (IsCssFunction(hStr)) css.HeightExpression = hStr;
+            else if (TryPx(hStr, out sizeVal, currentEmBase)) css.Height = sizeVal;
             else if (TryPercent(hStr, out sizeVal)) css.HeightPercent = sizeVal;
-            else if (IsCssFunction(hStr)) css.HeightExpression = hStr;
 
             string minWStr = DictGet(css.Map, "min-width");
-            if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
+            else if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
             else if (TryPercent(minWStr, out sizeVal)) css.MinWidthPercent = sizeVal;
-            else if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
             
             string minHStr = DictGet(css.Map, "min-height");
-            if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
+            else if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
             else if (TryPercent(minHStr, out sizeVal)) css.MinHeightPercent = sizeVal;
-            else if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
             
             string maxWStr = DictGet(css.Map, "max-width");
-            if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
+            else if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
             else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthPercent = sizeVal;
-            else if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
 
             if (!string.IsNullOrEmpty(maxWStr) && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
             {
@@ -3532,25 +3597,40 @@ private static double? ExtractPx(string text, string prop)
             }
 
             string maxHStr = DictGet(css.Map, "max-height");
-            if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
+            else if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
             else if (TryPercent(maxHStr, out sizeVal)) css.MaxHeightPercent = sizeVal;
-            else if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
             
             // Logical properties: inline-size, block-size
             string isVal = DictGet(css.Map, "inline-size");
-            if (TryPx(isVal, out sizeVal, currentEmBase)) css.Width = sizeVal;
+            if (IsCssFunction(isVal)) css.WidthExpression = isVal;
+            else if (TryPx(isVal, out sizeVal, currentEmBase)) css.Width = sizeVal;
             else if (TryPercent(isVal, out sizeVal)) css.WidthPercent = sizeVal;
-            else if (IsCssFunction(isVal)) css.WidthExpression = isVal;
             
             string bsVal = DictGet(css.Map, "block-size");
-            if (TryPx(bsVal, out sizeVal, currentEmBase)) css.Height = sizeVal;
+            if (IsCssFunction(bsVal)) css.HeightExpression = bsVal;
+            else if (TryPx(bsVal, out sizeVal, currentEmBase)) css.Height = sizeVal;
             else if (TryPercent(bsVal, out sizeVal)) css.HeightPercent = sizeVal;
-            else if (IsCssFunction(bsVal)) css.HeightExpression = bsVal;
             
-            if (TryPx(DictGet(css.Map, "min-inline-size"), out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
-            if (TryPx(DictGet(css.Map, "min-block-size"), out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
-            if (TryPx(DictGet(css.Map, "max-inline-size"), out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
-            if (TryPx(DictGet(css.Map, "max-block-size"), out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            var minInlineSize = DictGet(css.Map, "min-inline-size");
+            if (IsCssFunction(minInlineSize)) css.MinWidthExpression = minInlineSize;
+            else if (TryPx(minInlineSize, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
+            else if (TryPercent(minInlineSize, out sizeVal)) css.MinWidthPercent = sizeVal;
+
+            var minBlockSize = DictGet(css.Map, "min-block-size");
+            if (IsCssFunction(minBlockSize)) css.MinHeightExpression = minBlockSize;
+            else if (TryPx(minBlockSize, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
+            else if (TryPercent(minBlockSize, out sizeVal)) css.MinHeightPercent = sizeVal;
+
+            var maxInlineSize = DictGet(css.Map, "max-inline-size");
+            if (IsCssFunction(maxInlineSize)) css.MaxWidthExpression = maxInlineSize;
+            else if (TryPx(maxInlineSize, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
+            else if (TryPercent(maxInlineSize, out sizeVal)) css.MaxWidthPercent = sizeVal;
+
+            var maxBlockSize = DictGet(css.Map, "max-block-size");
+            if (IsCssFunction(maxBlockSize)) css.MaxHeightExpression = maxBlockSize;
+            else if (TryPx(maxBlockSize, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
+            else if (TryPercent(maxBlockSize, out sizeVal)) css.MaxHeightPercent = sizeVal;
             
             var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
             if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
@@ -3707,6 +3787,71 @@ private static double? ExtractPx(string text, string prop)
                 if (!string.IsNullOrWhiteSpace(shorthandPosition))
                 {
                     css.BackgroundPosition = shorthandPosition;
+                }
+            }
+
+            var authoredBackgroundSize = Safe(DictGet(css.Map, "background-size"));
+            if (string.IsNullOrWhiteSpace(css.BackgroundSize))
+            {
+                css.BackgroundSize = ExtractBackgroundSizeFromShorthand(bgShorthandRaw);
+            }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundSize) ||
+                     string.Equals(authoredBackgroundSize, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandSize = ExtractBackgroundSizeFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandSize))
+                {
+                    css.BackgroundSize = shorthandSize;
+                }
+            }
+
+            var authoredBackgroundOrigin = Safe(DictGet(css.Map, "background-origin"));
+            if (string.IsNullOrWhiteSpace(css.BackgroundOrigin))
+            {
+                css.BackgroundOrigin = ExtractBackgroundOriginFromShorthand(bgShorthandRaw);
+            }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundOrigin) ||
+                     string.Equals(authoredBackgroundOrigin, "padding-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandOrigin = ExtractBackgroundOriginFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandOrigin))
+                {
+                    css.BackgroundOrigin = shorthandOrigin;
+                }
+            }
+
+            var authoredBackgroundClip = Safe(DictGet(css.Map, "background-clip"));
+            if (string.IsNullOrWhiteSpace(css.BackgroundClip))
+            {
+                css.BackgroundClip = ExtractBackgroundClipFromShorthand(bgShorthandRaw);
+            }
+            else if (string.IsNullOrWhiteSpace(authoredBackgroundClip) ||
+                     string.Equals(authoredBackgroundClip, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var shorthandClip = ExtractBackgroundClipFromShorthand(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(shorthandClip))
+                {
+                    css.BackgroundClip = shorthandClip;
+                }
+            }
+
+            var authoredBackgroundPositionX = Safe(DictGet(css.Map, "background-position-x"));
+            var authoredBackgroundPositionY = Safe(DictGet(css.Map, "background-position-y"));
+            if ((string.IsNullOrWhiteSpace(authoredBackgroundPositionX) || string.IsNullOrWhiteSpace(authoredBackgroundPositionY)) &&
+                !string.IsNullOrWhiteSpace(css.BackgroundPosition))
+            {
+                var positionParts = SplitCssShorthandTokens(css.BackgroundPosition).Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
+                if (positionParts.Count > 0)
+                {
+                    if (string.IsNullOrWhiteSpace(authoredBackgroundPositionX))
+                    {
+                        css.Map["background-position-x"] = positionParts[0];
+                    }
+
+                    if (string.IsNullOrWhiteSpace(authoredBackgroundPositionY))
+                    {
+                        css.Map["background-position-y"] = positionParts.Count > 1 ? positionParts[1] : "center";
+                    }
                 }
             }
 
@@ -3886,15 +4031,17 @@ private static double? ExtractPx(string text, string prop)
             // Logical Properties: margin-block/margin-inline (horizontal-tb writing mode)
             // margin-block-start -> top, margin-block-end -> bottom
             // margin-inline-start -> left, margin-inline-end -> right
-            if (TryThickness(DictGet(css.Map, "margin-block"), out th, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "margin-block"), currentEmBase, out var marginBlockStart, out var marginBlockEnd))
             {
-                mTop = th.Top; mBottom = th.Bottom;
+                mTop = marginBlockStart;
+                mBottom = marginBlockEnd;
             }
             if (TryPx(DictGet(css.Map, "margin-block-start"), out mVal, currentEmBase)) mTop = mVal;
             if (TryPx(DictGet(css.Map, "margin-block-end"), out mVal, currentEmBase)) mBottom = mVal;
-            if (TryThickness(DictGet(css.Map, "margin-inline"), out th, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "margin-inline"), currentEmBase, out var marginInlineStart, out var marginInlineEnd))
             {
-                mLeft = th.Left; mRight = th.Right;
+                mLeft = marginInlineStart;
+                mRight = marginInlineEnd;
             }
             if (TryPx(DictGet(css.Map, "margin-inline-start"), out mVal, currentEmBase)) mLeft = mVal;
             if (TryPx(DictGet(css.Map, "margin-inline-end"), out mVal, currentEmBase)) mRight = mVal;
@@ -3919,15 +4066,17 @@ private static double? ExtractPx(string text, string prop)
             if (TryPx(DictGet(css.Map, "padding-bottom"), out mVal, currentEmBase)) pBottom = mVal;
             
             // Logical Properties: padding-block/padding-inline (horizontal-tb writing mode)
-            if (TryThickness(DictGet(css.Map, "padding-block"), out th, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "padding-block"), currentEmBase, out var paddingBlockStart, out var paddingBlockEnd))
             {
-                pTop = th.Top; pBottom = th.Bottom;
+                pTop = paddingBlockStart;
+                pBottom = paddingBlockEnd;
             }
             if (TryPx(DictGet(css.Map, "padding-block-start"), out mVal, currentEmBase)) pTop = mVal;
             if (TryPx(DictGet(css.Map, "padding-block-end"), out mVal, currentEmBase)) pBottom = mVal;
-            if (TryThickness(DictGet(css.Map, "padding-inline"), out th, currentEmBase))
+            if (TryParseLogicalAxisPair(DictGet(css.Map, "padding-inline"), currentEmBase, out var paddingInlineStart, out var paddingInlineEnd))
             {
-                pLeft = th.Left; pRight = th.Right;
+                pLeft = paddingInlineStart;
+                pRight = paddingInlineEnd;
             }
             if (TryPx(DictGet(css.Map, "padding-inline-start"), out mVal, currentEmBase)) pLeft = mVal;
             if (TryPx(DictGet(css.Map, "padding-inline-end"), out mVal, currentEmBase)) pRight = mVal;
@@ -4112,6 +4261,214 @@ private static double? ExtractPx(string text, string prop)
                 var sideStyle = ExtractBorderSideStyle(borderInlineRaw);
                 if (sideStyle != "none") { css.BorderStyleLeft = sideStyle; css.BorderStyleRight = sideStyle; }
             }
+
+            // Logical border side longhands and directional variants.
+            bool inlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
+            string inlineStartSide = inlineStartIsRight ? "right" : "left";
+            string inlineEndSide = inlineStartIsRight ? "left" : "right";
+
+            void SetBorderWidthForSide(string side, double width)
+            {
+                if (width <= 0)
+                {
+                    return;
+                }
+
+                switch (side)
+                {
+                    case "left":
+                        bLeft = width;
+                        break;
+                    case "right":
+                        bRight = width;
+                        break;
+                    case "top":
+                        bTop = width;
+                        break;
+                    case "bottom":
+                        bBottom = width;
+                        break;
+                }
+
+                css.Map[$"border-{side}-width"] = width.ToString("0.###", CultureInfo.InvariantCulture) + "px";
+            }
+
+            void SetBorderStyleForSide(string side, string styleValue)
+            {
+                var normalized = styleValue?.Trim().ToLowerInvariant();
+                if (string.IsNullOrEmpty(normalized))
+                {
+                    return;
+                }
+
+                switch (side)
+                {
+                    case "left":
+                        css.BorderStyleLeft = normalized;
+                        break;
+                    case "right":
+                        css.BorderStyleRight = normalized;
+                        break;
+                    case "top":
+                        css.BorderStyleTop = normalized;
+                        break;
+                    case "bottom":
+                        css.BorderStyleBottom = normalized;
+                        break;
+                }
+
+                css.Map[$"border-{side}-style"] = normalized;
+            }
+
+            void SetBorderColorForSide(string side, string colorValue)
+            {
+                if (string.IsNullOrWhiteSpace(colorValue))
+                {
+                    return;
+                }
+
+                var parsed = TryColor(colorValue);
+                if (!parsed.HasValue)
+                {
+                    return;
+                }
+
+                borderSideColor = parsed;
+                css.Map[$"border-{side}-color"] = colorValue.Trim();
+            }
+
+            void ApplyLogicalBorderSideShorthand(string logicalName, string physicalSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    return;
+                }
+
+                var sideWidth = ExtractBorderSideWidth(raw, currentEmBase);
+                SetBorderWidthForSide(physicalSide, sideWidth);
+
+                var sideStyle = ExtractBorderSideStyle(raw);
+                if (!string.Equals(sideStyle, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetBorderStyleForSide(physicalSide, sideStyle);
+                }
+
+                var sideColor = ExtractBorderSideColor(raw);
+                if (sideColor.HasValue)
+                {
+                    borderSideColor = sideColor;
+                }
+            }
+
+            void ApplyLogicalBorderWidthLonghand(string logicalName, string physicalSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                if (TryParseBorderWidthToken(raw, currentEmBase, out var width))
+                {
+                    SetBorderWidthForSide(physicalSide, width);
+                }
+            }
+
+            void ApplyLogicalBorderStyleLonghand(string logicalName, string physicalSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                if (!string.IsNullOrWhiteSpace(raw))
+                {
+                    SetBorderStyleForSide(physicalSide, raw);
+                }
+            }
+
+            void ApplyLogicalBorderColorLonghand(string logicalName, string physicalSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                SetBorderColorForSide(physicalSide, raw);
+            }
+
+            void ApplyLogicalAxisWidthShorthand(string logicalName, string firstSide, string secondSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                var tokens = SplitCssValues(raw);
+                if (tokens.Count == 0)
+                {
+                    return;
+                }
+
+                if (TryParseBorderWidthToken(tokens[0], currentEmBase, out var first))
+                {
+                    SetBorderWidthForSide(firstSide, first);
+                }
+
+                if (tokens.Count > 1)
+                {
+                    if (TryParseBorderWidthToken(tokens[1], currentEmBase, out var second))
+                    {
+                        SetBorderWidthForSide(secondSide, second);
+                    }
+                }
+                else
+                {
+                    if (TryParseBorderWidthToken(tokens[0], currentEmBase, out var same))
+                    {
+                        SetBorderWidthForSide(secondSide, same);
+                    }
+                }
+            }
+
+            void ApplyLogicalAxisStyleShorthand(string logicalName, string firstSide, string secondSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                var tokens = SplitCssValues(raw).Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+                if (tokens.Count == 0)
+                {
+                    return;
+                }
+
+                SetBorderStyleForSide(firstSide, tokens[0]);
+                SetBorderStyleForSide(secondSide, tokens.Count > 1 ? tokens[1] : tokens[0]);
+            }
+
+            void ApplyLogicalAxisColorShorthand(string logicalName, string firstSide, string secondSide)
+            {
+                var raw = Safe(DictGet(css.Map, logicalName));
+                var tokens = SplitCssValues(raw).Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+                if (tokens.Count == 0)
+                {
+                    return;
+                }
+
+                SetBorderColorForSide(firstSide, tokens[0]);
+                SetBorderColorForSide(secondSide, tokens.Count > 1 ? tokens[1] : tokens[0]);
+            }
+
+            ApplyLogicalBorderSideShorthand("border-inline-start", inlineStartSide);
+            ApplyLogicalBorderSideShorthand("border-inline-end", inlineEndSide);
+            ApplyLogicalBorderSideShorthand("border-block-start", "top");
+            ApplyLogicalBorderSideShorthand("border-block-end", "bottom");
+
+            ApplyLogicalBorderWidthLonghand("border-inline-start-width", inlineStartSide);
+            ApplyLogicalBorderWidthLonghand("border-inline-end-width", inlineEndSide);
+            ApplyLogicalBorderWidthLonghand("border-block-start-width", "top");
+            ApplyLogicalBorderWidthLonghand("border-block-end-width", "bottom");
+
+            ApplyLogicalBorderStyleLonghand("border-inline-start-style", inlineStartSide);
+            ApplyLogicalBorderStyleLonghand("border-inline-end-style", inlineEndSide);
+            ApplyLogicalBorderStyleLonghand("border-block-start-style", "top");
+            ApplyLogicalBorderStyleLonghand("border-block-end-style", "bottom");
+
+            ApplyLogicalBorderColorLonghand("border-inline-start-color", inlineStartSide);
+            ApplyLogicalBorderColorLonghand("border-inline-end-color", inlineEndSide);
+            ApplyLogicalBorderColorLonghand("border-block-start-color", "top");
+            ApplyLogicalBorderColorLonghand("border-block-end-color", "bottom");
+
+            ApplyLogicalAxisWidthShorthand("border-inline-width", inlineStartSide, inlineEndSide);
+            ApplyLogicalAxisWidthShorthand("border-block-width", "top", "bottom");
+
+            ApplyLogicalAxisStyleShorthand("border-inline-style", inlineStartSide, inlineEndSide);
+            ApplyLogicalAxisStyleShorthand("border-block-style", "top", "bottom");
+
+            ApplyLogicalAxisColorShorthand("border-inline-color", inlineStartSide, inlineEndSide);
+            ApplyLogicalAxisColorShorthand("border-block-color", "top", "bottom");
             
             // Spec: border-width computed value is 0 if border-style is none or hidden
             if (css.BorderStyleLeft == "none" || css.BorderStyleLeft == "hidden") bLeft = 0;
@@ -4129,12 +4486,16 @@ private static double? ExtractPx(string text, string prop)
             css.Clear = Safe(DictGet(css.Map, "clear"));
             css.Overflow = Safe(DictGet(css.Map, "overflow"));
 
-            css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
-            css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
-            css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
-            css.AlignItems = Safe(DictGet(css.Map, "align-items"));
-            css.AlignContent = Safe(DictGet(css.Map, "align-content"));
-            css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
+                css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
+                css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
+                css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
+                css.JustifyItems = Safe(DictGet(css.Map, "justify-items"));
+                css.JustifySelf = Safe(DictGet(css.Map, "justify-self"));
+                css.AlignItems = Safe(DictGet(css.Map, "align-items"));
+                css.AlignContent = Safe(DictGet(css.Map, "align-content"));
+                css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
+                ApplyPlaceShorthands(css);
+                css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
 
             // Generated Content & Counters
             css.Content = Safe(DictGet(css.Map, "content"));
@@ -4190,6 +4551,12 @@ private static double? ExtractPx(string text, string prop)
 
             // Parse hyphens property for word-breaking behavior
             css.Hyphens = Safe(DictGet(css.Map, "hyphens"));
+            css.WordBreak = Safe(DictGet(css.Map, "word-break"))?.ToLowerInvariant();
+            css.OverflowWrap = Safe(DictGet(css.Map, "overflow-wrap"))?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(css.OverflowWrap))
+            {
+                css.OverflowWrap = Safe(DictGet(css.Map, "word-wrap"))?.ToLowerInvariant();
+            }
 
             css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
             css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
@@ -4355,6 +4722,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 css.ClipPath = clipPathRaw2;
             }
+            css.Contain = Safe(DictGet(css.Map, "contain"));
 
 
 
@@ -6227,12 +6595,16 @@ private static double? ExtractPx(string text, string prop)
         {
             if (string.IsNullOrWhiteSpace(s)) return false;
             s = s.Trim().ToLowerInvariant();
-            return s.StartsWith("calc(") || 
-                   s.StartsWith("min(") || 
-                   s.StartsWith("max(") || 
-                   s.StartsWith("clamp(") || 
-                   s.StartsWith("env(") || 
-                   s.StartsWith("var(");
+            return s.StartsWith("calc(") ||
+                   s.StartsWith("min(") ||
+                   s.StartsWith("max(") ||
+                   s.StartsWith("clamp(") ||
+                   s.StartsWith("env(") ||
+                   s.StartsWith("var(") ||
+                   s.StartsWith("fit-content(") ||
+                   s == "fit-content" ||
+                   s == "min-content" ||
+                   s == "max-content";
         }
 
         private static string ComposeEffectiveTransform(IDictionary<string, string> map)
@@ -6456,7 +6828,7 @@ private static double? ExtractPx(string text, string prop)
         /// Example: font: italic 400 16px/1.5 Arial, sans-serif
         /// Only font-size and font-family are required.
         /// </summary>
-        private static void ParseFontShorthand(string value, CssComputed css, double emBase)
+        private static void ParseFontShorthand(string value, CssComputed css, double emBase, bool preserveExplicitFontSize = false)
         {
             if (string.IsNullOrWhiteSpace(value)) return;
             
@@ -6519,8 +6891,9 @@ private static double? ExtractPx(string text, string prop)
                 
                 if (foundSize && parsedSize > 0)
                 {
-                    // Only set if font-size isn't already explicitly set
-                    if (!css.FontSize.HasValue)
+                    // Honor cascade winner: if font-size longhand already exists in
+                    // the cascaded map, shorthand cannot overwrite it here.
+                    if (!preserveExplicitFontSize && !css.Map.ContainsKey("font-size"))
                     {
                         css.FontSize = parsedSize;
                         css.Map["font-size"] = parsedSize.ToString("0.##") + "px";
@@ -6751,6 +7124,119 @@ private static double? ExtractPx(string text, string prop)
             return string.Join(" ", position);
         }
 
+        private static string ExtractBackgroundSizeFromShorthand(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var tokens = SplitCssShorthandTokens(value);
+            if (tokens.Count == 0)
+            {
+                return null;
+            }
+
+            var sizes = new List<string>(2);
+            bool parsingSize = false;
+            foreach (var tokenRaw in tokens)
+            {
+                var token = tokenRaw.Trim().ToLowerInvariant();
+                if (string.IsNullOrEmpty(token))
+                {
+                    continue;
+                }
+
+                if (token == "/")
+                {
+                    parsingSize = true;
+                    continue;
+                }
+
+                var slashIdx = token.IndexOf('/');
+                if (slashIdx >= 0 &&
+                    !token.StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
+                    !token.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
+                {
+                    parsingSize = true;
+                    var tail = token.Substring(slashIdx + 1).Trim();
+                    if (IsBackgroundSizeToken(tail))
+                    {
+                        sizes.Add(tail);
+                    }
+                    continue;
+                }
+
+                if (!parsingSize)
+                {
+                    continue;
+                }
+
+                if (IsBackgroundSizeToken(token))
+                {
+                    sizes.Add(token);
+                    if (sizes.Count == 2)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                break;
+            }
+
+            if (sizes.Count == 0)
+            {
+                return null;
+            }
+
+            return string.Join(" ", sizes.Take(2));
+        }
+
+        private static string ExtractBackgroundOriginFromShorthand(string value)
+        {
+            var boxes = ExtractBackgroundBoxTokensFromShorthand(value);
+            return boxes.Count > 0 ? boxes[0] : null;
+        }
+
+        private static string ExtractBackgroundClipFromShorthand(string value)
+        {
+            var boxes = ExtractBackgroundBoxTokensFromShorthand(value);
+            if (boxes.Count == 0)
+            {
+                return null;
+            }
+
+            // With one box token, spec applies it to both origin and clip.
+            return boxes.Count == 1 ? boxes[0] : boxes[1];
+        }
+
+        private static List<string> ExtractBackgroundBoxTokensFromShorthand(string value)
+        {
+            var boxes = new List<string>(2);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return boxes;
+            }
+
+            foreach (var tokenRaw in SplitCssShorthandTokens(value))
+            {
+                var token = tokenRaw.Trim().ToLowerInvariant();
+                if (!IsBackgroundBoxToken(token))
+                {
+                    continue;
+                }
+
+                boxes.Add(token);
+                if (boxes.Count == 2)
+                {
+                    break;
+                }
+            }
+
+            return boxes;
+        }
+
         private static List<string> SplitCssShorthandTokens(string value)
         {
             var result = new List<string>();
@@ -6811,6 +7297,63 @@ private static double? ExtractPx(string text, string prop)
             }
 
             return token == "0";
+        }
+
+        private static bool IsBackgroundBoxToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            return token == "border-box" || token == "padding-box" || token == "content-box";
+        }
+
+        private static bool IsBackgroundSizeToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            if (token == "auto" || token == "cover" || token == "contain")
+            {
+                return true;
+            }
+
+            return IsBackgroundLengthToken(token);
+        }
+
+        private static bool IsBackgroundLengthToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            if (token == "0")
+            {
+                return true;
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal))
+            {
+                return double.TryParse(token[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+            }
+
+            string[] units = { "px", "em", "rem", "pt", "vw", "vh", "vmin", "vmax", "ch", "ex", "cm", "mm", "in", "pc" };
+            foreach (var unit in units)
+            {
+                if (token.EndsWith(unit, StringComparison.Ordinal))
+                {
+                    return double.TryParse(token.Substring(0, token.Length - unit.Length), NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+                }
+            }
+
+            return false;
         }
 
         private static string ParseGradient(string css)
@@ -6982,61 +7525,237 @@ private static double? ExtractPx(string text, string prop)
 
     private static bool MatchesHas(Element n, string selectorList)
     {
-        if (string.IsNullOrWhiteSpace(selectorList)) return false;
-        
-        var chains = SelectorMatcher.ParseSelectorList(selectorList);
-        if (chains.Count == 0) return false;
+        if (n == null || string.IsNullOrWhiteSpace(selectorList))
+        {
+            return false;
+        }
 
-        var queue = new Queue<Element>();
-        // ... Queue traversal ... 
-        // Actually SelectorMatcher.MatchesHas logic is better/different.
-        // It implements :has relative to element scoping.
-        // The previous MatchesHas logic (Step 427) did a subtree search.
-        // :has(+ .sibling) checks siblings. :has(> .child) checks children. :has(.descendant) checks descendants.
-        // My previous logic implementation found in Step 427 was:
-        /*
-        var queue = new Queue<Element>();
-        if (n.Children != null) ...
-        */
-        // This suggests it treated :has arguments as descendants of n?
-        // Spec says :has() matches if the relative selectors match when anchored at the element.
-        
-        // So I should ideally reuse SelectorMatcher.MatchesHas if exposed?
-        // SelectorMatcher has private MatchesHas.
-        // But I can implement it by parsing and using MatchesChain.
-        // Relative selectors are chains where first segment has combinator.
-        
-        // For now, I'll stick to the existing logic but fix parsing.
-        
-        if (n.HasChildNodes)
+        // Delegate to the Level-4 matcher so :has() relative selectors
+        // (> / + / ~ / descendant) resolve against the anchor element.
+        return SelectorMatcher.Matches(n, $":has({selectorList})");
+    }
+
+    private static void ApplyPlaceShorthands(CssComputed css)
+    {
+        if (css?.Map == null)
         {
-             for(var child = n.FirstChild; child != null; child = child.NextSibling)
-             {
-                 if(child.IsElement()) queue.Enqueue((Element)child);
-             }
+            return;
         }
-        
-        while (queue.Count > 0)
+
+        ApplyPlaceShorthand(css, "place-items", "align-items", "justify-items", () => css.AlignItems, () => css.JustifyItems, v => css.AlignItems = v, v => css.JustifyItems = v);
+        ApplyPlaceShorthand(css, "place-content", "align-content", "justify-content", () => css.AlignContent, () => css.JustifyContent, v => css.AlignContent = v, v => css.JustifyContent = v);
+        ApplyPlaceShorthand(css, "place-self", "align-self", "justify-self", () => css.AlignSelf, () => css.JustifySelf, v => css.AlignSelf = v, v => css.JustifySelf = v);
+    }
+
+    private static void ApplyPlaceShorthand(
+        CssComputed css,
+        string shorthandKey,
+        string primaryLonghand,
+        string secondaryLonghand,
+        Func<string> getPrimary,
+        Func<string> getSecondary,
+        Action<string> setPrimary,
+        Action<string> setSecondary)
+    {
+        var raw = Safe(DictGet(css.Map, shorthandKey));
+        if (string.IsNullOrWhiteSpace(raw))
         {
-            var curr = queue.Dequeue();
-            foreach (var chain in chains)
+            return;
+        }
+
+        if (!TryParsePlacePair(raw, out var first, out var second))
+        {
+            return;
+        }
+
+        bool hasPrimary = !string.IsNullOrWhiteSpace(getPrimary?.Invoke()) || css.Map.ContainsKey(primaryLonghand);
+        bool hasSecondary = !string.IsNullOrWhiteSpace(getSecondary?.Invoke()) || css.Map.ContainsKey(secondaryLonghand);
+
+        if (!hasPrimary && !string.IsNullOrWhiteSpace(first))
+        {
+            setPrimary(first);
+            css.Map[primaryLonghand] = first;
+        }
+
+        if (!hasSecondary && !string.IsNullOrWhiteSpace(second))
+        {
+            setSecondary(second);
+            css.Map[secondaryLonghand] = second;
+        }
+    }
+
+    private static bool TryParsePlacePair(string raw, out string first, out string second)
+    {
+        first = null;
+        second = null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var tokens = SplitCssValues(raw)
+            .Select(t => t?.Trim())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        first = tokens[0].ToLowerInvariant();
+        second = tokens.Count > 1 ? tokens[1].ToLowerInvariant() : first;
+        return true;
+    }
+
+    private static void ApplyInventoryPropertyAliasNormalizations(Dictionary<string, string> map)
+    {
+        if (map == null)
+        {
+            return;
+        }
+
+        if (map.TryGetValue("word-wrap", out var wordWrapAlias) &&
+            !string.IsNullOrWhiteSpace(wordWrapAlias) &&
+            !map.ContainsKey("overflow-wrap"))
+        {
+            map["overflow-wrap"] = wordWrapAlias.Trim().ToLowerInvariant();
+        }
+
+        if (map.TryGetValue("font-width", out var fontWidthAlias) &&
+            !string.IsNullOrWhiteSpace(fontWidthAlias) &&
+            !map.ContainsKey("font-stretch"))
+        {
+            map["font-stretch"] = fontWidthAlias.Trim().ToLowerInvariant();
+        }
+
+        if (map.TryGetValue("background-position-inline", out var backgroundPositionInline) &&
+            !string.IsNullOrWhiteSpace(backgroundPositionInline) &&
+            !map.ContainsKey("background-position-x"))
+        {
+            map["background-position-x"] = backgroundPositionInline.Trim().ToLowerInvariant();
+        }
+
+        if (map.TryGetValue("background-position-block", out var backgroundPositionBlock) &&
+            !string.IsNullOrWhiteSpace(backgroundPositionBlock) &&
+            !map.ContainsKey("background-position-y"))
+        {
+            map["background-position-y"] = backgroundPositionBlock.Trim().ToLowerInvariant();
+        }
+
+        var posX = map.TryGetValue("background-position-x", out var xValue) ? xValue?.Trim() : null;
+        var posY = map.TryGetValue("background-position-y", out var yValue) ? yValue?.Trim() : null;
+        if (!string.IsNullOrWhiteSpace(posX) &&
+            !string.IsNullOrWhiteSpace(posY) &&
+            !map.ContainsKey("background-position"))
+        {
+            map["background-position"] = $"{posX} {posY}";
+        }
+
+        if (map.TryGetValue("background-repeat-inline", out var repeatInline) &&
+            !string.IsNullOrWhiteSpace(repeatInline))
+        {
+            map["background-repeat-x"] = repeatInline.Trim().ToLowerInvariant();
+        }
+
+        if (map.TryGetValue("background-repeat-block", out var repeatBlock) &&
+            !string.IsNullOrWhiteSpace(repeatBlock))
+        {
+            map["background-repeat-y"] = repeatBlock.Trim().ToLowerInvariant();
+        }
+
+        var repeatX = map.TryGetValue("background-repeat-x", out var repeatXValue) ? repeatXValue?.Trim().ToLowerInvariant() : null;
+        var repeatY = map.TryGetValue("background-repeat-y", out var repeatYValue) ? repeatYValue?.Trim().ToLowerInvariant() : null;
+        if (!string.IsNullOrWhiteSpace(repeatX) && !string.IsNullOrWhiteSpace(repeatY))
+        {
+            if (repeatX == "repeat" && repeatY == "repeat")
             {
-                // This logic is simplistic: checking if any descendant matches the chain.
-                // This means :has(.foo) works.
-                // But :has(> .foo) would fail if parse doesn't handle relative selectors correctly or logic ignores combinator.
-                // Assuming basic descendant check for now as legacy.
-                if (Matches(curr, chain)) return true;
+                map["background-repeat"] = "repeat";
             }
-            
-            if (curr.HasChildNodes)
+            else if (repeatX == "no-repeat" && repeatY == "no-repeat")
             {
-                for(var child = curr.FirstChild; child != null; child = child.NextSibling)
-                {
-                    if(child.IsElement()) queue.Enqueue((Element)child);
-                }
+                map["background-repeat"] = "no-repeat";
+            }
+            else if (repeatX == "repeat" && repeatY == "no-repeat")
+            {
+                map["background-repeat"] = "repeat-x";
+            }
+            else if (repeatX == "no-repeat" && repeatY == "repeat")
+            {
+                map["background-repeat"] = "repeat-y";
+            }
+            else
+            {
+                map["background-repeat"] = $"{repeatX} {repeatY}";
             }
         }
-        return false;
+    }
+
+    private static bool TryParseBorderWidthToken(string raw, double emBase, out double width)
+    {
+        width = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        raw = raw.Trim().ToLowerInvariant();
+        switch (raw)
+        {
+            case "thin":
+                width = 1;
+                return true;
+            case "medium":
+                width = 3;
+                return true;
+            case "thick":
+                width = 5;
+                return true;
+        }
+
+        if (TryPx(raw, out width, emBase))
+        {
+            return true;
+        }
+
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out width);
+    }
+
+    private static bool TryParseLogicalAxisPair(string raw, double emBase, out double start, out double end)
+    {
+        start = 0;
+        end = 0;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var tokens = SplitCssValues(raw)
+            .Select(t => t?.Trim())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .ToList();
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        if (!TryPx(tokens[0], out start, emBase))
+        {
+            return false;
+        }
+
+        if (tokens.Count == 1)
+        {
+            end = start;
+            return true;
+        }
+
+        if (!TryPx(tokens[1], out end, emBase))
+        {
+            return false;
+        }
+
+        return true;
     }
     
     private static bool IsIdentChar(char c)
