@@ -204,6 +204,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private IEnumerable<Node> GetChildren(Element element)
         {
+            if (element != null)
+            {
+                string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (tag == "OBJECT" || tag == "IFRAME")
+                {
+                    // Preserve structural fallback descendants (nested elements) so
+                    // selector/layout behavior can target them, while skipping raw
+                    // text fallback payload nodes.
+                    return element.ChildNodes.OfType<Node>().Where(static n => n is Element);
+                }
+            }
+
             if (element != null && ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
             {
                 return Array.Empty<Node>();

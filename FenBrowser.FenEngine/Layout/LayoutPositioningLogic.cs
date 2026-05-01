@@ -230,6 +230,16 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
+            // Keep intrinsic geometry measured by layout for positioned containers
+            // with structured child layout (blocks/floats/etc). Text-estimate fallback
+            // should only apply to leaf-like text boxes, not multi-child layout trees.
+            if (box.Children.Count > 0 &&
+                box.Children.Any(static child => child != null && child is not TextLayoutBox) &&
+                (intrinsicWidth > 0f || intrinsicHeight > 0f))
+            {
+                return;
+            }
+
             string text = LayoutHelper.GetRenderableTextContentTrimmed(element);
             if (string.IsNullOrWhiteSpace(text))
             {

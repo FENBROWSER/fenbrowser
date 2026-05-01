@@ -236,6 +236,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         private static bool TryResolveInsetOffset(CssComputed style, string side, float containingSize, out float offset)
         {
             offset = 0f;
+            bool mapHasAuthoredInset = MapHasAuthoredInset(style?.Map, side);
             if (!HasExplicitInset(style, side))
             {
                 return false;
@@ -257,7 +258,69 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             }
 
             string axisShorthand = side == "top" || side == "bottom" ? "inset-block" : "inset-inline";
-            return TryResolveInsetFromShorthand(style, axisShorthand, side, containingSize, out offset);
+            if (TryResolveInsetFromShorthand(style, axisShorthand, side, containingSize, out offset))
+            {
+                return true;
+            }
+
+            // If this side was explicitly authored but token parsing did not resolve
+            // a concrete length (e.g. em/calc forms), use the computed typed projection.
+            if (mapHasAuthoredInset && TryResolveInsetFromTypedProjection(style, side, containingSize, out offset))
+            {
+                return true;
+            }
+
+            // Fallback only for map-less synthetic styles (e.g. tests directly setting
+            // CssComputed.Top/Left without authored map keys).
+            if (style?.Map == null || style.Map.Count == 0)
+            {
+                return TryResolveInsetFromTypedProjection(style, side, containingSize, out offset);
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveInsetFromTypedProjection(CssComputed style, string side, float containingSize, out float offset)
+        {
+            offset = 0f;
+            if (style == null)
+            {
+                return false;
+            }
+
+            switch (side)
+            {
+                case "top":
+                    if (style.Top.HasValue)
+                    {
+                        offset = (float)style.Top.Value;
+                        return true;
+                    }
+                    break;
+                case "right":
+                    if (style.Right.HasValue)
+                    {
+                        offset = (float)style.Right.Value;
+                        return true;
+                    }
+                    break;
+                case "bottom":
+                    if (style.Bottom.HasValue)
+                    {
+                        offset = (float)style.Bottom.Value;
+                        return true;
+                    }
+                    break;
+                case "left":
+                    if (style.Left.HasValue)
+                    {
+                        offset = (float)style.Left.Value;
+                        return true;
+                    }
+                    break;
+            }
+
+            return false;
         }
 
         private static bool TryResolveInsetFromPrimaryKey(CssComputed style, string side, float containingSize, out float offset)
@@ -400,22 +463,52 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 
         private static bool HasExplicitInset(CssComputed style, string side)
         {
-            if (style?.Map == null || string.IsNullOrWhiteSpace(side))
+            if (style == null || string.IsNullOrWhiteSpace(side))
             {
                 return false;
             }
 
-            if (style.Map.ContainsKey(side) || style.Map.ContainsKey("inset") || style.Map.ContainsKey($"inset-{side}"))
+            bool mapHasAuthoredInset = MapHasAuthoredInset(style.Map, side);
+            if (mapHasAuthoredInset)
+            {
+                return true;
+            }
+
+            // If author map exists but doesn't contain this inset, typed fields can be stale
+            // from previous style states and must be ignored.
+            if (style.Map != null && style.Map.Count > 0)
+            {
+                return false;
+            }
+
+            return side switch
+            {
+                "top" => style.Top.HasValue || style.TopPercent.HasValue,
+                "right" => style.Right.HasValue || style.RightPercent.HasValue,
+                "bottom" => style.Bottom.HasValue || style.BottomPercent.HasValue,
+                "left" => style.Left.HasValue || style.LeftPercent.HasValue,
+                _ => false
+            };
+        }
+
+        private static bool MapHasAuthoredInset(System.Collections.Generic.IReadOnlyDictionary<string, string> map, string side)
+        {
+            if (map == null || map.Count == 0 || string.IsNullOrWhiteSpace(side))
+            {
+                return false;
+            }
+
+            if (map.ContainsKey(side) || map.ContainsKey("inset") || map.ContainsKey($"inset-{side}"))
             {
                 return true;
             }
 
             return side switch
             {
-                "top" => style.Map.ContainsKey("inset-block-start"),
-                "bottom" => style.Map.ContainsKey("inset-block-end"),
-                "left" => style.Map.ContainsKey("inset-inline-start"),
-                "right" => style.Map.ContainsKey("inset-inline-end"),
+                "top" => map.ContainsKey("inset-block-start"),
+                "bottom" => map.ContainsKey("inset-block-end"),
+                "left" => map.ContainsKey("inset-inline-start"),
+                "right" => map.ContainsKey("inset-inline-end"),
                 _ => false
             };
         }

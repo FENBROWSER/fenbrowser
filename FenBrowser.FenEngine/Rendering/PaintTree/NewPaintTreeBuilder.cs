@@ -2869,6 +2869,15 @@ namespace FenBrowser.FenEngine.Rendering
                         "currentColor",
                         RegexOptions.IgnoreCase);
                 }
+
+                // Bridge computed CSS presentation properties onto inline SVG root.
+                // This makes declarations like `svg { fill: ...; stroke: ...; }` visible to rasterization.
+                var cssFill = ResolveSvgPresentationProperty(style, "fill");
+                var cssStroke = ResolveSvgPresentationProperty(style, "stroke");
+                if (!string.IsNullOrWhiteSpace(cssFill) || !string.IsNullOrWhiteSpace(cssStroke))
+                {
+                    svgContent = InjectSvgRootPresentationStyle(svgContent, cssFill, cssStroke);
+                }
                 
                 // Final currentColor fallback if any left.
                 // Some inline SVG icons (notably Google material symbols) rely on inherited color;
@@ -2957,6 +2966,134 @@ namespace FenBrowser.FenEngine.Rendering
                 return bitmap;
             }
             return null;
+        }
+
+        private static string ResolveSvgPresentationProperty(CssComputed style, string propertyName)
+        {
+            if (style?.Map == null || string.IsNullOrWhiteSpace(propertyName))
+            {
+                return null;
+            }
+
+            if (!style.Map.TryGetValue(propertyName, out var raw) || string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            var value = raw.Trim();
+            if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var resolved = style.ResolveVariable(value);
+                if (!string.IsNullOrWhiteSpace(resolved))
+                {
+                    value = resolved.Trim();
+                }
+            }
+
+            return value;
+        }
+
+        private static string InjectSvgRootPresentationStyle(string svgContent, string fill, string stroke)
+        {
+            if (string.IsNullOrWhiteSpace(svgContent))
+            {
+                return svgContent;
+            }
+
+            var declarations = new List<string>();
+            if (!string.IsNullOrWhiteSpace(fill))
+            {
+                declarations.Add($"fill: {fill}");
+            }
+            if (!string.IsNullOrWhiteSpace(stroke))
+            {
+                declarations.Add($"stroke: {stroke}");
+            }
+            if (declarations.Count == 0)
+            {
+                return svgContent;
+            }
+
+            int svgStart = svgContent.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
+            if (svgStart < 0)
+            {
+                return svgContent;
+            }
+
+            int tagEnd = FindTagEnd(svgContent, svgStart);
+            if (tagEnd < 0)
+            {
+                return svgContent;
+            }
+
+            string openTag = svgContent.Substring(svgStart, tagEnd - svgStart + 1);
+            string appendedStyle = string.Join("; ", declarations) + ";";
+
+            var styleMatch = Regex.Match(
+                openTag,
+                @"\bstyle\s*=\s*([""'])(?<value>.*?)\1",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            string updatedTag;
+            if (styleMatch.Success)
+            {
+                string quote = styleMatch.Groups[1].Value;
+                string existing = styleMatch.Groups["value"].Value.Trim();
+                if (!string.IsNullOrEmpty(existing) && !existing.EndsWith(";", StringComparison.Ordinal))
+                {
+                    existing += ";";
+                }
+
+                string merged = string.IsNullOrEmpty(existing)
+                    ? appendedStyle
+                    : existing + " " + appendedStyle;
+
+                string replacement = $"style={quote}{merged}{quote}";
+                updatedTag = openTag.Substring(0, styleMatch.Index) +
+                    replacement +
+                    openTag.Substring(styleMatch.Index + styleMatch.Length);
+            }
+            else
+            {
+                int insertAt = openTag.LastIndexOf('>');
+                if (insertAt <= 0)
+                {
+                    return svgContent;
+                }
+
+                updatedTag = openTag.Insert(insertAt, $" style=\"{appendedStyle}\"");
+            }
+
+            return svgContent.Substring(0, svgStart) +
+                updatedTag +
+                svgContent.Substring(tagEnd + 1);
+        }
+
+        private static int FindTagEnd(string text, int startIndex)
+        {
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+
+            for (int i = startIndex; i < text.Length; i++)
+            {
+                char ch = text[i];
+                if (ch == '"' && !inSingleQuote)
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                    continue;
+                }
+                if (ch == '\'' && !inDoubleQuote)
+                {
+                    inSingleQuote = !inSingleQuote;
+                    continue;
+                }
+                if (ch == '>' && !inSingleQuote && !inDoubleQuote)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
         }
 
 

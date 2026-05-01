@@ -1,3 +1,7 @@
+// SpecRef: CSS2.2 Visual Formatting Model and positioned layout sizing
+// CapabilityId: LAYOUT-POSITIONING-SIZING-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using System;
 using System.Linq;
 using FenBrowser.FenEngine.Layout.Tree;
@@ -909,11 +913,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             var resolvedContentLeft = (float)(marginLeft + border.Left + padding.Left);
+            var resolvedContentTop = (float)(margin.Top + border.Top + padding.Top);
+            var existingContentHeight = box.Geometry.ContentBox.Height;
+            if (!float.IsFinite(existingContentHeight) || existingContentHeight < 0f)
+            {
+                existingContentHeight = 0f;
+            }
+
             box.Geometry.ContentBox = new SKRect(
                 resolvedContentLeft,
-                box.Geometry.ContentBox.Top,
+                resolvedContentTop,
                 resolvedContentLeft + resolvedContentWidth,
-                box.Geometry.ContentBox.Bottom);
+                resolvedContentTop + existingContentHeight);
             
             box.Geometry.Padding = padding;
             box.Geometry.Border = border;

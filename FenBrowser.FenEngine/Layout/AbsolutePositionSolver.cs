@@ -292,17 +292,15 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (!height.HasValue && !top.HasValue)
             {
-                h = intrinsicHeight > 0
-                    ? (preserveIntrinsicAutoSize ? intrinsicHeight : Math.Max(0, Math.Min(intrinsicHeight, cbHeight - fixedSpace - mt - mb - b)))
-                    : Math.Max(0, cbHeight - fixedSpace - mt - mb - b);
+                float available = cbHeight - fixedSpace - mt - mb - b;
+                h = ResolveAutoPositionedHeight(intrinsicHeight, available, preserveIntrinsicAutoSize);
                 t = cbHeight - mt - fixedSpace - h - mb - b;
                 result.HeightWasAuto = true;
             }
             else if (!height.HasValue && !bottom.HasValue)
             {
-                h = intrinsicHeight > 0
-                    ? (preserveIntrinsicAutoSize ? intrinsicHeight : Math.Max(0, Math.Min(intrinsicHeight, cbHeight - fixedSpace - t - mt - mb)))
-                    : Math.Max(0, cbHeight - fixedSpace - t - mt - mb);
+                float available = cbHeight - fixedSpace - t - mt - mb;
+                h = ResolveAutoPositionedHeight(intrinsicHeight, available, preserveIntrinsicAutoSize);
                 b = cbHeight - t - mt - fixedSpace - h - mb;
                 result.HeightWasAuto = true;
             }
@@ -331,6 +329,24 @@ namespace FenBrowser.FenEngine.Layout
             result.Height = h;
             result.MarginTop = mt;
             result.MarginBottom = mb;
+        }
+
+        private static float ResolveAutoPositionedHeight(
+            float intrinsicHeight,
+            float availableHeight,
+            bool preserveIntrinsicAutoSize)
+        {
+            if (intrinsicHeight > 0f)
+            {
+                if (preserveIntrinsicAutoSize || !float.IsFinite(availableHeight) || availableHeight <= 0f)
+                {
+                    return intrinsicHeight;
+                }
+
+                return Math.Max(0f, Math.Min(intrinsicHeight, availableHeight));
+            }
+
+            return Math.Max(0f, availableHeight);
         }
 
         private static void ApplyConstraints(

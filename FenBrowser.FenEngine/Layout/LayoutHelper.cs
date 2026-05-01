@@ -206,6 +206,99 @@ namespace FenBrowser.FenEngine.Layout
             if (string.IsNullOrEmpty(expression)) return -1;
             expression = expression.Trim().ToLowerInvariant();
 
+            // Intrinsic sizing keywords.
+            if (expression == "min-content") return 0;
+            if (expression == "max-content" || expression == "fit-content")
+            {
+                return Math.Max(0, parentSize);
+            }
+
+            if (expression.StartsWith("fit-content(") && expression.EndsWith(")"))
+            {
+                int start = expression.IndexOf('(');
+                int end = expression.LastIndexOf(')');
+                if (start > -1 && end > start)
+                {
+                    var inner = expression.Substring(start + 1, end - start - 1).Trim();
+                    float limit = EvaluateCssExpression(inner, parentSize, viewportWidth, viewportHeight);
+                    if (limit < 0)
+                    {
+                        return Math.Max(0, parentSize);
+                    }
+
+                    float maxContent = Math.Max(0, parentSize);
+                    return Math.Max(0, Math.Min(maxContent, Math.Max(0, limit)));
+                }
+
+                return Math.Max(0, parentSize);
+            }
+
+            if (expression.StartsWith("min(") || expression.StartsWith("max(") || expression.StartsWith("clamp("))
+            {
+                int start = expression.IndexOf('(');
+                int end = expression.LastIndexOf(')');
+                if (start > -1 && end > start)
+                {
+                    var inner = expression.Substring(start + 1, end - start - 1);
+                    var args = new List<string>();
+                    var chunk = new StringBuilder();
+                    int depth = 0;
+
+                    foreach (char ch in inner)
+                    {
+                        if (ch == '(') depth++;
+                        else if (ch == ')') depth = Math.Max(0, depth - 1);
+
+                        if (ch == ',' && depth == 0)
+                        {
+                            args.Add(chunk.ToString().Trim());
+                            chunk.Clear();
+                            continue;
+                        }
+
+                        chunk.Append(ch);
+                    }
+
+                    if (chunk.Length > 0)
+                    {
+                        args.Add(chunk.ToString().Trim());
+                    }
+
+                    if (expression.StartsWith("min("))
+                    {
+                        float minValue = float.PositiveInfinity;
+                        foreach (var arg in args)
+                        {
+                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight);
+                            if (parsed < 0) continue;
+                            if (parsed < minValue) minValue = parsed;
+                        }
+                        if (!float.IsPositiveInfinity(minValue)) return minValue;
+                    }
+                    else if (expression.StartsWith("max("))
+                    {
+                        float maxValue = float.NegativeInfinity;
+                        foreach (var arg in args)
+                        {
+                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight);
+                            if (parsed < 0) continue;
+                            if (parsed > maxValue) maxValue = parsed;
+                        }
+                        if (!float.IsNegativeInfinity(maxValue)) return maxValue;
+                    }
+                    else if (expression.StartsWith("clamp(") && args.Count == 3)
+                    {
+                        float min = EvaluateCssExpression(args[0], parentSize, viewportWidth, viewportHeight);
+                        float preferred = EvaluateCssExpression(args[1], parentSize, viewportWidth, viewportHeight);
+                        float max = EvaluateCssExpression(args[2], parentSize, viewportWidth, viewportHeight);
+                        if (min >= 0 && preferred >= 0 && max >= 0)
+                        {
+                            return Math.Max(min, Math.Min(preferred, max));
+                        }
+                    }
+                }
+            }
+
             // Simple parser
             if (expression.StartsWith("calc"))
             {
