@@ -3121,7 +3121,12 @@ namespace FenBrowser.FenEngine.Rendering
 
              // Use placeholder if value is empty
              bool isPlaceholder = false;
-             if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(placeholder))
+             var className = elem.ClassName ?? string.Empty;
+             var hasFocusedClass = className
+                 .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                 .Contains("is-focused", StringComparer.Ordinal);
+             var suppressPlaceholder = isFocused || hasFocusedClass;
+             if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(placeholder) && !suppressPlaceholder)
              {
                  value = placeholder;
                  isPlaceholder = true;
@@ -3142,17 +3147,19 @@ namespace FenBrowser.FenEngine.Rendering
              using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
              float textWidth = paint.MeasureText(value);
              
-             // Use PaddingBox for alignment so submit/button text centers within padded controls.
-             float x = box.PaddingBox.Left;
+             // Text-like controls render inside the content box; button-like controls center in padding.
+             bool isButtonLike = type == "submit" || type == "button" || type == "reset";
+             var textLayoutBox = isButtonLike ? box.PaddingBox : box.ContentBox;
+             float x = textLayoutBox.Left;
              var metrics = paint.FontMetrics;
              float textHeight = metrics.Descent - metrics.Ascent;
-             float y = box.PaddingBox.Top + (box.PaddingBox.Height - textHeight) / 2f - metrics.Ascent;
+             float y = textLayoutBox.Top + (textLayoutBox.Height - textHeight) / 2f - metrics.Ascent;
 
              // Alignment logic
              SKTextAlign align = style?.TextAlign ?? SKTextAlign.Left;
              
              // Defaults based on type
-             if (align == SKTextAlign.Left && (type == "submit" || type == "button" || type == "reset"))
+             if (align == SKTextAlign.Left && isButtonLike)
              {
                  align = SKTextAlign.Center;
              }
@@ -3160,12 +3167,12 @@ namespace FenBrowser.FenEngine.Rendering
              if (align == SKTextAlign.Center)
              {
                  // Center within ContentBox
-                 x = box.PaddingBox.Left + (box.PaddingBox.Width - textWidth) / 2;
+                 x = textLayoutBox.Left + (textLayoutBox.Width - textWidth) / 2;
              }
              else if (align == SKTextAlign.Right)
              {
                  // Right align within ContentBox
-                 x = box.PaddingBox.Right - textWidth;
+                 x = textLayoutBox.Right - textWidth;
              }
              // else Left: x is already ContentBox.Left
 
@@ -3193,7 +3200,7 @@ namespace FenBrowser.FenEngine.Rendering
 
              return new TextPaintNode
              {
-                 Bounds = box.PaddingBox, // Clip to padding box? Or ContentBox? Text usually allowed to overflow into padding? Clipping usually happens at BorderBox.
+                 Bounds = textLayoutBox,
                  SourceNode = elem,
                  Color = textColor,
                  FontSize = fontSize,
