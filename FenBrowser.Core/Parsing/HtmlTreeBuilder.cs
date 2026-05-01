@@ -78,6 +78,8 @@ namespace FenBrowser.Core.Parsing
         public HtmlParsingOutcome LastParsingOutcome { get; private set; } = new HtmlParsingOutcome();
         private bool _openElementsDepthLimitLogged;
         private bool _openElementUnderflowLogged;
+        private bool _deferParsingCheckpointCallbacks;
+        private readonly List<HtmlParseCheckpoint> _deferredParsingCheckpointCallbacks = new List<HtmlParseCheckpoint>();
 
         public HtmlTreeBuilder(string html)
         {
@@ -117,6 +119,8 @@ namespace FenBrowser.Core.Parsing
             var tokenBatchSize = Math.Max(0, InterleavedTokenBatchSize);
             var useInterleavedBuild = tokenBatchSize > 0;
             var tokenBuffer = new List<HtmlToken>(useInterleavedBuild ? tokenBatchSize : 256);
+            _deferParsingCheckpointCallbacks = !useInterleavedBuild;
+            _deferredParsingCheckpointCallbacks.Clear();
             IDisposable frameScope = null;
             IDisposable tokenizingStageScope = null;
             IDisposable parsingStageScope = null;
@@ -221,6 +225,15 @@ namespace FenBrowser.Core.Parsing
 
                 tokenizingCheckpointCount++;
                 EmitCheckpoint(HtmlParseBuildPhase.Tokenizing, tokenCount, isFinal: true);
+                if (_deferParsingCheckpointCallbacks && _deferredParsingCheckpointCallbacks.Count > 0)
+                {
+                    foreach (var checkpoint in _deferredParsingCheckpointCallbacks)
+                    {
+                        EmitCheckpoint(checkpoint);
+                    }
+
+                    _deferredParsingCheckpointCallbacks.Clear();
+                }
                 tokenizingStageScope?.Dispose();
                 tokenizingStageScope = null;
 
@@ -300,6 +313,8 @@ namespace FenBrowser.Core.Parsing
                 parsingStageScope?.Dispose();
                 tokenizingStageScope?.Dispose();
                 frameScope?.Dispose();
+                _deferParsingCheckpointCallbacks = false;
+                _deferredParsingCheckpointCallbacks.Clear();
             }
         }
 
@@ -354,7 +369,14 @@ namespace FenBrowser.Core.Parsing
                 {
                     parsingCheckpointCount++;
                     var checkpoint = new HtmlParseCheckpoint(HtmlParseBuildPhase.Parsing, parsedTokenCount, isFinal: false);
-                    EmitCheckpoint(checkpoint);
+                    if (_deferParsingCheckpointCallbacks)
+                    {
+                        _deferredParsingCheckpointCallbacks.Add(checkpoint);
+                    }
+                    else
+                    {
+                        EmitCheckpoint(checkpoint);
+                    }
                     EmitDocumentCheckpoint(checkpoint);
                 }
             }
