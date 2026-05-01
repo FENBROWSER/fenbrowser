@@ -407,5 +407,46 @@ namespace FenBrowser.Tests.DOM
             Assert.Equal("0", runtime.GetGlobal("__linkedRulesLength").ToString());
             Assert.Equal("true", runtime.GetGlobal("__missingSheetIsNull").ToString());
         }
+
+        [Fact]
+        public void DocumentStyleSheets_IsLiveAndKeepsStableObjectIdentity()
+        {
+            var runtime = new FenRuntime();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var sheetsA = document.styleSheets;
+                var sheetsB = document.styleSheets;
+                globalThis.__sameListObject = String(sheetsA === sheetsB);
+                globalThis.__len0 = String(sheetsA.length);
+
+                var style1 = document.createElement('style');
+                style1.textContent = 'body { color: red; }';
+                document.head.appendChild(style1);
+                globalThis.__len1 = String(sheetsA.length);
+                globalThis.__sheet0IsStyle1 = String(sheetsA.item(0) === style1.sheet);
+
+                var link = document.createElement('link');
+                link.setAttribute('rel', 'stylesheet');
+                link.setAttribute('href', '/theme.css');
+                document.head.appendChild(link);
+                globalThis.__len2 = String(sheetsA.length);
+                globalThis.__sheet1OwnerTag = sheetsA.item(1) && sheetsA.item(1).ownerNode ? sheetsA.item(1).ownerNode.tagName : '';
+
+                document.head.removeChild(style1);
+                globalThis.__len3 = String(sheetsA.length);
+                globalThis.__firstOwnerAfterRemoval = sheetsA.item(0) && sheetsA.item(0).ownerNode ? sheetsA.item(0).ownerNode.tagName : '';
+            ");
+
+            Assert.Equal("true", runtime.GetGlobal("__sameListObject").ToString());
+            Assert.Equal("0", runtime.GetGlobal("__len0").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__len1").ToString());
+            Assert.Equal("true", runtime.GetGlobal("__sheet0IsStyle1").ToString());
+            Assert.Equal("2", runtime.GetGlobal("__len2").ToString());
+            Assert.Equal("LINK", runtime.GetGlobal("__sheet1OwnerTag").ToString());
+            Assert.Equal("1", runtime.GetGlobal("__len3").ToString());
+            Assert.Equal("LINK", runtime.GetGlobal("__firstOwnerAfterRemoval").ToString());
+        }
     }
 }

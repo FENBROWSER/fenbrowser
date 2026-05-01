@@ -1,3 +1,7 @@
+// SpecRef: CSSOM, Document.styleSheets and StyleSheetList exposure
+// CapabilityId: CSSOM-STYLESHEET-LIST-01
+// Determinism: strict
+// FallbackPolicy: spec-defined
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Linq;
@@ -22,10 +26,12 @@ namespace FenBrowser.FenEngine.DOM
     {
         private static readonly ConditionalWeakTable<Document, FenObject> s_defaultViewByDocument = new ConditionalWeakTable<Document, FenObject>();
         private static readonly ConditionalWeakTable<Document, Element> s_browsingContextHostByDocument = new ConditionalWeakTable<Document, Element>();
+        private static readonly ConditionalWeakTable<Element, FenObject> s_linkedStyleSheetByElement = new ConditionalWeakTable<Element, FenObject>();
         private readonly Node _root;
         private readonly IExecutionContext _context;
         private readonly Uri _baseUri;
         private IObject _prototype;
+        private IObject _styleSheetList;
         private string _readyState = "loading"; // Spec compliant default
         private readonly Dictionary<string, FenValue> _expando = new Dictionary<string, FenValue>(StringComparer.Ordinal);
         private FenObject _fonts;
@@ -1218,29 +1224,177 @@ namespace FenBrowser.FenEngine.DOM
             return EnumerateDocumentElements().Where(IsHyperlinkElement);
         }
 
-        private FenObject BuildStyleSheetListObject()
+        private IObject BuildStyleSheetListObject()
         {
-            var sheets = CollectStyleSheetValues();
-            var list = FenObject.CreateArray();
+            _styleSheetList ??= new StyleSheetListObject(CollectStyleSheetValues);
+            return _styleSheetList;
+        }
 
-            for (var index = 0; index < sheets.Count; index++)
+        private sealed class StyleSheetListObject : IObject
+        {
+            private readonly Func<List<FenValue>> _sourceProvider;
+            private readonly Dictionary<string, FenValue> _expandos = new(StringComparer.Ordinal);
+            private IObject _prototype;
+
+            public StyleSheetListObject(Func<List<FenValue>> sourceProvider)
             {
-                list.Set(index.ToString(), sheets[index]);
+                _sourceProvider = sourceProvider ?? (() => new List<FenValue>());
             }
 
-            list.Set("length", FenValue.FromNumber(sheets.Count));
-            list.Set("item", FenValue.FromFunction(new FenFunction("item", (args, thisVal) =>
+            public object NativeObject { get; set; }
+
+            public FenValue Get(string key, IExecutionContext context = null)
             {
-                var idx = args.Length > 0 ? (int)args[0].ToNumber() : -1;
-                if (idx < 0 || idx >= sheets.Count)
+                if (TryParseArrayIndex(key, out var index))
                 {
-                    return FenValue.Null;
+                    var snapshot = _sourceProvider();
+                    if (index < (uint)snapshot.Count)
+                    {
+                        return snapshot[(int)index];
+                    }
+
+                    return FenValue.Undefined;
                 }
 
-                return sheets[idx];
-            })));
+                if (_expandos.TryGetValue(key, out var expandoValue))
+                {
+                    return expandoValue;
+                }
 
-            return list;
+                switch (key)
+                {
+                    case "length":
+                        return FenValue.FromNumber(_sourceProvider().Count);
+                    case "item":
+                        return FenValue.FromFunction(new FenFunction("item", (args, thisVal) =>
+                        {
+                            if (args.Length == 0)
+                            {
+                                return FenValue.Null;
+                            }
+
+                            var number = args[0].ToNumber();
+                            if (double.IsNaN(number) || double.IsInfinity(number))
+                            {
+                                return FenValue.Null;
+                            }
+
+                            var idx = (int)number;
+                            var snapshot = _sourceProvider();
+                            if (idx < 0 || idx >= snapshot.Count)
+                            {
+                                return FenValue.Null;
+                            }
+
+                            return snapshot[idx];
+                        }));
+                    default:
+                        return FenValue.Undefined;
+                }
+            }
+
+            public void Set(string key, FenValue value, IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal) || string.Equals(key, "item", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (TryParseArrayIndex(key, out _))
+                {
+                    return;
+                }
+
+                _expandos[key] = value;
+            }
+
+            public bool Has(string key, IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal) || string.Equals(key, "item", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                if (_expandos.ContainsKey(key))
+                {
+                    return true;
+                }
+
+                if (TryParseArrayIndex(key, out var index))
+                {
+                    return index < (uint)_sourceProvider().Count;
+                }
+
+                return false;
+            }
+
+            public bool Delete(string key, IExecutionContext context = null)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal) || string.Equals(key, "item", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (TryParseArrayIndex(key, out var index))
+                {
+                    return index >= (uint)_sourceProvider().Count;
+                }
+
+                return _expandos.Remove(key) || !_expandos.ContainsKey(key);
+            }
+
+            public IEnumerable<string> Keys(IExecutionContext context = null)
+            {
+                var snapshot = _sourceProvider();
+                for (var i = 0; i < snapshot.Count; i++)
+                {
+                    yield return i.ToString();
+                }
+
+                yield return "length";
+                yield return "item";
+
+                foreach (var key in _expandos.Keys)
+                {
+                    yield return key;
+                }
+            }
+
+            public IObject GetPrototype() => _prototype;
+
+            public void SetPrototype(IObject prototype) => _prototype = prototype;
+
+            public bool DefineOwnProperty(string key, PropertyDescriptor desc)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal) || string.Equals(key, "item", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (TryParseArrayIndex(key, out var index))
+                {
+                    return index >= (uint)_sourceProvider().Count;
+                }
+
+                if (desc.IsAccessor)
+                {
+                    return false;
+                }
+
+                _expandos[key] = desc.Value ?? FenValue.Undefined;
+                return true;
+            }
+
+            private static bool TryParseArrayIndex(string key, out uint index)
+            {
+                index = 0;
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    return false;
+                }
+
+                return uint.TryParse(key, out index) && index != uint.MaxValue;
+            }
         }
 
         private List<FenValue> CollectStyleSheetValues()
@@ -1293,7 +1447,12 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue CreateLinkedStyleSheetValue(Element linkElement)
         {
-            var sheet = new FenObject();
+            if (!s_linkedStyleSheetByElement.TryGetValue(linkElement, out var sheet))
+            {
+                sheet = new FenObject();
+                s_linkedStyleSheetByElement.Add(linkElement, sheet);
+            }
+
             sheet.Set("ownerNode", DomWrapperFactory.Wrap(linkElement, _context));
             sheet.Set("href", FenValue.FromString(ResolveLinkHref(linkElement)));
             sheet.Set("media", FenValue.FromString(linkElement.GetAttribute("media") ?? string.Empty));
