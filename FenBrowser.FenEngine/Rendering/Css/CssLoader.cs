@@ -3292,6 +3292,10 @@ private static double? ExtractPx(string text, string prop)
 
                 // Populate core display/positioning properties from the map
                 css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(css.Display))
+                {
+                    css.Display = GetDefaultDisplayValue(n);
+                }
                 
                 // DEBUG: Trace display:flex application
                 if (css.Display == "flex" || css.Display == "inline-flex")
@@ -4481,7 +4485,11 @@ private static double? ExtractPx(string text, string prop)
             if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
                 css.BorderBrushColor = borderSideColor;
 
-            css.Display = Safe(DictGet(css.Map, "display"));
+            css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(css.Display))
+            {
+                css.Display = GetDefaultDisplayValue(n);
+            }
             css.Position = Safe(DictGet(css.Map, "position"));
             css.Float = Safe(DictGet(css.Map, "float"));
             css.Clear = Safe(DictGet(css.Map, "clear"));
@@ -6345,6 +6353,69 @@ private static double? ExtractPx(string text, string prop)
             foreach (var t in SplitTokens(list))
                 if (string.Equals(t, token, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        private static string GetDefaultDisplayValue(Node node)
+        {
+            if (node is Text)
+            {
+                return "inline";
+            }
+
+            if (node is not Element element)
+            {
+                return "inline";
+            }
+
+            if (element.HasAttribute("hidden"))
+            {
+                return "none";
+            }
+
+            if (string.Equals(element.TagName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                string inputType = element.GetAttribute("type")?.Trim();
+                if (string.Equals(inputType, "hidden", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "none";
+                }
+            }
+
+            string tag = element.TagName?.ToUpperInvariant();
+            if (string.IsNullOrEmpty(tag))
+            {
+                return "inline";
+            }
+
+            if (tag.Contains("-", StringComparison.Ordinal))
+            {
+                return "inline";
+            }
+
+            return tag switch
+            {
+                "HEAD" or "SCRIPT" or "STYLE" or "META" or "LINK" or "TITLE" or "NOSCRIPT" or "TEMPLATE" => "none",
+                "TABLE" => "table",
+                "TR" => "table-row",
+                "THEAD" => "table-header-group",
+                "TBODY" => "table-row-group",
+                "TFOOT" => "table-footer-group",
+                "COL" => "table-column",
+                "COLGROUP" => "table-column-group",
+                "TD" or "TH" => "table-cell",
+                "CAPTION" => "table-caption",
+                "LI" => "list-item",
+                "INPUT" or "SELECT" or "TEXTAREA" or "BUTTON" => "inline-block",
+                "SVG" => "inline-block",
+                "IMG" or "CANVAS" or "IFRAME" or "OBJECT" => "inline",
+                "A" or "ABBR" or "ACRONYM" or "B" or "BDI" or "BDO" or "BIG" or
+                "BR" or "CITE" or "CODE" or "DATA" or "DEL" or "DFN" or "EM" or
+                "I" or "INS" or "KBD" or "LABEL" or "MAP" or "MARK" or
+                "METER" or "OUTPUT" or "PICTURE" or "PROGRESS" or "Q" or "RUBY" or
+                "S" or "SAMP" or "SMALL" or "SPAN" or "STRONG" or "SUB" or "SUP" or
+                "TIME" or "TT" or "U" or "VAR" or "WBR" => "inline",
+                _ => "block"
+            };
         }
 
         private static string Safe(string s) { return string.IsNullOrWhiteSpace(s) ? null : s.Trim(); }

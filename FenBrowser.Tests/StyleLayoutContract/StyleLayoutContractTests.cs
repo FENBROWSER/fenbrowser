@@ -36,10 +36,8 @@ namespace FenBrowser.Tests.StyleLayoutContract
             Assert.Equal("block", computed[div].Map["display"]);
             Assert.Equal("block", computed[body].Map["display"]);
 
-            // BUG: span should be 'inline', but it is missing from the map because default values aren't injected
-            computed[span].Map.TryGetValue("display", out var spanDisplay);
-            Assert.Null(spanDisplay);
-            Assert.Null(computed[span].Display);
+            // Span should resolve to inline display even when no authored/UA display declaration is present.
+            Assert.Equal("inline", computed[span].Display);
         }
 
         [Fact]
@@ -297,10 +295,8 @@ div { color: black; }
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
             var x = doc.GetElementById("x");
 
-            // BUG: Unknown elements don't get 'inline' display in computed styles until layout defaults.
-            computed[x].Map.TryGetValue("display", out var display);
-            Assert.Null(display);
-            Assert.Null(computed[x].Display);
+            // Unknown/custom elements default to inline in computed styles.
+            Assert.Equal("inline", computed[x].Display);
         }
     }
 }
