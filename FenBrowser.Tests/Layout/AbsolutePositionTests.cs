@@ -56,6 +56,27 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void Solver_LeftAutoRightAndWidth_AnchorsFromRightEdge()
+        {
+            var cb = new ContainingBlock { Width = 100, Height = 100 };
+
+            var style = new CssComputed
+            {
+                Position = "absolute",
+                Left = null,   // auto
+                Right = 10,
+                Width = 30,
+                Top = 0,
+                Height = 20
+            };
+
+            var result = AbsolutePositionSolver.Solve(style, cb);
+
+            Assert.Equal(60f, result.X);
+            Assert.Equal(30f, result.Width);
+        }
+
+        [Fact]
         public void Solver_AutoMargins_CenterHorizontally()
         {
             // CB: 100x100
