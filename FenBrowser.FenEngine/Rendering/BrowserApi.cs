@@ -8598,6 +8598,15 @@ pre {{
                 }
 
                 bool isContentEditable = string.Equals(_focusedElement.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                if (tag == "button")
+                {
+                    if (IsButtonActivationKey(key) && !IsDisabledControl(_focusedElement))
+                    {
+                        await HandleElementClick(_focusedElement).ConfigureAwait(false);
+                    }
+
+                    return;
+                }
 
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
@@ -8795,6 +8804,13 @@ pre {{
             }
             
             return;
+        }
+
+        private static bool IsButtonActivationKey(string key)
+        {
+            return string.Equals(key, "Enter", StringComparison.Ordinal) ||
+                   string.Equals(key, " ", StringComparison.Ordinal) ||
+                   string.Equals(key, "Space", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool ShouldSubmitOnEnterTextArea(Element textarea)
@@ -9175,6 +9191,5 @@ pre {{
         }
     }
 }
-
 
 
