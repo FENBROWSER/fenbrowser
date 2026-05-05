@@ -147,6 +147,11 @@ body { margin: 0; background: white; }
                 if (!File.Exists(referenceImagePath))
                 {
                     // Save as new reference
+                    var referenceDir = Path.GetDirectoryName(referenceImagePath);
+                    if (!string.IsNullOrWhiteSpace(referenceDir))
+                    {
+                        Directory.CreateDirectory(referenceDir);
+                    }
                     SaveBitmap(actual, referenceImagePath);
                     result.Message = "Reference image created";
                     result.Passed = true;
