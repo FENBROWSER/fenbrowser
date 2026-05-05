@@ -329,5 +329,40 @@ div { color: black; }
             Assert.NotNull(childBox);
             Assert.Equal(50f, childBox.ContentBox.Width);
         }
+
+        [Fact]
+        public async Task Test12_HeadMetadataNodesDoNotCreateLayoutBoxes()
+        {
+            string html = @"
+<!doctype html>
+<html>
+<head id='head'>
+  <meta id='meta' charset='utf-8'>
+  <link id='link' rel='stylesheet' href='noop.css'>
+</head>
+<body>
+  <p id='visible'>Visible</p>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://test.local/"));
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), _ => Task.FromResult<string>(null));
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var head = doc.GetElementById("head");
+            var meta = doc.GetElementById("meta");
+            var link = doc.GetElementById("link");
+            var visible = doc.GetElementById("visible");
+
+            Assert.Null(layoutComputer.GetBox(head));
+            Assert.Null(layoutComputer.GetBox(meta));
+            Assert.Null(layoutComputer.GetBox(link));
+            Assert.NotNull(layoutComputer.GetBox(visible));
+        }
     }
 }
