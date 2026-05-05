@@ -491,6 +491,52 @@ div { color: black; }
             Assert.True(z1Index < z2Index, $"Positive z-index contexts should paint in ascending z-index order. z1={z1Index}, z2={z2Index}");
         }
 
+        [Fact]
+        public async Task Test16_ScrollBasicsEmitClipAndScrollPaintNodes()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<body>
+  <div id='scroller' style='width:120px;height:40px;overflow-y:auto;overflow-x:auto;background:#eee'>
+    <div id='content' style='width:120px;height:140px;background:#f00'></div>
+  </div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var scroller = doc.GetElementById("scroller");
+            var content = doc.GetElementById("content");
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var boxes = layoutComputer.GetAllBoxes().ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+            var scrollManager = new FenBrowser.FenEngine.Rendering.Interaction.ScrollManager();
+
+            _ = NewPaintTreeBuilder.Build(root, boxes, computed, 800, 600, scrollManager);
+            var state = scrollManager.GetScrollState(scroller);
+            Assert.True(state.MaxScrollY > 0, $"Expected scrollable content. maxY={state.MaxScrollY}");
+
+            scrollManager.SetScrollPosition(scroller, 0, state.MaxScrollY);
+
+            var tree = NewPaintTreeBuilder.Build(root, boxes, computed, 800, 600, scrollManager);
+            var nodes = FlattenPaintNodes(tree.Roots);
+
+            var scrollNode = nodes.OfType<ScrollPaintNode>().OrderByDescending(n => n.ScrollY).FirstOrDefault();
+            var clipNode = nodes.OfType<ClipPaintNode>().FirstOrDefault();
+            int contentBackgroundIndex = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, content));
+
+            Assert.NotNull(clipNode);
+            Assert.NotNull(scrollNode);
+            Assert.True(scrollNode.ScrollY > 0, $"Expected positive scroll offset after SetScrollPosition. y={scrollNode.ScrollY}");
+            Assert.True(contentBackgroundIndex >= 0, "Expected scroll content background node to be present in paint tree.");
+        }
+
         private static List<PaintNodeBase> FlattenPaintNodes(IEnumerable<PaintNodeBase> nodes)
         {
             var list = new List<PaintNodeBase>();
