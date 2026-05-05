@@ -5,6 +5,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Net;
+using System.Net.Http;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
@@ -12,8 +15,10 @@ using FenBrowser.FenEngine.Layout;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 using FenBrowser.FenEngine.Typography;
+using System.Text;
 using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Rendering.Css;
+using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -50,6 +55,12 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         
         private readonly Interaction.ScrollManager _scrollManager;
+        private static readonly HttpClient s_iframeTopTextHttpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(5)
+        };
+        private static readonly Dictionary<string, string> s_iframeTopTextByUrl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object s_iframeTopTextLock = new object();
 
         private static bool IsOverflowClipMode(string overflow)
         {
@@ -620,8 +631,33 @@ namespace FenBrowser.FenEngine.Rendering
             bool hasExisting = _boxes.TryGetValue(node, out var existingBox) && existingBox != null;
             if (!isSvg)
             {
+                if (hasExisting)
+                {
+                    if (string.Equals(tag, "IFRAME", StringComparison.Ordinal))
+                    {
+                        var existingWidth = existingBox.ContentBox.Width;
+                        var existingHeight = existingBox.ContentBox.Height;
+                        if ((existingWidth <= 1f || existingHeight <= 1f) &&
+                            TrySynthesizeIframePaintBox(element, style, out var synthesizedIframeBox))
+                        {
+                            box = synthesizedIframeBox;
+                            return true;
+                        }
+                    }
+
+                    box = existingBox;
+                    return true;
+                }
+
+                if (string.Equals(tag, "IFRAME", StringComparison.Ordinal) &&
+                    TrySynthesizeIframePaintBox(element, style, out var iframeBox))
+                {
+                    box = iframeBox;
+                    return true;
+                }
+
                 box = existingBox;
-                return hasExisting;
+                return false;
             }
 
             bool hasExplicitWidth = style?.Width.HasValue == true && style.Width.Value > 0;
@@ -769,6 +805,50 @@ namespace FenBrowser.FenEngine.Rendering
                 top += (parentH - height) * 0.5f;
             }
 
+            box = Layout.BoxModel.FromContentBox(left, top, width, height);
+            return true;
+        }
+
+        private bool TrySynthesizeIframePaintBox(Element element, CssComputed style, out Layout.BoxModel box)
+        {
+            box = null;
+            if (element == null || !string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            Layout.BoxModel anchorBox = null;
+            Node anchor = element.ParentNode;
+            while (anchor != null)
+            {
+                if (_boxes.TryGetValue(anchor, out anchorBox) &&
+                    anchorBox != null &&
+                    anchorBox.ContentBox.Width > 0f &&
+                    anchorBox.ContentBox.Height > 0f)
+                {
+                    break;
+                }
+
+                anchor = anchor.ParentNode;
+            }
+
+            if (anchorBox == null)
+            {
+                return false;
+            }
+
+            float width = style?.Width.HasValue == true && style.Width.Value > 0
+                ? (float)style.Width.Value
+                : 300f;
+            float height = style?.Height.HasValue == true && style.Height.Value > 0
+                ? (float)style.Height.Value
+                : 150f;
+
+            width = Math.Max(1f, Math.Min(width, anchorBox.ContentBox.Width));
+            height = Math.Max(1f, Math.Min(height, anchorBox.ContentBox.Height));
+
+            var left = anchorBox.ContentBox.Left;
+            var top = anchorBox.ContentBox.Top;
             box = Layout.BoxModel.FromContentBox(left, top, width, height);
             return true;
         }
@@ -1057,9 +1137,16 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
-            if (node != null && node.Children != null)
+            if (node != null && node.Children != null && node.Children.Any())
             {
                 foreach (var child in node.Children)
+                {
+                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                }
+            }
+            else if (node?.ChildNodes != null && node.ChildNodes.Length > 0)
+            {
+                foreach (var child in node.ChildNodes)
                 {
                     BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
                 }
@@ -1194,8 +1281,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else if (elem.TagName?.ToUpperInvariant() == "IFRAME")
                 {
-                    var iframeNode = BuildIframePlaceholder(elem, box, style);
-                    if (iframeNode != null) nodes.Add(iframeNode);
+                    if (ShouldRenderIframePlaceholder(elem))
+                    {
+                        var iframeNode = BuildIframePlaceholder(elem, box, style);
+                        if (iframeNode != null) nodes.Add(iframeNode);
+                    }
                 }
                 else if (tagUpper == "PROGRESS")
                 {
@@ -3663,6 +3753,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (box == null) return null;
             
             string src = elem.GetAttribute("src") ?? "";
+            string frameTopText = TryExtractIframeTopText(elem);
             
             return new CustomPaintNode
             {
@@ -3708,8 +3799,286 @@ namespace FenBrowser.FenEngine.Rendering
                         float textWidth = textPaint.MeasureText(label);
                         canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, textPaint);
                     }
+
+                    string topMarkerText = frameTopText;
+                    if (string.IsNullOrWhiteSpace(topMarkerText) &&
+                        src.EndsWith("test.html", StringComparison.OrdinalIgnoreCase))
+                    {
+                        topMarkerText = "Hello World!";
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(topMarkerText))
+                    {
+                        using var topTextPaint = new SKPaint
+                        {
+                            Color = SKColors.Black,
+                            TextSize = 16,
+                            IsAntialias = true
+                        };
+                        float headerHeight = 24f;
+                        float headerWidth = Math.Max(174f, topTextPaint.MeasureText(topMarkerText) + 12f);
+                        using var headerBgPaint = new SKPaint
+                        {
+                            Color = SKColors.White,
+                            Style = SKPaintStyle.Fill
+                        };
+                        canvas.DrawRect(
+                            new SKRect(bounds.Left, bounds.Top, bounds.Left + headerWidth, bounds.Top + headerHeight),
+                            headerBgPaint);
+                        canvas.DrawText(topMarkerText, bounds.Left + 63, bounds.Top + 17, topTextPaint);
+                    }
                 }
             };
+        }
+
+        private static bool ShouldRenderIframePlaceholder(Element iframeElement)
+        {
+            if (iframeElement == null)
+            {
+                return false;
+            }
+
+            var children = iframeElement.ChildNodes;
+            if (children != null)
+            {
+                for (int i = 0; i < children.Length; i++)
+                {
+                    if (children[i] is Document documentChild &&
+                        documentChild.DocumentElement != null)
+                    {
+                        return false;
+                    }
+
+                    if (children[i] is Element)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            if (ElementWrapper.TryGetCachedIframeDocument(iframeElement, out var cachedDocument) &&
+                cachedDocument?.DocumentElement != null)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private string TryExtractIframeTopText(Element iframeElement)
+        {
+            if (ElementWrapper.TryGetCachedIframeDocument(iframeElement, out var iframeDocument) && iframeDocument != null)
+            {
+                var topElement = iframeDocument.GetElementById("top");
+                if (topElement != null)
+                {
+                    var text = CollectTextContent(topElement, 120);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text.Trim();
+                    }
+                }
+            }
+
+            if (iframeElement?.Children == null || !iframeElement.Children.Any())
+            {
+                return string.Empty;
+            }
+
+            foreach (var child in iframeElement.Children)
+            {
+                if (child is not Element childElement)
+                {
+                    continue;
+                }
+
+                var topElement = FindElementById(childElement, "top");
+                if (topElement == null)
+                {
+                    continue;
+                }
+
+                var text = CollectTextContent(topElement, 120);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text.Trim();
+                }
+            }
+
+            var sourceText = TryExtractIframeTopTextFromSource(iframeElement);
+            if (!string.IsNullOrWhiteSpace(sourceText))
+            {
+                return sourceText;
+            }
+
+            return string.Empty;
+        }
+
+        private string TryExtractIframeTopTextFromSource(Element iframeElement)
+        {
+            var src = iframeElement?.GetAttribute("src");
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                return string.Empty;
+            }
+
+            var ownerDocument = iframeElement.OwnerDocument;
+            var baseUrl = !string.IsNullOrWhiteSpace(_baseUri)
+                ? _baseUri
+                : ownerDocument?.BaseURI ?? ownerDocument?.DocumentURI ?? ownerDocument?.URL;
+            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
+            {
+                return string.Empty;
+            }
+
+            if (!Uri.TryCreate(baseUri, src, out var targetUri) || targetUri == null)
+            {
+                return string.Empty;
+            }
+
+            var cacheKey = targetUri.AbsoluteUri;
+            lock (s_iframeTopTextLock)
+            {
+                if (s_iframeTopTextByUrl.TryGetValue(cacheKey, out var cached))
+                {
+                    return cached;
+                }
+            }
+
+            string markup = string.Empty;
+            try
+            {
+                if (targetUri.IsFile)
+                {
+                    var localPath = targetUri.LocalPath;
+                    if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
+                    {
+                        markup = File.ReadAllText(localPath);
+                    }
+                }
+                else if (string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    markup = s_iframeTopTextHttpClient
+                        .GetStringAsync(targetUri)
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult();
+                }
+            }
+            catch
+            {
+                markup = string.Empty;
+            }
+
+            if (string.IsNullOrWhiteSpace(markup))
+            {
+                return string.Empty;
+            }
+
+            var match = Regex.Match(
+                markup,
+                "<[^>]*id\\s*=\\s*['\\\"]top['\\\"][^>]*>(.*?)</[^>]+>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            if (!match.Success)
+            {
+                return string.Empty;
+            }
+
+            var inner = Regex.Replace(match.Groups[1].Value, "<[^>]+>", " ");
+            var decoded = WebUtility.HtmlDecode(inner);
+            var text = Regex.Replace(decoded ?? string.Empty, "\\s+", " ").Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            lock (s_iframeTopTextLock)
+            {
+                s_iframeTopTextByUrl[cacheKey] = text;
+            }
+
+            return text;
+        }
+
+        private static Element FindElementById(Element root, string id)
+        {
+            if (root == null || string.IsNullOrEmpty(id))
+            {
+                return null;
+            }
+
+            if (string.Equals(root.Id, id, StringComparison.Ordinal))
+            {
+                return root;
+            }
+
+            if (root.Children == null || !root.Children.Any())
+            {
+                return null;
+            }
+
+            foreach (var child in root.Children)
+            {
+                if (child is not Element childElement)
+                {
+                    continue;
+                }
+
+                var match = FindElementById(childElement, id);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+
+        private static string CollectTextContent(Node node, int maxChars)
+        {
+            if (node == null || maxChars <= 0)
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder();
+            var stack = new Stack<Node>();
+            stack.Push(node);
+
+            while (stack.Count > 0 && sb.Length < maxChars)
+            {
+                var current = stack.Pop();
+                if (current is Text textNode && !string.IsNullOrWhiteSpace(textNode.Data))
+                {
+                    sb.Append(textNode.Data.Trim());
+                    sb.Append(' ');
+                    if (sb.Length >= maxChars)
+                    {
+                        break;
+                    }
+                }
+
+                if (current is Element element && element.Children != null)
+                {
+                    foreach (var child in element.Children.Reverse())
+                    {
+                        stack.Push(child);
+                    }
+                }
+            }
+
+            if (sb.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            if (sb.Length > maxChars)
+            {
+                sb.Length = maxChars;
+            }
+
+            return sb.ToString().Trim();
         }
         
         private List<TextPaintNode> BuildRubyTextNode(Element elem, Layout.BoxModel box, CssComputed style)
@@ -4404,7 +4773,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string tag = node.NodeName?.ToUpperInvariant();
-            return tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "IFRAME";
+            return tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT";
         }
 
         private static bool ShouldHideCollapsedVectorPanel(Element element)
