@@ -363,6 +363,44 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(150, childPositions[child1].Width, 1);
             Assert.Equal(250, childPositions[child2].Width, 1);
         }
+
+        [Fact]
+        public void Arrange_FlexShrink_WeightedDistribution()
+        {
+            // Container: 250px, item1 basis 200 shrink:1, item2 basis 100 shrink:2
+            // Overflow: 50px. Weighted factors: 200 and 200 -> each shrinks by 25px.
+            // Expected sizes: 175px and 75px.
+
+            var container = MockElement();
+            var child1 = MockElement();
+            var child2 = MockElement();
+            container.AppendChild(child1);
+            container.AppendChild(child2);
+
+            var childPositions = new Dictionary<Node, SKRect>();
+
+            var containerStyle = MockStyle("flex", "row", "nowrap", 250, 100);
+            var child1Style = new CssComputed { Width = 200, Height = 50, FlexShrink = 1 };
+            var child2Style = new CssComputed { Width = 100, Height = 50, FlexShrink = 2 };
+
+            CssFlexLayout.Arrange(
+                container,
+                new SKRect(0, 0, 250, 100),
+                (node, rect, depth) => childPositions[node] = rect,
+                (n) =>
+                {
+                    if (n == container) return containerStyle;
+                    if (n == child1) return child1Style;
+                    return child2Style;
+                },
+                (n) => n == child1 ? new SKSize(200, 50) : new SKSize(100, 50),
+                (n, s) => false,
+                0);
+
+            Assert.Equal(175, childPositions[child1].Width, 1);
+            Assert.Equal(75, childPositions[child2].Width, 1);
+            Assert.Equal(175, childPositions[child2].Left, 1);
+        }
         
         [Fact]
         public void Arrange_Gap_AddsSpacing()
