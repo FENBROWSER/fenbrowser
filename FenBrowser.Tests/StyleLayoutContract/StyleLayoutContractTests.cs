@@ -3,6 +3,7 @@ using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
@@ -431,6 +432,83 @@ div { color: black; }
             Assert.Null(layoutComputer.GetBox(hiddenChild));
             Assert.Null(layoutComputer.GetBox(hiddenLeaf));
             Assert.NotNull(layoutComputer.GetBox(visibleRoot));
+        }
+
+        [Fact]
+        public async Task Test15_PaintOrderFollowsStackingBuckets()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<body>
+  <div id='neg' style='position:relative;z-index:-1;width:30px;height:20px;background:#ff0000'></div>
+  <div id='block' style='width:30px;height:20px;background:#00ff00'></div>
+  <div id='auto' style='position:relative;width:30px;height:20px;background:#0000ff'></div>
+  <div id='z1' style='position:relative;z-index:1;width:30px;height:20px;background:#ffff00'></div>
+  <div id='z2' style='position:relative;z-index:2;width:30px;height:20px;background:#000'></div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var tree = NewPaintTreeBuilder.Build(
+                root,
+                layoutComputer.GetAllBoxes().ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+                computed,
+                800,
+                600,
+                null);
+
+            var nodes = FlattenPaintNodes(tree.Roots);
+            var neg = doc.GetElementById("neg");
+            var block = doc.GetElementById("block");
+            var auto = doc.GetElementById("auto");
+            var z1 = doc.GetElementById("z1");
+            var z2 = doc.GetElementById("z2");
+
+            int negIndex = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, neg));
+            int blockIndex = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, block));
+            int autoIndex = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, auto));
+            int z1Index = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, z1));
+            int z2Index = nodes.FindIndex(n => n is BackgroundPaintNode bg && ReferenceEquals(bg.SourceNode, z2));
+
+            Assert.True(negIndex >= 0, "Expected negative z-index layer to paint.");
+            Assert.True(blockIndex >= 0, "Expected normal-flow block to paint.");
+            Assert.True(autoIndex >= 0, "Expected positioned auto-z layer to paint.");
+            Assert.True(z1Index >= 0, "Expected positive z-index (1) layer to paint.");
+            Assert.True(z2Index >= 0, "Expected positive z-index (2) layer to paint.");
+
+            Assert.True(negIndex < blockIndex, $"Negative z-index should paint before normal flow. neg={negIndex}, block={blockIndex}");
+            Assert.True(blockIndex < autoIndex, $"Normal flow should paint before positioned auto-z. block={blockIndex}, auto={autoIndex}");
+            Assert.True(autoIndex < z1Index, $"Positioned auto-z should paint before positive z-index contexts. auto={autoIndex}, z1={z1Index}");
+            Assert.True(z1Index < z2Index, $"Positive z-index contexts should paint in ascending z-index order. z1={z1Index}, z2={z2Index}");
+        }
+
+        private static List<PaintNodeBase> FlattenPaintNodes(IEnumerable<PaintNodeBase> nodes)
+        {
+            var list = new List<PaintNodeBase>();
+            if (nodes == null)
+            {
+                return list;
+            }
+
+            foreach (var node in nodes)
+            {
+                list.Add(node);
+                if (node.Children != null)
+                {
+                    list.AddRange(FlattenPaintNodes(node.Children));
+                }
+            }
+
+            return list;
         }
     }
 }
