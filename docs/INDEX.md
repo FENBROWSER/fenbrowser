@@ -2,6 +2,8 @@
 
 **The complete technical documentation for the FenBrowser Project.**
 
+### [Code Cleanup Rules](rules/code_cleanup.md)
+
 ## I. The Core Volumes
 
 ### [Volume I: System Manifest & Architecture](VOLUME_I_SYSTEM_MANIFEST.md)

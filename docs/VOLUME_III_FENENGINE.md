@@ -5052,6 +5052,24 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
     - `plainCalls=2`
     - `aborted=True`
 
+### 2.137.1 Global AbortSignal Runtime Surface (2026-05-02)
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Added a real global `AbortSignal` constructor object instead of leaving the runtime with only `AbortController` plus an iframe-local `contentWindow.AbortSignal.timeout(...)` shim.
+  - `AbortSignal` now exposes spec-shaped static helpers `abort(reason)`, `timeout(ms)`, and `any(iterable)`.
+  - `AbortController.signal` now uses shared `AbortSignal` instances whose prototype inherits the runtime `EventTarget` surface, so `signal instanceof AbortSignal` works and abort listeners flow through the same generic event-target path.
+  - `AbortSignal.prototype.throwIfAborted()` now throws the stored JavaScript reason value rather than collapsing everything to a host-only type error.
+- `FenBrowser.FenEngine/DOM/ElementWrapper.cs`
+  - The synthesized iframe `contentWindow.AbortSignal` surface now matches the constructor-shaped runtime contract more closely instead of exposing a timeout-only plain object.
+  - Iframe-local signals now support `AbortSignal.abort(...)`, `AbortSignal.timeout(...)`, `AbortSignal.any(...)`, `signal instanceof frame.contentWindow.AbortSignal`, and `throwIfAborted()` with preserved thrown reason values.
+- `FenBrowser.Tests/DOM/InputEventTests.cs`
+  - Added `AbortSignal_GlobalSurface_ExposesStaticHelpersAndInstanceSemantics`.
+  - Added `AbortSignal_Any_UsesFirstAbortedSourceReason`.
+- `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs`
+  - Added `SetDomAsync_IframeContentWindow_AbortSignalSurface_MatchesConstructorShape`.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~InputEventTests" -v minimal` passed on `2026-05-02` with `16/16` tests green.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~SetDomAsync_IframeContentWindow_AbortSignalSurface_MatchesConstructorShape" -v minimal` passed on `2026-05-02` with `1/1` tests green.
+
 ## 2.138 History Stack And `popstate` Hardening For Same-Document Navigation (2026-03-20)
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`
   - Replaced stale `history.length` / `history.state` data properties with live accessors backed by either the host history bridge or a runtime-owned fallback history stack.
