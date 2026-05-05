@@ -245,6 +245,38 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal("https://example.test/hero-1280.png", selected);
         }
 
+        [Fact]
+        public void Selector_PictureMultipleMatchingSources_UsesFirstMatch()
+        {
+            var picture = new Element("picture");
+
+            var first = new Element("source");
+            first.SetAttribute("media", "(min-width:0px)");
+            first.SetAttribute("srcset", "https://example.test/first.png 1x");
+
+            var second = new Element("source");
+            second.SetAttribute("media", "(min-width:0px)");
+            second.SetAttribute("srcset", "https://example.test/second.png 1x");
+
+            var image = new Element("img");
+            image.SetAttribute("src", "https://example.test/fallback.png");
+
+            picture.AppendChild(first);
+            picture.AppendChild(second);
+            picture.AppendChild(image);
+
+            var selectorType = typeof(SkiaDomRenderer).Assembly.GetType("FenBrowser.FenEngine.Rendering.ResponsiveImageSourceSelector");
+            Assert.NotNull(selectorType);
+
+            var method = selectorType!.GetMethod(
+                "PickCurrentImageSource",
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            var selected = method!.Invoke(null, new object[] { image, 900d, 600d, 1d }) as string;
+            Assert.Equal("https://example.test/first.png", selected);
+        }
+
         private static MemoryStream CreatePngStream(int width, int height, SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(width, height));
