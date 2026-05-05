@@ -379,5 +379,64 @@ namespace FenBrowser.Tests.Layout
              Assert.True(boxes[spanCell].BorderBox.Height >= 120f,
                  $"Rowspan cell should honor explicit height budget. actual={boxes[spanCell].BorderBox.Height}");
         }
+
+        [Fact]
+        public void TableLayout_TableSections_KeepHeaderRowsBeforeBodyRows()
+        {
+             var html = "<table><thead><tr><td id='head'>H</td></tr></thead><tbody><tr><td id='body'>B</td></tr></tbody></table>";
+             var parser = new HtmlParser(html);
+             var doc = parser.Parse();
+
+             var bodyRoot = new Element("BODY");
+             var nodes = doc.Children.ToList();
+             doc.RemoveAllChildren();
+             doc.AppendChild(bodyRoot);
+             foreach (var node in nodes) bodyRoot.AppendChild(node);
+
+             var table = FindFirstElementByTag(bodyRoot, "TABLE");
+             Assert.NotNull(table);
+
+             var headCell = FindElementById(table, "head");
+             var bodyCell = FindElementById(table, "body");
+             Assert.NotNull(headCell);
+             Assert.NotNull(bodyCell);
+
+             var styles = new Dictionary<Node, CssComputed>();
+             void ApplyStyles(Node node)
+             {
+                 var style = new CssComputed();
+                 if (node is Element e)
+                 {
+                     if (TagEquals(e, "BODY")) style.Display = "block";
+                     else if (TagEquals(e, "TABLE")) style.Display = "table";
+                     else if (TagEquals(e, "THEAD")) style.Display = "table-header-group";
+                     else if (TagEquals(e, "TBODY")) style.Display = "table-row-group";
+                     else if (TagEquals(e, "TR")) style.Display = "table-row";
+                     else if (TagEquals(e, "TD")) style.Display = "table-cell";
+                     else style.Display = "block";
+                 }
+                 styles[node] = style;
+                 if (node.ChildNodes != null)
+                 {
+                     foreach (var child in node.ChildNodes) ApplyStyles(child);
+                 }
+             }
+             ApplyStyles(bodyRoot);
+
+             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             layout.Measure(bodyRoot, new SKSize(800, 600));
+             layout.Arrange(bodyRoot, new SKRect(0, 0, 800, 600));
+
+             var boxes = layout.GetAllBoxes().ToDictionary(k => k.Key, v => v.Value);
+             Assert.True(boxes.ContainsKey(headCell));
+             Assert.True(boxes.ContainsKey(bodyCell));
+
+             var headerTop = boxes[headCell].BorderBox.Top;
+             var bodyTop = boxes[bodyCell].BorderBox.Top;
+
+             Assert.True(
+                 headerTop < bodyTop,
+                 $"Expected header row to appear before body row. headerTop={headerTop}, bodyTop={bodyTop}");
+        }
     }
 }
