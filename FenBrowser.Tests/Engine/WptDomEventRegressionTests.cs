@@ -38,6 +38,15 @@ public class WptDomEventRegressionTests
                 return outerHit === false;
             })();
         "));
+
+        Assert.Equal(true, engine.Evaluate(@"
+            (function () {
+                var inner = document.getElementById('inner');
+                inner.addEventListener('cancel-check', function (e) { e.preventDefault(); }, false);
+                var ev = new Event('cancel-check', { bubbles: true, cancelable: true });
+                return inner.dispatchEvent(ev) === false;
+            })();
+        "));
     }
 
     [Fact]
