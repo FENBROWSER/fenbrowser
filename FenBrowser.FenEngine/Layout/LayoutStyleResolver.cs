@@ -32,6 +32,24 @@ namespace FenBrowser.FenEngine.Layout
                 style.Position = mappedPosition;
             }
 
+            if (string.IsNullOrWhiteSpace(style.FlexDirection) && style.Map.TryGetValue("flex-direction", out var mapFlexDir))
+                style.FlexDirection = mapFlexDir;
+            if (string.IsNullOrWhiteSpace(style.FlexWrap) && style.Map.TryGetValue("flex-wrap", out var mapFlexWrap))
+                style.FlexWrap = mapFlexWrap;
+            if (string.IsNullOrWhiteSpace(style.JustifyContent) && style.Map.TryGetValue("justify-content", out var mapJustify))
+                style.JustifyContent = mapJustify;
+            if (string.IsNullOrWhiteSpace(style.AlignItems) && style.Map.TryGetValue("align-items", out var mapAlign))
+                style.AlignItems = mapAlign;
+            if (string.IsNullOrWhiteSpace(style.AlignContent) && style.Map.TryGetValue("align-content", out var mapAlignContent))
+                style.AlignContent = mapAlignContent;
+
+            if (style.Overflow == null && style.Map.TryGetValue("overflow", out var mapOverflow))
+                style.Overflow = mapOverflow;
+            if (style.OverflowX == null && style.Map.TryGetValue("overflow-x", out var mapOverflowX))
+                style.OverflowX = mapOverflowX;
+            if (style.OverflowY == null && style.Map.TryGetValue("overflow-y", out var mapOverflowY))
+                style.OverflowY = mapOverflowY;
+
             SyncInset(style.Map, "left", style.Left, style.LeftPercent, value => style.Left = value, value => style.LeftPercent = value);
             SyncInset(style.Map, "top", style.Top, style.TopPercent, value => style.Top = value, value => style.TopPercent = value);
             SyncInset(style.Map, "right", style.Right, style.RightPercent, value => style.Right = value, value => style.RightPercent = value);

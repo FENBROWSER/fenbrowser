@@ -190,10 +190,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                         bool isEditable = tagLow == "input" || tagLow == "textarea";
 
                         string imageSrc = tagLow == "img" ? element.GetAttribute("src") : null;
+                        var resolvedCursor = ResolveCursor(element, tagLow, href, isClickable, isEditable);
                         result = new global::FenBrowser.FenEngine.Interaction.HitTestResult(
                             TagName: tagLow ?? "",
                             Href: href,
-                            Cursor: !string.IsNullOrEmpty(href) ? global::FenBrowser.FenEngine.Interaction.CursorType.Pointer : (isEditable ? global::FenBrowser.FenEngine.Interaction.CursorType.Text : global::FenBrowser.FenEngine.Interaction.CursorType.Default),
+                            Cursor: resolvedCursor,
                             IsClickable: isClickable,
                             IsFocusable: isFocusable,
                             IsEditable: isEditable,
@@ -209,6 +210,105 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             return false;
         }
         
+        /// <summary>
+        /// Resolve the cursor type for a hit element by checking the CSS 'cursor' property
+        /// on the element and its ancestors, then applying CSS UI Module spec defaults for 'auto'.
+        /// </summary>
+        private static global::FenBrowser.FenEngine.Interaction.CursorType ResolveCursor(
+            Element element, string tagLow, string href, bool isClickable, bool isEditable)
+        {
+            // 1. Walk up ancestors to find an explicit CSS cursor declaration
+            var current = element;
+            string cssCursor = null;
+            while (current != null)
+            {
+                var style = current.GetComputedStyle();
+                if (style != null && !string.IsNullOrEmpty(style.Cursor))
+                {
+                    var val = style.Cursor.Trim().ToLowerInvariant();
+                    if (val != "auto" && val != "inherit")
+                    {
+                        cssCursor = val;
+                        break;
+                    }
+                }
+                current = current.ParentElement;
+            }
+
+            // 2. If an explicit CSS cursor is set (not auto), use it
+            if (!string.IsNullOrEmpty(cssCursor))
+            {
+                return MapCssCursorToType(cssCursor);
+            }
+
+            // 3. CSS cursor: auto (default) — apply spec heuristics
+            //    Per CSS UI Module Level 3 §7.1:
+            //    - Links (href) → pointer
+            //    - Editable elements (input, textarea, contenteditable) → text
+            //    - Buttons, labels, select → pointer (clickable affordance)
+            //    - Everything else → default
+            if (!string.IsNullOrEmpty(href))
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+
+            if (isEditable)
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Text;
+
+            // contenteditable check
+            if (element.GetAttribute("contenteditable") == "true")
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Text;
+
+            // Clickable elements (button, label, select) → pointer
+            if (tagLow == "button" || tagLow == "select" || tagLow == "label" ||
+                tagLow == "summary" || tagLow == "details")
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+
+            // Elements with onclick/role=button/tabindex should show pointer
+            if (!string.IsNullOrEmpty(element.GetAttribute("onclick")) ||
+                element.GetAttribute("role") == "button" ||
+                element.GetAttribute("role") == "link")
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+
+            return global::FenBrowser.FenEngine.Interaction.CursorType.Default;
+        }
+
+        /// <summary>
+        /// Map a CSS cursor keyword to the engine's CursorType enum.
+        /// Reference: CSS UI Module Level 3 §7.1.1
+        /// </summary>
+        private static global::FenBrowser.FenEngine.Interaction.CursorType MapCssCursorToType(string cssCursor)
+        {
+            return cssCursor switch
+            {
+                "default" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                "pointer" => global::FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                "text" => global::FenBrowser.FenEngine.Interaction.CursorType.Text,
+                "wait" => global::FenBrowser.FenEngine.Interaction.CursorType.Wait,
+                "progress" => global::FenBrowser.FenEngine.Interaction.CursorType.Wait,
+                "not-allowed" => global::FenBrowser.FenEngine.Interaction.CursorType.NotAllowed,
+                "no-drop" => global::FenBrowser.FenEngine.Interaction.CursorType.NotAllowed,
+                "move" => global::FenBrowser.FenEngine.Interaction.CursorType.Move,
+                "all-scroll" => global::FenBrowser.FenEngine.Interaction.CursorType.Move,
+                "crosshair" => global::FenBrowser.FenEngine.Interaction.CursorType.Crosshair,
+                "grab" => global::FenBrowser.FenEngine.Interaction.CursorType.Grab,
+                "grabbing" => global::FenBrowser.FenEngine.Interaction.CursorType.Grabbing,
+                "n-resize" or "s-resize" or "ns-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeNS,
+                "e-resize" or "w-resize" or "ew-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeEW,
+                "ne-resize" or "sw-resize" or "nesw-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeNESW,
+                "nw-resize" or "se-resize" or "nwse-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeNWSE,
+                "col-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeEW,
+                "row-resize" => global::FenBrowser.FenEngine.Interaction.CursorType.ResizeNS,
+                "help" => global::FenBrowser.FenEngine.Interaction.CursorType.Default, // No help cursor in Silk.NET
+                "context-menu" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                "cell" => global::FenBrowser.FenEngine.Interaction.CursorType.Crosshair,
+                "vertical-text" => global::FenBrowser.FenEngine.Interaction.CursorType.Text,
+                "alias" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                "copy" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                "none" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                "zoom-in" or "zoom-out" => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+                _ => global::FenBrowser.FenEngine.Interaction.CursorType.Default,
+            };
+        }
+
         private static Element FindInteractiveAncestor(Element element)
         {
             var current = element;

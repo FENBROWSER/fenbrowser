@@ -4,6 +4,7 @@ using System.Linq;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Layout.Tree
 {
@@ -207,7 +208,37 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (element != null)
             {
                 string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
-                if (tag == "OBJECT" || tag == "IFRAME")
+                if (tag == "IFRAME")
+                {
+                    // Prefer the nested browsing-context document when available.
+                    var frameDocs = element.ChildNodes.OfType<Document>().Cast<Node>().ToList();
+                    if (frameDocs.Count > 0)
+                    {
+                        return frameDocs;
+                    }
+
+                    // Fallback: include element children (e.g. WebDriver-attached frame roots).
+                    var frameElements = element.ChildNodes.OfType<Element>().Cast<Node>().ToList();
+                    if (frameElements.Count > 0)
+                    {
+                        return frameElements;
+                    }
+
+                    // Last fallback: if the JS layer has a cached frame document not yet attached,
+                    // traverse its document element so layout/paint can represent frame content.
+                    if (ElementWrapper.TryGetCachedIframeDocument(element, out var iframeDocument))
+                    {
+                        var root = iframeDocument?.DocumentElement;
+                        if (root != null)
+                        {
+                            return new Node[] { root };
+                        }
+                    }
+
+                    return Array.Empty<Node>();
+                }
+
+                if (tag == "OBJECT")
                 {
                     // Preserve structural fallback descendants (nested elements) so
                     // selector/layout behavior can target them, while skipping raw

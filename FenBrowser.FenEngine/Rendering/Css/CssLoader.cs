@@ -3093,6 +3093,7 @@ private static double? ExtractPx(string text, string prop)
                     
                     // CRITICAL FIX: Attach style directly to node to avoid dictionary key mismatch
                     // This ensures layout can find styles even if DOM node instances differ
+                    FenBrowser.FenEngine.Layout.LayoutStyleResolver.NormalizeForLayout(css);
                     n.ComputedStyle = css;
                 }
                 catch (Exception resolveEx)
