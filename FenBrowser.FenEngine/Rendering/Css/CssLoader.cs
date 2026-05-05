@@ -4794,6 +4794,18 @@ private static double? ExtractPx(string text, string prop)
                  }
             }
 
+            if (parentCss != null)
+            {
+                foreach (var inheritedProperty in CssComputed.InheritedProperties)
+                {
+                    if (!css.Map.ContainsKey(inheritedProperty) &&
+                        parentCss.Map.TryGetValue(inheritedProperty, out var inheritedValue))
+                    {
+                        css.Map[inheritedProperty] = inheritedValue;
+                    }
+                }
+            }
+
             return css;
         }
 

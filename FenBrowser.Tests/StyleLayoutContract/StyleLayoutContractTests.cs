@@ -200,16 +200,16 @@ div { color: black; }
             var doc = parser.Parse();
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var parent = doc.GetElementById("parent");
             var child = doc.GetElementById("child");
 
-            // BUG: Map does not contain inherited properties! 
-            computed[child].Map.TryGetValue("color", out var childColorMap);
-            Assert.Null(childColorMap);
-            
-            // Wait, does CssComputed.Color exist? FenBrowser might not expose Color easily on CssComputed.
-            // But we can check FontSize.
-            computed[child].Map.TryGetValue("font-size", out var childFontSizeMap);
-            Assert.Null(childFontSizeMap);
+            Assert.True(computed[parent].Map.TryGetValue("color", out var parentColor));
+            Assert.True(computed[child].Map.TryGetValue("color", out var childColor));
+            Assert.Equal(parentColor, childColor);
+
+            Assert.True(computed[parent].Map.TryGetValue("font-size", out var parentFontSize));
+            Assert.True(computed[child].Map.TryGetValue("font-size", out var childFontSize));
+            Assert.Equal(parentFontSize, childFontSize);
         }
 
         [Fact]
