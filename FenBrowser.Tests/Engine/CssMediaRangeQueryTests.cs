@@ -54,6 +54,25 @@ namespace FenBrowser.Tests.Engine
             Assert.True(EvaluateMediaQuery("@media (max-width: 833px)", 720));
         }
 
+        [Fact]
+        public void MediaQuery_CommaSeparatedQueries_WorkAsOr()
+        {
+            const string query = "(max-width: 600px), (min-width: 1000px)";
+
+            Assert.True(EvaluateMediaQuery(query, 1200));
+            Assert.True(EvaluateMediaQuery(query, 500));
+            Assert.False(EvaluateMediaQuery(query, 800));
+        }
+
+        [Fact]
+        public void MediaQuery_NotOperator_NegatesCondition()
+        {
+            const string query = "not (max-width: 833px)";
+
+            Assert.True(EvaluateMediaQuery(query, 1920));
+            Assert.False(EvaluateMediaQuery(query, 720));
+        }
+
         private static bool EvaluateMediaQuery(string query, double viewportWidth)
         {
             var method = typeof(CssLoader).GetMethod("EvaluateMediaQuery", BindingFlags.NonPublic | BindingFlags.Static);
