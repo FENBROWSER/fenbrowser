@@ -55,6 +55,14 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Symbol_KeyFor_NonGlobalSymbol_ReturnsUndefined()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple("var s = Symbol('local'); var k = Symbol.keyFor(s); var t = typeof k;");
+            Assert.Equal("undefined", rt.GetGlobal("t").ToString());
+        }
+
+        [Fact]
         public void Symbol_WellKnown_IteratorExists()
         {
             var rt = CreateRuntime();
