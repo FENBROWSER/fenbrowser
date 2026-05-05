@@ -364,5 +364,36 @@ div { color: black; }
             Assert.Null(layoutComputer.GetBox(link));
             Assert.NotNull(layoutComputer.GetBox(visible));
         }
+
+        [Fact]
+        public async Task Test13_BlockFlowSiblingsStackVertically()
+        {
+            string html = @"
+<!doctype html>
+<html>
+<body>
+  <div id='first' style='height:40px'>A</div>
+  <div id='second' style='height:30px'>B</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var first = doc.GetElementById("first");
+            var second = doc.GetElementById("second");
+            var firstBox = layoutComputer.GetBox(first);
+            var secondBox = layoutComputer.GetBox(second);
+
+            Assert.NotNull(firstBox);
+            Assert.NotNull(secondBox);
+            Assert.InRange(secondBox.ContentBox.Top - firstBox.ContentBox.Bottom, -0.001f, 0.001f);
+        }
     }
 }
