@@ -39,12 +39,19 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(type) || callback == null)
                 return;
 
+            bool added;
+
             lock (_listenerLock)
             {
                 _listeners ??= new EventListenerStorage();
-                _listeners.Add(type, callback, options);
+
+                added = _listeners.Add(type, callback, options);
+                if (!added && _listeners.IsEmpty)
+                    _listeners = null;
             }
-            OnEventListenersChanged();
+
+            if (added)
+                OnEventListenersChanged();
         }
 
         /// <summary>
@@ -57,17 +64,21 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(type) || callback == null)
                 return;
 
+            bool removed = false;
+
             lock (_listenerLock)
             {
                 if (_listeners == null)
                     return;
 
-                _listeners.Remove(type, callback, capture);
+                removed = _listeners.Remove(type, callback, capture);
 
                 if (_listeners.IsEmpty)
                     _listeners = null;
             }
-            OnEventListenersChanged();
+
+            if (removed)
+                OnEventListenersChanged();
         }
 
         /// <summary>
@@ -155,8 +166,11 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool IsEmpty => _totalCount == 0;
 
-        public void Add(string type, EventListener callback, AddEventListenerOptions options)
+        public bool Add(string type, EventListener callback, AddEventListenerOptions options)
         {
+            if (options.Signal != null && options.Signal.Aborted)
+                return false;
+
             _listeners ??= new Dictionary<string, List<EventListenerEntry>>(StringComparer.Ordinal);
 
             if (!_listeners.TryGetValue(type, out var list))
@@ -169,7 +183,7 @@ namespace FenBrowser.Core.Dom.V2
             foreach (var entry in list)
             {
                 if (ReferenceEquals(entry.Callback, callback) && entry.Capture == options.Capture)
-                    return; // Already registered, per spec
+                    return false; // Already registered, per spec
             }
 
             var newEntry = new EventListenerEntry
@@ -182,25 +196,31 @@ namespace FenBrowser.Core.Dom.V2
             };
 
             // Register abort signal listener if provided
-            if (options.Signal != null && !options.Signal.Aborted)
+            if (options.Signal != null)
             {
-                options.Signal.OnAbort += () => Remove(type, callback, options.Capture);
+                Action abortHandler = () => Remove(type, callback, options.Capture);
+                newEntry.AbortHandler = abortHandler;
+                options.Signal.OnAbort += abortHandler;
             }
 
             list.Add(newEntry);
             _totalCount++;
+            return true;
         }
 
-        public void Remove(string type, EventListener callback, bool capture)
+        public bool Remove(string type, EventListener callback, bool capture)
         {
             if (_listeners == null || !_listeners.TryGetValue(type, out var list))
-                return;
+                return false;
 
             for (int i = list.Count - 1; i >= 0; i--)
             {
                 var entry = list[i];
                 if (ReferenceEquals(entry.Callback, callback) && entry.Capture == capture)
                 {
+                    if (entry.Signal != null && entry.AbortHandler != null)
+                        entry.Signal.OnAbort -= entry.AbortHandler;
+
                     // Mark as removed for iteration safety, then remove
                     entry.Removed = true;
                     list.RemoveAt(i);
@@ -208,9 +228,11 @@ namespace FenBrowser.Core.Dom.V2
 
                     if (list.Count == 0)
                         _listeners.Remove(type);
-                    return;
+                    return true;
                 }
             }
+
+            return false;
         }
 
         /// <summary>
@@ -243,6 +265,7 @@ namespace FenBrowser.Core.Dom.V2
         public bool Once;
         public bool Passive;
         public AbortSignal Signal;
+        public Action AbortHandler;
         public volatile bool Removed; // Volatile for thread visibility
     }
 
@@ -645,9 +668,9 @@ namespace FenBrowser.Core.Dom.V2
                     evt.InPassiveListenerFlag = wasInPassive;
                 }
 
-                // Handle once option
+                // Handle once option by removing the registered listener entry.
                 if (listener.Once)
-                    listener.Removed = true;
+                    target.RemoveEventListener(evt.Type, listener.Callback, listener.Capture);
             }
         }
 

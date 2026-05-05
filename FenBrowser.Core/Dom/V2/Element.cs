@@ -151,6 +151,22 @@ namespace FenBrowser.Core.Dom.V2
             _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
         }
 
+        protected override void ValidateChildType(Node node)
+        {
+            if (node is Document)
+            {
+                // Internal browsing-context bridge: iframe/frame elements can own a nested
+                // Document node so layout/paint and WebDriver frame traversal can walk it.
+                if (string.Equals(LocalName, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(LocalName, "frame", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+
+            base.ValidateChildType(node);
+        }
+
         // --- Attribute API ---
 
         /// <summary>
