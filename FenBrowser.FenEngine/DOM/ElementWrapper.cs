@@ -10,10 +10,12 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.IO;
 using System.Globalization;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security.Oopif;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
@@ -40,6 +42,7 @@ namespace FenBrowser.FenEngine.DOM
         private static readonly ConditionalWeakTable<Element, FenObject> s_inlineStyleSheetByElement = new ConditionalWeakTable<Element, FenObject>();
         private static readonly ConditionalWeakTable<Element, CssRuleListObject> s_inlineCssRuleListByElement = new ConditionalWeakTable<Element, CssRuleListObject>();
         private static readonly OopifPolicy s_oopifPolicy = new OopifPolicy();
+        private static readonly HttpClient s_iframeDocumentHttpClient = CreateIframeDocumentHttpClient();
         private static readonly string[] s_inventoryNonEventHtmlAttributes_2026_05_01 =
         {
             "abbr", "accept", "accept-charset", "accesskey", "action", "allow", "allowfullscreen", "alpha",
@@ -581,8 +584,199 @@ namespace FenBrowser.FenEngine.DOM
             {
                 frameWindow = new FenObject();
 
-                var abortSignal = new FenObject();
-                abortSignal.Set("timeout", FenValue.FromFunction(new FenFunction("timeout", (args, thisVal) =>
+                var abortSignalPrototype = new FenObject();
+
+                FenValue NormalizeAbortReason(FenValue reason)
+                {
+                    return reason.IsUndefined ? FenValue.FromString("AbortError") : reason;
+                }
+
+                List<FenValue> GetAbortSignalListeners(FenObject signal)
+                {
+                    if (signal.NativeObject is List<FenValue> listeners)
+                    {
+                        return listeners;
+                    }
+
+                    listeners = new List<FenValue>();
+                    signal.NativeObject = listeners;
+                    return listeners;
+                }
+
+                FenObject RequireAbortSignalReceiver(FenValue thisValue, string methodName)
+                {
+                    var signal = thisValue.IsObject ? thisValue.AsObject() as FenObject : null;
+                    if (signal == null || !string.Equals(signal.InternalClass, "AbortSignal", StringComparison.Ordinal))
+                    {
+                        throw new FenTypeError($"TypeError: {methodName} called on incompatible receiver");
+                    }
+
+                    return signal;
+                }
+
+                FenObject CreateAbortEvent(FenObject signal)
+                {
+                    var abortEvent = new FenObject();
+                    abortEvent.Set("type", FenValue.FromString("abort"));
+                    abortEvent.Set("target", FenValue.FromObject(signal));
+                    return abortEvent;
+                }
+
+                void InvokeAbortCallback(FenObject signal, FenValue callback, FenObject abortEvent)
+                {
+                    FenFunction callbackFn = null;
+                    var callbackThis = FenValue.FromObject(signal);
+
+                    if (callback.IsFunction)
+                    {
+                        callbackFn = callback.AsFunction() as FenFunction;
+                    }
+                    else if (callback.IsObject)
+                    {
+                        var handleEvent = callback.AsObject()?.Get("handleEvent") ?? FenValue.Undefined;
+                        if (handleEvent.IsFunction)
+                        {
+                            callbackFn = handleEvent.AsFunction() as FenFunction;
+                            callbackThis = callback;
+                        }
+                    }
+
+                    callbackFn?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, callbackThis);
+                }
+
+                FenObject CreateAbortSignal()
+                {
+                    var signal = new FenObject();
+                    signal.InternalClass = "AbortSignal";
+                    signal.SetPrototype(abortSignalPrototype);
+                    signal.Set("aborted", FenValue.FromBoolean(false));
+                    signal.Set("reason", FenValue.Undefined);
+                    signal.Set("onabort", FenValue.Undefined);
+                    signal.NativeObject = new List<FenValue>();
+
+                    signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (sigArgs, sigThis) =>
+                    {
+                        if (sigArgs.Length < 2 || !string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return FenValue.Undefined;
+                        }
+
+                        var callback = sigArgs[1];
+                        var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
+                        if (!callbackIsValid || callback.IsUndefined || callback.IsNull)
+                        {
+                            return FenValue.Undefined;
+                        }
+
+                        var listeners = GetAbortSignalListeners(signal);
+                        foreach (var existing in listeners)
+                        {
+                            if (existing.IsObject && existing.AsObject() is FenObject existingObj && existingObj.Get("callback").Equals(callback))
+                            {
+                                return FenValue.Undefined;
+                            }
+                        }
+
+                        var once = false;
+                        if (sigArgs.Length >= 3)
+                        {
+                            if (sigArgs[2].IsObject)
+                            {
+                                once = sigArgs[2].AsObject().Get("once").ToBoolean();
+                            }
+                        }
+
+                        var entry = new FenObject();
+                        entry.Set("callback", callback);
+                        entry.Set("once", FenValue.FromBoolean(once));
+                        listeners.Add(FenValue.FromObject(entry));
+                        return FenValue.Undefined;
+                    })));
+
+                    signal.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (sigArgs, sigThis) =>
+                    {
+                        if (sigArgs.Length < 2 || !string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return FenValue.Undefined;
+                        }
+
+                        var callback = sigArgs[1];
+                        var listeners = GetAbortSignalListeners(signal);
+                        listeners.RemoveAll(existing =>
+                            existing.IsObject &&
+                            existing.AsObject() is FenObject existingObj &&
+                            existingObj.Get("callback").Equals(callback));
+                        return FenValue.Undefined;
+                    })));
+
+                    return signal;
+                }
+
+                void DispatchAbortSignal(FenObject signal, FenValue reason, bool skipWhenDetached)
+                {
+                    if (signal == null || signal.Get("aborted").ToBoolean())
+                    {
+                        return;
+                    }
+
+                    if (skipWhenDetached && _element.ParentNode == null)
+                    {
+                        return;
+                    }
+
+                    var normalizedReason = NormalizeAbortReason(reason);
+                    signal.Set("aborted", FenValue.FromBoolean(true));
+                    signal.Set("reason", normalizedReason);
+                    var abortEvent = CreateAbortEvent(signal);
+
+                    var onAbort = signal.Get("onabort");
+                    if (onAbort.IsFunction)
+                    {
+                        onAbort.AsFunction()?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, FenValue.FromObject(signal));
+                    }
+
+                    var listeners = GetAbortSignalListeners(signal);
+                    foreach (var listener in listeners.ToList())
+                    {
+                        if (!listener.IsObject || listener.AsObject() is not FenObject listenerEntry)
+                        {
+                            continue;
+                        }
+
+                        InvokeAbortCallback(signal, listenerEntry.Get("callback"), abortEvent);
+                        if (listenerEntry.Get("once").ToBoolean())
+                        {
+                            listeners.Remove(listener);
+                        }
+                    }
+                }
+
+                var throwIfAborted = FenValue.FromFunction(new FenFunction("throwIfAborted", (sigArgs, sigThis) =>
+                {
+                    var signal = RequireAbortSignalReceiver(sigThis, "AbortSignal.prototype.throwIfAborted");
+                    if (signal.Get("aborted").ToBoolean())
+                    {
+                        throw new JsThrownValueException(NormalizeAbortReason(signal.Get("reason")));
+                    }
+
+                    return FenValue.Undefined;
+                }));
+                abortSignalPrototype.Set("throwIfAborted", throwIfAborted);
+
+                var abortSignalCtor = new FenFunction("AbortSignal", (args, thisVal) =>
+                {
+                    throw new FenTypeError("TypeError: Illegal constructor");
+                });
+                abortSignalCtor.Prototype = abortSignalPrototype;
+                abortSignalCtor.Set("prototype", FenValue.FromObject(abortSignalPrototype));
+                abortSignalPrototype.Set("constructor", FenValue.FromFunction(abortSignalCtor));
+                abortSignalCtor.Set("abort", FenValue.FromFunction(new FenFunction("abort", (args, thisVal) =>
+                {
+                    var signal = CreateAbortSignal();
+                    DispatchAbortSignal(signal, args.Length > 0 ? args[0] : FenValue.Undefined, skipWhenDetached: false);
+                    return FenValue.FromObject(signal);
+                })));
+                abortSignalCtor.Set("timeout", FenValue.FromFunction(new FenFunction("timeout", (args, thisVal) =>
                 {
                     int delayMs = 0;
                     if (args.Length > 0)
@@ -590,66 +784,95 @@ namespace FenBrowser.FenEngine.DOM
                         delayMs = (int)Math.Max(0, args[0].ToNumber());
                     }
 
-                    var signal = new FenObject();
-                    signal.Set("aborted", FenValue.FromBoolean(false));
-                    signal.Set("reason", FenValue.Undefined);
-                    signal.Set("onabort", FenValue.Undefined);
-
-                    var listeners = new List<FenValue>();
-                    signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (sigArgs, sigThis) =>
-                    {
-                        if (sigArgs.Length >= 2 && string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
-                        {
-                            listeners.Add(sigArgs[1]);
-                        }
-                        return FenValue.Undefined;
-                    })));
-
-                    signal.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (sigArgs, sigThis) =>
-                    {
-                        if (sigArgs.Length >= 2 && string.Equals(sigArgs[0].ToString(), "abort", StringComparison.OrdinalIgnoreCase))
-                        {
-                            listeners.RemoveAll(l => l.Equals(sigArgs[1]));
-                        }
-                        return FenValue.Undefined;
-                    })));
-
+                    var signal = CreateAbortSignal();
                     _context?.ScheduleCallback?.Invoke(() =>
                     {
-                        // If iframe was detached before timeout, this context is considered gone.
-                        if (_element.ParentNode == null)
-                        {
-                            return;
-                        }
-
-                        if (signal.Get("aborted").ToBoolean())
-                        {
-                            return;
-                        }
-
-                        var reason = FenValue.FromString("TimeoutError");
-                        signal.Set("aborted", FenValue.FromBoolean(true));
-                        signal.Set("reason", reason);
-
-                        var onAbort = signal.Get("onabort");
-                        if (onAbort.IsFunction)
-                        {
-                            onAbort.AsFunction().Invoke(new[] { reason }, _context, FenValue.FromObject(signal));
-                        }
-
-                        foreach (var listener in listeners.ToList())
-                        {
-                            if (listener.IsFunction)
-                            {
-                                listener.AsFunction().Invoke(new[] { reason }, _context, FenValue.FromObject(signal));
-                            }
-                        }
+                        DispatchAbortSignal(signal, FenValue.FromString("TimeoutError"), skipWhenDetached: true);
                     }, delayMs);
 
                     return FenValue.FromObject(signal);
                 })));
+                abortSignalCtor.Set("any", FenValue.FromFunction(new FenFunction("any", (args, thisVal) =>
+                {
+                    if (args.Length == 0 || !args[0].IsObject || args[0].IsNull)
+                    {
+                        throw new FenTypeError("TypeError: AbortSignal.any requires an iterable of signals");
+                    }
 
-                frameWindow.Set("AbortSignal", FenValue.FromObject(abortSignal));
+                    var composite = CreateAbortSignal();
+                    var iterable = args[0].AsObject();
+                    var lengthValue = iterable.Get("length");
+                    if (!lengthValue.IsNumber)
+                    {
+                        return FenValue.FromObject(composite);
+                    }
+
+                    var registrations = new List<(FenObject source, FenValue callback)>();
+
+                    void CleanupRegistrations()
+                    {
+                        foreach (var registration in registrations.ToList())
+                        {
+                            var removeEventListener = registration.source.Get("removeEventListener");
+                            if (removeEventListener.IsFunction)
+                            {
+                                removeEventListener.AsFunction()?.Invoke(new[]
+                                {
+                                    FenValue.FromString("abort"),
+                                    registration.callback
+                                }, _context, FenValue.FromObject(registration.source));
+                            }
+                        }
+
+                        registrations.Clear();
+                    }
+
+                    int length = Math.Max(0, (int)lengthValue.ToNumber());
+                    for (int index = 0; index < length; index++)
+                    {
+                        var item = iterable.Get(index.ToString());
+                        if (!item.IsObject || item.IsNull || item.AsObject() is not FenObject sourceSignal)
+                        {
+                            throw new FenTypeError("TypeError: AbortSignal.any requires AbortSignal objects");
+                        }
+
+                        if (sourceSignal.Get("aborted").ToBoolean())
+                        {
+                            DispatchAbortSignal(composite, sourceSignal.Get("reason"), skipWhenDetached: false);
+                            return FenValue.FromObject(composite);
+                        }
+
+                        var capturedSource = sourceSignal;
+                        var callback = FenValue.FromFunction(new FenFunction("_iframeAbortSignalAny", (callbackArgs, callbackThis) =>
+                        {
+                            if (!composite.Get("aborted").ToBoolean())
+                            {
+                                DispatchAbortSignal(composite, capturedSource.Get("reason"), skipWhenDetached: false);
+                            }
+
+                            CleanupRegistrations();
+                            return FenValue.Undefined;
+                        }));
+
+                        registrations.Add((sourceSignal, callback));
+                        var addEventListener = sourceSignal.Get("addEventListener");
+                        if (addEventListener.IsFunction)
+                        {
+                            var options = new FenObject();
+                            options.Set("once", FenValue.FromBoolean(true));
+                            addEventListener.AsFunction()?.Invoke(new[]
+                            {
+                                FenValue.FromString("abort"),
+                                callback,
+                                FenValue.FromObject(options)
+                            }, _context, FenValue.FromObject(sourceSignal));
+                        }
+                    }
+
+                    return FenValue.FromObject(composite);
+                })));
+
+                frameWindow.Set("AbortSignal", FenValue.FromFunction(abortSignalCtor));
                 frameWindow.Set("__fenSandboxed", FenValue.FromBoolean(sandboxed));
                 frameWindow.Set("__fenSandboxScriptsAllowed", FenValue.FromBoolean(allowScripts));
                 frameWindow.Set("__fenSandboxSameOrigin", FenValue.FromBoolean(allowSameOrigin));
@@ -867,7 +1090,7 @@ namespace FenBrowser.FenEngine.DOM
 
         private IframeProcessAssignment GetIframeProcessAssignment()
         {
-            var currentUrl = _context?.CurrentUrl;
+            var currentUrl = ResolveIframeNavigationBaseUrl();
             var targetUrl = _element.GetAttribute("src");
             if (!s_iframeAssignmentByElement.TryGetValue(_element, out var assignment))
             {
@@ -971,6 +1194,144 @@ namespace FenBrowser.FenEngine.DOM
                    Uri.TryCreate(baseUri, trimmed, out resolved);
         }
 
+        private static HttpClient CreateIframeDocumentHttpClient()
+        {
+            return new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(15)
+            };
+        }
+
+        private string ResolveIframeNavigationBaseUrl()
+        {
+            if (_context?.DocumentUrl != null && _context.DocumentUrl.IsAbsoluteUri)
+            {
+                return _context.DocumentUrl.AbsoluteUri;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_context?.CurrentUrl) &&
+                Uri.TryCreate(_context.CurrentUrl, UriKind.Absolute, out var absoluteCurrentUrl))
+            {
+                return absoluteCurrentUrl.AbsoluteUri;
+            }
+
+            var owner = _element?.OwnerDocument;
+            if (!string.IsNullOrWhiteSpace(owner?.BaseURI) &&
+                Uri.IsWellFormedUriString(owner.BaseURI, UriKind.Absolute))
+            {
+                return owner.BaseURI;
+            }
+
+            if (!string.IsNullOrWhiteSpace(owner?.DocumentURI) &&
+                Uri.IsWellFormedUriString(owner.DocumentURI, UriKind.Absolute))
+            {
+                return owner.DocumentURI;
+            }
+
+            if (!string.IsNullOrWhiteSpace(owner?.URL))
+            {
+                return owner.URL;
+            }
+
+            return "about:blank";
+        }
+
+        private static bool TryReadIframeMarkup(Uri targetUri, out string markup)
+        {
+            markup = null;
+            if (targetUri == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (targetUri.IsFile)
+                {
+                    var localPath = targetUri.LocalPath;
+                    if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+                    {
+                        return false;
+                    }
+
+                    markup = File.ReadAllText(localPath);
+                    return true;
+                }
+
+                if (string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                {
+                    markup = s_iframeDocumentHttpClient
+                        .GetStringAsync(targetUri)
+                        .ConfigureAwait(false)
+                        .GetAwaiter()
+                        .GetResult();
+                    return !string.IsNullOrEmpty(markup);
+                }
+            }
+            catch
+            {
+                // Fall back to the default empty iframe document below.
+            }
+
+            return false;
+        }
+
+        private static Document ParseIframeDocument(string markup, Uri baseUri)
+        {
+            if (string.IsNullOrWhiteSpace(markup))
+            {
+                return null;
+            }
+
+            try
+            {
+                return HtmlParser.ParseDocument(
+                    markup,
+                    new HtmlParserOptions
+                    {
+                        BaseUri = baseUri ?? new Uri("about:blank")
+                    });
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private Document LoadIframeDocumentFromSource()
+        {
+            var srcdoc = _element.GetAttribute("srcdoc");
+            if (!string.IsNullOrWhiteSpace(srcdoc))
+            {
+                var baseUrl = ResolveIframeNavigationBaseUrl();
+                if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var srcdocBaseUri))
+                {
+                    return ParseIframeDocument(srcdoc, srcdocBaseUri);
+                }
+
+                return ParseIframeDocument(srcdoc, new Uri("about:blank"));
+            }
+
+            var src = _element.GetAttribute("src");
+            if (string.IsNullOrWhiteSpace(src))
+            {
+                return null;
+            }
+
+            if (!TryResolveIframeTargetUri(ResolveIframeNavigationBaseUrl(), src, out var targetUri))
+            {
+                return null;
+            }
+
+            if (!TryReadIframeMarkup(targetUri, out var markup))
+            {
+                return null;
+            }
+
+            return ParseIframeDocument(markup, targetUri);
+        }
+
         private Document GetOrCreateIframeDocument()
         {
             if (!string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
@@ -980,12 +1341,50 @@ namespace FenBrowser.FenEngine.DOM
 
             if (s_iframeDocumentByElement.TryGetValue(_element, out var existing))
             {
+                EnsureIframeDocumentAttached(existing);
                 return existing;
             }
 
-            var document = Document.CreateHtmlDocument();
+            var document = LoadIframeDocumentFromSource() ?? Document.CreateHtmlDocument();
             s_iframeDocumentByElement.Add(_element, document);
+            EnsureIframeDocumentAttached(document);
             return document;
+        }
+
+        private void EnsureIframeDocumentAttached(Document document)
+        {
+            if (document == null ||
+                !string.Equals(_element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var children = _element.ChildNodes;
+            for (int i = 0; i < children.Length; i++)
+            {
+                if (ReferenceEquals(children[i], document))
+                {
+                    return;
+                }
+            }
+
+            while (_element.FirstChild != null)
+            {
+                _element.RemoveChild(_element.FirstChild);
+            }
+
+            _element.AppendChild(document);
+        }
+
+        internal static bool TryGetCachedIframeDocument(Element iframeElement, out Document iframeDocument)
+        {
+            iframeDocument = null;
+            if (iframeElement == null || !string.Equals(iframeElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return s_iframeDocumentByElement.TryGetValue(iframeElement, out iframeDocument) && iframeDocument != null;
         }
 
 
@@ -4399,7 +4798,12 @@ namespace FenBrowser.FenEngine.DOM
             s_iframeDocumentByElement.Remove(_element);
             s_iframeWindowByElement.Remove(_element);
 
-            if (TryResolveIframeTargetUri(_context?.CurrentUrl, value, out var iframeTarget))
+            while (_element.FirstChild != null)
+            {
+                _element.RemoveChild(_element.FirstChild);
+            }
+
+            if (TryResolveIframeTargetUri(ResolveIframeNavigationBaseUrl(), value, out var iframeTarget))
             {
                 ElementStateManager.Instance.RecordVisitedUrl(iframeTarget);
             }
