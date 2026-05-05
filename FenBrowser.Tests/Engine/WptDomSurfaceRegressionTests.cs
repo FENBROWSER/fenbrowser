@@ -102,6 +102,38 @@ public class WptDomSurfaceRegressionTests
         "));
     }
 
+    [Fact]
+    public async Task Closest_Matches_And_Dataset_Work_For_Common_Delegation_Patterns()
+    {
+        var baseUri = new Uri("https://example.com/index.html");
+        var parser = new HtmlParser("<html><body><div id='root' data-vt-d='1'><span id='child'></span></div></body></html>", baseUri);
+        var doc = parser.Parse();
+        var engine = new JavaScriptEngine(CreateHost());
+
+        await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+        Assert.Equal("function", engine.Evaluate("typeof document.getElementById('child').closest")?.ToString());
+        Assert.Equal("function", engine.Evaluate("typeof document.getElementById('root').matches")?.ToString());
+        Assert.Equal("object", engine.Evaluate("typeof document.getElementById('root').dataset")?.ToString());
+
+        Assert.Equal("true", engine.Evaluate(@"
+            (function () {
+                var child = document.getElementById('child');
+                var host = child.closest('[data-vt-d]');
+                if (!host) return 'false';
+                return String(host.matches('#root') && host.dataset.vtD === '1');
+            })();
+        ")?.ToString());
+
+        Assert.Equal("ok", engine.Evaluate(@"
+            (function () {
+                var host = document.getElementById('root');
+                host.dataset.vtFlag = 'ok';
+                return host.getAttribute('data-vt-flag');
+            })();
+        ")?.ToString());
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(
