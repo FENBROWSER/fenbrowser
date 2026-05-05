@@ -83,6 +83,40 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal("a\nb", textarea.TextContent);
         }
 
+        [Fact]
+        public async Task HandleKeyPress_FocusedInput_AppendsCharactersToValue()
+        {
+            var host = new BrowserHost();
+            var input = new Element("input");
+            input.SetAttribute("type", "text");
+            input.SetAttribute("value", string.Empty);
+            SetFocusedElement(host, input);
+
+            await host.HandleKeyPress("f");
+            await host.HandleKeyPress("e");
+            await host.HandleKeyPress("n");
+
+            Assert.Equal("fen", input.GetAttribute("value"));
+        }
+
+        [Fact]
+        public async Task HandleKeyPress_InputCaretAndBackspace_EditAtCursorPosition()
+        {
+            var host = new BrowserHost();
+            var input = new Element("input");
+            input.SetAttribute("type", "text");
+            input.SetAttribute("value", string.Empty);
+            SetFocusedElement(host, input);
+
+            await host.HandleKeyPress("a");
+            await host.HandleKeyPress("b");
+            await host.HandleKeyPress("c");
+            await host.HandleKeyPress("ArrowLeft");
+            await host.HandleKeyPress("Backspace");
+
+            Assert.Equal("ac", input.GetAttribute("value"));
+        }
+
         private static void RegisterElement(BrowserHost host, string elementId, Element element)
         {
             var mapField = typeof(BrowserHost).GetField("_elementMap", BindingFlags.Instance | BindingFlags.NonPublic);
