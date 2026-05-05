@@ -395,5 +395,42 @@ div { color: black; }
             Assert.NotNull(secondBox);
             Assert.InRange(secondBox.ContentBox.Top - firstBox.ContentBox.Bottom, -0.001f, 0.001f);
         }
+
+        [Fact]
+        public async Task Test14_DisplayNoneHidesEntireSubtreeFromLayout()
+        {
+            string html = @"
+<!doctype html>
+<html>
+<body>
+  <section id='hidden-root' style='display:none'>
+    <div id='hidden-child'>
+      <span id='hidden-leaf'>Leaf</span>
+    </div>
+  </section>
+  <section id='visible-root'>Visible</section>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var hiddenRoot = doc.GetElementById("hidden-root");
+            var hiddenChild = doc.GetElementById("hidden-child");
+            var hiddenLeaf = doc.GetElementById("hidden-leaf");
+            var visibleRoot = doc.GetElementById("visible-root");
+
+            Assert.Equal("none", computed[hiddenRoot].Map["display"]);
+            Assert.Null(layoutComputer.GetBox(hiddenRoot));
+            Assert.Null(layoutComputer.GetBox(hiddenChild));
+            Assert.Null(layoutComputer.GetBox(hiddenLeaf));
+            Assert.NotNull(layoutComputer.GetBox(visibleRoot));
+        }
     }
 }
