@@ -298,5 +298,36 @@ div { color: black; }
             // Unknown/custom elements default to inline in computed styles.
             Assert.Equal("inline", computed[x].Display);
         }
+
+        [Fact]
+        public async Task Test11_EmWidthUsesInheritedFontSize()
+        {
+            string html = @"
+<!doctype html>
+<html>
+<body>
+  <div id='parent' style='font-size:25px'>
+    <div id='child' style='width:2em'>Child</div>
+  </div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var child = doc.GetElementById("child");
+
+            Assert.Equal("2em", computed[child].Map["width"]);
+            Assert.InRange(computed[child].Width ?? 0d, 49.999d, 50.001d);
+
+            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var childBox = layoutComputer.GetBox(child);
+            Assert.NotNull(childBox);
+            Assert.Equal(50f, childBox.ContentBox.Width);
+        }
     }
 }
