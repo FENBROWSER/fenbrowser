@@ -10261,160 +10261,268 @@ window.Set("navigation", FenValue.FromObject(navigation));
             })));
 
             // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ AbortController / AbortSignal ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
-            SetGlobal("AbortController", FenValue.FromFunction(new FenFunction("AbortController", (args, thisVal) =>
+            var abortSignalPrototype = new FenObject();
+            abortSignalPrototype.SetPrototype(eventTargetPrototype);
+
+            FenValue NormalizeAbortReason(FenValue reason)
             {
-                var controller = new FenObject();
+                return reason.IsUndefined ? FenValue.FromString("AbortError") : reason;
+            }
+
+            FenObject RequireAbortSignalReceiver(FenValue thisValue, string methodName)
+            {
+                var signal = thisValue.IsObject ? thisValue.AsObject() as FenObject : null;
+                if (signal == null || !string.Equals(signal.InternalClass, "AbortSignal", StringComparison.Ordinal))
+                {
+                    throw new FenTypeError($"TypeError: {methodName} called on incompatible receiver");
+                }
+
+                return signal;
+            }
+
+            FenObject CreateAbortSignalObject()
+            {
                 var signal = new FenObject();
+                signal.InternalClass = "AbortSignal";
+                signal.SetPrototype(abortSignalPrototype);
                 signal.Set("aborted", FenValue.FromBoolean(false));
                 signal.Set("reason", FenValue.Undefined);
                 signal.Set("onabort", FenValue.Undefined);
-                var signalListeners = new List<FenObject>();
-                signal.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener",
-                    (sigArgs, sigThis) =>
+                return signal;
+            }
+
+            void DispatchAbortSignal(FenObject signal, FenValue reason)
+            {
+                if (signal == null || signal.Get("aborted").ToBoolean())
+                {
+                    return;
+                }
+
+                var normalizedReason = NormalizeAbortReason(reason);
+                signal.Set("aborted", FenValue.FromBoolean(true));
+                signal.Set("reason", normalizedReason);
+
+                var abortEvent = new DomEvent("abort", false, false, false, _context);
+                abortEvent.Set("target", FenValue.FromObject(signal), _context);
+
+                var onAbort = signal.Get("onabort");
+                if (onAbort.IsFunction)
+                {
+                    onAbort.AsFunction()?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, FenValue.FromObject(signal));
+                }
+
+                var dispatchEvent = signal.Get("dispatchEvent");
+                if (dispatchEvent.IsFunction)
+                {
+                    dispatchEvent.AsFunction()?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, FenValue.FromObject(signal));
+                }
+            }
+
+            IEnumerable<FenObject> EnumerateAbortSignals(FenValue iterableValue)
+            {
+                if (!iterableValue.IsObject || iterableValue.IsNull)
+                {
+                    throw new FenTypeError("TypeError: AbortSignal.any requires an iterable of signals");
+                }
+
+                var iterableObject = iterableValue.AsObject();
+                var lengthValue = iterableObject.Get("length");
+                if (lengthValue.IsNumber)
+                {
+                    int length = Math.Max(0, (int)lengthValue.ToNumber());
+                    for (int index = 0; index < length; index++)
                     {
-                        if (sigArgs.Length < 2)
+                        var item = iterableObject.Get(index.ToString());
+                        if (!item.IsObject || item.IsNull || item.AsObject() is not FenObject signal)
                         {
-                            return FenValue.Undefined;
+                            throw new FenTypeError("TypeError: AbortSignal.any requires AbortSignal objects");
                         }
 
-                        var type = sigArgs[0].ToString();
-                        var callback = sigArgs[1];
-                        var callbackIsValid = callback.IsFunction || (callback.IsObject && !callback.IsNull);
-                        if (!string.Equals(type, "abort", StringComparison.OrdinalIgnoreCase) ||
-                            !callbackIsValid || callback.IsUndefined || callback.IsNull)
-                        {
-                            return FenValue.Undefined;
-                        }
+                        yield return signal;
+                    }
 
-                        var capture = false;
-                        var once = false;
-                        if (sigArgs.Length >= 3)
-                        {
-                            if (sigArgs[2].IsBoolean)
-                            {
-                                capture = sigArgs[2].ToBoolean();
-                            }
-                            else if (sigArgs[2].IsObject)
-                            {
-                                var opts = sigArgs[2].AsObject();
-                                capture = opts.Get("capture").ToBoolean();
-                                once = opts.Get("once").ToBoolean();
-                            }
-                        }
+                    yield break;
+                }
 
-                        foreach (var existing in signalListeners)
-                        {
-                            if (existing.Get("callback").Equals(callback) &&
-                                existing.Get("capture").ToBoolean() == capture)
-                            {
-                                return FenValue.Undefined;
-                            }
-                        }
+                var iteratorMethod = iterableObject.Get(JsSymbol.Iterator.ToPropertyKey());
+                if (iteratorMethod.IsUndefined)
+                {
+                    iteratorMethod = iterableObject.Get("[Symbol.iterator]");
+                }
 
-                        var entry = new FenObject();
-                        entry.Set("callback", callback);
-                        entry.Set("capture", FenValue.FromBoolean(capture));
-                        entry.Set("once", FenValue.FromBoolean(once));
-                        signalListeners.Add(entry);
-                        return FenValue.Undefined;
-                    })));
-                signal.Set("removeEventListener",
-                    FenValue.FromFunction(new FenFunction("removeEventListener",
-                        (sigArgs, sigThis) =>
-                        {
-                            if (sigArgs.Length < 2)
-                            {
-                                return FenValue.Undefined;
-                            }
+                if (!iteratorMethod.IsFunction)
+                {
+                    throw new FenTypeError("TypeError: AbortSignal.any requires an iterable of signals");
+                }
 
-                            var type = sigArgs[0].ToString();
-                            var callback = sigArgs[1];
-                            var capture = false;
-                            if (sigArgs.Length >= 3)
-                            {
-                                if (sigArgs[2].IsBoolean)
-                                {
-                                    capture = sigArgs[2].ToBoolean();
-                                }
-                                else if (sigArgs[2].IsObject)
-                                {
-                                    capture = sigArgs[2].AsObject().Get("capture").ToBoolean();
-                                }
-                            }
+                var iteratorValue = iteratorMethod.AsFunction()?.Invoke(Array.Empty<FenValue>(), _context, iterableValue) ?? FenValue.Undefined;
+                if (!iteratorValue.IsObject || iteratorValue.IsNull)
+                {
+                    throw new FenTypeError("TypeError: AbortSignal.any received an invalid iterator");
+                }
 
-                            if (!string.Equals(type, "abort", StringComparison.OrdinalIgnoreCase))
-                            {
-                                return FenValue.Undefined;
-                            }
+                var iteratorObject = iteratorValue.AsObject();
+                var nextMethod = iteratorObject.Get("next");
+                if (!nextMethod.IsFunction)
+                {
+                    throw new FenTypeError("TypeError: AbortSignal.any received an invalid iterator");
+                }
 
-                            for (int i = signalListeners.Count - 1; i >= 0; i--)
-                            {
-                                var existing = signalListeners[i];
-                                if (existing.Get("callback").Equals(callback) &&
-                                    existing.Get("capture").ToBoolean() == capture)
-                                {
-                                    signalListeners.RemoveAt(i);
-                                    break;
-                                }
-                            }
-
-                            return FenValue.Undefined;
-                        })));
-                signal.Set("throwIfAborted", FenValue.FromFunction(new FenFunction("throwIfAborted",
-                    (sigArgs, sigThis) =>
+                while (true)
+                {
+                    var nextValue = nextMethod.AsFunction()?.Invoke(Array.Empty<FenValue>(), _context, iteratorValue) ?? FenValue.Undefined;
+                    if (!nextValue.IsObject || nextValue.IsNull)
                     {
-                        if (signal.Get("aborted").ToBoolean())
-                            throw new FenTypeError("AbortError: signal is aborted");
+                        throw new FenTypeError("TypeError: AbortSignal.any iterator result is not an object");
+                    }
+
+                    var nextObject = nextValue.AsObject();
+                    if (nextObject.Get("done").ToBoolean())
+                    {
+                        yield break;
+                    }
+
+                    var item = nextObject.Get("value");
+                    if (!item.IsObject || item.IsNull || item.AsObject() is not FenObject signal)
+                    {
+                        throw new FenTypeError("TypeError: AbortSignal.any requires AbortSignal objects");
+                    }
+
+                    yield return signal;
+                }
+            }
+
+            var abortSignalThrowIfAborted = FenValue.FromFunction(new FenFunction("throwIfAborted", (sigArgs, sigThis) =>
+            {
+                var signal = RequireAbortSignalReceiver(sigThis, "AbortSignal.prototype.throwIfAborted");
+                if (signal.Get("aborted").ToBoolean())
+                {
+                    var reason = signal.Get("reason");
+                    throw new JsThrownValueException(NormalizeAbortReason(reason));
+                }
+
+                return FenValue.Undefined;
+            }));
+            abortSignalPrototype.SetBuiltin("throwIfAborted", abortSignalThrowIfAborted);
+
+            var abortSignalCtor = new FenFunction("AbortSignal", (args, thisVal) =>
+            {
+                throw new FenTypeError("TypeError: Illegal constructor");
+            });
+            abortSignalCtor.Prototype = abortSignalPrototype;
+            abortSignalCtor.Set("prototype", FenValue.FromObject(abortSignalPrototype));
+            abortSignalPrototype.SetBuiltin("constructor", FenValue.FromFunction(abortSignalCtor));
+            abortSignalCtor.Set("abort", FenValue.FromFunction(new FenFunction("abort", (abortArgs, abortThis) =>
+            {
+                var signal = CreateAbortSignalObject();
+                DispatchAbortSignal(signal, abortArgs.Length > 0 ? abortArgs[0] : FenValue.Undefined);
+                return FenValue.FromObject(signal);
+            })));
+            abortSignalCtor.Set("timeout", FenValue.FromFunction(new FenFunction("timeout", (timeoutArgs, timeoutThis) =>
+            {
+                int delayMs = 0;
+                if (timeoutArgs.Length > 0)
+                {
+                    delayMs = (int)Math.Max(0, timeoutArgs[0].ToNumber());
+                }
+
+                var signal = CreateAbortSignalObject();
+                _context?.ScheduleCallback?.Invoke(() =>
+                {
+                    DispatchAbortSignal(signal, FenValue.FromString("TimeoutError"));
+                }, delayMs);
+
+                return FenValue.FromObject(signal);
+            })));
+            abortSignalCtor.Set("any", FenValue.FromFunction(new FenFunction("any", (anyArgs, anyThis) =>
+            {
+                if (anyArgs.Length == 0)
+                {
+                    throw new FenTypeError("TypeError: AbortSignal.any requires an iterable of signals");
+                }
+
+                var composite = CreateAbortSignalObject();
+                var registrations = new List<FenObject>();
+
+                void CleanupRegistrations()
+                {
+                    foreach (var registration in registrations.ToList())
+                    {
+                        var source = registration.Get("source");
+                        var callback = registration.Get("callback");
+                        if (!source.IsObject || callback.IsUndefined)
+                        {
+                            continue;
+                        }
+
+                        var removeListener = source.AsObject()?.Get("removeEventListener") ?? FenValue.Undefined;
+                        if (removeListener.IsFunction)
+                        {
+                            removeListener.AsFunction()?.Invoke(new[]
+                            {
+                                FenValue.FromString("abort"),
+                                callback
+                            }, _context, source);
+                        }
+                    }
+
+                    registrations.Clear();
+                }
+
+                foreach (var sourceSignal in EnumerateAbortSignals(anyArgs[0]))
+                {
+                    if (sourceSignal.Get("aborted").ToBoolean())
+                    {
+                        DispatchAbortSignal(composite, sourceSignal.Get("reason"));
+                        return FenValue.FromObject(composite);
+                    }
+
+                    var addListener = sourceSignal.Get("addEventListener");
+                    if (!addListener.IsFunction)
+                    {
+                        throw new FenTypeError("TypeError: AbortSignal.any requires AbortSignal objects");
+                    }
+
+                    var capturedSource = sourceSignal;
+                    var callback = FenValue.FromFunction(new FenFunction("_abortSignalAny", (callbackArgs, callbackThis) =>
+                    {
+                        if (!composite.Get("aborted").ToBoolean())
+                        {
+                            DispatchAbortSignal(composite, capturedSource.Get("reason"));
+                        }
+
+                        CleanupRegistrations();
                         return FenValue.Undefined;
-                    })));
+                    }));
+
+                    var registration = new FenObject();
+                    registration.Set("source", FenValue.FromObject(sourceSignal));
+                    registration.Set("callback", callback);
+                    registrations.Add(registration);
+
+                    var options = new FenObject();
+                    options.Set("once", FenValue.FromBoolean(true));
+                    addListener.AsFunction()?.Invoke(new[]
+                    {
+                        FenValue.FromString("abort"),
+                        callback,
+                        FenValue.FromObject(options)
+                    }, _context, FenValue.FromObject(sourceSignal));
+                }
+
+                return FenValue.FromObject(composite);
+            })));
+            SetGlobal("AbortSignal", FenValue.FromFunction(abortSignalCtor));
+
+            SetGlobal("AbortController", FenValue.FromFunction(new FenFunction("AbortController", (args, thisVal) =>
+            {
+                var controller = new FenObject();
+                var signal = CreateAbortSignalObject();
 
                 controller.Set("signal", FenValue.FromObject(signal));
                 controller.Set("abort", FenValue.FromFunction(new FenFunction("abort", (abortArgs, abortThis) =>
                 {
-                    if (signal.Get("aborted").ToBoolean())
-                    {
-                        return FenValue.Undefined;
-                    }
-
-                    signal.Set("aborted", FenValue.FromBoolean(true));
-                    var reason = abortArgs.Length > 0 ? abortArgs[0] : FenValue.FromString("AbortError");
-                    signal.Set("reason", reason);
-                    var abortEvent = new DomEvent("abort", false, false, false, _context);
-                    abortEvent.Set("target", FenValue.FromObject(signal), _context);
-
-                    var onAbort = signal.Get("onabort");
-                    if (onAbort.IsFunction)
-                    {
-                        onAbort.AsFunction()?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, FenValue.FromObject(signal));
-                    }
-
-                    foreach (var listener in signalListeners.ToList())
-                    {
-                        var callback = listener.Get("callback");
-                        FenFunction callbackFn = null;
-                        var callbackThis = FenValue.FromObject(signal);
-                        if (callback.IsFunction)
-                        {
-                            callbackFn = callback.AsFunction() as FenFunction;
-                        }
-                        else if (callback.IsObject)
-                        {
-                            var handleEvent = callback.AsObject().Get("handleEvent");
-                            if (handleEvent.IsFunction)
-                            {
-                                callbackFn = handleEvent.AsFunction() as FenFunction;
-                                callbackThis = callback;
-                            }
-                        }
-
-                        callbackFn?.Invoke(new[] { FenValue.FromObject(abortEvent) }, _context, callbackThis);
-
-                        if (listener.Get("once").ToBoolean())
-                        {
-                            signalListeners.Remove(listener);
-                        }
-                    }
-
+                    DispatchAbortSignal(signal, abortArgs.Length > 0 ? abortArgs[0] : FenValue.Undefined);
                     return FenValue.Undefined;
                 })));
 
@@ -17490,6 +17598,16 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             NotifyPopState(entry.State);
         }
 
+        private void UpdateExecutionContextDocumentUrl(Uri documentUrl)
+        {
+            if (_context is not ExecutionContext executionContext)
+            {
+                return;
+            }
+
+            executionContext.DocumentUrl = documentUrl ?? BaseUri ?? new Uri("about:blank");
+        }
+
         private void SynchronizeHistorySurface(Uri explicitUrl = null)
         {
             var currentUrl = explicitUrl ?? GetCurrentHistoryUrl();
@@ -17497,6 +17615,8 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             {
                 BaseUri = currentUrl;
             }
+
+            UpdateExecutionContextDocumentUrl(currentUrl);
 
             if (_locationObject != null)
             {
@@ -17720,6 +17840,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
             UpdateLocationState(location, target);
             BaseUri = target;
+            UpdateExecutionContextDocumentUrl(target);
 
             try
             {
@@ -17774,6 +17895,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             if (root == null) return;
             var documentRoot = root as Document ?? root.OwnerDocument ?? root;
             this.BaseUri = baseUri;
+            UpdateExecutionContextDocumentUrl(baseUri);
             if (_historyBridge == null)
             {
                 EnsureLocalHistoryInitialized();

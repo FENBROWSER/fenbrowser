@@ -715,12 +715,12 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
 
             // Try to resolve relative URL against document base URI
-            if (options.AutoResolveRelativeUrls && _context?.DocumentUrl != null)
+            if (options.AutoResolveRelativeUrls && TryGetResolutionBaseUri(out var resolutionBaseUri))
             {
                 // Handle protocol-relative URLs (//example.com/path)
                 if (rawUrl.StartsWith("//"))
                 {
-                    var scheme = _context.DocumentUrl.Scheme;
+                    var scheme = resolutionBaseUri.Scheme;
                     var protocolRelativeUrl = scheme + ":" + rawUrl;
                     if (Uri.TryCreate(protocolRelativeUrl, UriKind.Absolute, out var protocolRelativeUri))
                     {
@@ -728,26 +728,12 @@ namespace FenBrowser.FenEngine.WebAPIs
                         return true;
                     }
                 }
-                // Handle root-relative URLs (/path/to/resource)
-                else if (rawUrl.StartsWith("/"))
+
+                // Handle root-relative and other relative URLs in one path.
+                if (Uri.TryCreate(resolutionBaseUri, rawUrl, out var relativeUri))
                 {
-                    var builder = new UriBuilder(_context.DocumentUrl)
-                    {
-                        Path = rawUrl,
-                        Query = null,
-                        Fragment = null
-                    };
-                    resolvedUri = builder.Uri;
+                    resolvedUri = relativeUri;
                     return true;
-                }
-                // Handle other relative URLs (path/to/resource, ./resource, ../resource)
-                else
-                {
-                    if (Uri.TryCreate(_context.DocumentUrl, rawUrl, out var relativeUri))
-                    {
-                        resolvedUri = relativeUri;
-                        return true;
-                    }
                 }
             }
 
@@ -758,6 +744,25 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
 
             errorMessage = $"Unable to resolve URL: '{rawUrl}'";
+            return false;
+        }
+
+        private bool TryGetResolutionBaseUri(out Uri baseUri)
+        {
+            baseUri = _context?.DocumentUrl;
+            if (baseUri != null)
+            {
+                return true;
+            }
+
+            var currentUrl = _context?.CurrentUrl;
+            if (!string.IsNullOrWhiteSpace(currentUrl) &&
+                Uri.TryCreate(currentUrl, UriKind.Absolute, out baseUri))
+            {
+                return true;
+            }
+
+            baseUri = null;
             return false;
         }
 
