@@ -380,6 +380,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDomAsync_IframeContentWindow_AbortSignalSurface_MatchesConstructorShape()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var ctor = frame.contentWindow.AbortSignal; var signal = ctor.abort('iframe-reason'); var thrown = 'none'; try { signal.throwIfAborted(); } catch (e) { thrown = String(e); } globalThis.__iframeAbortSignalType = typeof ctor; globalThis.__iframeAbortSignalAbortType = typeof ctor.abort; globalThis.__iframeAbortSignalTimeoutType = typeof ctor.timeout; globalThis.__iframeAbortSignalAnyType = typeof ctor.any; globalThis.__iframeAbortSignalInstance = signal instanceof ctor; globalThis.__iframeAbortSignalAborted = signal.aborted; globalThis.__iframeAbortSignalReason = String(signal.reason); globalThis.__iframeAbortSignalThrown = thrown;\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeAbortSignalType")?.ToString());
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeAbortSignalAbortType")?.ToString());
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeAbortSignalTimeoutType")?.ToString());
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeAbortSignalAnyType")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__iframeAbortSignalInstance"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__iframeAbortSignalAborted"));
+            Assert.Equal("iframe-reason", engine.Evaluate("globalThis.__iframeAbortSignalReason")?.ToString());
+            Assert.Equal("iframe-reason", engine.Evaluate("globalThis.__iframeAbortSignalThrown")?.ToString());
+        }
+
+        [Fact]
         public async Task SetDomAsync_IframeContentDocument_ComputedStyleReflectsInjectedStyles()
         {
             var baseUri = new Uri("https://example.com/index.html");
@@ -584,6 +607,22 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("ready", engine.Evaluate("globalThis.__titleAfterSet")?.ToString());
             Assert.Equal("http://acid3.acidtests.org/test.html", engine.Evaluate("globalThis.__objectData1")?.ToString());
             Assert.Equal("http://acid3.acidtests.org/test.html", engine.Evaluate("globalThis.__objectData2")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_XmlHttpRequestOpen_AllowsGoogleStyleRootRelativeAsyncUrl()
+        {
+            var baseUri = new Uri("https://www.google.com/");
+            var parser = new HtmlParser(
+                "<html><body><script>try { var req = new XMLHttpRequest(); req.open('GET', '/async/hpba?async=_basejs:/xjs/_/js/k%3Dxjs.hd.test,_basecss:/xjs/_/ss/k%3Dxjs.hd.test,_basecomb:/xjs/_/js/k%3Dxjs.hd.test'); globalThis.__xhrOpenStatus = 'ok'; } catch (e) { globalThis.__xhrOpenStatus = String(e && e.message ? e.message : e); }</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("ok", engine.Evaluate("globalThis.__xhrOpenStatus")?.ToString());
         }
 
         [Fact]

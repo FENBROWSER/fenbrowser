@@ -169,5 +169,61 @@ namespace FenBrowser.Tests.Engine
 
             Assert.Single(log);
         }
+
+        [Fact]
+        public void Test_OnceListener_CanBeRegisteredAgainAfterDispatch()
+        {
+            var el = new Element("div");
+            var log = new List<string>();
+            var listener = CreateListener("ONCE", log);
+
+            el.AddEventListener("click", listener, new AddEventListenerOptions { Once = true });
+            el.DispatchEvent(new Event("click", new EventInit { Bubbles = true, Cancelable = true }));
+
+            el.AddEventListener("click", listener);
+            el.DispatchEvent(new Event("click", new EventInit { Bubbles = true, Cancelable = true }));
+
+            Assert.Equal(2, log.Count);
+        }
+
+        [Fact]
+        public void Test_AbortedSignal_DoesNotRegisterListener()
+        {
+            var el = new Element("div");
+            var log = new List<string>();
+            var controller = new AbortController();
+
+            controller.Abort();
+
+            el.AddEventListener("click", CreateListener("ABORTED", log), new AddEventListenerOptions
+            {
+                Signal = controller.Signal
+            });
+
+            el.DispatchEvent(new Event("click", new EventInit { Bubbles = true, Cancelable = true }));
+
+            Assert.Empty(log);
+        }
+
+        [Fact]
+        public void Test_RemoveEventListener_DetachesAbortHandler()
+        {
+            var el = new Element("div");
+            var log = new List<string>();
+            var controller = new AbortController();
+            var listener = CreateListener("DETACH", log);
+
+            el.AddEventListener("click", listener, new AddEventListenerOptions
+            {
+                Signal = controller.Signal
+            });
+            el.RemoveEventListener("click", listener);
+
+            el.AddEventListener("click", listener);
+            controller.Abort();
+            el.DispatchEvent(new Event("click", new EventInit { Bubbles = true, Cancelable = true }));
+
+            Assert.Single(log);
+        }
     }
 }

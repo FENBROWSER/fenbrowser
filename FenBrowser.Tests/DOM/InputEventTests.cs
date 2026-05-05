@@ -427,6 +427,80 @@ namespace FenBrowser.Tests.DOM
             Assert.Equal(1, (int)window.Get("__duplicateSignalCalls").ToNumber());
         }
 
+        [Fact]
+        public void AbortSignal_GlobalSurface_ExposesStaticHelpersAndInstanceSemantics()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                window.__abortSignalType = typeof AbortSignal;
+                window.__abortSignalAbortType = typeof AbortSignal.abort;
+                window.__abortSignalTimeoutType = typeof AbortSignal.timeout;
+                window.__abortSignalAnyType = typeof AbortSignal.any;
+
+                var ctorBlocked = false;
+                try { new AbortSignal(); } catch (e) { ctorBlocked = true; }
+
+                var signal = AbortSignal.abort('boom');
+                var thrownReason = 'none';
+                try {
+                    signal.throwIfAborted();
+                } catch (e) {
+                    thrownReason = String(e);
+                }
+
+                window.__abortSignalCtorBlocked = ctorBlocked;
+                window.__abortSignalAborted = signal.aborted;
+                window.__abortSignalReason = String(signal.reason);
+                window.__abortSignalInstance = signal instanceof AbortSignal;
+                window.__abortSignalThrownReason = thrownReason;
+                window.__abortSignalTimeoutInstance = AbortSignal.timeout(0) instanceof AbortSignal;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.Equal("function", window.Get("__abortSignalType").ToString());
+            Assert.Equal("function", window.Get("__abortSignalAbortType").ToString());
+            Assert.Equal("function", window.Get("__abortSignalTimeoutType").ToString());
+            Assert.Equal("function", window.Get("__abortSignalAnyType").ToString());
+            Assert.True(window.Get("__abortSignalCtorBlocked").ToBoolean());
+            Assert.True(window.Get("__abortSignalAborted").ToBoolean());
+            Assert.Equal("boom", window.Get("__abortSignalReason").ToString());
+            Assert.True(window.Get("__abortSignalInstance").ToBoolean());
+            Assert.Equal("boom", window.Get("__abortSignalThrownReason").ToString());
+            Assert.True(window.Get("__abortSignalTimeoutInstance").ToBoolean());
+        }
+
+        [Fact]
+        public void AbortSignal_Any_UsesFirstAbortedSourceReason()
+        {
+            var runtime = new FenRuntimeCore();
+            var document = Document.CreateHtmlDocument();
+            runtime.SetDom(document);
+
+            runtime.ExecuteSimple(@"
+                var first = new AbortController();
+                var second = new AbortController();
+                var composite = AbortSignal.any([first.signal, second.signal]);
+                window.__abortAnyBefore = composite.aborted;
+
+                second.abort('second-reason');
+
+                window.__abortAnyAfter = composite.aborted;
+                window.__abortAnyReason = String(composite.reason);
+                window.__abortAnyInstance = composite instanceof AbortSignal;
+            ");
+
+            var window = runtime.GetGlobal("window").AsObject();
+            Assert.NotNull(window);
+            Assert.False(window.Get("__abortAnyBefore").ToBoolean());
+            Assert.True(window.Get("__abortAnyAfter").ToBoolean());
+            Assert.Equal("second-reason", window.Get("__abortAnyReason").ToString());
+            Assert.True(window.Get("__abortAnyInstance").ToBoolean());
+        }
+
         private sealed class TinyResourceLimits : IResourceLimits
         {
             public int MaxCallStackDepth => 100;
