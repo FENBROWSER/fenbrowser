@@ -395,6 +395,10 @@ public class AddressBarWidget : Widget
         var mouse = FenBrowser.Host.Input.InputManager.Instance.Mouse;
         if (mouse == null) return;
 
+        if (x < 0 && y < 0) return; // Leave event
+        
+        base.OnMouseMove(x, y);
+
         // Check for hover over shield
         // Match click target expansion (+6)
         if (x >= Bounds.Left && x < Bounds.Left + IconPadding + 6)

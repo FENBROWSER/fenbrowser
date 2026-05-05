@@ -68,6 +68,7 @@ public class BrowserIntegration
     
     private string _overrideUrl;
     private Element? _highlightedElement;
+    private Element? _deferredScrollTarget;
     private string _pendingFragmentTargetId;
     private string _pendingFragmentSourceUrl;
     
@@ -133,6 +134,12 @@ public class BrowserIntegration
         _browser = new BrowserHost(options: BrowserIntegrationRuntime.CreateBrowserHostOptions());
         _renderer = new SkiaDomRenderer();
 
+        _browser.GetWindowRectDelegate = GetWebDriverWindowRect;
+        _browser.SetWindowRectDelegate = SetWebDriverWindowRect;
+        _browser.MaximizeWindowDelegate = MaximizeWebDriverWindow;
+        _browser.MinimizeWindowDelegate = MinimizeWebDriverWindow;
+        _browser.FullscreenWindowDelegate = FullscreenWebDriverWindow;
+
         // Inject the actual renderer into BrowserHost so its InputManager
         // hit tests use the populated paint tree instead of a stale copy.
         _browser.SetActiveRenderer(_renderer);
@@ -178,6 +185,7 @@ public class BrowserIntegration
             {
                 _lastNavigationTime = DateTime.Now;
                 _hasFirstStyledRender = false;
+                _deferredScrollTarget = null;
                 _scrollY = 0f;
                 _contentHeight = 0f;
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
@@ -305,6 +313,101 @@ public class BrowserIntegration
         {
             RequestFrame(RenderFrameInvalidationReason.Animation, "CssAnimationEngine");
         };
+    }
+
+    private (int Left, int Top, int Right, int Bottom) GetViewportInsets()
+    {
+        var wm = WindowManager.Instance;
+        var bounds = ChromeManager.Instance.GetWebContentBounds();
+
+        int left = Math.Max(0, (int)Math.Round(bounds.Left));
+        int top = Math.Max(0, (int)Math.Round(bounds.Top));
+        int right = Math.Max(0, wm.LogicalWidth - (int)Math.Round(bounds.Right));
+        int bottom = Math.Max(0, wm.LogicalHeight - (int)Math.Round(bounds.Bottom));
+        return (left, top, right, bottom);
+    }
+
+    private WindowRect GetWebDriverWindowRect()
+    {
+        var wm = WindowManager.Instance;
+        var window = wm.Window;
+        var insets = GetViewportInsets();
+
+        int width = Math.Max(1, wm.LogicalWidth - insets.Left - insets.Right);
+        int height = Math.Max(1, wm.LogicalHeight - insets.Top - insets.Bottom);
+        int x = (window?.Position.X ?? 0) + insets.Left;
+        int y = (window?.Position.Y ?? 0) + insets.Top;
+
+        return new WindowRect
+        {
+            X = x,
+            Y = y,
+            Width = width,
+            Height = height
+        };
+    }
+
+    private WindowRect SetWebDriverWindowRect(int? x, int? y, int? width, int? height)
+    {
+        var wm = WindowManager.Instance;
+        var window = wm.Window;
+        if (window == null)
+        {
+            return GetWebDriverWindowRect();
+        }
+
+        var insets = GetViewportInsets();
+        int currentViewportWidth = Math.Max(1, wm.LogicalWidth - insets.Left - insets.Right);
+        int currentViewportHeight = Math.Max(1, wm.LogicalHeight - insets.Top - insets.Bottom);
+        int targetViewportWidth = Math.Max(1, width ?? currentViewportWidth);
+        int targetViewportHeight = Math.Max(1, height ?? currentViewportHeight);
+
+        int outerWidth = Math.Max(1, targetViewportWidth + insets.Left + insets.Right);
+        int outerHeight = Math.Max(1, targetViewportHeight + insets.Top + insets.Bottom);
+        window.Size = new Silk.NET.Maths.Vector2D<int>(outerWidth, outerHeight);
+
+        if (x.HasValue || y.HasValue)
+        {
+            int targetX = x ?? ((window.Position.X) + insets.Left);
+            int targetY = y ?? ((window.Position.Y) + insets.Top);
+            window.Position = new Silk.NET.Maths.Vector2D<int>(targetX - insets.Left, targetY - insets.Top);
+        }
+
+        UpdateViewport(new SKSize(targetViewportWidth, targetViewportHeight));
+        return GetWebDriverWindowRect();
+    }
+
+    private WindowRect MaximizeWebDriverWindow()
+    {
+        var window = WindowManager.Instance.Window;
+        if (window != null)
+        {
+            window.WindowState = Silk.NET.Windowing.WindowState.Maximized;
+        }
+
+        return GetWebDriverWindowRect();
+    }
+
+    private WindowRect MinimizeWebDriverWindow()
+    {
+        var window = WindowManager.Instance.Window;
+        if (window != null)
+        {
+            window.WindowState = Silk.NET.Windowing.WindowState.Minimized;
+        }
+
+        return GetWebDriverWindowRect();
+    }
+
+    private WindowRect FullscreenWebDriverWindow()
+    {
+        var window = WindowManager.Instance.Window;
+        if (window != null)
+        {
+            window.WindowState = Silk.NET.Windowing.WindowState.Fullscreen;
+        }
+
+        return GetWebDriverWindowRect();
     }
 
     private void RequestFrame(RenderFrameInvalidationReason reason, string source, bool notifyUi = false)
@@ -1159,9 +1262,20 @@ public class BrowserIntegration
                     : 0;
             }
 
+            Element? deferredScroll = null;
             if (_styles != null && _styles.Count > 0)
             {
                 _hasFirstStyledRender = true;
+                if (_deferredScrollTarget != null)
+                {
+                    deferredScroll = _deferredScrollTarget;
+                    _deferredScrollTarget = null;
+                }
+            }
+
+            if (deferredScroll != null)
+            {
+                ScrollToElement(deferredScroll);
             }
 
             LogCommittedFrame(frameResult, viewportSize);
@@ -1469,8 +1583,9 @@ public class BrowserIntegration
         // before first styled paint can yank the viewport away from first fold.
         if (IsLoading || !_hasFirstStyledRender)
         {
+            _deferredScrollTarget = element;
             EngineLogBridge.Info(
-                $"[ScrollToElement] Ignored during startup: loading={IsLoading} firstStyled={_hasFirstStyledRender} tag={element.TagName} id={element.Id ?? "<none>"}",
+                $"[ScrollToElement] Deferred during startup: loading={IsLoading} firstStyled={_hasFirstStyledRender} tag={element.TagName} id={element.Id ?? "<none>"}",
                 LogCategory.Navigation);
             return;
         }

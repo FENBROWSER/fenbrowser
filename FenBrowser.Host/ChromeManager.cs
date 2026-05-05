@@ -284,6 +284,12 @@ namespace FenBrowser.Host
             return WindowManager.Instance.RunOnMainThread(action);
         }
 
+        public SKRect GetWebContentBounds()
+        {
+            var webContent = _root?.FindWidget<WebContentWidget>();
+            return webContent?.Bounds ?? SKRect.Empty;
+        }
+
         private static void RunOnUiThread(Action action)
         {
             var windowManager = WindowManager.Instance;
@@ -588,7 +594,7 @@ namespace FenBrowser.Host
              
              if (hit != null) {
                  if (!(hit is WebContentWidget)) {
-                     CursorManager.ResetCursor(m);
+                     CursorManager.UpdateCursor(m, GetCursorForWidget(hit));
                      _statusBar?.ClearHoverUrl();
                  }
                  
@@ -660,6 +666,24 @@ namespace FenBrowser.Host
              _processIsolation?.Shutdown();
              ProcessIsolationRuntime.SetCoordinator(null);
              _remoteDebugServer?.Dispose();
+        }
+
+        /// <summary>
+        /// Map a widget's semantic role to the correct cursor type.
+        /// Buttons/tabs/links → pointer (hand), edit widgets → text (I-beam), others → default (arrow).
+        /// Individual widgets can further override via their OnMouseMove.
+        /// </summary>
+        private static FenBrowser.FenEngine.Interaction.CursorType GetCursorForWidget(Widget widget)
+        {
+            return widget.Role switch
+            {
+                WidgetRole.Button => FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                WidgetRole.Link => FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                WidgetRole.Tab => FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                WidgetRole.TabItem => FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                WidgetRole.Edit => FenBrowser.FenEngine.Interaction.CursorType.Text,
+                _ => FenBrowser.FenEngine.Interaction.CursorType.Default,
+            };
         }
     }
 }

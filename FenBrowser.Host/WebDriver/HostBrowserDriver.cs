@@ -473,18 +473,136 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> TakeScreenshotAsync()
         {
-            return await RunOnMainThread(() =>
+            const int maxAttempts = 10;
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
-                var bitmap = WindowManager.Instance.CaptureScreenshot();
-                if (bitmap != null)
+                await RunOnMainThread(() =>
                 {
-                    using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
-                    using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
-                    return Convert.ToBase64String(data.ToArray());
+                    var activeTab = _tabs.ActiveTab;
+                    if (activeTab == null)
+                    {
+                        return;
+                    }
+
+                    var bounds = ChromeManager.Instance.GetWebContentBounds();
+                    FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.OnFrameRequested(activeTab, bounds.Width, bounds.Height);
+                    activeTab.Browser.RequestRepaint();
+                });
+
+                // Allow the render thread to process the requested frame before capture.
+                await Task.Delay(70).ConfigureAwait(false);
+
+                var capture = await RunOnMainThread(() =>
+                {
+                    var bitmap = WindowManager.Instance.CaptureScreenshot();
+                    if (bitmap == null)
+                    {
+                        return (Base64: string.Empty, IsSolid: true, Width: 0, Height: 0);
+                    }
+
+                    try
+                    {
+                        var screenshotBitmap = TryCropToWebViewport(bitmap);
+                        try
+                        {
+                            var isSolid = IsSolidColor(screenshotBitmap);
+                            using var image = SkiaSharp.SKImage.FromBitmap(screenshotBitmap);
+                            using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+                            return (
+                                Base64: Convert.ToBase64String(data.ToArray()),
+                                IsSolid: isSolid,
+                                Width: screenshotBitmap.Width,
+                                Height: screenshotBitmap.Height);
+                        }
+                        finally
+                        {
+                            if (!ReferenceEquals(screenshotBitmap, bitmap))
+                            {
+                                screenshotBitmap.Dispose();
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        bitmap.Dispose();
+                    }
+                });
+
+                if (!capture.IsSolid)
+                {
+                    return capture.Base64;
                 }
 
-                return "";
-            });
+                if (attempt == maxAttempts - 1)
+                {
+                    return capture.Base64;
+                }
+
+                // Solid captures can occur while waiting for asynchronous paint submission.
+                // Retry with a short progressive backoff rather than synthesizing pixels.
+                await Task.Delay(60 + (attempt * 20)).ConfigureAwait(false);
+            }
+
+            return string.Empty;
+        }
+
+        private static bool IsSolidColor(SkiaSharp.SKBitmap bitmap)
+        {
+            if (bitmap == null || bitmap.Width <= 0 || bitmap.Height <= 0)
+            {
+                return true;
+            }
+
+            var first = bitmap.GetPixel(0, 0);
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                for (var x = 0; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y) != first)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static SkiaSharp.SKBitmap TryCropToWebViewport(SkiaSharp.SKBitmap sourceBitmap)
+        {
+            var contentBounds = ChromeManager.Instance.GetWebContentBounds();
+            if (contentBounds.Width <= 1 || contentBounds.Height <= 1)
+            {
+                return sourceBitmap;
+            }
+
+            var dpiScale = Math.Max(WindowManager.Instance.DpiScale, 1f);
+            var left = (int)Math.Floor(contentBounds.Left * dpiScale);
+            var top = (int)Math.Floor(contentBounds.Top * dpiScale);
+            var right = (int)Math.Ceiling(contentBounds.Right * dpiScale);
+            var bottom = (int)Math.Ceiling(contentBounds.Bottom * dpiScale);
+
+            left = Math.Max(0, Math.Min(left, sourceBitmap.Width));
+            top = Math.Max(0, Math.Min(top, sourceBitmap.Height));
+            right = Math.Max(left, Math.Min(right, sourceBitmap.Width));
+            bottom = Math.Max(top, Math.Min(bottom, sourceBitmap.Height));
+
+            var width = right - left;
+            var height = bottom - top;
+            if (width <= 1 || height <= 1)
+            {
+                return sourceBitmap;
+            }
+
+            var cropRect = new SkiaSharp.SKRectI(left, top, right, bottom);
+            var cropped = new SkiaSharp.SKBitmap(width, height, sourceBitmap.ColorType, sourceBitmap.AlphaType);
+            if (!sourceBitmap.ExtractSubset(cropped, cropRect))
+            {
+                cropped.Dispose();
+                return sourceBitmap;
+            }
+
+            return cropped;
         }
 
         public async Task<string> TakeElementScreenshotAsync(object element)
@@ -512,35 +630,50 @@ namespace FenBrowser.Host.WebDriver
 
         public (int x, int y, int width, int height) GetWindowRect()
         {
-            var host = GetActiveHostOrThrow();
-            var rect = host.GetWindowRect();
+            var rect = RunOnMainThread(() =>
+            {
+                var host = GetActiveHostOrThrow();
+                return host.GetWindowRect();
+            }).GetAwaiter().GetResult();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public void SetWindowRect(int? x, int? y, int? width, int? height)
         {
-            var host = GetActiveHostOrThrow();
-            host.SetWindowRect(x, y, width, height);
+            RunOnMainThread(() =>
+            {
+                var host = GetActiveHostOrThrow();
+                host.SetWindowRect(x, y, width, height);
+            }).GetAwaiter().GetResult();
         }
 
         public (int x, int y, int width, int height) MaximizeWindow()
         {
-            var host = GetActiveHostOrThrow();
-            var rect = host.MaximizeWindow();
+            var rect = RunOnMainThread(() =>
+            {
+                var host = GetActiveHostOrThrow();
+                return host.MaximizeWindow();
+            }).GetAwaiter().GetResult();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public (int x, int y, int width, int height) MinimizeWindow()
         {
-            var host = GetActiveHostOrThrow();
-            var rect = host.MinimizeWindow();
+            var rect = RunOnMainThread(() =>
+            {
+                var host = GetActiveHostOrThrow();
+                return host.MinimizeWindow();
+            }).GetAwaiter().GetResult();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
         public (int x, int y, int width, int height) FullscreenWindow()
         {
-            var host = GetActiveHostOrThrow();
-            var rect = host.FullscreenWindow();
+            var rect = RunOnMainThread(() =>
+            {
+                var host = GetActiveHostOrThrow();
+                return host.FullscreenWindow();
+            }).GetAwaiter().GetResult();
             return (rect.X, rect.Y, rect.Width, rect.Height);
         }
 
