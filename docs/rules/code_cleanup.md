@@ -775,21 +775,31 @@ Those claims require broad evidence.
 
 Truth table of supported, partial, experimental, and missing systems.
 
+Status: Added (2026-05-05).
+
 ### `CONTRIBUTING_ENGINE.md`
 
 Rules for patches, tests, AI use, and browser-engine standards.
+
+Status: Added (2026-05-05).
 
 ### `QUIRKS.md`
 
 List of temporary compatibility quirks and removal conditions.
 
+Status: Added (2026-05-05).
+
 ### `TESTING.md`
 
 How to run unit tests, layout tests, reduced tests, WPT subsets, and screenshot comparisons.
 
+Status: Added (2026-05-05).
+
 ### `RISK_REGISTER.md`
 
 Known technical debt and severity.
+
+Status: Added (2026-05-05).
 
 Example:
 
