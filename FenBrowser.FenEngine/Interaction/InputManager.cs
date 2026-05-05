@@ -177,6 +177,11 @@ namespace FenBrowser.FenEngine.Interaction
             domEvent.Set("tiltY", FenValue.FromNumber(evt.TiltY));
             domEvent.Set("isPrimary", FenValue.FromBoolean(evt.IsPrimary));
             domEvent.Set("pointerCaptured", FenValue.FromBoolean(evt.PointerCaptured));
+            if (IsKeyboardInputEvent(evt.Type))
+            {
+                var key = string.IsNullOrWhiteSpace(evt.Key) ? "Unidentified" : evt.Key;
+                domEvent.Set("key", FenValue.FromString(key));
+            }
 
             if (evt.TouchPoints.Count > 0)
             {
@@ -207,6 +212,11 @@ namespace FenBrowser.FenEngine.Interaction
             }
 
             return FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(evt.Target, domEvent, context);
+        }
+
+        private static bool IsKeyboardInputEvent(InputEventType type)
+        {
+            return type == InputEventType.KeyDown || type == InputEventType.KeyUp;
         }
 
         private readonly struct DomEventMetadata
