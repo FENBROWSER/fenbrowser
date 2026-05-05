@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
+using System;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace FenBrowser.Tests.Rendering
@@ -35,6 +38,44 @@ namespace FenBrowser.Tests.Rendering
 
             Assert.NotNull(textNode);
             Assert.Equal(0, textNode.Color.Alpha);
+        }
+
+        [Fact]
+        public async Task AuthoredTextColor_PaintsWithComputedForeground()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>#probe { color: rgb(12, 34, 56); }</style>
+</head>
+<body>
+  <p id='probe'>Hello Paint</p>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            computer.Measure(doc, new SKSize(800, 600));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var boxes = (ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
+
+            var textNode = Flatten(tree.Roots)
+                .OfType<TextPaintNode>()
+                .FirstOrDefault(n => !string.IsNullOrEmpty(n.FallbackText) && n.FallbackText.Contains("Hello Paint", StringComparison.Ordinal));
+
+            Assert.NotNull(textNode);
+            Assert.Equal((byte)12, textNode.Color.Red);
+            Assert.Equal((byte)34, textNode.Color.Green);
+            Assert.Equal((byte)56, textNode.Color.Blue);
+            Assert.Equal((byte)255, textNode.Color.Alpha);
         }
 
         private static ImmutablePaintTree RunPipeline(Element root, Dictionary<Node, CssComputed> styles)
