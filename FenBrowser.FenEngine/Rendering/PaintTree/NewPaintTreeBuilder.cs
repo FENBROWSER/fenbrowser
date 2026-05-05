@@ -4885,7 +4885,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
             // filter creates stacking context
             // Note: filter is not yet fully implemented for rendering, but it MUST create a stacking context
-            // to support overlays like the "AI Mode" overlay or backdrop-filters.
+            // to support overlay and backdrop-filter layering behavior.
             if (!string.IsNullOrEmpty(style.Filter) && style.Filter != "none")
                 return true;
 
