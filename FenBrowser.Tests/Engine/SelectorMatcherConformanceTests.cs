@@ -648,6 +648,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void BlankPseudoClass_MatchesWhitespaceOnlyInputs()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='blank' value='   ' />
+    <input id='filled' value='x' />
+</body></html>");
+
+            var blank = ById(doc, "blank");
+            var filled = ById(doc, "filled");
+
+            Assert.True(SelectorMatcher.Matches(blank, ":blank"));
+            Assert.False(SelectorMatcher.Matches(filled, ":blank"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

@@ -955,6 +955,32 @@ namespace FenBrowser.FenEngine.Rendering
                    resolved.Port == docUri.Port;
         }
 
+        public static bool IsBlankInput(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.IsNullOrWhiteSpace(element.GetAttribute("value"));
+            }
+
+            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                var value = element.GetAttribute("value");
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return false;
+                }
+
+                return string.IsNullOrWhiteSpace(element.TextContent);
+            }
+
+            return false;
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
