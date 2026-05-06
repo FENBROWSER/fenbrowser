@@ -1,11 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
-using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Security;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
@@ -15,111 +14,78 @@ namespace FenBrowser.FenEngine.WebAPIs
     /// </summary>
     public static class MediaDevicesAPI
     {
-        private static FenValue _onDeviceChangeHandler;
-        private static IExecutionContext _context;
+        private sealed class MediaDevicesState
+        {
+            public FenValue OnDeviceChangeHandler { get; set; } = FenValue.Null;
+        }
 
         public static FenObject CreateMediaDevices(IExecutionContext context)
         {
-            _context = context;
             var mediaDevices = new FenObject();
+            var state = new MediaDevicesState();
 
-            _onDeviceChangeHandler = FenValue.Null;
-            mediaDevices.Set("ondevicechange", _onDeviceChangeHandler);
+            mediaDevices.Set("ondevicechange", state.OnDeviceChangeHandler);
 
-            mediaDevices.Set("getUserMedia", FenValue.FromFunction(new FenFunction("getUserMedia", (args, thisVal) => GetUserMedia(args, thisVal, context))));
-            mediaDevices.Set("enumerateDevices", FenValue.FromFunction(new FenFunction("enumerateDevices", (args, thisVal) => EnumerateDevices(args, thisVal, context))));
-            mediaDevices.Set("getDisplayMedia", FenValue.FromFunction(new FenFunction("getDisplayMedia", (args, thisVal) => GetDisplayMedia(args, thisVal, context))));
+            mediaDevices.Set("getUserMedia", FenValue.FromFunction(new FenFunction("getUserMedia", (args, thisVal) => GetUserMedia(args, context))));
+            mediaDevices.Set("enumerateDevices", FenValue.FromFunction(new FenFunction("enumerateDevices", (args, thisVal) => EnumerateDevices(context))));
+            mediaDevices.Set("getDisplayMedia", FenValue.FromFunction(new FenFunction("getDisplayMedia", (args, thisVal) => GetDisplayMedia(context))));
 
-            SetupEventTargetMethods(mediaDevices, context);
+            SetupEventTargetMethods(mediaDevices, state);
             return mediaDevices;
         }
 
-        private static FenValue GetUserMedia(FenValue[] args, FenValue thisVal, IExecutionContext context)
+        private static FenValue GetUserMedia(FenValue[] args, IExecutionContext context)
         {
-            bool audioRequested = false;
-            bool videoRequested = false;
+            if (!TryParseRequestedMedia(args, out var audioRequested, out var videoRequested, out var parseError))
+                return Reject(parseError, context);
 
-            if (args.Length > 0 && args[0].IsObject)
-            {
-                var constraints = args[0].AsObject();
-                var audio = constraints.Get("audio");
-                var video = constraints.Get("video");
+            if (!IsSecureContext(context))
+                return Reject("NotAllowedError: getUserMedia() requires a secure context.", context);
 
-                audioRequested = !audio.IsNull && audio.IsObject
-                    ? !IsConstraintFalse(audio.AsObject().Get("exact"))
-                    : audio.IsBoolean && audio.AsBoolean();
+            if (!HasCameraPermission(context, "navigator.mediaDevices.getUserMedia"))
+                return Reject("NotAllowedError: Permission denied for camera/microphone access.", context);
 
-                videoRequested = !video.IsNull && video.IsObject
-                    ? !IsConstraintFalse(video.AsObject().Get("exact"))
-                    : video.IsBoolean && video.AsBoolean();
-            }
+            EngineLogCompat.Warn(
+                $"[MediaDevicesAPI] getUserMedia blocked: audio={audioRequested}, video={videoRequested}, no capture backend registered",
+                LogCategory.JavaScript);
 
-            EngineLogCompat.Warn($"[MediaDevicesAPI] getUserMedia called - audio={audioRequested}, video={videoRequested} (stub implementation)", LogCategory.JavaScript);
-
-            var stream = new MediaStream();
-
-            if (audioRequested)
-            {
-                var audioTrack = new MediaStreamTrack("audio", "Microphone (FAKE)");
-                stream.AddTrack(audioTrack);
-            }
-
-            if (videoRequested)
-            {
-                var videoTrack = new MediaStreamTrack("video", "Camera (FAKE)");
-                stream.AddTrack(videoTrack);
-            }
-
-            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(stream), context));
+            return Reject("NotFoundError: No camera or microphone devices are available.", context);
         }
 
-        private static FenValue EnumerateDevices(FenValue[] args, FenValue thisVal, IExecutionContext context)
+        private static FenValue EnumerateDevices(IExecutionContext context)
         {
-            var devices = new FenObject();
-            var deviceList = new List<FenObject>();
+            if (!IsSecureContext(context))
+                return Reject("NotAllowedError: enumerateDevices() requires a secure context.", context);
 
-            var videoInput = new FenObject();
-            videoInput.Set("kind", FenValue.FromString("videoinput"));
-            videoInput.Set("label", FenValue.FromString("Camera (FAKE - permission denied)"));
-            videoInput.Set("deviceId", FenValue.FromString("fake-camera-id"));
-            videoInput.Set("groupId", FenValue.FromString("fake-group-id"));
-            deviceList.Add(videoInput);
-
-            var audioInput = new FenObject();
-            audioInput.Set("kind", FenValue.FromString("audioinput"));
-            audioInput.Set("label", FenValue.FromString("Microphone (FAKE - permission denied)"));
-            audioInput.Set("deviceId", FenValue.FromString("fake-mic-id"));
-            audioInput.Set("groupId", FenValue.FromString("fake-group-id"));
-            deviceList.Add(audioInput);
-
-            var audioOutput = new FenObject();
-            audioOutput.Set("kind", FenValue.FromString("audiooutput"));
-            audioOutput.Set("label", FenValue.FromString("Speaker (FAKE - permission denied)"));
-            audioOutput.Set("deviceId", FenValue.FromString("fake-speaker-id"));
-            audioOutput.Set("groupId", FenValue.FromString("fake-group-id"));
-            deviceList.Add(audioOutput);
-
-            devices.Set("length", FenValue.FromNumber(deviceList.Count));
-            for (int i = 0; i < deviceList.Count; i++)
-                devices.Set(i.ToString(), FenValue.FromObject(deviceList[i]));
-
-            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(devices), context));
+            // Privacy-first: without a host capture backend we do not invent fake devices
+            // or labels. Return a deterministic empty list.
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateDeviceArray(Array.Empty<FenObject>())), context));
         }
 
-        private static FenValue GetDisplayMedia(FenValue[] args, FenValue thisVal, IExecutionContext context)
+        private static FenValue GetDisplayMedia(IExecutionContext context)
         {
-            EngineLogCompat.Warn("[MediaDevicesAPI] getDisplayMedia called - screen picker UI not yet implemented", LogCategory.JavaScript);
-            return FenValue.FromObject(ResolvedThenable.Rejected("NotAllowedError: getDisplayMedia() requires user permission", context));
+            if (!IsSecureContext(context))
+                return Reject("NotAllowedError: getDisplayMedia() requires a secure context.", context);
+
+            if (!HasCameraPermission(context, "navigator.mediaDevices.getDisplayMedia"))
+                return Reject("NotAllowedError: Permission denied for screen capture.", context);
+
+            EngineLogCompat.Warn("[MediaDevicesAPI] getDisplayMedia blocked: no screen picker backend registered", LogCategory.JavaScript);
+            return Reject("NotFoundError: Screen capture backend is not available.", context);
         }
 
-        private static void SetupEventTargetMethods(FenObject mediaDevices, IExecutionContext context)
+        private static void SetupEventTargetMethods(FenObject mediaDevices, MediaDevicesState state)
         {
             mediaDevices.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 var type = args[0].ToString();
                 var listener = args[1];
-                if (type == "devicechange") _onDeviceChangeHandler = listener;
+                if (type == "devicechange")
+                {
+                    state.OnDeviceChangeHandler = listener;
+                    mediaDevices.Set("ondevicechange", listener);
+                }
                 return FenValue.Undefined;
             })));
 
@@ -127,14 +93,125 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 var type = args[0].ToString();
-                if (type == "devicechange") _onDeviceChangeHandler = FenValue.Null;
+                if (type == "devicechange")
+                {
+                    state.OnDeviceChangeHandler = FenValue.Null;
+                    mediaDevices.Set("ondevicechange", FenValue.Null);
+                }
                 return FenValue.Undefined;
             })));
         }
 
-        private static bool IsConstraintFalse(FenValue val)
+        private static bool TryParseRequestedMedia(FenValue[] args, out bool audioRequested, out bool videoRequested, out string error)
         {
-            return val.IsBoolean && !val.AsBoolean();
+            audioRequested = false;
+            videoRequested = false;
+            error = null;
+
+            if (args.Length == 0 || !args[0].IsObject)
+            {
+                error = "TypeError: getUserMedia() requires a constraints object.";
+                return false;
+            }
+
+            var constraints = args[0].AsObject();
+            if (constraints == null)
+            {
+                error = "TypeError: getUserMedia() requires a constraints object.";
+                return false;
+            }
+
+            audioRequested = IsTrackRequested(constraints.Get("audio"));
+            videoRequested = IsTrackRequested(constraints.Get("video"));
+
+            if (!audioRequested && !videoRequested)
+            {
+                error = "TypeError: getUserMedia() requires at least one of audio/video to be requested.";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsTrackRequested(FenValue trackConstraint)
+        {
+            if (trackConstraint.IsUndefined || trackConstraint.IsNull)
+                return false;
+
+            if (trackConstraint.IsBoolean)
+                return trackConstraint.AsBoolean();
+
+            if (!trackConstraint.IsObject)
+                return false;
+
+            var obj = trackConstraint.AsObject();
+            if (obj == null)
+                return false;
+
+            var exact = obj.Get("exact");
+            if (exact.IsBoolean && !exact.AsBoolean())
+                return false;
+
+            return true;
+        }
+
+        private static bool HasCameraPermission(IExecutionContext context, string operation)
+        {
+            var permissions = context?.Permissions;
+            if (permissions == null)
+                return false;
+
+            return permissions.CheckAndLog(JsPermissions.Camera, operation);
+        }
+
+        private static bool IsSecureContext(IExecutionContext context)
+        {
+            var documentUrl = context?.DocumentUrl;
+            if (documentUrl == null || !documentUrl.IsAbsoluteUri)
+                return false;
+
+            var scheme = documentUrl.Scheme ?? string.Empty;
+            if (scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (scheme.Equals("fen", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+                return IsLoopbackHost(documentUrl.Host);
+
+            return false;
+        }
+
+        private static bool IsLoopbackHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+                return false;
+
+            if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (host.Equals("::1", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (host.StartsWith("127.", StringComparison.Ordinal))
+                return true;
+
+            return false;
+        }
+
+        private static FenObject CreateDeviceArray(IReadOnlyList<FenObject> devices)
+        {
+            var arr = new FenObject();
+            arr.Set("length", FenValue.FromNumber(devices.Count));
+            for (int i = 0; i < devices.Count; i++)
+                arr.Set(i.ToString(), FenValue.FromObject(devices[i]));
+            return arr;
+        }
+
+        private static FenValue Reject(string reason, IExecutionContext context)
+        {
+            return FenValue.FromObject(ResolvedThenable.Rejected(reason, context));
         }
     }
 }
