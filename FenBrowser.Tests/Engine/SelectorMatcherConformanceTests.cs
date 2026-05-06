@@ -723,6 +723,32 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DisabledPseudoClass_RespectsFieldsetAndOptGroupInheritance()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <fieldset disabled>
+        <legend><input id='legend-input' /></legend>
+        <input id='fieldset-input' />
+    </fieldset>
+    <select>
+        <optgroup disabled>
+            <option id='disabled-option'>A</option>
+        </optgroup>
+    </select>
+</body></html>");
+
+            var legendInput = ById(doc, "legend-input");
+            var fieldsetInput = ById(doc, "fieldset-input");
+            var disabledOption = ById(doc, "disabled-option");
+
+            Assert.False(SelectorMatcher.Matches(legendInput, ":disabled"));
+            Assert.True(SelectorMatcher.Matches(fieldsetInput, ":disabled"));
+            Assert.True(SelectorMatcher.Matches(disabledOption, ":disabled"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

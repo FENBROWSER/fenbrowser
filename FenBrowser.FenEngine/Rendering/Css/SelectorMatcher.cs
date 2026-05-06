@@ -897,7 +897,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "local-link": return ElementStateManager.IsLocalLinkElement(el);
                 case "blank": return ElementStateManager.IsBlankInput(el);
                 case "checked": return IsCheckedFormControl(el);
-                case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
+                case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
+                                         ElementStateManager.IsEffectivelyDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);
                 case "focus": return ElementStateManager.Instance.IsFocused(el);
                 case "hover": return ElementStateManager.Instance.IsHovered(el);

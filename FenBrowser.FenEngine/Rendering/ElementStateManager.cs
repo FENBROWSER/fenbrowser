@@ -981,6 +981,92 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
 
+        public static bool IsEffectivelyDisabled(Element element)
+        {
+            if (element == null || !SupportsEnabledDisabledPseudoClass(element))
+            {
+                return false;
+            }
+
+            if (element.HasAttribute("disabled"))
+            {
+                return true;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+
+            if (tag == "option")
+            {
+                var parent = element.ParentElement;
+                if (parent != null &&
+                    (string.Equals(parent.TagName, "optgroup", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(parent.TagName, "select", StringComparison.OrdinalIgnoreCase)) &&
+                    parent.HasAttribute("disabled"))
+                {
+                    return true;
+                }
+            }
+
+            if (tag == "optgroup")
+            {
+                var parentSelect = element.ParentElement;
+                if (parentSelect != null &&
+                    string.Equals(parentSelect.TagName, "select", StringComparison.OrdinalIgnoreCase) &&
+                    parentSelect.HasAttribute("disabled"))
+                {
+                    return true;
+                }
+            }
+
+            for (var ancestor = element.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+            {
+                if (!string.Equals(ancestor.TagName, "fieldset", StringComparison.OrdinalIgnoreCase) ||
+                    !ancestor.HasAttribute("disabled"))
+                {
+                    continue;
+                }
+
+                if (IsInsideFirstLegend(ancestor, element))
+                {
+                    return false;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        public static bool SupportsEnabledDisabledPseudoClass(Element element)
+        {
+            var tag = element?.TagName?.ToLowerInvariant();
+            return tag == "button" ||
+                   tag == "input" ||
+                   tag == "select" ||
+                   tag == "textarea" ||
+                   tag == "fieldset" ||
+                   tag == "option" ||
+                   tag == "optgroup";
+        }
+
+        private static bool IsInsideFirstLegend(Element fieldset, Element target)
+        {
+            var firstLegend = fieldset.Children?
+                .OfType<Element>()
+                .FirstOrDefault(child => string.Equals(child.TagName, "legend", StringComparison.OrdinalIgnoreCase));
+            if (firstLegend == null)
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(firstLegend, target))
+            {
+                return true;
+            }
+
+            return firstLegend.Descendants().OfType<Element>().Any(desc => ReferenceEquals(desc, target));
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
