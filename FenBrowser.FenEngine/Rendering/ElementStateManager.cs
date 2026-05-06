@@ -847,6 +847,38 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Equals(element.GetAttribute("indeterminate"), "true", StringComparison.OrdinalIgnoreCase);
         }
 
+        public static bool IsOpenElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag != "details" && tag != "dialog")
+            {
+                return false;
+            }
+
+            return element.HasAttribute("open");
+        }
+
+        public static bool IsClosedElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag != "details" && tag != "dialog")
+            {
+                return false;
+            }
+
+            return !element.HasAttribute("open");
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,

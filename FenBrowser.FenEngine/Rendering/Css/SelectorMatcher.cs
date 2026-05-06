@@ -890,6 +890,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "placeholder-shown": return ElementStateManager.IsPlaceholderShown(el);
                 case "default": return ElementStateManager.IsDefaultControl(el);
                 case "indeterminate": return ElementStateManager.IsIndeterminate(el);
+                case "open": return ElementStateManager.IsOpenElement(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);
