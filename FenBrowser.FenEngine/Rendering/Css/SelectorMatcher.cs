@@ -892,6 +892,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "indeterminate": return ElementStateManager.IsIndeterminate(el);
                 case "open": return ElementStateManager.IsOpenElement(el);
                 case "closed": return ElementStateManager.IsClosedElement(el);
+                case "modal": return ElementStateManager.IsModalElement(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);

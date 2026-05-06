@@ -879,6 +879,26 @@ namespace FenBrowser.FenEngine.Rendering
             return !element.HasAttribute("open");
         }
 
+        public static bool IsModalElement(Element element)
+        {
+            if (element == null || !string.Equals(element.TagName, "dialog", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (!element.HasAttribute("open"))
+            {
+                return false;
+            }
+
+            if (string.Equals(element.GetAttribute("data-top-layer"), "modal", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return element.OwnerDocument?.TopLayer?.Contains(element) == true;
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,

@@ -591,6 +591,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ModalPseudoClass_MatchesOpenDialogInModalTopLayer()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <dialog id='modal' open data-top-layer='modal'></dialog>
+    <dialog id='non-modal' open></dialog>
+</body></html>");
+
+            var modal = ById(doc, "modal");
+            var nonModal = ById(doc, "non-modal");
+
+            Assert.True(SelectorMatcher.Matches(modal, ":modal"));
+            Assert.False(SelectorMatcher.Matches(nonModal, ":modal"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
