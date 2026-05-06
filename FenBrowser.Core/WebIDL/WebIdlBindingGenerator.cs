@@ -704,7 +704,7 @@ namespace FenBrowser.Core.WebIDL
             sb.AppendLine("            if (UnwrapImpl != null) return UnwrapImpl(obj);");
             sb.AppendLine("            var slot = obj.Get(\"[[NativeRef]]\");");
             sb.AppendLine("            // NativeRef slot stores target as IObject with Target property (dynamic dispatch)");
-            sb.AppendLine("            if (slot.IsObject) { dynamic wrapper = slot.AsObject(); try { return wrapper.Target; } catch { } }");
+            sb.AppendLine("            if (slot.IsObject) { dynamic wrapper = slot.AsObject(); try { return wrapper.Target; } catch (Exception) { return null; } }");
             sb.AppendLine("            return null;");
             sb.AppendLine("        }");
             sb.AppendLine();
