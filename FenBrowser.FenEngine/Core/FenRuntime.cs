@@ -26,6 +26,7 @@ using FenBrowser.FenEngine.Errors;
 using FenBrowser.FenEngine.Compatibility;
 using FenBrowser.FenEngine.Security;
 using System.Diagnostics;
+using FenBrowser.FenEngine.Workers;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -161,6 +162,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             public MessagePortEndpoint Entangled { get; set; }
             public bool Closed { get; set; }
             public List<FenValue> MessageListeners { get; } = new List<FenValue>();
+            public List<FenValue> MessageErrorListeners { get; } = new List<FenValue>();
         }
 
         private sealed class BroadcastChannelEndpoint
@@ -169,6 +171,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             public FenObject ChannelObject { get; set; }
             public bool Closed { get; set; }
             public List<FenValue> MessageListeners { get; } = new List<FenValue>();
+            public List<FenValue> MessageErrorListeners { get; } = new List<FenValue>();
         }
 
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
@@ -629,6 +632,140 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             }
         }
 
+        private bool IsSupportedMessageListener(FenValue listener)
+        {
+            if (listener.IsFunction)
+            {
+                return true;
+            }
+
+            if (!listener.IsObject)
+            {
+                return false;
+            }
+
+            var handleEvent = listener.AsObject()?.Get("handleEvent", _context) ?? FenValue.Undefined;
+            return handleEvent.IsFunction;
+        }
+
+        private static void AddUniqueMessageListener(List<FenValue> listeners, FenValue listener)
+        {
+            if (listeners == null)
+            {
+                return;
+            }
+
+            foreach (var existing in listeners)
+            {
+                if (existing == listener)
+                {
+                    return;
+                }
+            }
+
+            listeners.Add(listener);
+        }
+
+        private static void RemoveMessageListener(List<FenValue> listeners, FenValue listener)
+        {
+            if (listeners == null || listeners.Count == 0)
+            {
+                return;
+            }
+
+            listeners.RemoveAll(existing => existing == listener);
+        }
+
+        private static bool IsMessagePortEventType(string type, out bool isMessageError)
+        {
+            isMessageError = false;
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                return false;
+            }
+
+            if (string.Equals(type, "message", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(type, "messageerror", StringComparison.OrdinalIgnoreCase))
+            {
+                isMessageError = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static FenValue[] ExtractTransferListFromMessageArgument(FenValue transferOrOptions)
+        {
+            if (transferOrOptions.IsUndefined || transferOrOptions.IsNull || !transferOrOptions.IsObject)
+            {
+                return null;
+            }
+
+            FenValue listValue = transferOrOptions;
+            var optionsObject = transferOrOptions.AsObject();
+            var transferValue = optionsObject?.Get("transfer") ?? FenValue.Undefined;
+            if (transferValue.IsObject)
+            {
+                listValue = transferValue;
+            }
+
+            var listObject = listValue.AsObject();
+            if (listObject == null)
+            {
+                return null;
+            }
+
+            var lengthValue = listObject.Get("length");
+            if (!lengthValue.IsNumber)
+            {
+                return null;
+            }
+
+            var length = (int)Math.Max(0, lengthValue.ToNumber());
+            if (length == 0)
+            {
+                return Array.Empty<FenValue>();
+            }
+
+            var transferList = new FenValue[length];
+            for (int i = 0; i < length; i++)
+            {
+                transferList[i] = listObject.Get(i.ToString());
+            }
+
+            return transferList;
+        }
+
+        private FenValue CloneMessagePayloadForChannel(FenValue payload, FenValue transferOrOptions)
+        {
+            try
+            {
+                var transferList = ExtractTransferListFromMessageArgument(transferOrOptions);
+                if (transferList != null)
+                {
+                    return StructuredClone.CloneFenValueWithTransfer(payload, transferList);
+                }
+
+                return StructuredClone.CloneFenValue(payload);
+            }
+            catch (StructuredCloneException ex)
+            {
+                throw new FenTypeError(ex.Message);
+            }
+            catch (FenTypeError)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new FenTypeError($"DataCloneError: {ex.Message}");
+            }
+        }
+
         private FenObject CreateMessagePortObject(MessagePortEndpoint endpoint)
         {
             var port = new FenObject();
@@ -640,21 +777,41 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             port.Set("close", FenValue.FromFunction(new FenFunction("close", (args, thisVal) =>
             {
                 endpoint.Closed = true;
+                if (endpoint.Entangled != null)
+                {
+                    endpoint.Entangled.Entangled = null;
+                    endpoint.Entangled = null;
+                }
                 return FenValue.Undefined;
             })));
             port.Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
             {
+                if (endpoint.Closed)
+                {
+                    return FenValue.Undefined;
+                }
+
                 TraceXBootMessagePort($"MessagePort.postMessage sourceClosed={endpoint.Closed} hasTarget={endpoint.Entangled != null}");
-                EnqueueMessagePortDelivery(endpoint, args.Length > 0 ? args[0] : FenValue.Undefined);
+                var payload = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var transferOrOptions = args.Length > 1 ? args[1] : FenValue.Undefined;
+                var clonedPayload = CloneMessagePayloadForChannel(payload, transferOrOptions);
+                EnqueueMessagePortDelivery(endpoint, clonedPayload);
                 return FenValue.Undefined;
             })));
             port.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
             {
                 if (args.Length >= 2 &&
-                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
-                    args[1].IsFunction)
+                    IsMessagePortEventType(args[0].ToString(), out var isMessageError) &&
+                    IsSupportedMessageListener(args[1]))
                 {
-                    endpoint.MessageListeners.Add(args[1]);
+                    if (isMessageError)
+                    {
+                        AddUniqueMessageListener(endpoint.MessageErrorListeners, args[1]);
+                    }
+                    else
+                    {
+                        AddUniqueMessageListener(endpoint.MessageListeners, args[1]);
+                    }
                 }
 
                 return FenValue.Undefined;
@@ -662,13 +819,16 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             port.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
             {
                 if (args.Length >= 2 &&
-                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
-                    args[1].IsFunction)
+                    IsMessagePortEventType(args[0].ToString(), out var isMessageError))
                 {
-                    var callback = args[1].AsFunction();
-                    endpoint.MessageListeners.RemoveAll(existing =>
-                        existing.IsFunction &&
-                        existing.AsFunction() == callback);
+                    if (isMessageError)
+                    {
+                        RemoveMessageListener(endpoint.MessageErrorListeners, args[1]);
+                    }
+                    else
+                    {
+                        RemoveMessageListener(endpoint.MessageListeners, args[1]);
+                    }
                 }
 
                 return FenValue.Undefined;
@@ -764,16 +924,30 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             })));
             channel.Set("postMessage", FenValue.FromFunction(new FenFunction("postMessage", (args, thisVal) =>
             {
-                EnqueueBroadcastChannelDelivery(endpoint, args.Length > 0 ? args[0] : FenValue.Undefined);
+                if (endpoint.Closed)
+                {
+                    throw new FenTypeError("InvalidStateError: BroadcastChannel is closed");
+                }
+
+                var payload = args.Length > 0 ? args[0] : FenValue.Undefined;
+                var clonedPayload = CloneMessagePayloadForChannel(payload, FenValue.Undefined);
+                EnqueueBroadcastChannelDelivery(endpoint, clonedPayload);
                 return FenValue.Undefined;
             })));
             channel.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
             {
                 if (args.Length >= 2 &&
-                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
-                    args[1].IsFunction)
+                    IsMessagePortEventType(args[0].ToString(), out var isMessageError) &&
+                    IsSupportedMessageListener(args[1]))
                 {
-                    endpoint.MessageListeners.Add(args[1]);
+                    if (isMessageError)
+                    {
+                        AddUniqueMessageListener(endpoint.MessageErrorListeners, args[1]);
+                    }
+                    else
+                    {
+                        AddUniqueMessageListener(endpoint.MessageListeners, args[1]);
+                    }
                 }
 
                 return FenValue.Undefined;
@@ -781,13 +955,16 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             channel.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
             {
                 if (args.Length >= 2 &&
-                    string.Equals(args[0].ToString(), "message", StringComparison.OrdinalIgnoreCase) &&
-                    args[1].IsFunction)
+                    IsMessagePortEventType(args[0].ToString(), out var isMessageError))
                 {
-                    var callback = args[1].AsFunction();
-                    endpoint.MessageListeners.RemoveAll(existing =>
-                        existing.IsFunction &&
-                        existing.AsFunction() == callback);
+                    if (isMessageError)
+                    {
+                        RemoveMessageListener(endpoint.MessageErrorListeners, args[1]);
+                    }
+                    else
+                    {
+                        RemoveMessageListener(endpoint.MessageListeners, args[1]);
+                    }
                 }
 
                 return FenValue.Undefined;
@@ -8257,16 +8434,63 @@ window.Set("navigation", FenValue.FromObject(navigation));
                     return FenValue.Null;
                 }
 
-                var requestedUrl = args.Length > 0 ? args[0].ToString() : string.Empty;
+                var requestedUrl = args.Length > 0 && !args[0].IsUndefined && !args[0].IsNull
+                    ? args[0].ToString()
+                    : "about:blank";
                 if (string.IsNullOrWhiteSpace(requestedUrl))
+                {
+                    requestedUrl = "about:blank";
+                }
+
+                var features = args.Length > 2 && !args[2].IsUndefined && !args[2].IsNull
+                    ? args[2].ToString()
+                    : string.Empty;
+                var featureTokens = features.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                var noOpenerOrNoReferrer = featureTokens.Any(token =>
+                {
+                    var trimmedToken = token?.Trim();
+                    if (string.IsNullOrWhiteSpace(trimmedToken))
+                    {
+                        return false;
+                    }
+
+                    var equalsIndex = trimmedToken.IndexOf('=');
+                    var key = equalsIndex >= 0 ? trimmedToken.Substring(0, equalsIndex).Trim() : trimmedToken;
+                    var value = equalsIndex >= 0 ? trimmedToken.Substring(equalsIndex + 1).Trim() : "1";
+                    if (!string.Equals(key, "noopener", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(key, "noreferrer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    if (string.IsNullOrEmpty(value))
+                    {
+                        return true;
+                    }
+
+                    return !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) &&
+                           !string.Equals(value, "no", StringComparison.OrdinalIgnoreCase) &&
+                           !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
+                });
+
+                var resolvedTarget = ResolveLocationTarget(requestedUrl, location);
+                if (resolvedTarget == null)
                 {
                     return FenValue.Null;
                 }
 
-                RequestWindowNavigation(location, requestedUrl);
+                var scheme = resolvedTarget.Scheme ?? string.Empty;
+                if (string.Equals(scheme, "javascript", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(scheme, "data", StringComparison.OrdinalIgnoreCase))
+                {
+                    EngineLogCompat.Warn($"[FenRuntime] window.open blocked unsafe URL scheme '{scheme}'", LogCategory.Security);
+                    return FenValue.Null;
+                }
+
+                RequestWindowNavigation(location, resolvedTarget.AbsoluteUri);
 
                 // Same-window fallback for now until full popup/tab orchestration is wired.
-                return FenValue.FromObject(window);
+                return noOpenerOrNoReferrer ? FenValue.Null : FenValue.FromObject(window);
             }));
             window.Set("open", windowOpenFunc);
 
@@ -11875,7 +12099,7 @@ window.Set("navigation", FenValue.FromObject(navigation));
                 {
                     if (args.Length == 0 || !args[0].IsFunction)
                     {
-                        return FenValue.FromNumber(0);
+                        throw new FenTypeError("TypeError: requestIdleCallback callback must be a function");
                     }
 
                     var callback = args[0].AsFunction();
@@ -11886,7 +12110,11 @@ window.Set("navigation", FenValue.FromObject(navigation));
                         var timeoutValue = options.Get("timeout");
                         if (!timeoutValue.IsUndefined && !timeoutValue.IsNull)
                         {
-                            timeoutMs = Math.Max(0, (int)timeoutValue.ToNumber());
+                            var rawTimeout = timeoutValue.ToNumber();
+                            if (!double.IsNaN(rawTimeout) && rawTimeout > 0)
+                            {
+                                timeoutMs = (int)Math.Min(int.MaxValue, Math.Floor(rawTimeout));
+                            }
                         }
                     }
 

@@ -147,5 +147,94 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(1.0, ((FenValue)runtime.ExecuteSimple("deliveries.length")).ToNumber());
             Assert.Equal("beta:boot", ((FenValue)runtime.ExecuteSimple("deliveries[0]")).ToString());
         }
+
+        [Fact]
+        public void MessageChannel_PostMessage_UsesStructuredCloneSnapshot()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var snapshot = '';
+                var payload = { count: 1, nested: { ok: true } };
+                var channel = new MessageChannel();
+                channel.port1.onmessage = function (event) {
+                    snapshot = String(event.data.count) + ':' + String(event.data.nested.ok);
+                    event.data.count = 99;
+                };
+                channel.port2.postMessage(payload);
+                payload.count = 2;
+                payload.nested.ok = false;
+            ");
+
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            Assert.Equal("1:true", ((FenValue)runtime.ExecuteSimple("snapshot")).ToString());
+            Assert.Equal(2.0, ((FenValue)runtime.ExecuteSimple("payload.count")).ToNumber());
+        }
+
+        [Fact]
+        public void MessageChannel_PostMessage_FunctionPayload_ThrowsDataCloneError()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var cloneError = '';
+                var channel = new MessageChannel();
+                try {
+                    channel.port1.postMessage(function () { return 1; });
+                } catch (e) {
+                    cloneError = String(e && e.message ? e.message : e);
+                }
+            ");
+
+            var errorText = ((FenValue)runtime.ExecuteSimple("cloneError")).ToString();
+            Assert.Contains("DataCloneError", errorText, System.StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void BroadcastChannel_PostMessage_UsesStructuredCloneSnapshot()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var received = '';
+                var alpha = new BroadcastChannel('clone-check');
+                var beta = new BroadcastChannel('clone-check');
+                var payload = { value: 5 };
+
+                beta.onmessage = function (event) {
+                    received = String(event.data.value);
+                    event.data.value = 17;
+                };
+
+                alpha.postMessage(payload);
+                payload.value = 9;
+            ");
+
+            EventLoopCoordinator.Instance.RunUntilEmpty();
+
+            Assert.Equal("5", ((FenValue)runtime.ExecuteSimple("received")).ToString());
+            Assert.Equal(9.0, ((FenValue)runtime.ExecuteSimple("payload.value")).ToNumber());
+        }
+
+        [Fact]
+        public void BroadcastChannel_PostMessage_AfterClose_ThrowsInvalidStateError()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var channelClosedError = '';
+                var channel = new BroadcastChannel('closed-channel');
+                channel.close();
+                try {
+                    channel.postMessage('ignored');
+                } catch (e) {
+                    channelClosedError = String(e && e.message ? e.message : e);
+                }
+            ");
+
+            var errorText = ((FenValue)runtime.ExecuteSimple("channelClosedError")).ToString();
+            Assert.Contains("InvalidStateError", errorText, System.StringComparison.Ordinal);
+        }
     }
 }
