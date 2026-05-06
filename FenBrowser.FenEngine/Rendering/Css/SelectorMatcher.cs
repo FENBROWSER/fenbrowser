@@ -886,6 +886,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "hover": return ElementStateManager.Instance.IsHovered(el);
                 case "active": return ElementStateManager.Instance.IsActive(el);
                 case "visited": return ElementStateManager.Instance.IsVisited(el);
+                case "target": return ElementStateManager.Instance.IsTarget(el);
                 case "link": 
                 case "any-link":
                     if (!string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase) &&

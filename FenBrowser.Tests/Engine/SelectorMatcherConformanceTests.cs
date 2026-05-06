@@ -274,6 +274,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void TargetPseudoClass_MatchesElementWithCurrentFragment()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <section id='hero'></section>
+    <section id='other'></section>
+</body></html>");
+
+            var hero = ById(doc, "hero");
+            var other = ById(doc, "other");
+
+            ElementStateManager.Instance.SetTargetFragment("hero");
+
+            Assert.True(SelectorMatcher.Matches(hero, ":target"));
+            Assert.False(SelectorMatcher.Matches(other, ":target"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
