@@ -888,6 +888,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "read-only": return ElementStateManager.IsReadOnly(el);
                 case "read-write": return ElementStateManager.IsReadWrite(el);
                 case "placeholder-shown": return ElementStateManager.IsPlaceholderShown(el);
+                case "default": return ElementStateManager.IsDefaultControl(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);

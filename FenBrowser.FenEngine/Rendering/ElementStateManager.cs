@@ -790,6 +790,32 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
+        public static bool IsDefaultControl(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(element.TagName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return element.HasAttribute("selected");
+            }
+
+            if (!string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
+            if (type == "checkbox" || type == "radio")
+            {
+                return element.HasAttribute("checked");
+            }
+
+            return false;
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,

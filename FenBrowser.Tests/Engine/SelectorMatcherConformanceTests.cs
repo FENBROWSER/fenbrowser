@@ -503,6 +503,31 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DefaultPseudoClass_MatchesDefaultCheckedAndSelectedControls()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='checked-radio' type='radio' checked />
+    <input id='plain-radio' type='radio' />
+    <select>
+        <option id='selected-option' selected>One</option>
+        <option id='plain-option'>Two</option>
+    </select>
+</body></html>");
+
+            var checkedRadio = ById(doc, "checked-radio");
+            var plainRadio = ById(doc, "plain-radio");
+            var selectedOption = ById(doc, "selected-option");
+            var plainOption = ById(doc, "plain-option");
+
+            Assert.True(SelectorMatcher.Matches(checkedRadio, ":default"));
+            Assert.False(SelectorMatcher.Matches(plainRadio, ":default"));
+            Assert.True(SelectorMatcher.Matches(selectedOption, ":default"));
+            Assert.False(SelectorMatcher.Matches(plainOption, ":default"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
