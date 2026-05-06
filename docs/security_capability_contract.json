@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "capabilityId": "FETCH-CORS-POLICY-01",
+      "securityImpact": "Blocks cross-origin data exposure and origin-confused response handling.",
+      "requiredReasonCodes": [
+        "CORS_ORIGIN_CONTEXT_MISSING",
+        "CORS_RESPONSE_DISALLOWED",
+        "CORS_PREFLIGHT_BLOCKED"
+      ]
+    },
+    {
+      "capabilityId": "SECURITY-CSP-ENFORCEMENT-01",
+      "securityImpact": "Prevents unauthorized network execution/loading paths via policy enforcement.",
+      "requiredReasonCodes": [
+        "CSP_CONNECT_SRC_BLOCKED"
+      ]
+    },
+    {
+      "capabilityId": "SECURITY-COOKIE-MODEL-01",
+      "securityImpact": "Protects cookie confidentiality and boundary semantics (origin, path, SameSite, Secure).",
+      "requiredReasonCodes": [
+        "COOKIE_POLICY_BLOCKED",
+        "COOKIE_SCOPE_MISMATCH"
+      ]
+    },
+    {
+      "capabilityId": "PROCESS-IPC-HANDSHAKE-01",
+      "securityImpact": "Prevents unverified child process startup and IPC session spoofing.",
+      "requiredReasonCodes": [
+        "IPC_HANDSHAKE_TIMEOUT",
+        "IPC_HANDSHAKE_INVALID_STATE"
+      ]
+    },
+    {
+      "capabilityId": "PROCESS-SANDBOX-FAILCLOSED-01",
+      "securityImpact": "Prevents ambient authority leaks by denying launches without valid sandbox posture.",
+      "requiredReasonCodes": [
+        "SANDBOX_PROFILE_MISSING",
+        "SANDBOX_FACTORY_UNAVAILABLE",
+        "SANDBOX_CREATION_FAILED"
+      ]
+    }
+  ]
+}

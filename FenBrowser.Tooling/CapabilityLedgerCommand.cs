@@ -21,6 +21,7 @@ internal static class CapabilityLedgerCommand
         var repositoryRoot = ResolveRepositoryRoot();
         var matrixPath = Path.Combine(repositoryRoot, "docs", "COMPLIANCE_MATRIX.md");
         var governanceMapPath = Path.Combine(repositoryRoot, "docs", "spec_governance_map.json");
+        var securityContractPath = Path.Combine(repositoryRoot, "docs", "security_capability_contract.json");
 
         if (!File.Exists(matrixPath))
         {
@@ -31,9 +32,18 @@ internal static class CapabilityLedgerCommand
         {
             throw new FileNotFoundException($"Missing governance map: {governanceMapPath}");
         }
+        if (!File.Exists(securityContractPath))
+        {
+            throw new FileNotFoundException($"Missing security capability contract: {securityContractPath}");
+        }
 
         var matrixCapabilities = ParseComplianceMatrix(matrixPath);
         var governanceMap = LoadGovernanceMap(governanceMapPath);
+        var securityContract = LoadSecurityCapabilityContract(securityContractPath);
+        var securityContractByCapability = securityContract.Entries
+            .Where(static entry => !string.IsNullOrWhiteSpace(entry.CapabilityId))
+            .GroupBy(entry => entry.CapabilityId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
         var governedFiles = ReadGovernedFileHeaders(repositoryRoot, governanceMap.GovernedFiles);
         var sourceBindingsByCapability = governedFiles
             .Where(entry => !string.IsNullOrWhiteSpace(entry.CapabilityId))
@@ -49,6 +59,7 @@ internal static class CapabilityLedgerCommand
         {
             sourceBindingsByCapability.TryGetValue(capability.CapabilityId, out var bindings);
             bindings ??= new List<GovernedFileHeader>();
+            securityContractByCapability.TryGetValue(capability.CapabilityId, out var securityContractEntry);
 
             var reconciliation = DetermineReconciliation(bindings);
             ledgerEntries.Add(new CapabilityLedgerEntry
@@ -63,6 +74,11 @@ internal static class CapabilityLedgerCommand
                 GovernanceRequired = requiredCapabilitySet.Contains(capability.CapabilityId),
                 SourceBindingCount = bindings.Count,
                 Reconciliation = reconciliation,
+                SecurityContractCovered = securityContractEntry != null,
+                SecurityImpact = securityContractEntry?.SecurityImpact ?? string.Empty,
+                RequiredReasonCodes = securityContractEntry?.RequiredReasonCodes?
+                    .Where(static code => !string.IsNullOrWhiteSpace(code))
+                    .ToList() ?? new List<string>(),
                 PromotionContract = new CapabilityPromotionContract
                 {
                     OwnerPath = capability.Owner,
@@ -90,12 +106,20 @@ internal static class CapabilityLedgerCommand
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToList();
 
+        var missingSecurityContractCapabilityIds = matrixCapabilities
+            .Select(x => x.CapabilityId)
+            .Where(IsSecuritySensitiveCapability)
+            .Where(id => !securityContractByCapability.ContainsKey(id))
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+
         var statusCounts = ledgerEntries
             .GroupBy(x => x.Status, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
 
         var implicitCompleteViolations = CollectImplicitCompleteViolations(ledgerEntries, liveArtifactEvidence);
         var failureGatePassed = implicitCompleteViolations.Count == 0 &&
+            missingSecurityContractCapabilityIds.Count == 0 &&
             (!commandArgs.RequireLiveEvidence || liveArtifactEvidence.HasMinimumEvidence);
 
         var summary = new CapabilityLedgerSummary
@@ -107,7 +131,8 @@ internal static class CapabilityLedgerCommand
             CapabilitiesWithSourceBindings = ledgerEntries.Count(x => x.SourceBindingCount > 0),
             StatusCounts = statusCounts,
             CompleteCapabilities = ledgerEntries.Count(x => IsCompleteStatus(x.Status)),
-            ImplicitCompleteViolationCount = implicitCompleteViolations.Count
+            ImplicitCompleteViolationCount = implicitCompleteViolations.Count,
+            SecurityContractMissingCount = missingSecurityContractCapabilityIds.Count
         };
 
         var generatedAtUtc = DateTime.UtcNow;
@@ -122,6 +147,7 @@ internal static class CapabilityLedgerCommand
             MatrixCapabilityIdsWithoutGovernedHeader = matrixCapabilityIdsWithoutGovernedHeader,
             RequiredCapabilityIdsWithoutMatrixEntry = requiredCapabilityIdsWithoutMatrixEntry,
             RequiredCapabilityIdsWithoutSourceBinding = requiredCapabilityIdsWithoutSourceBinding,
+            MissingSecurityContractCapabilityIds = missingSecurityContractCapabilityIds,
             ImplicitCompleteViolations = implicitCompleteViolations,
             LiveArtifactEvidence = liveArtifactEvidence,
             FailureGatePassed = failureGatePassed,
@@ -131,6 +157,10 @@ internal static class CapabilityLedgerCommand
         if (commandArgs.RequireLiveEvidence && !liveArtifactEvidence.HasMinimumEvidence)
         {
             report.ImplicitCompleteViolations.Add("Missing required live artifact evidence under logs/.");
+        }
+        if (missingSecurityContractCapabilityIds.Count > 0)
+        {
+            report.ImplicitCompleteViolations.Add("Missing security capability contract entries: " + string.Join(", ", missingSecurityContractCapabilityIds));
         }
 
         var outputDirectory = Path.Combine(repositoryRoot, "Results");
@@ -280,6 +310,30 @@ internal static class CapabilityLedgerCommand
         return map ?? new GovernanceMap();
     }
 
+    private static SecurityCapabilityContract LoadSecurityCapabilityContract(string path)
+    {
+        var json = File.ReadAllText(path);
+        var contract = JsonSerializer.Deserialize<SecurityCapabilityContract>(
+            json,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        return contract ?? new SecurityCapabilityContract();
+    }
+
+    private static bool IsSecuritySensitiveCapability(string capabilityId)
+    {
+        if (string.IsNullOrWhiteSpace(capabilityId))
+        {
+            return false;
+        }
+
+        return capabilityId.StartsWith("SECURITY-", StringComparison.Ordinal) ||
+               capabilityId.StartsWith("PROCESS-", StringComparison.Ordinal) ||
+               capabilityId.Equals("FETCH-CORS-POLICY-01", StringComparison.Ordinal);
+    }
+
     private static List<GovernedFileHeader> ReadGovernedFileHeaders(string repositoryRoot, IReadOnlyList<string> governedFiles)
     {
         var results = new List<GovernedFileHeader>(governedFiles.Count);
@@ -392,6 +446,26 @@ internal static class CapabilityLedgerCommand
             if (entry.SourceBindingCount <= 0 || !string.Equals(entry.Reconciliation, "Mapped", StringComparison.Ordinal))
             {
                 violations.Add($"{entry.CapabilityId}: Complete without mapped governed source binding.");
+            }
+
+            if (IsSecuritySensitiveCapability(entry.CapabilityId))
+            {
+                if (!entry.SecurityContractCovered)
+                {
+                    violations.Add($"{entry.CapabilityId}: Complete without security capability contract entry.");
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(entry.SecurityImpact))
+                    {
+                        violations.Add($"{entry.CapabilityId}: Complete without security impact note.");
+                    }
+
+                    if (entry.RequiredReasonCodes == null || entry.RequiredReasonCodes.Count == 0)
+                    {
+                        violations.Add($"{entry.CapabilityId}: Complete without required security reason codes.");
+                    }
+                }
             }
 
             if (!liveArtifactEvidence.HasMinimumEvidence)
@@ -528,6 +602,19 @@ internal static class CapabilityLedgerCommand
         public List<string> RequiredCapabilityIds { get; set; } = new();
     }
 
+    private sealed class SecurityCapabilityContract
+    {
+        public int Version { get; set; }
+        public List<SecurityCapabilityEntry> Entries { get; set; } = new();
+    }
+
+    private sealed class SecurityCapabilityEntry
+    {
+        public string CapabilityId { get; set; } = string.Empty;
+        public string SecurityImpact { get; set; } = string.Empty;
+        public List<string> RequiredReasonCodes { get; set; } = new();
+    }
+
     private sealed class CapabilityLedgerArguments
     {
         public string OutputPath { get; set; } = string.Empty;
@@ -546,6 +633,7 @@ internal static class CapabilityLedgerCommand
         public List<string> MatrixCapabilityIdsWithoutGovernedHeader { get; set; } = new();
         public List<string> RequiredCapabilityIdsWithoutMatrixEntry { get; set; } = new();
         public List<string> RequiredCapabilityIdsWithoutSourceBinding { get; set; } = new();
+        public List<string> MissingSecurityContractCapabilityIds { get; set; } = new();
         public List<string> ImplicitCompleteViolations { get; set; } = new();
         public LiveArtifactEvidence LiveArtifactEvidence { get; set; } = new();
         public bool FailureGatePassed { get; set; }
@@ -561,6 +649,7 @@ internal static class CapabilityLedgerCommand
         public int CapabilitiesWithSourceBindings { get; set; }
         public int CompleteCapabilities { get; set; }
         public int ImplicitCompleteViolationCount { get; set; }
+        public int SecurityContractMissingCount { get; set; }
         public Dictionary<string, int> StatusCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
@@ -576,6 +665,9 @@ internal static class CapabilityLedgerCommand
         public bool GovernanceRequired { get; set; }
         public int SourceBindingCount { get; set; }
         public string Reconciliation { get; set; } = string.Empty;
+        public bool SecurityContractCovered { get; set; }
+        public string SecurityImpact { get; set; } = string.Empty;
+        public List<string> RequiredReasonCodes { get; set; } = new();
         public CapabilityPromotionContract PromotionContract { get; set; } = new();
         public List<SourceBindingEntry> SourceBindings { get; set; } = new();
     }

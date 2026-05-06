@@ -11,6 +11,7 @@ namespace FenBrowser.Tests.Architecture;
 public class SpecGovernanceTests
 {
     private static readonly GovernanceMap Map = LoadGovernanceMap();
+    private static readonly SecurityCapabilityContract SecurityContract = LoadSecurityCapabilityContract();
 
     private static readonly HashSet<string> AllowedDeterminism =
         new(StringComparer.OrdinalIgnoreCase) { "strict", "best-effort" };
@@ -123,6 +124,70 @@ public class SpecGovernanceTests
         Assert.Contains("PROCESS_OWNERSHIP.md", index, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SecurityCapabilityContract_CoversSecuritySensitiveCapabilities()
+    {
+        var root = GetRepoRoot();
+        var matrixPath = Path.Combine(root, "docs", "COMPLIANCE_MATRIX.md");
+        var matrixIds = new HashSet<string>(ParseCapabilityIds(matrixPath), StringComparer.Ordinal);
+        var contractPath = Path.Combine(root, "docs", "security_capability_contract.json");
+        Assert.True(File.Exists(contractPath), $"Missing security capability contract: {contractPath}");
+
+        var duplicateContractIds = SecurityContract.Entries
+            .GroupBy(x => x.CapabilityId, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(duplicateContractIds.Count == 0, "Duplicate capability IDs in security capability contract:\n" + string.Join("\n", duplicateContractIds));
+
+        var expectedSecurityIds = matrixIds
+            .Where(IsSecuritySensitiveCapability)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+
+        var contractIds = new HashSet<string>(
+            SecurityContract.Entries.Select(x => x.CapabilityId),
+            StringComparer.Ordinal);
+
+        var missing = expectedSecurityIds
+            .Where(id => !contractIds.Contains(id))
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(missing.Count == 0, "Missing security capability contract entries:\n" + string.Join("\n", missing));
+
+        var unknown = contractIds
+            .Where(id => !matrixIds.Contains(id))
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(unknown.Count == 0, "Security capability contract contains IDs not present in COMPLIANCE_MATRIX:\n" + string.Join("\n", unknown));
+
+        var failures = new List<string>();
+        foreach (var entry in SecurityContract.Entries)
+        {
+            if (string.IsNullOrWhiteSpace(entry.SecurityImpact))
+            {
+                failures.Add($"{entry.CapabilityId}: missing securityImpact");
+            }
+
+            if (entry.RequiredReasonCodes == null || entry.RequiredReasonCodes.Count == 0)
+            {
+                failures.Add($"{entry.CapabilityId}: missing requiredReasonCodes");
+                continue;
+            }
+
+            var invalidReasonCodes = entry.RequiredReasonCodes
+                .Where(code => string.IsNullOrWhiteSpace(code) || !Regex.IsMatch(code, "^[A-Z0-9_]+$"))
+                .ToList();
+            if (invalidReasonCodes.Count > 0)
+            {
+                failures.Add($"{entry.CapabilityId}: invalid reason codes: {string.Join(", ", invalidReasonCodes)}");
+            }
+        }
+
+        Assert.True(failures.Count == 0, "Security capability contract validation failures:\n" + string.Join("\n", failures));
+    }
+
     private static bool TryReadHeaderValue(string source, string key, out string value)
     {
         // Keep header scanning strict near file start.
@@ -192,9 +257,52 @@ public class SpecGovernanceTests
         return map ?? new GovernanceMap();
     }
 
+    private static SecurityCapabilityContract LoadSecurityCapabilityContract()
+    {
+        var path = Path.Combine(GetRepoRoot(), "docs", "security_capability_contract.json");
+        if (!File.Exists(path))
+        {
+            return new SecurityCapabilityContract();
+        }
+
+        var json = File.ReadAllText(path);
+        var contract = JsonSerializer.Deserialize<SecurityCapabilityContract>(
+            json,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        return contract ?? new SecurityCapabilityContract();
+    }
+
+    private static bool IsSecuritySensitiveCapability(string capabilityId)
+    {
+        if (string.IsNullOrWhiteSpace(capabilityId))
+        {
+            return false;
+        }
+
+        return capabilityId.StartsWith("SECURITY-", StringComparison.Ordinal) ||
+               capabilityId.StartsWith("PROCESS-", StringComparison.Ordinal) ||
+               capabilityId.Equals("FETCH-CORS-POLICY-01", StringComparison.Ordinal);
+    }
+
     private sealed class GovernanceMap
     {
         public List<string> GovernedFiles { get; set; } = new();
         public List<string> RequiredCapabilityIds { get; set; } = new();
+    }
+
+    private sealed class SecurityCapabilityContract
+    {
+        public int Version { get; set; }
+        public List<SecurityCapabilityEntry> Entries { get; set; } = new();
+    }
+
+    private sealed class SecurityCapabilityEntry
+    {
+        public string CapabilityId { get; set; } = string.Empty;
+        public string SecurityImpact { get; set; } = string.Empty;
+        public List<string> RequiredReasonCodes { get; set; } = new();
     }
 }
