@@ -293,6 +293,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void TargetWithinPseudoClass_MatchesAncestorOfTarget()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <main id='root'>
+        <section id='hero'></section>
+    </main>
+    <main id='other-root'>
+        <section id='other'></section>
+    </main>
+</body></html>");
+
+            var root = ById(doc, "root");
+            var otherRoot = ById(doc, "other-root");
+
+            ElementStateManager.Instance.SetTargetFragment("hero");
+
+            Assert.True(SelectorMatcher.Matches(root, ":target-within"));
+            Assert.False(SelectorMatcher.Matches(otherRoot, ":target-within"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

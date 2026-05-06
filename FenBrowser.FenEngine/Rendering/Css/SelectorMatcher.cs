@@ -887,6 +887,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "active": return ElementStateManager.Instance.IsActive(el);
                 case "visited": return ElementStateManager.Instance.IsVisited(el);
                 case "target": return ElementStateManager.Instance.IsTarget(el);
+                case "target-within": return IsTargetWithin(el);
                 case "link": 
                 case "any-link":
                     if (!string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
@@ -961,6 +962,29 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return true;
+        }
+
+        private static bool IsTargetWithin(Element el)
+        {
+            if (el == null)
+            {
+                return false;
+            }
+
+            if (ElementStateManager.Instance.IsTarget(el))
+            {
+                return true;
+            }
+
+            foreach (var descendant in el.Descendants().OfType<Element>())
+            {
+                if (ElementStateManager.Instance.IsTarget(descendant))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool SupportsEnabledDisabledPseudoClass(Element el)
