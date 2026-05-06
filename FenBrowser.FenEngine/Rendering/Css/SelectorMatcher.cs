@@ -914,7 +914,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     return !ElementStateManager.Instance.IsVisited(el);
 
                 case "any-link":
-                    if (!IsHyperlinkElement(el, includeLinkElement: false))
+                    if (!IsHyperlinkElement(el, includeLinkElement: true))
                     {
                         return false;
                     }
