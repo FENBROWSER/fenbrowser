@@ -758,6 +758,38 @@ namespace FenBrowser.FenEngine.Rendering
             return !element.HasAttribute("readonly");
         }
 
+        public static bool IsPlaceholderShown(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (!element.HasAttribute("placeholder"))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(element.GetAttribute("value")))
+            {
+                return false;
+            }
+
+            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(element.TextContent))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,

@@ -470,6 +470,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PlaceholderShownPseudoClass_MatchesEmptyControlsWithPlaceholder()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='shown' placeholder='Type here' />
+    <input id='hidden' placeholder='Type here' value='x' />
+</body></html>");
+
+            var shown = ById(doc, "shown");
+            var hidden = ById(doc, "hidden");
+
+            Assert.True(SelectorMatcher.Matches(shown, ":placeholder-shown"));
+            Assert.False(SelectorMatcher.Matches(hidden, ":placeholder-shown"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
