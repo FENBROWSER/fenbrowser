@@ -1866,6 +1866,13 @@ namespace FenBrowser.Core
         public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CspPolicy policy)
         {
             if (request == null || request.RequestUri == null) throw new ArgumentNullException(nameof(request));
+            var requestUrl = request.RequestUri.AbsoluteUri;
+            var logContext = new EngineLogContext(
+                NavigationId: LogContext.CurrentCorrelationId,
+                Url: requestUrl,
+                ResourceUrl: requestUrl,
+                SpecArea: "fetch-cors-csp",
+                Source: nameof(ResourceManager));
 
             // CSP Check
             if (policy != null)
@@ -1873,7 +1880,19 @@ namespace FenBrowser.Core
                 // Default to connect-src for generic fetch/XHR
                 if (!policy.IsAllowed("connect-src", request.RequestUri, ExtractOrigin(request.Headers.Referrer)))
                 {
-                    EngineLogCompat.Warn($"[CSP] Blocked generic request to {request.RequestUri} (connect-src)", LogCategory.Network);
+                    FailClosedDiagnostics.LogDenied(
+                        capabilityId: "SECURITY-CSP-ENFORCEMENT-01",
+                        stage: "fetch.csp",
+                        reasonCode: FailClosedReasonCodes.CspConnectSrcBlocked,
+                        message: $"[CSP] Blocked generic request to {request.RequestUri} (connect-src)",
+                        subsystem: LogSubsystem.Security,
+                        context: logContext,
+                        fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["directive"] = "connect-src",
+                            ["requestMethod"] = request.Method.Method,
+                            ["requestUri"] = requestUrl
+                        });
                     throw new Exception($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
                 }
             }
@@ -1898,7 +1917,19 @@ namespace FenBrowser.Core
                 var originUri = GetCorsOrigin(request);
                 if (isCorsMode && originUri == null)
                 {
-                    EngineLogCompat.Warn($"[CORS] Blocked request to {request.RequestUri} due to missing origin context", LogCategory.Network);
+                    FailClosedDiagnostics.LogDenied(
+                        capabilityId: "FETCH-CORS-POLICY-01",
+                        stage: "fetch.cors",
+                        reasonCode: FailClosedReasonCodes.CorsOriginContextMissing,
+                        message: $"[CORS] Blocked request to {request.RequestUri} due to missing origin context",
+                        subsystem: LogSubsystem.Security,
+                        context: logContext,
+                        fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["fetchMode"] = fetchMode ?? string.Empty,
+                            ["requestMethod"] = request.Method.Method,
+                            ["requestUri"] = requestUrl
+                        });
                     throw new HttpRequestException($"Blocked by CORS policy (missing origin context): {request.RequestUri}");
                 }
 
@@ -1908,7 +1939,19 @@ namespace FenBrowser.Core
                 var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
                 if (isCorsMode && !CorsHandler.IsCorsAllowed(response, request.RequestUri, originUri))
                 {
-                    EngineLogCompat.Warn($"[CORS] Blocked response from {request.RequestUri} due to missing/invalid ACAO", LogCategory.Network);
+                    FailClosedDiagnostics.LogDenied(
+                        capabilityId: "FETCH-CORS-POLICY-01",
+                        stage: "fetch.cors-response",
+                        reasonCode: FailClosedReasonCodes.CorsResponseDisallowed,
+                        message: $"[CORS] Blocked response from {request.RequestUri} due to missing/invalid ACAO",
+                        subsystem: LogSubsystem.Security,
+                        context: logContext,
+                        fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["requestMethod"] = request.Method.Method,
+                            ["requestUri"] = requestUrl,
+                            ["originUri"] = originUri?.AbsoluteUri ?? string.Empty
+                        });
                     response.Dispose();
                     throw new HttpRequestException($"Blocked by CORS policy (response validation failed): {request.RequestUri}");
                 }
@@ -1988,7 +2031,25 @@ namespace FenBrowser.Core
                 return;
             }
 
-            EngineLogCompat.Warn($"[CORS] Preflight blocked {request.Method.Method} {request.RequestUri}", LogCategory.Network);
+            var requestUrl = request?.RequestUri?.AbsoluteUri ?? string.Empty;
+            FailClosedDiagnostics.LogDenied(
+                capabilityId: "FETCH-CORS-POLICY-01",
+                stage: "fetch.cors-preflight",
+                reasonCode: FailClosedReasonCodes.CorsPreflightBlocked,
+                message: $"[CORS] Preflight blocked {request.Method.Method} {request.RequestUri}",
+                subsystem: LogSubsystem.Security,
+                context: new EngineLogContext(
+                    NavigationId: LogContext.CurrentCorrelationId,
+                    Url: requestUrl,
+                    ResourceUrl: requestUrl,
+                    SpecArea: "fetch-cors-preflight",
+                    Source: nameof(ResourceManager)),
+                fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["requestMethod"] = request.Method.Method,
+                    ["requestUri"] = requestUrl,
+                    ["originUri"] = originUri?.AbsoluteUri ?? string.Empty
+                });
             throw new HttpRequestException($"Blocked by CORS preflight: {request.RequestUri}");
         }
 
