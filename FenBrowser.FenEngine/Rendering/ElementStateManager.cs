@@ -665,7 +665,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static bool IsRequired(Element element)
         {
-            return element?.Attr?.ContainsKey("required") == true;
+            if (!IsFormElement(element))
+            {
+                return false;
+            }
+
+            return element.Attr?.ContainsKey("required") == true;
         }
         
         /// <summary>
