@@ -75,6 +75,10 @@ jobs:
             exit 1
           }
 
+      - name: Run cleanup audit guard
+        shell: pwsh
+        run: ./scripts/ci/run-code-cleanup-audit.ps1 -OutputPath "Results\code_cleanup_audit_quality_gate.md" -FailOnMedium
+
       - name: Build WebIdlGen prerequisite
         run: dotnet build FenBrowser.WebIdlGen/FenBrowser.WebIdlGen.csproj -c Release --nologo
 

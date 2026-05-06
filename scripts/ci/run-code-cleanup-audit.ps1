@@ -1,6 +1,7 @@
 param(
     [string]$OutputPath = "",
-    [switch]$FailOnHigh
+    [switch]$FailOnHigh,
+    [switch]$FailOnMedium
 )
 
 Set-StrictMode -Version Latest
@@ -109,6 +110,7 @@ $lines.Add("Repository: $repoRoot")
 $lines.Add("")
 
 $highFindings = 0
+$mediumFindings = 0
 
 foreach ($check in $checks) {
     $matches = @(Invoke-Ripgrep -Pattern $check.Pattern -Paths $check.Paths -ExtraArgs $check.ExtraArgs)
@@ -116,6 +118,11 @@ foreach ($check in $checks) {
 
     if ($check.Severity -eq "High") {
         $highFindings += $count
+    }
+    elseif ($check.Severity -eq "Medium" -and $check.Name -eq "Silent Catch Blocks (Medium)") {
+        # Site-specific markers are evaluated against an allowlist in section 4.14.
+        # Silent catch blocks are always medium-severity violations.
+        $mediumFindings += $count
     }
 
     $lines.Add("## $($check.Name)")
@@ -307,6 +314,9 @@ foreach ($entry in $section4Checks) {
     if ($entry.Severity -eq "High" -and -not $entry.Passed) {
         $section4HighFailures++
     }
+    elseif ($entry.Severity -eq "Medium" -and -not $entry.Passed) {
+        $mediumFindings++
+    }
 }
 $lines.Add("")
 
@@ -341,6 +351,11 @@ Write-Host "[cleanup-audit] Wrote report: $OutputPath"
 
 if ($FailOnHigh -and $highFindings -gt 0) {
     Write-Error "[cleanup-audit] High-severity findings detected: $highFindings"
+    exit 1
+}
+
+if ($FailOnMedium -and ($highFindings + $mediumFindings) -gt 0) {
+    Write-Error "[cleanup-audit] High/medium findings detected: high=$highFindings medium=$mediumFindings"
     exit 1
 }
 
