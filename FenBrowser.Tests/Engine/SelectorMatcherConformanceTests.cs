@@ -407,6 +407,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void OutOfRangePseudoClass_MatchesRangedInputsOutsideBounds()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='in' type='number' min='10' max='20' value='15' />
+    <input id='out' type='number' min='10' max='20' value='25' />
+</body></html>");
+
+            var inRange = ById(doc, "in");
+            var outOfRange = ById(doc, "out");
+
+            Assert.False(SelectorMatcher.Matches(inRange, ":out-of-range"));
+            Assert.True(SelectorMatcher.Matches(outOfRange, ":out-of-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
