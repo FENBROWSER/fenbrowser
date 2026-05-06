@@ -1411,6 +1411,7 @@ namespace FenBrowser.FenEngine.Scripting
                         "notifications" => JsPermissions.Notifications,
                         "camera" => JsPermissions.Camera,
                         "microphone" => JsPermissions.Camera,
+                        "serial" => JsPermissions.Serial,
                         "clipboard-read" => JsPermissions.None,
                         "clipboard-write" => JsPermissions.None,
                         _ => JsPermissions.None
@@ -4626,42 +4627,1513 @@ namespace FenBrowser.FenEngine.Scripting
 
     public class JsCrypto : FenBrowser.FenEngine.Core.FenObject
     {
+        private sealed class LegacyCryptoKeyState
+        {
+            public string AlgorithmName { get; set; } = string.Empty;
+            public string HashName { get; set; } = string.Empty;
+            public string KeyType { get; set; } = string.Empty;
+            public int KeyLengthBits { get; set; }
+            public bool Extractable { get; set; }
+            public HashSet<string> Usages { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+            public byte[] SecretKey { get; set; } = Array.Empty<byte>();
+            public System.Security.Cryptography.RSA RsaKey { get; set; }
+            public bool IsPrivateKey { get; set; }
+        }
+
+        private static readonly HashSet<string> HmacAllowedUsages =
+            new HashSet<string>(new[] { "sign", "verify" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> RsaPrivateAllowedUsages =
+            new HashSet<string>(new[] { "sign" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> RsaPublicAllowedUsages =
+            new HashSet<string>(new[] { "verify" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> AesAllowedUsages =
+            new HashSet<string>(new[] { "encrypt", "decrypt" }, StringComparer.Ordinal);
+
         public JsCrypto()
         {
             Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", GetRandomValues)));
-            Set("subtle", FenValue.FromObject(new FenObject())); // Minimal mock
+            Set("randomUUID", FenValue.FromFunction(new FenFunction("randomUUID", (args, thisVal) =>
+                FenValue.FromString(Guid.NewGuid().ToString()))));
+            Set("subtle", FenValue.FromObject(CreateSubtleCryptoObject()));
             HostApiSurfaceCatalog.TraceUsage("crypto.subtle");
         }
-        
+
         private FenValue GetRandomValues(FenValue[] args, FenValue thisVal)
         {
-            if (args.Length < 1) return FenValue.Undefined;
+            if (args.Length < 1 || !args[0].IsObject)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: getRandomValues requires an integer typed array argument");
+            }
+
+            var input = args[0];
+            var target = input.AsObject();
+            if (target == null)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: getRandomValues requires an integer typed array argument");
+            }
+
+            const int maxBytes = 65536;
+
+            if (target is FenBrowser.FenEngine.Core.Types.JsTypedArray typedArray)
+            {
+                var byteLen = typedArray.Length * typedArray.BytesPerElement;
+                if (byteLen > maxBytes)
+                {
+                    throw new FenBrowser.FenEngine.Errors.FenResourceError("QuotaExceededError: Max 65536 bytes");
+                }
+
+                var bytes = new byte[byteLen];
+                using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+                rng.GetBytes(bytes);
+                Array.Copy(bytes, 0, typedArray.Buffer.Data, typedArray.ByteOffset, byteLen);
+                return input;
+            }
+
+            var lengthValue = target.Get("length");
+            if (lengthValue.IsNull || lengthValue.IsUndefined || !lengthValue.IsNumber)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: Argument must expose numeric length");
+            }
+
+            var len = (int)lengthValue.ToNumber();
+            if (len < 0)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: Argument length must be non-negative");
+            }
+
+            if (len > maxBytes)
+            {
+                throw new FenBrowser.FenEngine.Errors.FenResourceError("QuotaExceededError: Max 65536 bytes");
+            }
+
+            var randomBytes = new byte[len];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(randomBytes);
+            }
+
+            for (var i = 0; i < len; i++)
+            {
+                target.Set(i.ToString(), FenValue.FromNumber(randomBytes[i]));
+            }
+
+            return input;
+        }
+
+        private static FenObject CreateSubtleCryptoObject()
+        {
+            var subtle = new FenObject();
+            subtle.Set("digest", FenValue.FromFunction(new FenFunction("digest", Digest)));
+            subtle.Set("generateKey", FenValue.FromFunction(new FenFunction("generateKey", GenerateKey)));
+            subtle.Set("importKey", FenValue.FromFunction(new FenFunction("importKey", ImportKey)));
+            subtle.Set("exportKey", FenValue.FromFunction(new FenFunction("exportKey", ExportKey)));
+            subtle.Set("encrypt", FenValue.FromFunction(new FenFunction("encrypt", Encrypt)));
+            subtle.Set("decrypt", FenValue.FromFunction(new FenFunction("decrypt", Decrypt)));
+            subtle.Set("sign", FenValue.FromFunction(new FenFunction("sign", Sign)));
+            subtle.Set("verify", FenValue.FromFunction(new FenFunction("verify", Verify)));
+            return subtle;
+        }
+
+        private static FenValue GenerateKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 3)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: generateKey requires algorithm, extractable, and keyUsages"));
+            }
+
             try
             {
-                var arr = args[0].IsObject ? args[0].AsObject() as FenBrowser.FenEngine.Core.FenObject : null; // TypedArray usually
-                // In NilJS TypedArrays might be FenObjects with numeric keys
-                // For now, assume it's a typed array and fill it with random bytes.
-                // Since bridging typed arrays is complex, we'll just try to fill standard array-like object
-                
-                // Real implementation requires bridging TypedArrays properly.
-                // Assuming args[0] is the TypedArray instance.
-                
-                // We'll fill 'length' bytes.
-                if (arr != null && arr.Has("length"))
+                if (!TryNormalizeAlgorithmName(args[0], out var algorithmName))
                 {
-                    int len = (int)arr.Get("length").ToNumber();
-                    var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
-                    var bytes = new byte[len];
-                    rng.GetBytes(bytes);
-                    
-                    for(int i=0; i<len; i++)
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!TryParseKeyUsages(args[2], out var usages))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: keyUsages must be an array-like of strings"));
+                }
+
+                var extractable = args[1].ToBoolean();
+                switch (algorithmName)
+                {
+                    case "HMAC":
+                        return GenerateHmacKey(args[0], extractable, usages);
+                    case "RSASSAPKCS1V15":
+                        return GenerateRsaSsaKey(args[0], extractable, usages);
+                    case "AESGCM":
+                        return GenerateAesGcmKey(args[0], extractable, usages);
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue ImportKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 5)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: importKey requires format, keyData, algorithm, extractable, and keyUsages"));
+            }
+
+            try
+            {
+                var format = NormalizeKeyFormat(args[0]);
+                if (string.IsNullOrEmpty(format))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key format is invalid"));
+                }
+
+                if (!TryParseKeyUsages(args[4], out var usages))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: keyUsages must be an array-like of strings"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[2], out var algorithmName))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                var extractable = args[3].ToBoolean();
+
+                switch (algorithmName)
+                {
+                    case "HMAC":
+                        return ImportHmacKey(format, args[1], args[2], extractable, usages);
+                    case "RSASSAPKCS1V15":
+                        return ImportRsaSsaKey(format, args[1], args[2], extractable, usages);
+                    case "AESGCM":
+                        return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue ExportKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 2)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: exportKey requires format and key"));
+            }
+
+            try
+            {
+                var format = NormalizeKeyFormat(args[0]);
+                if (string.IsNullOrEmpty(format))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key format is invalid"));
+                }
+
+                if (!TryGetCryptoKeyState(args[1], out var keyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Provided key is not a CryptoKey"));
+                }
+
+                if (!keyState.Extractable)
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key is not extractable"));
+                }
+
+                switch (keyState.AlgorithmName)
+                {
+                    case "HMAC":
                     {
-                        arr.Set(i.ToString(), FenValue.FromNumber(bytes[i]));
+                        if (!string.Equals(format, "raw", StringComparison.Ordinal))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HMAC export only supports raw format"));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
+                    }
+
+                    case "AESGCM":
+                    {
+                        if (!string.Equals(format, "raw", StringComparison.Ordinal))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-GCM export only supports raw format"));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
+                    }
+
+                    case "RSASSAPKCS1V15":
+                    {
+                        if (string.Equals(format, "pkcs8", StringComparison.Ordinal))
+                        {
+                            if (!keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: pkcs8 export requires a private key"));
+                            }
+
+                            var pkcs8 = keyState.RsaKey.ExportPkcs8PrivateKey();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(pkcs8))));
+                        }
+
+                        if (string.Equals(format, "spki", StringComparison.Ordinal))
+                        {
+                            if (keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: spki export requires a public key"));
+                            }
+
+                            var spki = keyState.RsaKey.ExportSubjectPublicKeyInfo();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(spki))));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA export supports pkcs8 or spki only"));
+                    }
+
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue Encrypt(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 3)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: encrypt requires algorithm, key, and data"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var keyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Provided key is not a CryptoKey"));
+                }
+
+                if (!keyState.Usages.Contains("encrypt"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow encryption"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[0], out var operationAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!string.Equals(operationAlgorithm, keyState.AlgorithmName, StringComparison.Ordinal))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (!TryExtractDigestBytes(args[2], out var plaintext))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: encrypt data is invalid"));
+                }
+
+                if (string.Equals(operationAlgorithm, "AESGCM", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesGcmParams(args[0], out var iv, out var additionalData, out var tagLengthBits))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM parameters are invalid"));
+                    }
+
+                    var tagLengthBytes = tagLengthBits / 8;
+                    var ciphertext = new byte[plaintext.Length];
+                    var tag = new byte[tagLengthBytes];
+
+                    using (var aes = new System.Security.Cryptography.AesGcm(keyState.SecretKey))
+                    {
+                        aes.Encrypt(iv, plaintext, ciphertext, tag, additionalData.Length == 0 ? null : additionalData);
+                    }
+
+                    var payload = new byte[ciphertext.Length + tag.Length];
+                    Buffer.BlockCopy(ciphertext, 0, payload, 0, ciphertext.Length);
+                    Buffer.BlockCopy(tag, 0, payload, ciphertext.Length, tag.Length);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(payload))));
+                }
+
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue Decrypt(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 3)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: decrypt requires algorithm, key, and data"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var keyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Provided key is not a CryptoKey"));
+                }
+
+                if (!keyState.Usages.Contains("decrypt"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow decryption"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[0], out var operationAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!string.Equals(operationAlgorithm, keyState.AlgorithmName, StringComparison.Ordinal))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (!TryExtractDigestBytes(args[2], out var encryptedPayload))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: decrypt data is invalid"));
+                }
+
+                if (string.Equals(operationAlgorithm, "AESGCM", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesGcmParams(args[0], out var iv, out var additionalData, out var tagLengthBits))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM parameters are invalid"));
+                    }
+
+                    var tagLengthBytes = tagLengthBits / 8;
+                    if (encryptedPayload.Length < tagLengthBytes)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: AES-GCM ciphertext is shorter than authentication tag"));
+                    }
+
+                    var ciphertextLength = encryptedPayload.Length - tagLengthBytes;
+                    var ciphertext = new byte[ciphertextLength];
+                    var tag = new byte[tagLengthBytes];
+                    Buffer.BlockCopy(encryptedPayload, 0, ciphertext, 0, ciphertextLength);
+                    Buffer.BlockCopy(encryptedPayload, ciphertextLength, tag, 0, tagLengthBytes);
+
+                    var plaintext = new byte[ciphertextLength];
+                    using (var aes = new System.Security.Cryptography.AesGcm(keyState.SecretKey))
+                    {
+                        aes.Decrypt(iv, ciphertext, tag, plaintext, additionalData.Length == 0 ? null : additionalData);
+                    }
+
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
+                }
+
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue Sign(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 3)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: sign requires algorithm, key, and data"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var keyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Provided key is not a CryptoKey"));
+                }
+
+                if (!keyState.Usages.Contains("sign"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow signing"));
+                }
+
+                if (!TryExtractDigestBytes(args[2], out var data))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: sign data is invalid"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[0], out var operationAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!string.Equals(operationAlgorithm, keyState.AlgorithmName, StringComparison.Ordinal))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (!TryResolveHashNameForOperation(args[0], keyState.HashName, out var hashName))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                }
+
+                byte[] signature;
+                if (string.Equals(keyState.AlgorithmName, "HMAC", StringComparison.Ordinal))
+                {
+                    using var hmac = CreateHmac(hashName, keyState.SecretKey);
+                    if (hmac == null)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    signature = hmac.ComputeHash(data);
+                }
+                else if (string.Equals(keyState.AlgorithmName, "RSASSAPKCS1V15", StringComparison.Ordinal))
+                {
+                    if (!keyState.IsPrivateKey)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Signing requires a private key"));
+                    }
+
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    signature = keyState.RsaKey.SignData(data, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+                }
+                else
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(signature))));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue Verify(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 4)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: verify requires algorithm, key, signature, and data"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var keyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Provided key is not a CryptoKey"));
+                }
+
+                if (!keyState.Usages.Contains("verify"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow verification"));
+                }
+
+                if (!TryExtractDigestBytes(args[2], out var signature))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: verify signature is invalid"));
+                }
+
+                if (!TryExtractDigestBytes(args[3], out var data))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: verify data is invalid"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[0], out var operationAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!string.Equals(operationAlgorithm, keyState.AlgorithmName, StringComparison.Ordinal))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (!TryResolveHashNameForOperation(args[0], keyState.HashName, out var hashName))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                }
+
+                bool valid;
+                if (string.Equals(keyState.AlgorithmName, "HMAC", StringComparison.Ordinal))
+                {
+                    using var hmac = CreateHmac(hashName, keyState.SecretKey);
+                    if (hmac == null)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    var expected = hmac.ComputeHash(data);
+                    valid = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expected, signature);
+                }
+                else if (string.Equals(keyState.AlgorithmName, "RSASSAPKCS1V15", StringComparison.Ordinal))
+                {
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    valid = keyState.RsaKey.VerifyData(data, signature, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+                }
+                else
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(valid)));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue Digest(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 2)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: digest requires algorithm and data"));
+            }
+
+            try
+            {
+                if (!TryNormalizeAlgorithmName(args[0], out var algoName))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: digest algorithm is invalid"));
+                }
+
+                if (!TryExtractDigestBytes(args[1], out var inputData))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: digest data is invalid"));
+                }
+
+                byte[] hash;
+                switch (algoName)
+                {
+                    case "SHA1":
+                        using (var sha1 = System.Security.Cryptography.SHA1.Create())
+                            hash = sha1.ComputeHash(inputData);
+                        break;
+                    case "SHA256":
+                        using (var sha256 = System.Security.Cryptography.SHA256.Create())
+                            hash = sha256.ComputeHash(inputData);
+                        break;
+                    case "SHA384":
+                        using (var sha384 = System.Security.Cryptography.SHA384.Create())
+                            hash = sha384.ComputeHash(inputData);
+                        break;
+                    case "SHA512":
+                        using (var sha512 = System.Security.Cryptography.SHA512.Create())
+                            hash = sha512.ComputeHash(inputData);
+                        break;
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+
+                var resultBuffer = new FenBrowser.FenEngine.Core.Types.JsArrayBuffer(hash.Length);
+                Array.Copy(hash, resultBuffer.Data, hash.Length);
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(resultBuffer)));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue ImportHmacKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HMAC import supports raw format only"));
+            }
+
+            if (!ValidateKeyUsages(usages, HmacAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for HMAC"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, null, out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HMAC hash algorithm is invalid"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "HMAC",
+                HashName = hashName,
+                KeyType = "secret",
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue GenerateHmacKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HMAC generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, HmacAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for HMAC"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, null, out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HMAC hash algorithm is invalid"));
+            }
+
+            if (!TryResolveHmacLengthBits(algorithmArg, hashName, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HMAC length must be a positive multiple of 8"));
+            }
+
+            var keyBytes = new byte[keyLengthBits / 8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(keyBytes);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "HMAC",
+                HashName = hashName,
+                KeyType = "secret",
+                Extractable = extractable,
+                SecretKey = keyBytes,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue GenerateAesGcmKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-GCM"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForGenerate(algorithmArg, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM key length must be 128, 192, or 256"));
+            }
+
+            var keyBytes = new byte[keyLengthBits / 8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(keyBytes);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESGCM",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = keyBytes,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportRsaSsaKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
+            var isPublic = string.Equals(format, "spki", StringComparison.Ordinal);
+
+            if (!isPrivate && !isPublic)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSASSA import supports pkcs8 and spki formats"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            var allowedUsages = isPrivate ? RsaPrivateAllowedUsages : RsaPublicAllowedUsages;
+            if (!ValidateKeyUsages(usages, allowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSASSA-PKCS1-v1_5"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA hash algorithm is invalid"));
+            }
+
+            var rsa = System.Security.Cryptography.RSA.Create();
+            if (isPrivate)
+            {
+                rsa.ImportPkcs8PrivateKey(keyBytes, out _);
+            }
+            else
+            {
+                rsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSASSAPKCS1V15",
+                HashName = hashName,
+                KeyType = isPrivate ? "private" : "public",
+                Extractable = extractable,
+                RsaKey = rsa,
+                IsPrivateKey = isPrivate,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportAesGcmKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-GCM import supports raw format only"));
+            }
+
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM import requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-GCM"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForImport(algorithmArg, keyBytes.Length, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM key length must be 128, 192, or 256 and match raw key data"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESGCM",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue GenerateRsaSsaKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSASSA-PKCS1-v1_5 generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, new HashSet<string>(new[] { "sign", "verify" }, StringComparer.Ordinal), out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSASSA-PKCS1-v1_5"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA hash algorithm is invalid"));
+            }
+
+            if (!TryResolveRsaModulusLength(algorithmArg, out var modulusLength))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA modulusLength must be a positive integer"));
+            }
+
+            if (!TryResolveRsaPublicExponent(algorithmArg, out var publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA publicExponent is invalid"));
+            }
+
+            if (!IsSupportedRsaPublicExponent(publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA publicExponent currently supports 65537 only"));
+            }
+
+            using var generatedRsa = System.Security.Cryptography.RSA.Create(modulusLength);
+            var privatePkcs8 = generatedRsa.ExportPkcs8PrivateKey();
+            var publicSpki = generatedRsa.ExportSubjectPublicKeyInfo();
+
+            var privateRsa = System.Security.Cryptography.RSA.Create();
+            privateRsa.ImportPkcs8PrivateKey(privatePkcs8, out _);
+
+            var publicRsa = System.Security.Cryptography.RSA.Create();
+            publicRsa.ImportSubjectPublicKeyInfo(publicSpki, out _);
+
+            var privateUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("sign"))
+            {
+                privateUsages.Add("sign");
+            }
+
+            var publicUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("verify"))
+            {
+                publicUsages.Add("verify");
+            }
+
+            var privateState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSASSAPKCS1V15",
+                HashName = hashName,
+                KeyType = "private",
+                Extractable = extractable,
+                RsaKey = privateRsa,
+                IsPrivateKey = true,
+                Usages = privateUsages
+            };
+
+            var publicState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSASSAPKCS1V15",
+                HashName = hashName,
+                KeyType = "public",
+                Extractable = true,
+                RsaKey = publicRsa,
+                IsPrivateKey = false,
+                Usages = publicUsages
+            };
+
+            var keyPair = new FenObject();
+            keyPair.Set("privateKey", FenValue.FromObject(CreateCryptoKeyObject(privateState)));
+            keyPair.Set("publicKey", FenValue.FromObject(CreateCryptoKeyObject(publicState)));
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
+        }
+
+        private static bool TryGetCryptoKeyState(FenValue keyArg, out LegacyCryptoKeyState state)
+        {
+            state = null;
+            if (!keyArg.IsObject)
+            {
+                return false;
+            }
+
+            var keyObject = keyArg.AsObject() as FenObject;
+            if (keyObject == null)
+            {
+                return false;
+            }
+
+            state = keyObject.NativeObject as LegacyCryptoKeyState;
+            return state != null;
+        }
+
+        private static FenObject CreateCryptoKeyObject(LegacyCryptoKeyState state)
+        {
+            var keyObject = new FenObject
+            {
+                InternalClass = "CryptoKey",
+                NativeObject = state
+            };
+
+            keyObject.Set("type", FenValue.FromString(state.KeyType));
+            keyObject.Set("extractable", FenValue.FromBoolean(state.Extractable));
+            keyObject.Set("algorithm", FenValue.FromObject(CreateAlgorithmDescriptor(state)));
+            keyObject.Set("usages", FenValue.FromObject(CreateStringArray(state.Usages)));
+            return keyObject;
+        }
+
+        private static FenObject CreateAlgorithmDescriptor(LegacyCryptoKeyState state)
+        {
+            var descriptor = new FenObject();
+            descriptor.Set("name", FenValue.FromString(GetDisplayAlgorithmName(state.AlgorithmName)));
+
+            if (!string.IsNullOrWhiteSpace(state.HashName))
+            {
+                var hash = new FenObject();
+                hash.Set("name", FenValue.FromString(GetDisplayHashName(state.HashName)));
+                descriptor.Set("hash", FenValue.FromObject(hash));
+            }
+
+            if (string.Equals(state.AlgorithmName, "HMAC", StringComparison.Ordinal))
+            {
+                descriptor.Set("length", FenValue.FromNumber(state.SecretKey.Length * 8));
+            }
+            else if (string.Equals(state.AlgorithmName, "AESGCM", StringComparison.Ordinal))
+            {
+                var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
+                descriptor.Set("length", FenValue.FromNumber(length));
+            }
+
+            return descriptor;
+        }
+
+        private static FenObject CreateStringArray(IEnumerable<string> values)
+        {
+            var arrayObject = FenObject.CreateArray();
+            var index = 0;
+            foreach (var value in values)
+            {
+                arrayObject.Set(index.ToString(), FenValue.FromString(value));
+                index++;
+            }
+
+            arrayObject.Set("length", FenValue.FromNumber(index));
+            return arrayObject;
+        }
+
+        private static bool TryParseKeyUsages(FenValue usagesArg, out HashSet<string> usages)
+        {
+            usages = new HashSet<string>(StringComparer.Ordinal);
+
+            if (!usagesArg.IsObject)
+            {
+                return false;
+            }
+
+            var usagesObject = usagesArg.AsObject();
+            if (usagesObject == null)
+            {
+                return false;
+            }
+
+            var lengthValue = usagesObject.Get("length");
+            if (lengthValue.IsNull || lengthValue.IsUndefined || !lengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            var length = (int)lengthValue.ToNumber();
+            if (length < 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < length; i++)
+            {
+                var usageValue = usagesObject.Get(i.ToString());
+                if (!usageValue.IsString)
+                {
+                    return false;
+                }
+
+                var usage = usageValue.ToString().Trim();
+                if (string.IsNullOrWhiteSpace(usage))
+                {
+                    return false;
+                }
+
+                usages.Add(usage.ToLowerInvariant());
+            }
+
+            return true;
+        }
+
+        private static bool ValidateKeyUsages(HashSet<string> usages, HashSet<string> allowedUsages, out string unsupportedUsage)
+        {
+            unsupportedUsage = string.Empty;
+
+            foreach (var usage in usages)
+            {
+                if (!allowedUsages.Contains(usage))
+                {
+                    unsupportedUsage = usage;
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string NormalizeKeyFormat(FenValue formatArg)
+        {
+            if (!formatArg.IsString)
+            {
+                return string.Empty;
+            }
+
+            return formatArg.ToString().Trim().ToLowerInvariant();
+        }
+
+        private static bool TryResolveHashNameForOperation(FenValue algorithmArg, string fallbackHash, out string hashName)
+        {
+            hashName = fallbackHash;
+
+            if (algorithmArg.IsObject)
+            {
+                var algorithmObject = algorithmArg.AsObject();
+                var hashValue = algorithmObject?.Get("hash") ?? FenValue.Undefined;
+                if (!hashValue.IsUndefined && !hashValue.IsNull)
+                {
+                    if (!TryNormalizeHashName(hashValue, out hashName))
+                    {
+                        return false;
                     }
                 }
-                return args[0];
             }
-            catch { return args[0]; }
+
+            if (string.IsNullOrWhiteSpace(hashName))
+            {
+                return false;
+            }
+
+            return TryResolveHashAlgorithm(hashName, out _);
+        }
+
+        private static bool TryNormalizeHashName(FenValue hashArg, out string normalized)
+        {
+            normalized = string.Empty;
+            string raw;
+
+            if (hashArg.IsString)
+            {
+                raw = hashArg.ToString();
+            }
+            else if (hashArg.IsObject)
+            {
+                var hashObject = hashArg.AsObject();
+                var nameValue = hashObject?.Get("name") ?? FenValue.Undefined;
+                if (nameValue.IsUndefined || nameValue.IsNull)
+                {
+                    return false;
+                }
+
+                raw = nameValue.ToString();
+            }
+            else
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            normalized = raw
+                .Replace("-", string.Empty)
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .Trim()
+                .ToUpperInvariant();
+            return !string.IsNullOrWhiteSpace(normalized);
+        }
+
+        private static bool TryResolveHashAlgorithm(string normalizedHashName, out System.Security.Cryptography.HashAlgorithmName hashAlgorithm)
+        {
+            hashAlgorithm = default;
+
+            switch (normalizedHashName)
+            {
+                case "SHA1":
+                    hashAlgorithm = System.Security.Cryptography.HashAlgorithmName.SHA1;
+                    return true;
+                case "SHA256":
+                    hashAlgorithm = System.Security.Cryptography.HashAlgorithmName.SHA256;
+                    return true;
+                case "SHA384":
+                    hashAlgorithm = System.Security.Cryptography.HashAlgorithmName.SHA384;
+                    return true;
+                case "SHA512":
+                    hashAlgorithm = System.Security.Cryptography.HashAlgorithmName.SHA512;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static System.Security.Cryptography.HMAC CreateHmac(string normalizedHashName, byte[] secretKey)
+        {
+            switch (normalizedHashName)
+            {
+                case "SHA1":
+                    return new System.Security.Cryptography.HMACSHA1(secretKey);
+                case "SHA256":
+                    return new System.Security.Cryptography.HMACSHA256(secretKey);
+                case "SHA384":
+                    return new System.Security.Cryptography.HMACSHA384(secretKey);
+                case "SHA512":
+                    return new System.Security.Cryptography.HMACSHA512(secretKey);
+                default:
+                    return null;
+            }
+        }
+
+        private static FenBrowser.FenEngine.Core.Types.JsArrayBuffer CreateArrayBuffer(byte[] bytes)
+        {
+            var buffer = new FenBrowser.FenEngine.Core.Types.JsArrayBuffer(bytes.Length);
+            Array.Copy(bytes, buffer.Data, bytes.Length);
+            return buffer;
+        }
+
+        private static string GetDisplayAlgorithmName(string normalizedAlgorithmName)
+        {
+            return normalizedAlgorithmName switch
+            {
+                "HMAC" => "HMAC",
+                "AESGCM" => "AES-GCM",
+                "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
+                _ => normalizedAlgorithmName
+            };
+        }
+
+        private static string GetDisplayHashName(string normalizedHashName)
+        {
+            return normalizedHashName switch
+            {
+                "SHA1" => "SHA-1",
+                "SHA256" => "SHA-256",
+                "SHA384" => "SHA-384",
+                "SHA512" => "SHA-512",
+                _ => normalizedHashName
+            };
+        }
+
+        private static bool TryNormalizeAlgorithmName(FenValue algorithmArg, out string normalized)
+        {
+            normalized = string.Empty;
+            var raw = string.Empty;
+
+            if (algorithmArg.IsString)
+            {
+                raw = algorithmArg.ToString();
+            }
+            else if (algorithmArg.IsObject)
+            {
+                var algoObject = algorithmArg.AsObject();
+                if (algoObject != null)
+                {
+                    var nameValue = algoObject.Get("name");
+                    if (!nameValue.IsNull && !nameValue.IsUndefined)
+                    {
+                        raw = nameValue.ToString();
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            normalized = raw
+                .Replace("-", string.Empty)
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .Trim()
+                .ToUpperInvariant();
+            return !string.IsNullOrWhiteSpace(normalized);
+        }
+
+        private static bool TryResolveHmacLengthBits(FenValue algorithmArg, string hashName, out int keyLengthBits)
+        {
+            keyLengthBits = hashName switch
+            {
+                "SHA1" => 160,
+                "SHA256" => 256,
+                "SHA384" => 384,
+                "SHA512" => 512,
+                _ => 0
+            };
+
+            if (!algorithmArg.IsObject)
+            {
+                return keyLengthBits > 0;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return keyLengthBits > 0;
+            }
+
+            var lengthValue = algorithmObject.Get("length");
+            if (lengthValue.IsUndefined || lengthValue.IsNull)
+            {
+                return keyLengthBits > 0;
+            }
+
+            if (!lengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            var bits = (int)Math.Floor(lengthValue.ToNumber());
+            if (bits <= 0 || bits % 8 != 0)
+            {
+                return false;
+            }
+
+            keyLengthBits = bits;
+            return true;
+        }
+
+        private static bool TryResolveAesKeyLengthBitsForGenerate(FenValue algorithmArg, out int keyLengthBits)
+        {
+            keyLengthBits = 0;
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var lengthValue = algorithmObject.Get("length");
+            if (!lengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            keyLengthBits = (int)Math.Floor(lengthValue.ToNumber());
+            return keyLengthBits == 128 || keyLengthBits == 192 || keyLengthBits == 256;
+        }
+
+        private static bool TryResolveAesKeyLengthBitsForImport(FenValue algorithmArg, int keyByteLength, out int keyLengthBits)
+        {
+            keyLengthBits = keyByteLength * 8;
+            if (keyLengthBits != 128 && keyLengthBits != 192 && keyLengthBits != 256)
+            {
+                return false;
+            }
+
+            if (!algorithmArg.IsObject)
+            {
+                return true;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return true;
+            }
+
+            var lengthValue = algorithmObject.Get("length");
+            if (lengthValue.IsUndefined || lengthValue.IsNull)
+            {
+                return true;
+            }
+
+            if (!lengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            var requestedBits = (int)Math.Floor(lengthValue.ToNumber());
+            if (requestedBits != 128 && requestedBits != 192 && requestedBits != 256)
+            {
+                return false;
+            }
+
+            if (requestedBits != keyLengthBits)
+            {
+                return false;
+            }
+
+            keyLengthBits = requestedBits;
+            return true;
+        }
+
+        private static bool TryResolveAesGcmParams(FenValue algorithmArg, out byte[] iv, out byte[] additionalData, out int tagLengthBits)
+        {
+            iv = Array.Empty<byte>();
+            additionalData = Array.Empty<byte>();
+            tagLengthBits = 128;
+
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var ivValue = algorithmObject.Get("iv");
+            if (ivValue.IsUndefined || ivValue.IsNull || !TryExtractDigestBytes(ivValue, out iv) || iv.Length == 0)
+            {
+                return false;
+            }
+
+            var additionalDataValue = algorithmObject.Get("additionalData");
+            if (!additionalDataValue.IsUndefined && !additionalDataValue.IsNull)
+            {
+                if (!TryExtractDigestBytes(additionalDataValue, out additionalData))
+                {
+                    return false;
+                }
+            }
+
+            var tagLengthValue = algorithmObject.Get("tagLength");
+            if (!tagLengthValue.IsUndefined && !tagLengthValue.IsNull)
+            {
+                if (!tagLengthValue.IsNumber)
+                {
+                    return false;
+                }
+
+                var parsedTagLength = (int)Math.Floor(tagLengthValue.ToNumber());
+                if (parsedTagLength < 32 || parsedTagLength > 128 || parsedTagLength % 8 != 0)
+                {
+                    return false;
+                }
+
+                tagLengthBits = parsedTagLength;
+            }
+
+            return true;
+        }
+
+        private static bool TryResolveRsaModulusLength(FenValue algorithmArg, out int modulusLength)
+        {
+            modulusLength = 0;
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var modulusLengthValue = algorithmObject.Get("modulusLength");
+            if (!modulusLengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            modulusLength = (int)Math.Floor(modulusLengthValue.ToNumber());
+            return modulusLength > 0;
+        }
+
+        private static bool TryResolveRsaPublicExponent(FenValue algorithmArg, out byte[] publicExponent)
+        {
+            publicExponent = Array.Empty<byte>();
+
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var exponentValue = algorithmObject.Get("publicExponent");
+            if (exponentValue.IsUndefined || exponentValue.IsNull)
+            {
+                return false;
+            }
+
+            if (!TryExtractDigestBytes(exponentValue, out publicExponent))
+            {
+                return false;
+            }
+
+            return publicExponent.Length > 0;
+        }
+
+        private static bool IsSupportedRsaPublicExponent(byte[] exponent)
+        {
+            if (exponent == null || exponent.Length == 0)
+            {
+                return false;
+            }
+
+            var start = 0;
+            while (start < exponent.Length - 1 && exponent[start] == 0)
+            {
+                start++;
+            }
+
+            return exponent.Length - start == 3
+                && exponent[start] == 0x01
+                && exponent[start + 1] == 0x00
+                && exponent[start + 2] == 0x01;
+        }
+
+        private static bool TryExtractDigestBytes(FenValue dataArg, out byte[] data)
+        {
+            data = Array.Empty<byte>();
+
+            if (dataArg.IsString)
+            {
+                data = System.Text.Encoding.UTF8.GetBytes(dataArg.ToString());
+                return true;
+            }
+
+            if (!dataArg.IsObject)
+            {
+                return false;
+            }
+
+            var obj = dataArg.AsObject();
+            if (obj is FenBrowser.FenEngine.Core.Types.JsTypedArrayView typedView)
+            {
+                data = new byte[typedView.ByteLength];
+                Array.Copy(typedView.Buffer.Data, typedView.ByteOffset, data, 0, typedView.ByteLength);
+                return true;
+            }
+
+            if (obj is FenBrowser.FenEngine.Core.Types.JsArrayBuffer buffer)
+            {
+                data = (byte[])buffer.Data.Clone();
+                return true;
+            }
+
+            if (obj == null)
+            {
+                return false;
+            }
+
+            var lengthValue = obj.Get("length");
+            if (lengthValue.IsNull || lengthValue.IsUndefined || !lengthValue.IsNumber)
+            {
+                return false;
+            }
+
+            var len = (int)lengthValue.ToNumber();
+            if (len < 0)
+            {
+                return false;
+            }
+
+            data = new byte[len];
+            for (var i = 0; i < len; i++)
+            {
+                var item = obj.Get(i.ToString());
+                data[i] = (byte)(item.IsNumber ? item.ToNumber() : 0);
+            }
+
+            return true;
         }
     }
 
