@@ -46,7 +46,8 @@ namespace FenBrowser.FenEngine.Security
         Notifications = 1 << 19,     // Notification API
         Geolocation = 1 << 20,       // navigator.geolocation
         Camera = 1 << 21,            // Camera/Microphone
-        
+        Serial = 1 << 22,            // Web Serial API
+
         // DANGEROUS - Never grant these
         Eval = 1 << 30,              // eval(), Function constructor
         

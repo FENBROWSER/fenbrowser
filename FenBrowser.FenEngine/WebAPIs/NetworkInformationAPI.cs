@@ -1,5 +1,4 @@
 using System;
-using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -12,130 +11,104 @@ namespace FenBrowser.FenEngine.WebAPIs
     /// </summary>
     public static class NetworkInformationAPI
     {
-        private static string _effectiveType = "4g";
-        private static double _rtt = 50;
-        private static double _downlink = 10;
-        private static bool _saveData = false;
-        private static FenObject _changeListeners;
-        private static IExecutionContext _context;
+        private sealed class ConnectionState
+        {
+            public string EffectiveType { get; set; } = "4g";
+            public double Rtt { get; set; } = 50;
+            public double Downlink { get; set; } = 10;
+            public bool SaveData { get; set; }
+            public FenValue EventListener { get; set; } = FenValue.Null;
+            public IExecutionContext Context { get; init; }
+        }
 
         public static FenObject CreateNetworkInformation(IExecutionContext context)
         {
-            _context = context;
+            var state = new ConnectionState { Context = context };
             var connection = new FenObject();
 
-            connection.Set("effectiveType", FenValue.FromString(_effectiveType));
-            connection.Set("rtt", FenValue.FromNumber(_rtt));
-            connection.Set("downlink", FenValue.FromNumber(_downlink));
-            connection.Set("saveData", FenValue.FromBoolean(_saveData));
-
+            ApplyConnectionMetrics(connection, state);
             connection.Set("onchange", FenValue.Null);
-
-            _changeListeners = new FenObject();
-            connection.Set("__changeListeners", FenValue.FromObject(_changeListeners));
-
-            SetupEventTargetMethods(connection, context);
+            SetupEventTargetMethods(connection, state);
 
             return connection;
         }
 
-        private static void SetupEventTargetMethods(FenObject connection, IExecutionContext context)
+        private static void SetupEventTargetMethods(FenObject connection, ConnectionState state)
         {
-            connection.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) =>
+            connection.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, _) =>
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 var type = args[0].ToString();
                 var listener = args[1];
                 if (type == "change")
                 {
-                    _changeListeners.Set("listener", listener);
+                    state.EventListener = listener;
                 }
                 return FenValue.Undefined;
             })));
 
-            connection.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) =>
+            connection.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, _) =>
             {
                 if (args.Length < 2) return FenValue.Undefined;
                 var type = args[0].ToString();
                 if (type == "change")
                 {
-                    _changeListeners.Delete("listener");
+                    state.EventListener = FenValue.Null;
                 }
                 return FenValue.Undefined;
             })));
 
-connection.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) =>
-{
-if (args.Length < 1) return FenValue.FromBoolean(false);
-var eventArg = args[0];
-string eventType = "";
-if (eventArg.IsObject)
-{
-var typeVal = eventArg.AsObject().Get("type");
-if (!typeVal.IsNull && !typeVal.IsUndefined)
-eventType = typeVal.ToString();
-}
-if (eventType == "change")
-{
-FireChangeEvent();
-}
-return FenValue.FromBoolean(true);
-})));
-        }
-
-        private static void FireChangeEvent()
-        {
-            if (_changeListeners == null || _context == null) return;
-            var listener = _changeListeners.Get("listener");
-            if (listener.IsFunction)
+            connection.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, _) =>
             {
-                var eventObj = new FenObject();
-                eventObj.Set("type", FenValue.FromString("change"));
-                eventObj.Set("bubbles", FenValue.FromBoolean(false));
-                eventObj.Set("cancelable", FenValue.FromBoolean(false));
-                eventObj.Set("composed", FenValue.FromBoolean(false));
+                if (args.Length < 1) return FenValue.FromBoolean(false);
 
-                EventLoopCoordinator.Instance.ScheduleMicrotask(() =>
+                var eventArg = args[0];
+                var eventType = string.Empty;
+                if (eventArg.IsObject)
                 {
-                    listener.AsFunction()?.Invoke(new[] { FenValue.FromObject(eventObj) }, _context);
-                });
-            }
+                    var typeVal = eventArg.AsObject().Get("type");
+                    if (!typeVal.IsNull && !typeVal.IsUndefined)
+                        eventType = typeVal.ToString();
+                }
+
+                if (eventType == "change")
+                {
+                    FireChangeEvent(state, connection);
+                }
+
+                return FenValue.FromBoolean(true);
+            })));
         }
 
-        public static void UpdateConnectionMetrics(string effectiveType, double rtt, double downlink, bool saveData)
+        private static void ApplyConnectionMetrics(FenObject connection, ConnectionState state)
         {
-            bool changed = false;
-
-            if (_effectiveType != effectiveType)
-            {
-                _effectiveType = effectiveType;
-                changed = true;
-            }
-            if (_rtt != rtt)
-            {
-                _rtt = rtt;
-                changed = true;
-            }
-            if (_downlink != downlink)
-            {
-                _downlink = downlink;
-                changed = true;
-            }
-            if (_saveData != saveData)
-            {
-                _saveData = saveData;
-                changed = true;
-            }
-
-            if (changed)
-            {
-                FireChangeEvent();
-            }
+            connection.Set("effectiveType", FenValue.FromString(state.EffectiveType));
+            connection.Set("rtt", FenValue.FromNumber(state.Rtt));
+            connection.Set("downlink", FenValue.FromNumber(state.Downlink));
+            connection.Set("saveData", FenValue.FromBoolean(state.SaveData));
         }
 
-        public static string EffectiveType => _effectiveType;
-        public static double Rtt => _rtt;
-        public static double Downlink => _downlink;
-        public static bool SaveData => _saveData;
+        private static void FireChangeEvent(ConnectionState state, FenObject connection)
+        {
+            var listener = state.EventListener;
+            var onChange = connection.Get("onchange");
+            var context = state.Context;
+            if (context == null || (!listener.IsFunction && !onChange.IsFunction))
+                return;
+
+            var eventObj = new FenObject();
+            eventObj.Set("type", FenValue.FromString("change"));
+            eventObj.Set("bubbles", FenValue.FromBoolean(false));
+            eventObj.Set("cancelable", FenValue.FromBoolean(false));
+            eventObj.Set("composed", FenValue.FromBoolean(false));
+
+            EventLoopCoordinator.Instance.ScheduleMicrotask(() =>
+            {
+                if (listener.IsFunction)
+                    listener.AsFunction().Invoke(new[] { FenValue.FromObject(eventObj) }, context);
+                if (onChange.IsFunction)
+                    onChange.AsFunction().Invoke(new[] { FenValue.FromObject(eventObj) }, context);
+            });
+        }
     }
 }
