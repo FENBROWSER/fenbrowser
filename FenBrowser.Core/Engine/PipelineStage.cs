@@ -1,3 +1,7 @@
+// SpecRef: FenBrowser pipeline stage authority contract (parse -> DOM -> style -> layout -> paint -> raster)
+// CapabilityId: PIPELINE-STAGE-AUTHORITY-01
+// Determinism: strict
+// FallbackPolicy: clean-unsupported
 // =============================================================================
 // PipelineStage.cs
 // FenBrowser Rendering Pipeline Stage Definitions

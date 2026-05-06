@@ -21,6 +21,7 @@ Owner: Architecture Track
 
 | Capability ID | Subsystem | Spec Reference | Owner | Status | Severity | Verification Target |
 | --- | --- | --- | --- | --- | --- | --- |
+| PIPELINE-STAGE-AUTHORITY-01 | Pipeline Contracts | FenBrowser parse->DOM->style->layout->paint->raster authority contract | `FenBrowser.Core` + `FenBrowser.FenEngine` | Provisional | P0 | PipelineContextTests + PipelineInvariantGateTests + RenderPipelineInvariantTests |
 | EVENTLOOP-MACROTASK-01 | Event Loop | WHATWG HTML event loops | `FenBrowser.FenEngine` | Partial | P0 | Deterministic task ordering tests |
 | EVENTLOOP-MICROTASK-01 | Event Loop | WHATWG HTML microtask checkpoint | `FenBrowser.FenEngine` | Partial | P0 | Promise/microtask drain tests |
 | DOM-NODELIST-LIVE-01 | DOM | DOM Living Standard NodeList behavior | `FenBrowser.Core` + `FenBrowser.FenEngine` | Provisional | P1 | DOM collection regression tests |

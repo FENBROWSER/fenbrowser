@@ -1,5 +1,9 @@
 {
   "governedFiles": [
+    "FenBrowser.Core/Engine/PipelineStage.cs",
+    "FenBrowser.Core/Engine/PipelineContext.cs",
+    "FenBrowser.Core/Engine/PhaseGuard.cs",
+    "FenBrowser.FenEngine/Rendering/RenderPipeline.cs",
     "FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs",
     "FenBrowser.FenEngine/Core/EventLoop/MicrotaskQueue.cs",
     "FenBrowser.FenEngine/DOM/NodeListWrapper.cs",
@@ -37,6 +41,7 @@
     "FenBrowser.Tooling/Test262ToolRunner.cs"
   ],
   "requiredCapabilityIds": [
+    "PIPELINE-STAGE-AUTHORITY-01",
     "EVENTLOOP-MACROTASK-01",
     "EVENTLOOP-MICROTASK-01",
     "DOM-NODELIST-LIVE-01",
