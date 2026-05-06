@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reduced Layout/Paint/Event Fixture</title>
+  <style>
+    #hidden {
+      display: none;
+    }
+
+    #visible {
+      margin: 8px;
+      padding: 4px;
+      border: 2px solid black;
+      width: 120px;
+      height: 24px;
+      background: #dde8ff;
+      color: #102030;
+    }
+  </style>
+</head>
+<body>
+  <div id="hidden">Hidden</div>
+  <button id="visible">Click me</button>
+  <script>
+    document.getElementById("visible").addEventListener("click", function () {
+      var marker = document.createElement("p");
+      marker.id = "clicked-marker";
+      marker.textContent = "Clicked";
+      document.body.appendChild(marker);
+    });
+  </script>
+</body>
+</html>

@@ -36,4 +36,15 @@ if ($LASTEXITCODE -ne 0) {
     Fail "Parser fuzz regression verification failed."
 }
 
+Write-Host "[verify] Running code cleanup audit (fail on high-severity findings)..."
+$cleanupAuditScript = "scripts/ci/run-code-cleanup-audit.ps1"
+if (-not (Test-Path $cleanupAuditScript)) {
+    Fail "Missing code cleanup audit runner: $cleanupAuditScript"
+}
+
+& powershell -ExecutionPolicy Bypass -File $cleanupAuditScript -OutputPath "Results\code_cleanup_audit_ci.md" -FailOnHigh
+if ($LASTEXITCODE -ne 0) {
+    Fail "Code cleanup audit failed."
+}
+
 Write-Host "[verify] Verification guards passed."
