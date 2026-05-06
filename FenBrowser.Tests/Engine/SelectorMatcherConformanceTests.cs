@@ -528,6 +528,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void IndeterminatePseudoClass_MatchesCheckboxMixedOrProgressWithoutValue()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='mixed' type='checkbox' aria-checked='mixed' />
+    <input id='checked' type='checkbox' checked />
+    <progress id='progress-indeterminate'></progress>
+    <progress id='progress-determinate' value='5'></progress>
+</body></html>");
+
+            var mixed = ById(doc, "mixed");
+            var checkedBox = ById(doc, "checked");
+            var indeterminateProgress = ById(doc, "progress-indeterminate");
+            var determinateProgress = ById(doc, "progress-determinate");
+
+            Assert.True(SelectorMatcher.Matches(mixed, ":indeterminate"));
+            Assert.False(SelectorMatcher.Matches(checkedBox, ":indeterminate"));
+            Assert.True(SelectorMatcher.Matches(indeterminateProgress, ":indeterminate"));
+            Assert.False(SelectorMatcher.Matches(determinateProgress, ":indeterminate"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

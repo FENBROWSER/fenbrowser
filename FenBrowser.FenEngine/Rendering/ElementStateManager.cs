@@ -816,6 +816,37 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
 
+        public static bool IsIndeterminate(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(element.TagName, "progress", StringComparison.OrdinalIgnoreCase))
+            {
+                return !element.HasAttribute("value");
+            }
+
+            if (!string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
+            if (type != "checkbox")
+            {
+                return false;
+            }
+
+            if (string.Equals(element.GetAttribute("aria-checked"), "mixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(element.GetAttribute("indeterminate"), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
