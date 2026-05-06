@@ -956,6 +956,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                                 effectiveDir = v;
                                 break;
                             }
+                            if (v == "auto")
+                            {
+                                effectiveDir = GetAutoDirection(dNode);
+                                break;
+                            }
                         }
                         dNode = dNode.ParentElement;
                     }
@@ -1061,6 +1066,34 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return null;
+        }
+
+        private static string GetAutoDirection(Element element)
+        {
+            if (element == null)
+            {
+                return "ltr";
+            }
+
+            var text = element.TextContent ?? string.Empty;
+            foreach (var ch in text)
+            {
+                if (char.IsWhiteSpace(ch))
+                {
+                    continue;
+                }
+
+                var code = (int)ch;
+                // Arabic + Hebrew blocks as strong RTL signals.
+                if ((code >= 0x0590 && code <= 0x08FF) || (code >= 0xFB1D && code <= 0xFEFC))
+                {
+                    return "rtl";
+                }
+
+                return "ltr";
+            }
+
+            return "ltr";
         }
 
         private static bool SupportsEnabledDisabledPseudoClass(Element el)

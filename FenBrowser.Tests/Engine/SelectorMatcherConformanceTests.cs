@@ -665,6 +665,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DirPseudoClass_DerivesDirectionFromDirAutoContent()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='rtl' dir='auto'>שלום</div>
+    <div id='ltr' dir='auto'>Hello</div>
+</body></html>");
+
+            var rtl = ById(doc, "rtl");
+            var ltr = ById(doc, "ltr");
+
+            Assert.True(SelectorMatcher.Matches(rtl, ":dir(rtl)"));
+            Assert.False(SelectorMatcher.Matches(rtl, ":dir(ltr)"));
+            Assert.True(SelectorMatcher.Matches(ltr, ":dir(ltr)"));
+            Assert.False(SelectorMatcher.Matches(ltr, ":dir(rtl)"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
