@@ -749,6 +749,35 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void EnabledPseudoClass_ExcludesEffectivelyDisabledControls()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <fieldset disabled>
+        <legend><input id='legend-input' /></legend>
+        <input id='fieldset-input' />
+    </fieldset>
+    <select>
+        <optgroup disabled>
+            <option id='disabled-option'>A</option>
+        </optgroup>
+        <option id='enabled-option'>B</option>
+    </select>
+</body></html>");
+
+            var legendInput = ById(doc, "legend-input");
+            var fieldsetInput = ById(doc, "fieldset-input");
+            var disabledOption = ById(doc, "disabled-option");
+            var enabledOption = ById(doc, "enabled-option");
+
+            Assert.True(SelectorMatcher.Matches(legendInput, ":enabled"));
+            Assert.False(SelectorMatcher.Matches(fieldsetInput, ":enabled"));
+            Assert.False(SelectorMatcher.Matches(disabledOption, ":enabled"));
+            Assert.True(SelectorMatcher.Matches(enabledOption, ":enabled"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

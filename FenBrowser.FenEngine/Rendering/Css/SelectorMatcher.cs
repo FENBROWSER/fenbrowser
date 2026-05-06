@@ -899,7 +899,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);
-                case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);
+                case "enabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
+                                        !ElementStateManager.IsEffectivelyDisabled(el);
                 case "focus": return ElementStateManager.Instance.IsFocused(el);
                 case "hover": return ElementStateManager.Instance.IsHovered(el);
                 case "active": return ElementStateManager.Instance.IsActive(el);
@@ -1119,21 +1120,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return !string.IsNullOrWhiteSpace(element.GetAttribute("href"));
-        }
-
-        private static bool SupportsEnabledDisabledPseudoClass(Element el)
-        {
-            var tagName = el?.TagName;
-            if (string.IsNullOrWhiteSpace(tagName))
-            {
-                return false;
-            }
-
-            return string.Equals(tagName, "input", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tagName, "button", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tagName, "select", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tagName, "fieldset", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsCheckedFormControl(Element el)
