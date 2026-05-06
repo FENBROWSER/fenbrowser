@@ -183,7 +183,10 @@ namespace FenBrowser.Core.Css
                         if (_fontFamily == null)
                             _fontFamily = SKTypeface.FromFamilyName(FontFamilyName); 
                     } 
-                    catch { }
+                    catch (Exception)
+                    {
+                        _fontFamily = SKTypeface.Default;
+                    }
                 }
                 return _fontFamily;
             }

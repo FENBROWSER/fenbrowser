@@ -313,13 +313,30 @@ namespace FenBrowser.Host.ProcessIsolation
             if (_disposed) return;
             _disposed = true;
 
-            try { _accessor?.Dispose(); } catch { }
-            try { _mmf?.Dispose(); } catch { }
-            try { _readyEvent?.Dispose(); } catch { }
+            TryDispose(_accessor, "accessor");
+            TryDispose(_mmf, "memory-mapped-file");
+            TryDispose(_readyEvent, "ready-event");
 
             _accessor = null;
             _mmf = null;
             _readyEvent = null;
+        }
+
+        private static void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
+            }
+
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[FrameSharedMemory] Dispose failed for {resourceName}: {ex.Message}");
+            }
         }
     }
 }

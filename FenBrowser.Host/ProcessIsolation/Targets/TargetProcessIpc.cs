@@ -246,24 +246,35 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
         public void SendShutdown()
         {
-            try
-            {
-                Send(new TargetIpcEnvelope { Type = TargetIpcMessageType.Shutdown.ToString() });
-            }
-            catch
-            {
-            }
+            Send(new TargetIpcEnvelope { Type = TargetIpcMessageType.Shutdown.ToString() });
         }
 
         public void Dispose()
         {
             _cts.Cancel();
             _readyTcs.TrySetResult(false);
-            try { SendShutdown(); } catch { }
-            try { _writer?.Dispose(); } catch { }
-            try { _reader?.Dispose(); } catch { }
-            try { _pipe?.Dispose(); } catch { }
-            try { _cts.Dispose(); } catch { }
+            SendShutdown();
+            TryDispose(_writer, "writer");
+            TryDispose(_reader, "reader");
+            TryDispose(_pipe, "pipe");
+            TryDispose(_cts, "cts");
+        }
+
+        private void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
+            }
+
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[{_targetKind}Process] Dispose failed for {resourceName}: {ex.Message}");
+            }
         }
 
         private async Task WaitForConnectionAsync()

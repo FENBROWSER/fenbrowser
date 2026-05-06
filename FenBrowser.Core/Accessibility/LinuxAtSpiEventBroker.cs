@@ -130,7 +130,14 @@ namespace FenBrowser.Core.Accessibility
             process.WaitForExit(1000);
             if (!process.HasExited)
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn($"[AT-SPI] Failed to kill timed out dbus-send process: {ex.Message}", LogCategory.Accessibility);
+                }
                 throw new TimeoutException("dbus-send timed out.");
             }
 
@@ -151,7 +158,14 @@ namespace FenBrowser.Core.Accessibility
             _disposed = true;
             _cts.Cancel();
             _signal.Release();
-            try { _worker.Wait(TimeSpan.FromSeconds(1)); } catch { }
+            try
+            {
+                _worker.Wait(TimeSpan.FromSeconds(1));
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[AT-SPI] Worker shutdown wait failed: {ex.Message}", LogCategory.Accessibility);
+            }
             _signal.Dispose();
             _cts.Dispose();
         }

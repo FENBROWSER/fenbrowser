@@ -7,6 +7,7 @@ using System.Text;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Dom.V2.Selectors;
 using FenBrowser.Core.Dom.V2.Security;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -470,7 +471,11 @@ namespace FenBrowser.Core.Dom.V2
             if (IsStyleAffectingAttribute(name))
             {
                 MarkDirty(InvalidationKind.Style);
-                try { StyleAttributeChanged?.Invoke(this); } catch { }
+                try { StyleAttributeChanged?.Invoke(this); }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[DOM] StyleAttributeChanged callback failed for '{TagName}': {ex.Message}", LogCategory.DOM);
+                }
             }
 
             // Update ancestor filter for selector optimization
@@ -509,7 +514,11 @@ namespace FenBrowser.Core.Dom.V2
             if (IsStyleAffectingAttribute(name))
             {
                 MarkDirty(InvalidationKind.Style);
-                try { StyleAttributeChanged?.Invoke(this); } catch { }
+                try { StyleAttributeChanged?.Invoke(this); }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[DOM] StyleAttributeChanged callback failed for '{TagName}': {ex.Message}", LogCategory.DOM);
+                }
             }
 
             UpdateAncestorFilter();

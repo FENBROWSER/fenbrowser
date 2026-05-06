@@ -464,7 +464,7 @@ namespace FenBrowser.Host.ProcessIsolation
                                 $"[ProcessIsolation] Sandbox.AttachToProcess failed for tab {tabId} pid={process.Id}: {ex.Message}");
                             if (!allowUnsandboxedFallback)
                             {
-                                try { process.Kill(entireProcessTree: true); } catch { }
+                                TryKillProcess(process, $"sandbox-attach-failed tab={tabId}");
                                 rendererSandbox.Dispose();
                                 return null;
                             }
@@ -518,8 +518,42 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             finally
             {
-                try { process.Dispose(); } catch { }
+                TryDisposeProcess(process, reason);
                 session.Dispose();
+            }
+        }
+
+        private static void TryKillProcess(Process process, string reason)
+        {
+            if (process == null || process.HasExited)
+            {
+                return;
+            }
+
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolation] Failed to kill renderer child ({reason}): {ex.Message}");
+            }
+        }
+
+        private static void TryDisposeProcess(Process process, string reason)
+        {
+            if (process == null)
+            {
+                return;
+            }
+
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolation] Failed to dispose renderer child ({reason}): {ex.Message}");
             }
         }
 

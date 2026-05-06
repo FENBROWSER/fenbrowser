@@ -1065,7 +1065,11 @@ public class SettingsPageWidget : Widget
                          {
                              _aboutIcon = SKBitmap.Decode(iconPath);
                          }
-                    } catch {}
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogBridge.Warn($"[Settings] Failed to decode about icon: {ex.Message}", LogCategory.General);
+                    }
                 }
 
                 if (_aboutIcon != null)

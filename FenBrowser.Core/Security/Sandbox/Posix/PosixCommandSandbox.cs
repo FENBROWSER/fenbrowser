@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using FenBrowser.Core.Platform;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security.Sandbox.Posix;
 
@@ -145,7 +146,11 @@ public sealed class PosixCommandSandbox : ISandbox
         {
             foreach (var process in _activeProcesses)
             {
-                try { process.Dispose(); } catch { }
+                try { process.Dispose(); }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[PosixSandbox] Failed to dispose tracked process: {ex.Message}", LogCategory.Security);
+                }
             }
 
             _activeProcesses.Clear();

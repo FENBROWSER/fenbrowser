@@ -135,7 +135,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     EngineLogBridge.Error(
                         $"[{_targetKind}Process] Child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
                         LogCategory.ProcessIsolation);
-                    try { child.Kill(entireProcessTree: true); } catch { }
+                    TryKillProcess(child, "startup-contract-failed");
                     sandbox?.Dispose();
                     session.Dispose();
                     return false;
@@ -160,25 +160,50 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
         public void Dispose()
         {
-            try { _session?.Dispose(); } catch { }
+            TryDispose(_session, "session");
             _session = null;
+
+            TryKillProcess(_childProcess, "host-dispose");
+
+            TryDispose(_childProcess, "child-process");
+            _childProcess = null;
+
+            TryDispose(_sandbox, "sandbox");
+            _sandbox = null;
+        }
+
+        private void TryKillProcess(Process process, string reason)
+        {
+            if (process == null || process.HasExited)
+            {
+                return;
+            }
 
             try
             {
-                if (_childProcess != null && !_childProcess.HasExited)
-                {
-                    _childProcess.Kill(entireProcessTree: true);
-                }
+                process.Kill(entireProcessTree: true);
             }
-            catch
+            catch (Exception ex)
             {
+                EngineLogBridge.Debug($"[{_targetKind}Process] Failed to kill child ({reason}): {ex.Message}", LogCategory.ProcessIsolation);
+            }
+        }
+
+        private void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
             }
 
-            try { _childProcess?.Dispose(); } catch { }
-            _childProcess = null;
-
-            try { _sandbox?.Dispose(); } catch { }
-            _sandbox = null;
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Debug($"[{_targetKind}Process] Dispose failed for {resourceName}: {ex.Message}", LogCategory.ProcessIsolation);
+            }
         }
 
         private static int ParseIntEnv(string key, int fallback)

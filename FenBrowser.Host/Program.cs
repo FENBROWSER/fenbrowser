@@ -72,13 +72,27 @@ namespace FenBrowser.Host
             // Enable High-DPI Awareness (Per-Monitor V2)
             if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
             {
-                try { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); } catch { }
+                try
+                {
+                    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Debug, $"[Startup] DPI awareness setup skipped: {ex.Message}");
+                }
             }
 
             try
             {
                 // Force UTF-8 Console Output if possible (may fail if no console attached)
-                try { Console.OutputEncoding = Encoding.UTF8; } catch { }
+                try
+                {
+                    Console.OutputEncoding = Encoding.UTF8;
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.General, LogSeverity.Debug, $"[Startup] Console UTF-8 setup skipped: {ex.Message}");
+                }
 
                 // Global Exception Handling
                 AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
@@ -900,8 +914,23 @@ namespace FenBrowser.Host
 
             foreach (var kvp in activeRequests)
             {
-                try { kvp.Value.Cancel(); } catch { }
-                try { kvp.Value.Dispose(); } catch { }
+                try
+                {
+                    kvp.Value.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.Net, LogSeverity.Debug, $"[NetworkChild] Request cancel failed: {ex.Message}");
+                }
+
+                try
+                {
+                    kvp.Value.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.Net, LogSeverity.Debug, $"[NetworkChild] Request dispose failed: {ex.Message}");
+                }
             }
 
             if (handshakeComplete)

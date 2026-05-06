@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Network.Handlers
 {
@@ -42,7 +43,10 @@ namespace FenBrowser.Core.Network.Handlers
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[HSTS] Load failed: {ex.Message}", LogCategory.Security);
+            }
         }
 
         private void SaveHsts()
@@ -58,7 +62,10 @@ namespace FenBrowser.Core.Network.Handlers
                 }
                 File.WriteAllText(_storePath, sb.ToString());
             }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[HSTS] Save failed: {ex.Message}", LogCategory.Security);
+            }
         }
 
         private Uri UpgradeIfHsts(Uri u)

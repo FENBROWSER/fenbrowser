@@ -297,7 +297,10 @@ public class BrowserIntegration
                         "BrowserIntegration.DomPoller");
                 }
             }
-            catch {}
+            catch (Exception ex)
+            {
+                EngineLogBridge.Debug($"[BrowserIntegration] DOM poller callback failed: {ex.Message}", LogCategory.Rendering);
+            }
         }, null, 100, 500); // Start after 100ms, poll every 500ms (event-driven is primary)
 
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
@@ -1831,15 +1834,10 @@ public class BrowserIntegration
                     // Resolve relative URLs
                     if (_browser.CurrentUri != null && !href.StartsWith("http") && !href.StartsWith("data:"))
                     {
-                        try
+                        if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
                         {
-                            Uri resolved;
-                            if (Uri.TryCreate(_browser.CurrentUri, href, out resolved))
-                            {
-                                return resolved.AbsoluteUri;
-                            }
+                            return resolved.AbsoluteUri;
                         }
-                        catch { }
                     }
                     return href;
                 }
@@ -2166,14 +2164,10 @@ public class BrowserIntegration
             return href;
         }
 
-        try
+        if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
         {
-            if (Uri.TryCreate(_browser.CurrentUri, href, out var resolved))
-            {
-                return resolved.AbsoluteUri;
-            }
+            return resolved.AbsoluteUri;
         }
-        catch { }
 
         return href;
     }

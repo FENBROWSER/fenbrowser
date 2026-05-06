@@ -1,5 +1,7 @@
 using System;
 using System.Text.RegularExpressions;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -48,7 +50,10 @@ namespace FenBrowser.FenEngine.Core
                 if (Uri.TryCreate(baseUri2, url, out var result))
                     return result.ToString();
             }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[ResourceUrlResolver] Resolve failed for base='{baseUrl}': {ex.Message}", LogCategory.Network);
+            }
 
             return url;
         }

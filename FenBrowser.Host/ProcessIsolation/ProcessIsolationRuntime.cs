@@ -1,3 +1,6 @@
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
+
 namespace FenBrowser.Host.ProcessIsolation
 {
     /// <summary>
@@ -70,20 +73,33 @@ namespace FenBrowser.Host.ProcessIsolation
 
         private static void ShutdownAuxiliaryTargets()
         {
-            try { _utilityHost?.Dispose(); } catch { }
+            TryDispose(_utilityHost, "utility-target-host");
             _utilityHost = null;
 
-            try { _gpuHost?.Dispose(); } catch { }
+            TryDispose(_gpuHost, "gpu-target-host");
             _gpuHost = null;
+
+            TryDispose(NetworkCoordinator, "network-coordinator");
+            NetworkCoordinator = null;
+            TryDispose(_networkHost, "network-child-host");
+            _networkHost = null;
+        }
+
+        private static void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
+            }
 
             try
             {
-                NetworkCoordinator?.Dispose();
-                NetworkCoordinator = null;
-                _networkHost?.Dispose();
+                disposable.Dispose();
             }
-            catch { }
-            _networkHost = null;
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolationRuntime] Dispose failed for {resourceName}: {ex.Message}");
+            }
         }
 
         private static bool IsAuxiliaryTargetAutoStartEnabled()

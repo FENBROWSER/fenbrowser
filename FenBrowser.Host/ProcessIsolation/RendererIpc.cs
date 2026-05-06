@@ -607,12 +607,29 @@ namespace FenBrowser.Host.ProcessIsolation
             _cts.Cancel();
             _readyTcs.TrySetResult(false);
 
-            try { _writer?.Dispose(); } catch { }
-            try { _reader?.Dispose(); } catch { }
-            try { _pipe?.Dispose(); } catch { }
-            try { _cts.Dispose(); } catch { }
-            try { _frameSharedMemory?.Dispose(); } catch { }
+            TryDispose(_writer, "writer");
+            TryDispose(_reader, "reader");
+            TryDispose(_pipe, "pipe");
+            TryDispose(_cts, "cts");
+            TryDispose(_frameSharedMemory, "frame-shared-memory");
             _frameSharedMemory = null;
+        }
+
+        private void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
+            }
+
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolation] Dispose failed for {resourceName} (tab {TabId}): {ex.Message}");
+            }
         }
     }
 }

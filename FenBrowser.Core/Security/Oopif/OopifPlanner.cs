@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using FenBrowser.Core.Network;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security.Oopif
 {
@@ -261,7 +262,11 @@ namespace FenBrowser.Core.Security.Oopif
                 IsOutOfProcess = false,
             };
 
-            try { frame.SiteLock = _policy.ComputeSiteLock(url); } catch { }
+            try { frame.SiteLock = _policy.ComputeSiteLock(url); }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[OOPIF] Failed to compute site lock for '{url}': {ex.Message}", LogCategory.Security);
+            }
 
             _mainFrame = frame;
             _frames[frame.FrameId] = frame;

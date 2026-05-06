@@ -1,6 +1,7 @@
 using SkiaSharp;
 using Silk.NET.Input;
 using FenBrowser.Host.Widgets;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.Context;
 
@@ -212,7 +213,10 @@ public class ContextMenuWidget : Widget
                 {
                     item.Invoke();
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[ContextMenu] Menu action failed: {ex.Message}", LogCategory.General);
+                }
                 Hide();
             }
         }

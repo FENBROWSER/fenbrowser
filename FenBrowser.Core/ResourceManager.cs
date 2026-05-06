@@ -232,7 +232,19 @@ namespace FenBrowser.Core
         }
 
         private static void AddHeaderSafe(HttpRequestMessage req, string name, string value)
-        { try { if (!string.IsNullOrWhiteSpace(value)) req.Headers.TryAddWithoutValidation(name, value); } catch { } }
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    req.Headers.TryAddWithoutValidation(name, value);
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[Network] Failed to add header '{name}': {ex.Message}", LogCategory.Network);
+            }
+        }
 
         private static ResilienceSettings GetResilienceSettings()
         {
@@ -840,7 +852,9 @@ namespace FenBrowser.Core
                         filePath = Path.Combine(folderPath, hash);
                         metaPath = filePath + ".meta";
                     }
-                } catch { } 
+                } catch (Exception ex) {
+                    EngineLogCompat.Debug($"[Network] Text cache path hashing failed: {ex.Message}", LogCategory.Network);
+                } 
             }            var refererOriginal = referer;
             Uri previousRequest = null;
 
@@ -873,7 +887,10 @@ namespace FenBrowser.Core
                         int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[Network] Failed to apply request timeout: {ex.Message}", LogCategory.Network);
+                    }
                     try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); }
                     catch (Exception sendEx)
                     {
@@ -938,7 +955,7 @@ namespace FenBrowser.Core
                 }
                 catch (Exception bodyEx)
                 {
-                    try { System.Diagnostics.Debug.WriteLine("[FetchTextError] body read failed url=" + url + " ex=" + bodyEx.Message); } catch { }
+                    EngineLogCompat.Debug($"[FetchTextError] body read failed url={url} ex={bodyEx.Message}", LogCategory.Network);
                     text = null;
                 }
                 try { 
@@ -946,7 +963,11 @@ namespace FenBrowser.Core
                     var _msg = $"[Network] GET {url} → {(int)resp.StatusCode} in {(int)_elapsed.TotalMilliseconds}ms"; 
                     EngineLogCompat.Info(_msg, LogCategory.Network);
                     if (LogSink != null) LogSink(_msg); 
-                } catch { }
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[Network] Post-request logging failed: {ex.Message}", LogCategory.Network);
+                }
 
                 if (resp != null)
                 {
@@ -982,21 +1003,29 @@ namespace FenBrowser.Core
                             var metaPayload = DateTimeOffset.UtcNow.ToString("o") + "|" + (finalUri != null ? finalUri.AbsoluteUri : string.Empty);
                             await File.WriteAllTextAsync(metaPath, metaPayload).ConfigureAwait(false);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            EngineLogCompat.Debug($"[Network] Disk text cache write failed for {url}: {ex.Message}", LogCategory.Network);
+                        }
                     }
                 }
                 if (string.IsNullOrEmpty(text))
                 {
-                    try { System.Diagnostics.Debug.WriteLine("[FetchTextEmpty] url=" + url); } catch { }
+                    EngineLogCompat.Debug($"[FetchTextEmpty] url={url}", LogCategory.Network);
                 }
                 return text;
             }
             catch (Exception ex) {
-                try {
-                    var msg = $"[FetchTextException] url={url} ex={ex.Message}";
-                    System.Diagnostics.Debug.WriteLine(msg);
+                var msg = $"[FetchTextException] url={url} ex={ex.Message}";
+                EngineLogCompat.Error(msg, LogCategory.Network);
+                try
+                {
                     LogSink?.Invoke(msg);
-                } catch { }
+                }
+                catch (Exception sinkEx)
+                {
+                    EngineLogCompat.Debug($"[Network] FetchText exception sink failed: {sinkEx.Message}", LogCategory.Network);
+                }
                 // Return a clear error message for text resources
                 return $"<!-- Resource load failed: {System.Net.WebUtility.HtmlEncode(url?.ToString() ?? "(null)")} : {System.Net.WebUtility.HtmlEncode(ex.Message)} -->";
             }
@@ -1114,7 +1143,10 @@ namespace FenBrowser.Core
                         int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[Network] Failed to apply detailed-fetch timeout: {ex.Message}", LogCategory.Network);
+                    }
 
                     try 
                     { 
@@ -1242,7 +1274,11 @@ namespace FenBrowser.Core
                 {
                     // 404, 500, etc.
                     string errBody = null;
-                    try { errBody = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); } catch {}
+                    try { errBody = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[Network] Failed to read error body for {finalUri}: {ex.Message}", LogCategory.Network);
+                    }
                     
                     FetchStatus status = FetchStatus.UnknownError;
                     if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) status = FetchStatus.NotFound;
@@ -1454,19 +1490,48 @@ namespace FenBrowser.Core
                 ApplyNavigationRequestHeaders(req, secFetchDest);
                 AttachCookies(req, referer ?? url, secFetchDest);
                 var cts = new System.Threading.CancellationTokenSource();
-                try { cts.CancelAfter(TimeSpan.FromSeconds(30)); } catch { }
+                try { cts.CancelAfter(TimeSpan.FromSeconds(30)); }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[Network] Failed to apply optimized-fetch timeout: {ex.Message}", LogCategory.Network);
+                }
                 HttpResponseMessage resp = null;
-                try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); } catch (Exception sendEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] send " + url + " ex=" + sendEx.Message); } catch { } }
+                try
+                {
+                    resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception sendEx)
+                {
+                    EngineLogCompat.Debug($"[FetchTextOptError] send {url} ex={sendEx.Message}", LogCategory.Network);
+                }
                 StoreResponseCookies(resp, referer ?? url);
                 if (resp == null || !resp.IsSuccessStatusCode)
-                { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptFail] url=" + url + " status=" + (resp!=null?(int)resp.StatusCode:0)); } catch { } return null; }
+                {
+                    EngineLogCompat.Debug($"[FetchTextOptFail] url={url} status={(resp != null ? (int)resp.StatusCode : 0)}", LogCategory.Network);
+                    return null;
+                }
                 AdoptResponseReferrerPolicy(resp, secFetchDest);
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
-                string text = null; try { text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); } catch (Exception bodyEx) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptError] body " + url + " ex=" + bodyEx.Message); } catch { } }
-                if (string.IsNullOrEmpty(text)) { try { System.Diagnostics.Debug.WriteLine("[FetchTextOptEmpty] url=" + url); } catch { } }
+                string text = null;
+                try
+                {
+                    text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                }
+                catch (Exception bodyEx)
+                {
+                    EngineLogCompat.Debug($"[FetchTextOptError] body {url} ex={bodyEx.Message}", LogCategory.Network);
+                }
+                if (string.IsNullOrEmpty(text))
+                {
+                    EngineLogCompat.Debug($"[FetchTextOptEmpty] url={url}", LogCategory.Network);
+                }
                 return text;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[FetchTextOptError] url={url} ex={ex.Message}", LogCategory.Network);
+                return null;
+            }
         }
 
         // Image with redirect and memory cache; disk caching optional later
@@ -1537,7 +1602,11 @@ namespace FenBrowser.Core
                                 var decodedData = Uri.UnescapeDataString(data);
                                 bytes = Convert.FromBase64String(decodedData); 
                             }
-                            catch { return null; }
+                            catch (Exception ex)
+                            {
+                                EngineLogCompat.Debug($"[FetchImage] Invalid base64 data URI for {url}: {ex.Message}", LogCategory.Network);
+                                return null;
+                            }
                         }
                         else
                         {
@@ -1549,7 +1618,11 @@ namespace FenBrowser.Core
                     }
                     return null;
                 }
-                catch { return null; }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[FetchImage] Data URI decode failed for {url}: {ex.Message}", LogCategory.Network);
+                    return null;
+                }
             }
 
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
@@ -1586,7 +1659,11 @@ namespace FenBrowser.Core
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     AttachCookies(req, refererOriginal ?? current, "image");
                     var cts = new System.Threading.CancellationTokenSource();
-                    try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); } catch { }
+                    try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[FetchImage] Failed to apply timeout: {ex.Message}", LogCategory.Network);
+                    }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
                     StoreResponseCookies(resp, refererOriginal ?? current);
                     
@@ -1643,11 +1720,16 @@ namespace FenBrowser.Core
                 return new MemoryStream(buf);
             }
             catch (Exception ex) {
-                try {
-                    var msg = $"[FetchImageException] url={url} ex={ex.Message}";
-                    System.Diagnostics.Debug.WriteLine(msg);
+                var msg = $"[FetchImageException] url={url} ex={ex.Message}";
+                EngineLogCompat.Debug(msg, LogCategory.Network);
+                try
+                {
                     LogSink?.Invoke(msg);
-                } catch { }
+                }
+                catch (Exception sinkEx)
+                {
+                    EngineLogCompat.Debug($"[Network] FetchImage exception sink failed: {sinkEx.Message}", LogCategory.Network);
+                }
                 return null;
             }
         }
@@ -1699,7 +1781,10 @@ namespace FenBrowser.Core
                         int sec = ResolveTimeoutSeconds(secFetchDest);
                         cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[FetchBytes] Failed to apply timeout: {ex.Message}", LogCategory.Network);
+                    }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
                     StoreResponseCookies(resp, referer ?? current);
                     if (resp != null)
@@ -1749,7 +1834,11 @@ namespace FenBrowser.Core
                 }
                 return buf;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[FetchBytes] Failed for {url}: {ex.Message}", LogCategory.Network);
+                return null;
+            }
         }
 
         private static bool ShouldAllowBinaryBodyOnHttpError(string secFetchDest, HttpResponseMessage response)

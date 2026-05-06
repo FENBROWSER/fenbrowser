@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Parsing
 {
@@ -121,7 +122,10 @@ namespace FenBrowser.Core.Parsing
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[PreloadScanner] Script scan failed: {ex.Message}", LogCategory.HtmlParsing);
+            }
         }
 
         private void ScanImages()
@@ -141,7 +145,10 @@ namespace FenBrowser.Core.Parsing
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[PreloadScanner] Image scan failed: {ex.Message}", LogCategory.HtmlParsing);
+            }
         }
     }
 }

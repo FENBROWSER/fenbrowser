@@ -197,7 +197,10 @@ namespace FenBrowser.Core.Accessibility
                     var rootProvider = GetOrCreateProvider(_tree.Root);
                     NativeWindowsUia.UiaReturnRawElementProvider(hwnd, IntPtr.Zero, IntPtr.Zero, rootProvider.NativeProvider);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn($"[UIA] UpdateWindowHandle failed: {ex.Message}", LogCategory.General);
+                }
             }
         }
 
@@ -633,7 +636,10 @@ namespace FenBrowser.Core.Accessibility
                 _       => "AXUIElementDestroyed"
             };
             try { NativeMacA11y.PostNotification(IntPtr.Zero, notif); }
-            catch { }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[NSAccessibility] FirePropertyChanged('{notif}') failed: {ex.Message}", LogCategory.General);
+            }
         }
 
         public void UpdateWindowHandle(IntPtr hwnd) { /* macOS uses NSWindow, not HWND */ }

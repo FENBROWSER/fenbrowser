@@ -155,7 +155,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             if (string.IsNullOrWhiteSpace(line)) return false;
             if (line.Length > MaxEnvelopeChars) return false;
             try { e = JsonSerializer.Deserialize<NetworkIpcEnvelope>(line, JsonOpts); return e != null; }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[NetworkProcess] Envelope deserialize failed: {ex.Message}");
+                return false;
+            }
         }
 
         public static string SerializePayload<T>(T p) =>
@@ -165,7 +169,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             if (e == null || string.IsNullOrWhiteSpace(e.Payload)) return null;
             try { return JsonSerializer.Deserialize<T>(e.Payload, JsonOpts); }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[NetworkProcess] Payload deserialize failed ({typeof(T).Name}): {ex.Message}");
+                return null;
+            }
         }
 
         public static bool TryValidateInboundEnvelope(
@@ -457,11 +465,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public void SendShutdown()
         {
-            try
-            {
-                Send(new NetworkIpcEnvelope { Type = NetworkIpcMessageType.Shutdown.ToString() });
-            }
-            catch { }
+            Send(new NetworkIpcEnvelope { Type = NetworkIpcMessageType.Shutdown.ToString() });
         }
 
         public bool ValidateCapabilityToken(string tokenValue, string requestOrigin)
@@ -492,11 +496,28 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             _cts.Cancel();
             _readyTcs.TrySetResult(false);
-            try { SendShutdown(); } catch { }
-            try { _writer?.Dispose(); } catch { }
-            try { _reader?.Dispose(); } catch { }
-            try { _pipe?.Dispose(); } catch { }
-            try { _cts.Dispose(); } catch { }
+            SendShutdown();
+            TryDispose(_writer, "writer");
+            TryDispose(_reader, "reader");
+            TryDispose(_pipe, "pipe");
+            TryDispose(_cts, "cts");
+        }
+
+        private static void TryDispose(IDisposable disposable, string resourceName)
+        {
+            if (disposable == null)
+            {
+                return;
+            }
+
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[NetworkProcess] Dispose failed for {resourceName}: {ex.Message}");
+            }
         }
     }
 }

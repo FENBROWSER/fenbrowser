@@ -370,7 +370,10 @@ namespace FenBrowser.Core.Network
 
                     _ = QueueHintAsync(url, hint.Value, asType);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing Link header segment: {ex.Message}", LogCategory.Network);
+                }
             }
         }
 
