@@ -608,6 +608,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DefinedPseudoClass_DistinguishesUpgradedCustomElements()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <x-ready id='defined-ce' data-ce-upgraded='true'></x-ready>
+    <x-pending id='undefined-ce'></x-pending>
+    <div id='builtin'></div>
+</body></html>");
+
+            var definedCe = ById(doc, "defined-ce");
+            var undefinedCe = ById(doc, "undefined-ce");
+            var builtin = ById(doc, "builtin");
+
+            Assert.True(SelectorMatcher.Matches(definedCe, ":defined"));
+            Assert.False(SelectorMatcher.Matches(undefinedCe, ":defined"));
+            Assert.True(SelectorMatcher.Matches(builtin, ":defined"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

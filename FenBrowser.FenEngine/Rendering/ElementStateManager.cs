@@ -899,6 +899,23 @@ namespace FenBrowser.FenEngine.Rendering
             return element.OwnerDocument?.TopLayer?.Contains(element) == true;
         }
 
+        public static bool IsDefinedElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var localName = element.LocalName ?? string.Empty;
+            if (!localName.Contains('-'))
+            {
+                // Built-in HTML/SVG/MathML elements are always defined.
+                return true;
+            }
+
+            return string.Equals(element.GetAttribute("data-ce-upgraded"), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
