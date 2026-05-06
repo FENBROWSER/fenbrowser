@@ -571,6 +571,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ClosedPseudoClass_MatchesClosedDetailsAndDialog()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <details id='details-open' open></details>
+    <details id='details-closed'></details>
+    <dialog id='dialog-closed'></dialog>
+</body></html>");
+
+            var detailsOpen = ById(doc, "details-open");
+            var detailsClosed = ById(doc, "details-closed");
+            var dialogClosed = ById(doc, "dialog-closed");
+
+            Assert.False(SelectorMatcher.Matches(detailsOpen, ":closed"));
+            Assert.True(SelectorMatcher.Matches(detailsClosed, ":closed"));
+            Assert.True(SelectorMatcher.Matches(dialogClosed, ":closed"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
