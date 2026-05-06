@@ -883,6 +883,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "optional": return ElementStateManager.IsOptional(el);
                 case "valid": return ElementStateManager.IsValid(el);
                 case "invalid": return ElementStateManager.IsInvalid(el);
+                case "in-range": return ElementStateManager.IsInRange(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);

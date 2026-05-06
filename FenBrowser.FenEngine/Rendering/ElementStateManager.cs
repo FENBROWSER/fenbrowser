@@ -681,6 +681,85 @@ namespace FenBrowser.FenEngine.Rendering
             if (!IsFormElement(element)) return false;
             return !IsRequired(element);
         }
+
+        public static bool IsInRange(Element element)
+        {
+            if (!TryGetRangedInputValue(element, out var value, out var min, out var max))
+            {
+                return false;
+            }
+
+            if (min.HasValue && value < min.Value)
+            {
+                return false;
+            }
+
+            if (max.HasValue && value > max.Value)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        public static bool IsOutOfRange(Element element)
+        {
+            if (!TryGetRangedInputValue(element, out var value, out var min, out var max))
+            {
+                return false;
+            }
+
+            if (min.HasValue && value < min.Value)
+            {
+                return true;
+            }
+
+            if (max.HasValue && value > max.Value)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetRangedInputValue(
+            Element element,
+            out double value,
+            out double? min,
+            out double? max)
+        {
+            value = 0;
+            min = null;
+            max = null;
+
+            if (element == null || !string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
+            if (type != "number" && type != "range")
+            {
+                return false;
+            }
+
+            if (!double.TryParse(element.GetAttribute("value"), out value))
+            {
+                return false;
+            }
+
+            if (double.TryParse(element.GetAttribute("min"), out var parsedMin))
+            {
+                min = parsedMin;
+            }
+
+            if (double.TryParse(element.GetAttribute("max"), out var parsedMax))
+            {
+                max = parsedMax;
+            }
+
+            return true;
+        }
         #endregion
         
         #region Utility
