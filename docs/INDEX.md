@@ -94,6 +94,10 @@ Process-boundary ownership map and required fail-closed startup and message enve
 
 Machine-readable mapping of governed source files and required capability IDs used by tests and CI validation.
 
+### [Appendix P: Security Capability Contract](security_capability_contract.json)
+
+Machine-readable security impact + reason-code contract for security-sensitive capability IDs.
+
 ---
 
-_State as of 2026-04-21_
+_State as of 2026-05-06_

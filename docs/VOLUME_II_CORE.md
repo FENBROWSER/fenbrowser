@@ -741,6 +741,23 @@ _End of Volume II_
 - Cross-origin CORS responses are now validated post-response via `CorsHandler.IsCorsAllowed(...)` before cookies are persisted or response content is exposed.
 - Responses missing valid `Access-Control-Allow-Origin` for the request origin are blocked with an explicit network-layer exception and warning log.
 
+### 1.33c Fail-Closed Diagnostic Schema For CORS/CSP Denies (2026-05-06)
+- `Logging/FailClosedDiagnostics.cs`
+- `ResourceManager.cs`
+- Added a centralized fail-closed diagnostic helper that emits structured deny events with mandatory fields:
+  - `policy=fail-closed`
+  - `decision=deny`
+  - `capabilityId`
+  - `stage`
+  - `reasonCode`
+  - `schemaVersion`
+- `ResourceManager.SendAsync(...)` now emits reason-coded structured deny logs for:
+  - missing CORS origin context (`CORS_ORIGIN_CONTEXT_MISSING`)
+  - disallowed CORS response ACAO (`CORS_RESPONSE_DISALLOWED`)
+  - blocked CORS preflight (`CORS_PREFLIGHT_BLOCKED`)
+  - blocked CSP `connect-src` request (`CSP_CONNECT_SRC_BLOCKED`)
+- Behavior remains fail-closed; this tranche hardens observability and promotion evidence by making deny-path semantics machine-readable.
+
 ### 1.34 CORB Enforcement Wiring Hardening (2026-03-07)
 - `Security/Corb/CorbFilter.cs`
 - `ResourceManager.cs`

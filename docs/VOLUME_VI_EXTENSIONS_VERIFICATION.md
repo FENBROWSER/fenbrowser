@@ -112,10 +112,11 @@ Standard xUnit tests covering internal components:
   - Governance source-of-truth:
     - `docs/spec_governance_map.json` defines governed file list + required capability IDs.
     - both test guard (`SpecGovernanceTests`) and CLI validator consume this map to avoid dual-list drift.
+    - `docs/security_capability_contract.json` defines mandatory security-impact notes plus reason-code schema for security-sensitive capability IDs (`SECURITY-*`, `PROCESS-*`, and `FETCH-CORS-POLICY-01`).
   - CI wiring:
     - `.github/workflows/build-fenbrowser-exe.yml` is now staged as a production pipeline:
       - `quality-gate` runs on PRs (targeting `main` / `rewrite-history`) and pushes to `main`.
-      - `quality-gate` runs `scripts/validate_spec_headers.ps1`, checks for placeholder test assertions, builds `FenBrowser.WebIdlGen`, builds `FenBrowser.Tests`, and executes blocking P0 hardening test filters.
+      - `quality-gate` runs `scripts/validate_spec_headers.ps1`, checks for placeholder test assertions, runs `scripts/ci/run-code-cleanup-audit.ps1 -FailOnMedium`, builds `FenBrowser.WebIdlGen`, builds `FenBrowser.Tests`, and executes blocking P0 hardening test filters.
       - `full-regression` (full `FenBrowser.Tests` suite) runs only on nightly schedule or explicit manual dispatch.
       - `full-regression` also runs `scripts/ci/verify-verification-guards.ps1` as advisory output (non-blocking) while legacy volume-reference debt is being paid down.
       - Windows EXE publish runs only for version tags (`refs/tags/v*`) or explicit manual dispatch input, not on every commit.
@@ -132,7 +133,7 @@ Standard xUnit tests covering internal components:
     - Live-artifact gate steps are part of stage execution for runtime tranches (`stage1+`), validating `logs/debug_screenshot.png`, `logs/dom_dump.txt`, and `logs/js_debug.log` presence and generating `evidenceId` metadata in bundle output.
     - Baseline script slices:
       - Stage 0 governance checks
-      - Stage 1 pipeline/event-loop invariants
+      - Stage 1 pipeline/event-loop invariants (including `PIPELINE-STAGE-AUTHORITY-01` governed headers and stage-order guard tests)
       - Stage 2 HTML parser-focused tranche
       - Stage 3 CSS/JS focused tranche
   - P0 hardening CI gate (2026-04-21, retained in staged pipeline):
