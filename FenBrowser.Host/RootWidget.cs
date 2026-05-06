@@ -63,8 +63,42 @@ public class RootWidget : DockPanel
         // Only valid if layout has happened
         if (x == 0 && y == 0) return; 
 
-        _siteInfoPopup.Show(x, y, "google.com", true); // Mock data for now
+        var (hostname, secure) = ResolveSiteInfo(_toolbar.AddressBar.Text, _toolbar.AddressBar.CurrentSecurity);
+        _siteInfoPopup.Show(x, y, hostname, secure);
         SetPopup(_siteInfoPopup);
+    }
+
+    internal static (string Hostname, bool Secure) ResolveSiteInfo(string addressBarText, SecurityState securityState)
+    {
+        const string unknownSite = "unknown site";
+        bool secure = securityState == SecurityState.Secure;
+        string rawText = addressBarText?.Trim() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return (unknownSite, secure);
+        }
+
+        if (Uri.TryCreate(rawText, UriKind.Absolute, out var absoluteUri))
+        {
+            var host = string.IsNullOrWhiteSpace(absoluteUri.Host) ? rawText : absoluteUri.Host;
+            if (securityState == SecurityState.Unknown &&
+                string.Equals(absoluteUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                secure = true;
+            }
+
+            return (host, secure);
+        }
+
+        if (!rawText.Contains(' ') &&
+            Uri.TryCreate("https://" + rawText, UriKind.Absolute, out var inferredUri) &&
+            !string.IsNullOrWhiteSpace(inferredUri.Host))
+        {
+            return (inferredUri.Host, secure);
+        }
+
+        return (rawText, secure);
     }
     
     public BookmarksBarWidget BookmarksBar => _bookmarksBar;
