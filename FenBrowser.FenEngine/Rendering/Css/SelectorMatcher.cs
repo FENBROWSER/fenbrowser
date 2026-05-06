@@ -886,6 +886,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "in-range": return ElementStateManager.IsInRange(el);
                 case "out-of-range": return ElementStateManager.IsOutOfRange(el);
                 case "read-only": return ElementStateManager.IsReadOnly(el);
+                case "read-write": return ElementStateManager.IsReadWrite(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);
