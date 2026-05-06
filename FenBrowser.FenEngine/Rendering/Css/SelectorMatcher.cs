@@ -880,6 +880,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "nth-of-type": return MatchesNthOfType(el, args);
                 case "nth-last-of-type": return MatchesNthLastOfType(el, args);
                 case "required": return ElementStateManager.IsRequired(el);
+                case "optional": return ElementStateManager.IsOptional(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return SupportsEnabledDisabledPseudoClass(el) && ElementStateManager.Instance.IsDisabled(el);
                 case "enabled": return SupportsEnabledDisabledPseudoClass(el) && !ElementStateManager.Instance.IsDisabled(el);

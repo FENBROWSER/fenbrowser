@@ -336,6 +336,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void OptionalPseudoClass_MatchesNonRequiredFormControlsOnly()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='required' required />
+    <input id='plain' />
+    <div id='non-form'></div>
+</body></html>");
+
+            var required = ById(doc, "required");
+            var plain = ById(doc, "plain");
+            var nonForm = ById(doc, "non-form");
+
+            Assert.False(SelectorMatcher.Matches(required, ":optional"));
+            Assert.True(SelectorMatcher.Matches(plain, ":optional"));
+            Assert.False(SelectorMatcher.Matches(nonForm, ":optional"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
