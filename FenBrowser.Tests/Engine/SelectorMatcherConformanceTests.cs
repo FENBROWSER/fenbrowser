@@ -424,6 +424,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ReadOnlyPseudoClass_MatchesNonEditableElements()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='readonly-input' readonly value='x' />
+    <input id='editable-input' value='x' />
+    <div id='plain-div'></div>
+    <div id='editable-div' contenteditable='true'></div>
+</body></html>");
+
+            var readonlyInput = ById(doc, "readonly-input");
+            var editableInput = ById(doc, "editable-input");
+            var plainDiv = ById(doc, "plain-div");
+            var editableDiv = ById(doc, "editable-div");
+
+            Assert.True(SelectorMatcher.Matches(readonlyInput, ":read-only"));
+            Assert.False(SelectorMatcher.Matches(editableInput, ":read-only"));
+            Assert.True(SelectorMatcher.Matches(plainDiv, ":read-only"));
+            Assert.False(SelectorMatcher.Matches(editableDiv, ":read-only"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

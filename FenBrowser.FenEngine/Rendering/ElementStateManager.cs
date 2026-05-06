@@ -722,6 +722,42 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
 
+        public static bool IsReadOnly(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return !IsReadWrite(element);
+        }
+
+        public static bool IsReadWrite(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (IsContentEditable(element))
+            {
+                return true;
+            }
+
+            if (!string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (Instance.IsDisabled(element))
+            {
+                return false;
+            }
+
+            return !element.HasAttribute("readonly");
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
@@ -759,6 +795,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return true;
+        }
+
+        private static bool IsContentEditable(Element element)
+        {
+            for (var current = element; current != null; current = current.ParentElement)
+            {
+                var attr = current.GetAttribute("contenteditable");
+                if (attr == null)
+                {
+                    continue;
+                }
+
+                var normalized = attr.Trim().ToLowerInvariant();
+                if (normalized == "false")
+                {
+                    return false;
+                }
+
+                if (normalized == string.Empty || normalized == "true" || normalized == "plaintext-only")
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
         #endregion
         
