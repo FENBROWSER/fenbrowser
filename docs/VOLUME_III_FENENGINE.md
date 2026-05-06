@@ -7452,3 +7452,20 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Expanded the compatibility slice to cover digest, key import/export, generated key workflows, AES-GCM encrypt/decrypt behavior, and rejection-path behavior (`15` tests in this class).
 - `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
   - Updated `crypto.subtle` summary to reflect implemented key lifecycle plus AES-GCM encrypt/decrypt coverage, and explicitly track remaining pending families (`derive`/`wrap`).
+
+## 2.257 Selector State/Form Conformance Uplift (2026-05-06)
+
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - Added matcher support for: `:target`, `:target-within`, `:required`, `:optional`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:read-only`, `:read-write`, `:placeholder-shown`, `:lang(...)`, `:default`, `:indeterminate`, `:open`, `:closed`, `:modal`, `:defined`, `:local-link`, and `:blank`.
+  - Hardened `:dir(...)` behavior to derive from `dir="auto"` content rather than defaulting incorrectly.
+  - Expanded hyperlink-state matching so both `:link` and `:any-link` include `<link href>` in addition to `<a>`/`<area>`.
+  - Hardened `:disabled` / `:enabled` to use effective disabledness (fieldset inheritance + first-legend exemption + option/optgroup inheritance) instead of raw attribute-only checks.
+- `FenBrowser.FenEngine/Rendering/ElementStateManager.cs`
+  - Added reusable pseudo-state helpers for range/editability/modal/custom-element/local-link/blank/effective-disabled behaviors used by the selector matcher.
+- `FenBrowser.Tests/Engine/SelectorMatcherConformanceTests.cs`
+  - Added focused conformance tests for each newly supported or hardened pseudo-class/state path above.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~SelectorMatcherConformanceTests" --logger "console;verbosity=minimal" -v q`
+  - Passed: `43/43` in this conformance class.
