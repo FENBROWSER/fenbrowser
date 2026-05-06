@@ -487,6 +487,22 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LangPseudoClass_MatchesInheritedLanguageRanges()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html lang='en-US'><body>
+    <p id='target'>Hello</p>
+</body></html>");
+
+            var target = ById(doc, "target");
+
+            Assert.True(SelectorMatcher.Matches(target, ":lang(en)"));
+            Assert.True(SelectorMatcher.Matches(target, ":lang(en-us)"));
+            Assert.False(SelectorMatcher.Matches(target, ":lang(fr)"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

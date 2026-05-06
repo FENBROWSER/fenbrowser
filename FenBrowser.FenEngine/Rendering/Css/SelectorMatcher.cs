@@ -926,6 +926,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     }
                     return false;
 
+                case "lang":
+                    return MatchesLanguage(el, args);
+
                 case "dir":
                     // Matches directionality: :dir(ltr) or :dir(rtl)
                     string requiredDir = args?.Trim().ToLowerInvariant();
@@ -994,6 +997,62 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return false;
+        }
+
+        private static bool MatchesLanguage(Element el, string args)
+        {
+            if (el == null || string.IsNullOrWhiteSpace(args))
+            {
+                return false;
+            }
+
+            var effectiveLanguage = GetEffectiveLanguage(el);
+            if (string.IsNullOrWhiteSpace(effectiveLanguage))
+            {
+                return false;
+            }
+
+            var requestedLanguages = args
+                .Split(',')
+                .Select(part => part.Trim().Trim('"', '\'').ToLowerInvariant())
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .ToArray();
+
+            if (requestedLanguages.Length == 0)
+            {
+                return false;
+            }
+
+            var actual = effectiveLanguage.ToLowerInvariant();
+            foreach (var requested in requestedLanguages)
+            {
+                if (actual == requested || actual.StartsWith(requested + "-", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string GetEffectiveLanguage(Element el)
+        {
+            for (var current = el; current != null; current = current.ParentElement)
+            {
+                var lang = current.GetAttribute("lang");
+                if (!string.IsNullOrWhiteSpace(lang))
+                {
+                    return lang.Trim();
+                }
+
+                lang = current.GetAttribute("xml:lang");
+                if (!string.IsNullOrWhiteSpace(lang))
+                {
+                    return lang.Trim();
+                }
+            }
+
+            return null;
         }
 
         private static bool SupportsEnabledDisabledPseudoClass(Element el)
