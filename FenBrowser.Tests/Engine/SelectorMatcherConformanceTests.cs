@@ -356,6 +356,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidPseudoClass_MatchesFormControlsPassingValidation()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='email-valid' type='email' required value='ok@example.com' />
+    <input id='email-invalid' type='email' required value='invalid' />
+</body></html>");
+
+            var emailValid = ById(doc, "email-valid");
+            var emailInvalid = ById(doc, "email-invalid");
+
+            Assert.True(SelectorMatcher.Matches(emailValid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(emailInvalid, ":valid"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
