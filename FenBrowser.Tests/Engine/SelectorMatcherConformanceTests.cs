@@ -684,6 +684,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LinkPseudoClass_MatchesLinkElementsWithHref()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><head>
+    <link id='stylesheet-link' rel='stylesheet' href='/site.css'>
+</head><body>
+    <a id='anchor-link' href='/docs'>Docs</a>
+</body></html>");
+
+            var stylesheetLink = ById(doc, "stylesheet-link");
+            var anchorLink = ById(doc, "anchor-link");
+
+            Assert.True(SelectorMatcher.Matches(stylesheetLink, ":link"));
+            Assert.True(SelectorMatcher.Matches(anchorLink, ":link"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

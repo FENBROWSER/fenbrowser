@@ -905,14 +905,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "visited": return ElementStateManager.Instance.IsVisited(el);
                 case "target": return ElementStateManager.Instance.IsTarget(el);
                 case "target-within": return IsTargetWithin(el);
-                case "link": 
+                case "link":
+                    if (!IsHyperlinkElement(el, includeLinkElement: true))
+                    {
+                        return false;
+                    }
+
+                    return !ElementStateManager.Instance.IsVisited(el);
+
                 case "any-link":
-                    if (!string.Equals(el.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(el.TagName, "area", StringComparison.OrdinalIgnoreCase))
+                    if (!IsHyperlinkElement(el, includeLinkElement: false))
+                    {
                         return false;
-                    if (string.IsNullOrWhiteSpace(el.GetAttribute("href")))
-                        return false;
-                    return string.Equals(name, "any-link", StringComparison.OrdinalIgnoreCase) || !ElementStateManager.Instance.IsVisited(el);
+                    }
+
+                    return true;
                 
                 // Shadow DOM Scoping
                 case "host": 
@@ -1094,6 +1101,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return "ltr";
+        }
+
+        private static bool IsHyperlinkElement(Element element, bool includeLinkElement)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            var tagSupported = tag == "a" || tag == "area" || (includeLinkElement && tag == "link");
+            if (!tagSupported)
+            {
+                return false;
+            }
+
+            return !string.IsNullOrWhiteSpace(element.GetAttribute("href"));
         }
 
         private static bool SupportsEnabledDisabledPseudoClass(Element el)
