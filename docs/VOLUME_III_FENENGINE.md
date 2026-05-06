@@ -7382,3 +7382,73 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - Replaced raw `window.on*` data-slot initialization with accessor-backed properties for the default window event-handler set.
   - Setter semantics now normalize non-callable assignments to `null` and preserve callable assignments, aligning with EventHandler IDL behavior.
   - Getter semantics return the current normalized handler value (`function` or `null`) for all registered window `on*` handlers.
+
+## 2.251 MediaDevices Fail-Closed Security + Stub Removal (2026-05-06)
+
+- `FenBrowser.FenEngine/WebAPIs/MediaDevicesAPI.cs`
+  - Removed synthetic media capture behavior (`FAKE` tracks/devices) from `navigator.mediaDevices`.
+  - `getUserMedia()` now validates constraints shape, enforces secure-context requirements, and enforces `JsPermissions.Camera` before continuing.
+  - With permission granted but no host capture backend wired, `getUserMedia()` now rejects with `NotFoundError` instead of fabricating media tracks.
+  - `enumerateDevices()` now returns a deterministic empty list when no backend is available, avoiding fake labels/device IDs and reducing fingerprinting leakage.
+  - `getDisplayMedia()` now follows the same fail-closed gate pattern (secure context + permission + backend required).
+  - Removed static cross-instance state for media-device event handlers so separate runtimes do not share mutable listener state.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `navigator.mediaDevices` catalog summary to reflect secure-gated fail-closed behavior instead of fake-stream compatibility shims.
+
+## 2.252 Serial And Network-Info Runtime Hardening (2026-05-06)
+
+- `FenBrowser.FenEngine/WebAPIs/SerialAPI.cs`
+  - Removed static cross-runtime serial state.
+  - `getPorts()` now enforces secure-context gating and returns a deterministic empty array without synthetic devices.
+  - `requestPort()` now enforces secure-context and `JsPermissions.Serial`, validates options shape, and fail-closes with `NotFoundError` until host picker/device backends exist.
+  - Event handler slots (`onconnect`, `ondisconnect`) are now instance-scoped instead of shared global state.
+- `FenBrowser.FenEngine/WebAPIs/NetworkInformationAPI.cs`
+  - Removed static shared listener/context state and shifted to per-runtime connection state.
+  - `connection` values remain deterministic low-entropy defaults, and `change` event callbacks now dispatch through runtime-local state.
+- `FenBrowser.FenEngine/Security/IPermissionManager.cs`
+  - Added `JsPermissions.Serial` for explicit serial-device permission gating.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - `navigator.permissions.query({ name: "serial" })` now maps to `JsPermissions.Serial`.
+
+## 2.253 Legacy JavaScriptEngine Crypto Bridge Hardening (2026-05-06)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Upgraded `JsCrypto` from a minimal `subtle` placeholder to a bounded `subtle.digest(...)` bridge supporting `SHA-1`, `SHA-256`, `SHA-384`, and `SHA-512`.
+  - Digest calls now return deterministic thenables with explicit rejection for unsupported algorithms or invalid inputs.
+  - Hardened `getRandomValues(...)` validation and quota enforcement (`65536` byte limit) and removed silent failure fallback behavior.
+  - Added `randomUUID()` on the legacy bridge for API-shape parity with runtime crypto.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` compatibility summary to reflect real digest behavior instead of an empty placeholder.
+
+## 2.254 Navigation API State Isolation + Deterministic History Mutation (2026-05-06)
+
+- `FenBrowser.FenEngine/WebAPIs/NavigationAPI.cs`
+  - Reworked `window.navigation` internals from process-global static fields to runtime-local state owned by each created navigation object.
+  - Removed duplicate mutation paths in `navigate(...)`; each navigation now appends exactly one history entry per call.
+  - Hardened traversal behavior for invalid/missing keys (`traverseTo`) and preserved deterministic promise settlement via queued microtasks.
+  - Ensured `currentEntry` stays synchronized with the runtime-local history cursor during `navigate`, `back`, `forward`, and `traverseTo`.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `window.navigation` catalog summary to reflect runtime-local history behavior and implemented traversal surface (`traverseTo`).
+
+## 2.255 Messaging/Idle/Popup Compatibility Hardening (2026-05-06)
+
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - `MessageChannel` / `MessagePort` messaging now clones payloads via structured clone before enqueue/delivery, including transfer-list parsing support (`postMessage(message, transfer|options)`).
+  - `BroadcastChannel.postMessage(...)` now clones payloads and throws `InvalidStateError` when called after `close()`.
+  - Channel `addEventListener`/`removeEventListener` now accepts both function callbacks and `{ handleEvent(...) }` listener objects for `message`/`messageerror`.
+  - `requestIdleCallback(...)` now enforces callable-callback validation and positive-timeout parsing instead of silently accepting invalid callback values.
+  - `window.open(...)` now blocks unsafe `javascript:`/`data:` URLs and honors `noopener`/`noreferrer` null-return semantics while keeping current same-window fallback navigation behavior.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `window.open`, `window.requestIdleCallback`, `window.MessageChannel`, and `window.BroadcastChannel` summaries to reflect the hardened runtime behavior and remaining gaps.
+
+## 2.256 SubtleCrypto Key Lifecycle Hardening (2026-05-06)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `crypto.subtle.generateKey(...)` for `HMAC`, `AES-GCM`, and `RSASSA-PKCS1-v1_5`, with strict key-usage validation, HMAC/AES key-length validation, and RSA modulus/exponent validation (currently fail-closed to exponent `65537`).
+  - Added `importKey`/`exportKey` support for HMAC, AES-GCM (`raw`), and RSASSA (`pkcs8`/`spki`) with extractable-key gating, algorithm matching checks, and fail-closed usage enforcement.
+  - Added `encrypt`/`decrypt` for `AES-GCM` with strict IV/tag-length/additionalData parsing and deterministic thenable rejection for invalid parameter shapes or authentication failures.
+  - Hardened algorithm-name normalization to accept canonical names like `RSASSA-PKCS1-v1_5` across key import/generate/sign/verify paths.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Expanded the compatibility slice to cover digest, key import/export, generated key workflows, AES-GCM encrypt/decrypt behavior, and rejection-path behavior (`15` tests in this class).
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` summary to reflect implemented key lifecycle plus AES-GCM encrypt/decrypt coverage, and explicitly track remaining pending families (`derive`/`wrap`).
