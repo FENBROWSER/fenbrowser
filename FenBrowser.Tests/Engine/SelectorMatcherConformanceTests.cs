@@ -628,6 +628,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LocalLinkPseudoClass_MatchesSameOriginHyperlinks()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <a id='local' href='/docs'>Local</a>
+    <a id='remote' href='https://other.example.org/docs'>Remote</a>
+</body></html>");
+
+            doc.URL = "https://example.org/home";
+            doc.BaseURI = "https://example.org/home";
+
+            var local = ById(doc, "local");
+            var remote = ById(doc, "remote");
+
+            Assert.True(SelectorMatcher.Matches(local, ":local-link"));
+            Assert.False(SelectorMatcher.Matches(remote, ":local-link"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

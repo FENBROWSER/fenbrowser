@@ -916,6 +916,45 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Equals(element.GetAttribute("data-ce-upgraded"), "true", StringComparison.OrdinalIgnoreCase);
         }
 
+        public static bool IsLocalLinkElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag != "a" && tag != "area" && tag != "link")
+            {
+                return false;
+            }
+
+            var href = element.GetAttribute("href");
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                return false;
+            }
+
+            var resolved = ResolveElementHref(element, href);
+            if (resolved == null)
+            {
+                return false;
+            }
+
+            var documentUrl = element.OwnerDocument?.BaseURI ??
+                              element.OwnerDocument?.DocumentURI ??
+                              element.OwnerDocument?.URL;
+            if (string.IsNullOrWhiteSpace(documentUrl) ||
+                !Uri.TryCreate(documentUrl, UriKind.Absolute, out var docUri))
+            {
+                return false;
+            }
+
+            return resolved.Scheme.Equals(docUri.Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   resolved.Host.Equals(docUri.Host, StringComparison.OrdinalIgnoreCase) &&
+                   resolved.Port == docUri.Port;
+        }
+
         private static bool TryGetRangedInputValue(
             Element element,
             out double value,
