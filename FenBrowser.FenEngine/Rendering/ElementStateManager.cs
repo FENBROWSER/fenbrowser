@@ -688,6 +688,24 @@ namespace FenBrowser.FenEngine.Rendering
                         return false;
                     }
                 }
+
+                if (type == "week" && !string.IsNullOrEmpty(value))
+                {
+                    if (!TryGetRangedInputValue(element, out var weekValue, out var weekMin, out var weekMax))
+                    {
+                        return false;
+                    }
+
+                    if (weekMin.HasValue && weekValue < weekMin.Value)
+                    {
+                        return false;
+                    }
+
+                    if (weekMax.HasValue && weekValue > weekMax.Value)
+                    {
+                        return false;
+                    }
+                }
             }
             else if (element.TagName?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
                      element.TagName?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)

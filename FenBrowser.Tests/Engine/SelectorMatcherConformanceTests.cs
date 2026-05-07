@@ -447,6 +447,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_RespectWeekMinMaxConstraints()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='week-valid' type='week' min='2026-W01' max='2026-W52' value='2026-W24' />
+    <input id='week-invalid' type='week' min='2026-W01' max='2026-W52' value='2027-W01' />
+</body></html>");
+
+            var valid = ById(doc, "week-valid");
+            var invalid = ById(doc, "week-invalid");
+
+            Assert.True(SelectorMatcher.Matches(valid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(valid, ":invalid"));
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"
