@@ -1106,6 +1106,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PastPseudoClass_FunctionalFilter_MatchesPastElementOnlyWhenFilterMatches()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='past-match' class='old' data-timeline-state='past'></li>
+    <li id='past-miss' class='new' data-timeline-state='past'></li>
+</body></html>");
+
+            var pastMatch = ById(doc, "past-match");
+            var pastMiss = ById(doc, "past-miss");
+
+            Assert.True(SelectorMatcher.Matches(pastMatch, ":past(.old)"));
+            Assert.False(SelectorMatcher.Matches(pastMiss, ":past(.old)"));
+        }
+
+        [Fact]
         public void FuturePseudoClass_MatchesFutureTimelineMarkers()
         {
             var doc = Parse(@"
