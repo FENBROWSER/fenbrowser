@@ -910,6 +910,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "volume-locked": return ElementStateManager.IsVolumeLockedMedia(el);
                 case "current": return ElementStateManager.IsTimelineCurrent(el);
                 case "past": return ElementStateManager.IsTimelinePast(el);
+                case "future": return ElementStateManager.IsTimelineFuture(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);

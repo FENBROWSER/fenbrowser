@@ -1066,6 +1066,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void FuturePseudoClass_MatchesFutureTimelineMarkers()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='future' data-timeline-state='future'></li>
+    <li id='current' data-timeline-state='current'></li>
+</body></html>");
+
+            var future = ById(doc, "future");
+            var current = ById(doc, "current");
+
+            Assert.True(SelectorMatcher.Matches(future, ":future"));
+            Assert.False(SelectorMatcher.Matches(current, ":future"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

@@ -851,6 +851,19 @@ namespace FenBrowser.FenEngine.Rendering
                 "past",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsTimelineFuture(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-timeline-state"),
+                "future",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
