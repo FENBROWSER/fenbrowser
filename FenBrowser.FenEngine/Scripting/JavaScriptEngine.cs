@@ -8150,6 +8150,11 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
+                if (Math.Floor(itemNumber) != itemNumber)
+                {
+                    return false;
+                }
+
                 data[i] = (byte)itemNumber;
             }
 
