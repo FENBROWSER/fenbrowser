@@ -915,7 +915,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "past":
                     return ElementStateManager.IsTimelinePast(el) &&
                            MatchesOptionalPseudoFilter(el, args, parsedArgs, depth + 1);
-                case "future": return ElementStateManager.IsTimelineFuture(el);
+                case "future":
+                    return ElementStateManager.IsTimelineFuture(el) &&
+                           MatchesOptionalPseudoFilter(el, args, parsedArgs, depth + 1);
                 case "fullscreen": return ElementStateManager.IsFullscreenElement(el);
                 case "picture-in-picture": return ElementStateManager.IsPictureInPictureElement(el);
                 case "popover-open": return ElementStateManager.IsPopoverOpen(el);

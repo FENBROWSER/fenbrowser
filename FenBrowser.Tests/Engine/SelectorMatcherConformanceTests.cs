@@ -1140,6 +1140,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void FuturePseudoClass_FunctionalFilter_MatchesFutureElementOnlyWhenFilterMatches()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='future-match' class='next' data-timeline-state='future'></li>
+    <li id='future-miss' class='other' data-timeline-state='future'></li>
+</body></html>");
+
+            var futureMatch = ById(doc, "future-match");
+            var futureMiss = ById(doc, "future-miss");
+
+            Assert.True(SelectorMatcher.Matches(futureMatch, ":future(.next)"));
+            Assert.False(SelectorMatcher.Matches(futureMiss, ":future(.next)"));
+        }
+
+        [Fact]
         public void FullscreenPseudoClass_MatchesFullscreenMarkedElement()
         {
             var doc = Parse(@"
