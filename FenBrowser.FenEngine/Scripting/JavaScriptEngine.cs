@@ -8109,6 +8109,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (publicExponent.Length > 4)
+            {
+                return false;
+            }
+
             return publicExponent.Length > 0;
         }
 
