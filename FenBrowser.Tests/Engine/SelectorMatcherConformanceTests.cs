@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -552,6 +553,34 @@ namespace FenBrowser.Tests.Engine
             var invalid = ById(doc, "time-invalid-lexical");
             Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
             Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
+        public void ValidityPseudoClasses_NumberInput_UsesInvariantLexicalParsing()
+        {
+            var originalCulture = CultureInfo.CurrentCulture;
+            var originalUiCulture = CultureInfo.CurrentUICulture;
+            try
+            {
+                var frenchCulture = new CultureInfo("fr-FR");
+                CultureInfo.CurrentCulture = frenchCulture;
+                CultureInfo.CurrentUICulture = frenchCulture;
+
+                var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='number-invalid-lexical' type='number' min='10' max='20' value='12,5' />
+</body></html>");
+
+                var invalid = ById(doc, "number-invalid-lexical");
+                Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+                Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = originalCulture;
+                CultureInfo.CurrentUICulture = originalUiCulture;
+            }
         }
 
         [Fact]

@@ -627,12 +627,26 @@ namespace FenBrowser.FenEngine.Rendering
                     element.Attr?.TryGetValue("min", out minStr);
                     element.Attr?.TryGetValue("max", out maxStr);
                     
-                    if (!string.IsNullOrEmpty(value) && double.TryParse(value, out double val))
+                    if (!string.IsNullOrEmpty(value))
                     {
-                        if (!string.IsNullOrEmpty(minStr) && double.TryParse(minStr, out double min) && val < min)
+                        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double val))
+                        {
                             return false;
-                        if (!string.IsNullOrEmpty(maxStr) && double.TryParse(maxStr, out double max) && val > max)
+                        }
+
+                        if (!string.IsNullOrEmpty(minStr) &&
+                            double.TryParse(minStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double min) &&
+                            val < min)
+                        {
                             return false;
+                        }
+
+                        if (!string.IsNullOrEmpty(maxStr) &&
+                            double.TryParse(maxStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double max) &&
+                            val > max)
+                        {
+                            return false;
+                        }
                     }
                 }
 
@@ -1641,7 +1655,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 case "number":
                 case "range":
-                    return double.TryParse(raw, out value);
+                    return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
                 case "date":
                     if (DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
                     {
