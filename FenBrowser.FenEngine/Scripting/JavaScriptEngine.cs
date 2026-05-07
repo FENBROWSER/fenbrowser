@@ -7467,7 +7467,13 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            iterations = (int)Math.Floor(iterationsValue.ToNumber());
+            var iterationsNumber = iterationsValue.ToNumber();
+            if (double.IsNaN(iterationsNumber) || double.IsInfinity(iterationsNumber))
+            {
+                return false;
+            }
+
+            iterations = (int)Math.Floor(iterationsNumber);
             if (iterations <= 0)
             {
                 return false;
