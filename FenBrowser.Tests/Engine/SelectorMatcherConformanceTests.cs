@@ -887,6 +887,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LastPseudoClass_AliasesLastChild()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <ul>
+        <li id='first'></li>
+        <li id='second'></li>
+    </ul>
+</body></html>");
+
+            var first = ById(doc, "first");
+            var second = ById(doc, "second");
+
+            Assert.False(SelectorMatcher.Matches(first, ":last"));
+            Assert.True(SelectorMatcher.Matches(second, ":last"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
