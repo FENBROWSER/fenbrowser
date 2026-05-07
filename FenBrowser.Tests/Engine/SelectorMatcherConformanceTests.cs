@@ -1012,6 +1012,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void VolumeLockedPseudoClass_MatchesMediaWithVolumeLockMarker()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='locked' data-media-volume-locked='true'></video>
+    <video id='normal'></video>
+</body></html>");
+
+            var locked = ById(doc, "locked");
+            var normal = ById(doc, "normal");
+
+            Assert.True(SelectorMatcher.Matches(locked, ":volume-locked"));
+            Assert.False(SelectorMatcher.Matches(normal, ":volume-locked"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

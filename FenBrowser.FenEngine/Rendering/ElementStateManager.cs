@@ -805,6 +805,16 @@ namespace FenBrowser.FenEngine.Rendering
 
             return HasBooleanStateAttribute(element, "muted");
         }
+
+        public static bool IsVolumeLockedMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            return HasBooleanStateAttribute(element, "volume-locked");
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
