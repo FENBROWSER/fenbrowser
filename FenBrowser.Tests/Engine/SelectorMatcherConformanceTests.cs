@@ -541,6 +541,20 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_InvalidTimeLexicalValue_IsInvalid()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='time-invalid-lexical' type='time' min='09:00' max='17:00' value='9:00 AM' />
+</body></html>");
+
+            var invalid = ById(doc, "time-invalid-lexical");
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"

@@ -1686,7 +1686,12 @@ namespace FenBrowser.FenEngine.Rendering
 
                     return false;
                 case "time":
-                    if (TimeOnly.TryParse(raw, out var time))
+                    if (TimeOnly.TryParseExact(
+                            raw,
+                            new[] { "HH:mm", "HH:mm:ss", "HH:mm:ss.FFFFFFF" },
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None,
+                            out var time))
                     {
                         value = time.ToTimeSpan().TotalSeconds;
                         return true;
