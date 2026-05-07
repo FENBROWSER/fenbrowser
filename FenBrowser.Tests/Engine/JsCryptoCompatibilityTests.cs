@@ -42,26 +42,30 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void JsCrypto_GetRandomValues_FillsArrayLikeObject()
+        public void JsCrypto_GetRandomValues_FillsUint8Array()
+        {
+            var crypto = new JsCrypto();
+            var getRandomValues = crypto.Get("getRandomValues").AsFunction();
+
+            var typedArray = new JsUint8Array(FenValue.FromNumber(8));
+            var returned = getRandomValues.Invoke(new[] { FenValue.FromObject(typedArray) }, null);
+            Assert.True(returned.IsObject);
+            Assert.Same(typedArray, returned.AsObject());
+            Assert.Equal(8, typedArray.Length);
+            Assert.Equal(8, typedArray.Buffer.Data.Length);
+        }
+
+        [Fact]
+        public void JsCrypto_GetRandomValues_ArrayLikeObject_Rejects()
         {
             var crypto = new JsCrypto();
             var getRandomValues = crypto.Get("getRandomValues").AsFunction();
 
             var arrayLike = new FenObject();
             arrayLike.Set("length", FenValue.FromNumber(8));
-            for (var i = 0; i < 8; i++)
-            {
-                arrayLike.Set(i.ToString(), FenValue.FromNumber(0));
-            }
 
-            var returned = getRandomValues.Invoke(new[] { FenValue.FromObject(arrayLike) }, null);
-            Assert.True(returned.IsObject);
-            Assert.Same(arrayLike, returned.AsObject());
-
-            for (var i = 0; i < 8; i++)
-            {
-                Assert.True(arrayLike.Get(i.ToString()).IsNumber);
-            }
+            Assert.Throws<FenTypeError>(() =>
+                getRandomValues.Invoke(new[] { FenValue.FromObject(arrayLike) }, null));
         }
 
         [Fact]
@@ -70,8 +74,7 @@ namespace FenBrowser.Tests.Engine
             var crypto = new JsCrypto();
             var getRandomValues = crypto.Get("getRandomValues").AsFunction();
 
-            var oversized = new FenObject();
-            oversized.Set("length", FenValue.FromNumber(70000));
+            var oversized = new JsUint8Array(FenValue.FromNumber(70000));
 
             Assert.Throws<FenResourceError>(() =>
                 getRandomValues.Invoke(new[] { FenValue.FromObject(oversized) }, null));

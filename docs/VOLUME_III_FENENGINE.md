@@ -7786,3 +7786,20 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `48/48` in this crypto compatibility class.
+
+## 2.273 Crypto.getRandomValues Typed-Array Contract Hardening (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Removed permissive array-like fallback behavior from `crypto.getRandomValues(...)`.
+  - API now strictly requires a typed-array input surface and fails closed for non-typed-array objects.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Switched positive coverage to a real `Uint8Array` target.
+  - Added explicit rejection coverage for array-like object input.
+  - Kept quota enforcement coverage on a typed-array payload.
+  - Crypto compatibility slice now totals `49` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `49/49` in this crypto compatibility class.

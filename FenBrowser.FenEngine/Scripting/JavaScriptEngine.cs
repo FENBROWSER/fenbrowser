@@ -4697,7 +4697,6 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             const int maxBytes = 65536;
-
             if (target is FenBrowser.FenEngine.Core.Types.JsTypedArray typedArray)
             {
                 var byteLen = typedArray.Length * typedArray.BytesPerElement;
@@ -4713,35 +4712,7 @@ namespace FenBrowser.FenEngine.Scripting
                 return input;
             }
 
-            var lengthValue = target.Get("length");
-            if (lengthValue.IsNull || lengthValue.IsUndefined || !lengthValue.IsNumber)
-            {
-                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: Argument must expose numeric length");
-            }
-
-            var len = (int)lengthValue.ToNumber();
-            if (len < 0)
-            {
-                throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: Argument length must be non-negative");
-            }
-
-            if (len > maxBytes)
-            {
-                throw new FenBrowser.FenEngine.Errors.FenResourceError("QuotaExceededError: Max 65536 bytes");
-            }
-
-            var randomBytes = new byte[len];
-            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(randomBytes);
-            }
-
-            for (var i = 0; i < len; i++)
-            {
-                target.Set(i.ToString(), FenValue.FromNumber(randomBytes[i]));
-            }
-
-            return input;
+            throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: getRandomValues requires an integer typed array argument");
         }
 
         private static FenObject CreateSubtleCryptoObject()
