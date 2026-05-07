@@ -908,6 +908,45 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleRsaOaep_EncryptOversizedPayload_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var oversizedPayload = new string('A', 80);
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithm("RSA-OAEP")),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromString(oversizedPayload)
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("OperationError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            Assert.Contains("too long", thenable.Get("__reason").ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleRsaOaep_WrapUnwrapKey_HmacRoundTrip_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

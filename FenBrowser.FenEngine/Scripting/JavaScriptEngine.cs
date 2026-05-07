@@ -5127,6 +5127,18 @@ namespace FenBrowser.FenEngine.Scripting
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP non-empty label is not supported"));
                     }
 
+                    if (!TryGetHashOutputLengthBytes(keyState.HashName, out var rsaOaepHashLengthBytes))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
+                    }
+
+                    var rsaModulusBytes = (keyState.RsaKey.KeySize + 7) / 8;
+                    var maxRsaOaepPlaintextBytes = rsaModulusBytes - (2 * rsaOaepHashLengthBytes) - 2;
+                    if (maxRsaOaepPlaintextBytes < 0 || plaintext.Length > maxRsaOaepPlaintextBytes)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: RSA-OAEP plaintext is too long for the selected key and hash"));
+                    }
+
                     var ciphertext = keyState.RsaKey.Encrypt(plaintext, padding);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
                 }
