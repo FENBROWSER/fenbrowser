@@ -7316,6 +7316,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (Math.Floor(bitsNumber) != bitsNumber)
+            {
+                return false;
+            }
+
             var bits = (int)Math.Floor(bitsNumber);
             if (bits <= 0 || bits % 8 != 0)
             {

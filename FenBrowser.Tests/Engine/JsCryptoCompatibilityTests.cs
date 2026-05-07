@@ -663,6 +663,28 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateHmacKey_FractionalLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+
+            var algorithm = CreateAlgorithm("HMAC", "SHA-256");
+            algorithm.Set("length", FenValue.FromNumber(256.5));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var thenable = AssertThenableState(generateResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateRsaKeyPair_SignVerify_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
