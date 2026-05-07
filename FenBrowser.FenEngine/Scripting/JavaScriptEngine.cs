@@ -8050,7 +8050,13 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            modulusLength = (int)Math.Floor(modulusLengthValue.ToNumber());
+            var modulusLengthNumber = modulusLengthValue.ToNumber();
+            if (double.IsNaN(modulusLengthNumber) || double.IsInfinity(modulusLengthNumber))
+            {
+                return false;
+            }
+
+            modulusLength = (int)Math.Floor(modulusLengthNumber);
             return modulusLength > 0;
         }
 

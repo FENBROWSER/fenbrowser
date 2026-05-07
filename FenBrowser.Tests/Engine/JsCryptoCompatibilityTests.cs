@@ -761,6 +761,29 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateRsaKeyPair_NonFiniteModulusLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSASSA-PKCS1-v1_5", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(double.PositiveInfinity));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var thenable = AssertThenableState(generateResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateRsaOaepKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
