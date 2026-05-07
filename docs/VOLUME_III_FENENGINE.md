@@ -7469,3 +7469,29 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~SelectorMatcherConformanceTests" --logger "console;verbosity=minimal" -v q`
   - Passed: `43/43` in this conformance class.
+
+## 2.258 SubtleCrypto Key Wrapping Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `crypto.subtle.wrapKey(...)` and `crypto.subtle.unwrapKey(...)` on the legacy runtime crypto bridge.
+  - `wrapKey` now composes `exportKey` + AES-GCM encryption with explicit usage gating:
+    - wrapping key must include `wrapKey`
+    - wrapped key must be extractable
+    - invalid key/format/algorithm paths fail-closed through deterministic rejected thenables.
+  - `unwrapKey` now composes AES-GCM decryption + `importKey` with explicit usage gating:
+    - unwrapping key must include `unwrapKey`
+    - decrypt/import validation remains strict and fail-closed.
+  - Expanded AES key-usage acceptance for `generateKey`/`importKey` to include `wrapKey` and `unwrapKey` in addition to `encrypt`/`decrypt`.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused regression coverage for:
+    - HMAC raw key wrap/unwrap round-trip using AES-GCM wrapping keys
+    - non-extractable key wrapping rejection
+    - unwrap rejection when key lacks `unwrapKey` usage.
+  - Crypto compatibility slice is now `18` tests (up from `15`) with full pass.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` catalog summary to include implemented `wrapKey`/`unwrapKey` support and keep `derive*` families explicitly pending.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `18/18` in this crypto compatibility class.

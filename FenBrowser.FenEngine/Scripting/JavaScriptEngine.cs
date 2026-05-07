@@ -4650,7 +4650,7 @@ namespace FenBrowser.FenEngine.Scripting
             new HashSet<string>(new[] { "verify" }, StringComparer.Ordinal);
 
         private static readonly HashSet<string> AesAllowedUsages =
-            new HashSet<string>(new[] { "encrypt", "decrypt" }, StringComparer.Ordinal);
+            new HashSet<string>(new[] { "encrypt", "decrypt", "wrapkey", "unwrapkey" }, StringComparer.Ordinal);
 
         public JsCrypto()
         {
@@ -4732,6 +4732,8 @@ namespace FenBrowser.FenEngine.Scripting
             subtle.Set("exportKey", FenValue.FromFunction(new FenFunction("exportKey", ExportKey)));
             subtle.Set("encrypt", FenValue.FromFunction(new FenFunction("encrypt", Encrypt)));
             subtle.Set("decrypt", FenValue.FromFunction(new FenFunction("decrypt", Decrypt)));
+            subtle.Set("wrapKey", FenValue.FromFunction(new FenFunction("wrapKey", WrapKey)));
+            subtle.Set("unwrapKey", FenValue.FromFunction(new FenFunction("unwrapKey", UnwrapKey)));
             subtle.Set("sign", FenValue.FromFunction(new FenFunction("sign", Sign)));
             subtle.Set("verify", FenValue.FromFunction(new FenFunction("verify", Verify)));
             return subtle;
@@ -5186,6 +5188,108 @@ namespace FenBrowser.FenEngine.Scripting
                 }
 
                 return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(valid)));
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue WrapKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 4)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: wrapKey requires format, key, wrappingKey, and wrapAlgorithm"));
+            }
+
+            try
+            {
+                var format = NormalizeKeyFormat(args[0]);
+                if (string.IsNullOrEmpty(format))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key format is invalid"));
+                }
+
+                if (!TryGetCryptoKeyState(args[2], out var wrappingKeyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: wrappingKey is not a CryptoKey"));
+                }
+
+                if (!wrappingKeyState.Usages.Contains("wrapkey"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow key wrapping"));
+                }
+
+                var exportResult = ExportKey(new[] { args[0], args[1] }, thisVal);
+                if (!TryGetFulfilledThenableResult(exportResult, out var exportedKeyData, out _))
+                {
+                    return exportResult;
+                }
+
+                var addedEncryptUsage = wrappingKeyState.Usages.Add("encrypt");
+                try
+                {
+                    return Encrypt(new[] { args[3], args[2], exportedKeyData }, thisVal);
+                }
+                finally
+                {
+                    if (addedEncryptUsage)
+                    {
+                        wrappingKeyState.Usages.Remove("encrypt");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue UnwrapKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 7)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: unwrapKey requires format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, and keyUsages"));
+            }
+
+            try
+            {
+                var format = NormalizeKeyFormat(args[0]);
+                if (string.IsNullOrEmpty(format))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key format is invalid"));
+                }
+
+                if (!TryGetCryptoKeyState(args[2], out var unwrappingKeyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: unwrappingKey is not a CryptoKey"));
+                }
+
+                if (!unwrappingKeyState.Usages.Contains("unwrapkey"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow key unwrapping"));
+                }
+
+                var addedDecryptUsage = unwrappingKeyState.Usages.Add("decrypt");
+                FenValue decryptResult;
+                try
+                {
+                    decryptResult = Decrypt(new[] { args[3], args[2], args[1] }, thisVal);
+                }
+                finally
+                {
+                    if (addedDecryptUsage)
+                    {
+                        unwrappingKeyState.Usages.Remove("decrypt");
+                    }
+                }
+
+                if (!TryGetFulfilledThenableResult(decryptResult, out var rawKeyData, out _))
+                {
+                    return decryptResult;
+                }
+
+                return ImportKey(new[] { args[0], rawKeyData, args[4], args[5], args[6] }, thisVal);
             }
             catch (Exception ex)
             {
@@ -5776,6 +5880,35 @@ namespace FenBrowser.FenEngine.Scripting
                 default:
                     return null;
             }
+        }
+
+        private static bool TryGetFulfilledThenableResult(FenValue thenableValue, out FenValue result, out FenValue reason)
+        {
+            result = FenValue.Undefined;
+            reason = FenValue.Undefined;
+
+            if (!thenableValue.IsObject)
+            {
+                reason = FenValue.FromString("OperationError: Promise result is not thenable");
+                return false;
+            }
+
+            var thenable = thenableValue.AsObject();
+            if (thenable == null)
+            {
+                reason = FenValue.FromString("OperationError: Promise object is null");
+                return false;
+            }
+
+            var state = thenable.Get("__state").AsString();
+            if (string.Equals(state, "fulfilled", StringComparison.Ordinal))
+            {
+                result = thenable.Get("__result");
+                return true;
+            }
+
+            reason = thenable.Get("__reason");
+            return false;
         }
 
         private static FenBrowser.FenEngine.Core.Types.JsArrayBuffer CreateArrayBuffer(byte[] bytes)

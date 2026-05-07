@@ -516,6 +516,228 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(rawKey, exported.Data);
         }
 
+        [Fact]
+        public void JsCrypto_SubtleWrapUnwrapKey_HmacRawRoundTrip_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var wrapKey = subtle.Get("wrapKey").AsFunction();
+            var unwrapKey = subtle.Get("unwrapKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+            var verify = subtle.Get("verify").AsFunction();
+
+            var keyToWrapImport = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("wrap-target-hmac-key"))),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyToWrapThenable = AssertThenableState(keyToWrapImport, "fulfilled");
+            var keyToWrap = Assert.IsType<FenObject>(keyToWrapThenable.Get("__result").AsObject());
+
+            var wrappingAlgorithm = CreateAlgorithm("AES-GCM");
+            wrappingAlgorithm.Set("length", FenValue.FromNumber(128));
+            var wrappingKeyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(wrappingAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("wrapKey", "unwrapKey"))
+                },
+                null);
+
+            var wrappingKeyThenable = AssertThenableState(wrappingKeyResult, "fulfilled");
+            var wrappingKey = Assert.IsType<FenObject>(wrappingKeyThenable.Get("__result").AsObject());
+
+            var wrapParams = CreateAlgorithm("AES-GCM");
+            wrapParams.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x41, 0x42, 0x43 })));
+
+            var wrapResult = wrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(keyToWrap),
+                    FenValue.FromObject(wrappingKey),
+                    FenValue.FromObject(wrapParams)
+                },
+                null);
+
+            var wrapThenable = AssertThenableState(wrapResult, "fulfilled");
+            var wrappedPayload = Assert.IsType<JsArrayBuffer>(wrapThenable.Get("__result").AsObject());
+            Assert.True(wrappedPayload.Data.Length > 0);
+
+            var unwrapResult = unwrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(wrappedPayload),
+                    FenValue.FromObject(wrappingKey),
+                    FenValue.FromObject(wrapParams),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var unwrapThenable = AssertThenableState(unwrapResult, "fulfilled");
+            var unwrappedKey = Assert.IsType<FenObject>(unwrapThenable.Get("__result").AsObject());
+
+            var message = FenValue.FromString("wrapped-key-sign-verify");
+            var signatureResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromString("HMAC"),
+                    FenValue.FromObject(unwrappedKey),
+                    message
+                },
+                null);
+
+            var signatureThenable = AssertThenableState(signatureResult, "fulfilled");
+            var signature = Assert.IsType<JsArrayBuffer>(signatureThenable.Get("__result").AsObject());
+
+            var verifyResult = verify.Invoke(
+                new[]
+                {
+                    FenValue.FromString("HMAC"),
+                    FenValue.FromObject(unwrappedKey),
+                    FenValue.FromObject(signature),
+                    message
+                },
+                null);
+
+            var verifyThenable = AssertThenableState(verifyResult, "fulfilled");
+            Assert.True(verifyThenable.Get("__result").ToBoolean());
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleWrapKey_NonExtractableTarget_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var wrapKey = subtle.Get("wrapKey").AsFunction();
+
+            var nonExtractableKeyResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("non-extractable-wrap-target"))),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(false),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var nonExtractableKeyThenable = AssertThenableState(nonExtractableKeyResult, "fulfilled");
+            var nonExtractableKey = Assert.IsType<FenObject>(nonExtractableKeyThenable.Get("__result").AsObject());
+
+            var wrappingAlgorithm = CreateAlgorithm("AES-GCM");
+            wrappingAlgorithm.Set("length", FenValue.FromNumber(128));
+            var wrappingKeyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(wrappingAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("wrapKey", "unwrapKey"))
+                },
+                null);
+
+            var wrappingKeyThenable = AssertThenableState(wrappingKeyResult, "fulfilled");
+            var wrappingKey = Assert.IsType<FenObject>(wrappingKeyThenable.Get("__result").AsObject());
+
+            var wrapParams = CreateAlgorithm("AES-GCM");
+            wrapParams.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x61, 0x62, 0x63 })));
+
+            var wrapResult = wrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(nonExtractableKey),
+                    FenValue.FromObject(wrappingKey),
+                    FenValue.FromObject(wrapParams)
+                },
+                null);
+
+            var thenable = AssertThenableState(wrapResult, "rejected");
+            Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleUnwrapKey_WithoutUnwrapUsage_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var wrapKey = subtle.Get("wrapKey").AsFunction();
+            var unwrapKey = subtle.Get("unwrapKey").AsFunction();
+
+            var keyToWrapImport = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("unwrap-usage-target-key"))),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyToWrapThenable = AssertThenableState(keyToWrapImport, "fulfilled");
+            var keyToWrap = Assert.IsType<FenObject>(keyToWrapThenable.Get("__result").AsObject());
+
+            var wrappingAlgorithm = CreateAlgorithm("AES-GCM");
+            wrappingAlgorithm.Set("length", FenValue.FromNumber(128));
+            var wrappingKeyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(wrappingAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("wrapKey"))
+                },
+                null);
+
+            var wrappingKeyThenable = AssertThenableState(wrappingKeyResult, "fulfilled");
+            var wrappingKey = Assert.IsType<FenObject>(wrappingKeyThenable.Get("__result").AsObject());
+
+            var wrapParams = CreateAlgorithm("AES-GCM");
+            wrapParams.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x81, 0x82, 0x83 })));
+
+            var wrapResult = wrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(keyToWrap),
+                    FenValue.FromObject(wrappingKey),
+                    FenValue.FromObject(wrapParams)
+                },
+                null);
+
+            var wrapThenable = AssertThenableState(wrapResult, "fulfilled");
+            var wrappedPayload = Assert.IsType<JsArrayBuffer>(wrapThenable.Get("__result").AsObject());
+
+            var unwrapResult = unwrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(wrappedPayload),
+                    FenValue.FromObject(wrappingKey),
+                    FenValue.FromObject(wrapParams),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var unwrapThenable = AssertThenableState(unwrapResult, "rejected");
+            Assert.Contains("InvalidAccessError", unwrapThenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
         private static FenObject GetSubtle(JsCrypto crypto)
         {
             return Assert.IsType<FenObject>(crypto.Get("subtle").AsObject());
