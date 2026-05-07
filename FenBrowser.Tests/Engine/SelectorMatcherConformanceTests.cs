@@ -906,6 +906,27 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void OnlyPseudoClass_AliasesOnlyChild()
+        {
+            var singleDoc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='single'></div>
+</body></html>");
+            var single = ById(singleDoc, "single");
+            Assert.True(SelectorMatcher.Matches(single, ":only"));
+
+            var multiDoc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='first'></div>
+    <div id='second'></div>
+</body></html>");
+            var first = ById(multiDoc, "first");
+            Assert.False(SelectorMatcher.Matches(first, ":only"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

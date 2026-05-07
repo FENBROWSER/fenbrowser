@@ -857,6 +857,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "only-child": return IsOnlyChild(el);
                 case "first": return IsFirstChild(el);
                 case "last": return IsLastChild(el);
+                case "only": return IsOnlyChild(el);
                 case "first-of-type": return IsFirstOfType(el);
                 case "last-of-type": return IsLastOfType(el);
                 case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
