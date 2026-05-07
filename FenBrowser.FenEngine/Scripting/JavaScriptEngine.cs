@@ -8155,6 +8155,11 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
+                if (itemNumber < 0)
+                {
+                    return false;
+                }
+
                 data[i] = (byte)itemNumber;
             }
 
