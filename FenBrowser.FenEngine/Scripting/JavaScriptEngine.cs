@@ -7402,6 +7402,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (Math.Floor(requestedBitsNumber) != requestedBitsNumber)
+            {
+                return false;
+            }
+
             var requestedBits = (int)Math.Floor(requestedBitsNumber);
             if (requestedBits != 128 && requestedBits != 192 && requestedBits != 256)
             {

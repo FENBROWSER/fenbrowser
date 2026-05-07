@@ -1856,6 +1856,30 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleImportAesGcmKey_FractionalLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            var algorithm = CreateAlgorithm("AES-GCM");
+            algorithm.Set("length", FenValue.FromNumber(128.5));
+
+            var result = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x12, 0x7A, 0xEE, 0x41, 0x99, 0x13, 0x8D, 0x05, 0xC0, 0x11, 0x22, 0x33, 0x67, 0x44, 0x10, 0xAF })),
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var thenable = AssertThenableState(result, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleWrapUnwrapKey_HmacRawRoundTrip_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
