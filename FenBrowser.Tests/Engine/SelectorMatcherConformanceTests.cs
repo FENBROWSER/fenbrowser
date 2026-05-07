@@ -1072,6 +1072,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void CurrentPseudoClass_FunctionalFilter_MatchesCurrentElementOnlyWhenFilterMatches()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='current-match' class='active' data-timeline-state='current'></li>
+    <li id='current-miss' class='idle' data-timeline-state='current'></li>
+</body></html>");
+
+            var currentMatch = ById(doc, "current-match");
+            var currentMiss = ById(doc, "current-miss");
+
+            Assert.True(SelectorMatcher.Matches(currentMatch, ":current(.active)"));
+            Assert.False(SelectorMatcher.Matches(currentMiss, ":current(.active)"));
+        }
+
+        [Fact]
         public void PastPseudoClass_MatchesPastTimelineMarkers()
         {
             var doc = Parse(@"

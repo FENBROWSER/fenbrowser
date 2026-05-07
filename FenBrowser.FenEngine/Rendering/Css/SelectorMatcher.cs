@@ -909,7 +909,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "stalled": return ElementStateManager.IsStalledMedia(el);
                 case "muted": return ElementStateManager.IsMutedMedia(el);
                 case "volume-locked": return ElementStateManager.IsVolumeLockedMedia(el);
-                case "current": return ElementStateManager.IsTimelineCurrent(el);
+                case "current":
+                    return ElementStateManager.IsTimelineCurrent(el) &&
+                           MatchesOptionalPseudoFilter(el, args, parsedArgs, depth + 1);
                 case "past": return ElementStateManager.IsTimelinePast(el);
                 case "future": return ElementStateManager.IsTimelineFuture(el);
                 case "fullscreen": return ElementStateManager.IsFullscreenElement(el);
@@ -1076,6 +1078,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return false;
+        }
+
+        private static bool MatchesOptionalPseudoFilter(Element el, string args, List<SelectorChain> parsedArgs, int depth)
+        {
+            if (string.IsNullOrWhiteSpace(args))
+            {
+                return true;
+            }
+
+            if (parsedArgs != null && parsedArgs.Count > 0)
+            {
+                return parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
+            }
+
+            return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
         }
 
         private static string GetEffectiveLanguage(Element el)
