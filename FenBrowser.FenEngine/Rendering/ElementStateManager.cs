@@ -652,6 +652,24 @@ namespace FenBrowser.FenEngine.Rendering
                         return false;
                     }
                 }
+
+                if (type == "datetime-local" && !string.IsNullOrEmpty(value))
+                {
+                    if (!TryGetRangedInputValue(element, out var dateTimeValue, out var dateTimeMin, out var dateTimeMax))
+                    {
+                        return false;
+                    }
+
+                    if (dateTimeMin.HasValue && dateTimeValue < dateTimeMin.Value)
+                    {
+                        return false;
+                    }
+
+                    if (dateTimeMax.HasValue && dateTimeValue > dateTimeMax.Value)
+                    {
+                        return false;
+                    }
+                }
             }
             else if (element.TagName?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
                      element.TagName?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)

@@ -409,6 +409,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_RespectDateTimeLocalMinMaxConstraints()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='dt-valid' type='datetime-local' min='2026-01-01T00:00' max='2026-12-31T23:59' value='2026-06-01T12:30' />
+    <input id='dt-invalid' type='datetime-local' min='2026-01-01T00:00' max='2026-12-31T23:59' value='2027-01-01T00:00' />
+</body></html>");
+
+            var valid = ById(doc, "dt-valid");
+            var invalid = ById(doc, "dt-invalid");
+
+            Assert.True(SelectorMatcher.Matches(valid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(valid, ":invalid"));
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"
