@@ -817,6 +817,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void UserValidPseudoClass_MatchesOnlyAfterInteractionMarker()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='valid-user' type='email' value='ok@example.com' data-user-interacted='true' />
+    <input id='valid-pristine' type='email' value='ok@example.com' />
+</body></html>");
+
+            var validUser = ById(doc, "valid-user");
+            var validPristine = ById(doc, "valid-pristine");
+
+            Assert.True(SelectorMatcher.Matches(validUser, ":user-valid"));
+            Assert.False(SelectorMatcher.Matches(validPristine, ":user-valid"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

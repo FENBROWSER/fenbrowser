@@ -659,6 +659,36 @@ namespace FenBrowser.FenEngine.Rendering
             if (!IsFormElement(element)) return false;
             return !IsValid(element);
         }
+
+        public static bool IsUserValid(Element element)
+        {
+            if (!IsFormElement(element))
+            {
+                return false;
+            }
+
+            if (!HasUserInteractionMarker(element))
+            {
+                return false;
+            }
+
+            return IsValid(element);
+        }
+
+        public static bool IsUserInvalid(Element element)
+        {
+            if (!IsFormElement(element))
+            {
+                return false;
+            }
+
+            if (!HasUserInteractionMarker(element))
+            {
+                return false;
+            }
+
+            return IsInvalid(element);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
@@ -1035,6 +1065,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return false;
+        }
+
+        private static bool HasUserInteractionMarker(Element element)
+        {
+            var marker = element?.GetAttribute("data-user-interacted");
+            return string.Equals(marker, "true", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool SupportsEnabledDisabledPseudoClass(Element element)
