@@ -1663,8 +1663,14 @@ namespace FenBrowser.FenEngine.Rendering
 
                     return false;
                 case "month":
-                    if (DateOnly.TryParse(raw + "-01", out var monthDate))
+                    if (DateTime.TryParseExact(
+                            raw,
+                            "yyyy-MM",
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None,
+                            out var monthDateTime))
                     {
+                        var monthDate = DateOnly.FromDateTime(monthDateTime);
                         value = monthDate.DayNumber;
                         return true;
                     }
