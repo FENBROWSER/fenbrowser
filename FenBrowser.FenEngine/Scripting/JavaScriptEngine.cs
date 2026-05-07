@@ -8056,6 +8056,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (Math.Floor(modulusLengthNumber) != modulusLengthNumber)
+            {
+                return false;
+            }
+
             modulusLength = (int)Math.Floor(modulusLengthNumber);
             return modulusLength > 0;
         }
