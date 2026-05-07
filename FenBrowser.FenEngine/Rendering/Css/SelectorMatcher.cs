@@ -905,6 +905,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "playing": return ElementStateManager.IsPlayingMedia(el);
                 case "paused": return ElementStateManager.IsPausedMedia(el);
                 case "seeking": return ElementStateManager.IsSeekingMedia(el);
+                case "buffering": return ElementStateManager.IsBufferingMedia(el);
                 case "stalled": return ElementStateManager.IsStalledMedia(el);
                 case "muted": return ElementStateManager.IsMutedMedia(el);
                 case "volume-locked": return ElementStateManager.IsVolumeLockedMedia(el);

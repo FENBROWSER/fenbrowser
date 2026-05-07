@@ -995,6 +995,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void BufferingPseudoClass_MatchesMediaBufferingState()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='buffering' data-media-buffering='true'></video>
+    <video id='steady'></video>
+</body></html>");
+
+            var buffering = ById(doc, "buffering");
+            var steady = ById(doc, "steady");
+
+            Assert.True(SelectorMatcher.Matches(buffering, ":buffering"));
+            Assert.False(SelectorMatcher.Matches(steady, ":buffering"));
+        }
+
+        [Fact]
         public void MutedPseudoClass_MatchesMutedMediaElements()
         {
             var doc = Parse(@"

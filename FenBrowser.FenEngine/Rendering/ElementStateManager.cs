@@ -791,6 +791,22 @@ namespace FenBrowser.FenEngine.Rendering
             return HasBooleanStateAttribute(element, "stalled");
         }
 
+        public static bool IsBufferingMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "buffering", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return HasBooleanStateAttribute(element, "buffering");
+        }
+
         public static bool IsMutedMedia(Element element)
         {
             if (!IsMediaElement(element))
