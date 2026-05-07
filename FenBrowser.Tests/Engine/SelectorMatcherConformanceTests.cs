@@ -1322,6 +1322,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void StatePseudoClass_MatchesCustomElementDeclaredState()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <x-tabs id='selected' data-custom-states='selected busy'></x-tabs>
+    <x-tabs id='idle' data-custom-states='busy'></x-tabs>
+</body></html>");
+
+            var selected = ById(doc, "selected");
+            var idle = ById(doc, "idle");
+
+            Assert.True(SelectorMatcher.Matches(selected, ":state(selected)"));
+            Assert.False(SelectorMatcher.Matches(idle, ":state(selected)"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_SupportsDateInputType()
         {
             var doc = Parse(@"

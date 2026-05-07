@@ -982,6 +982,38 @@ namespace FenBrowser.FenEngine.Rendering
                 .Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
                 .Any(type => string.Equals(type, requestedType, StringComparison.OrdinalIgnoreCase));
         }
+
+        public static bool IsCustomState(Element element, string args)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(args))
+            {
+                return false;
+            }
+
+            var localName = element.LocalName ?? string.Empty;
+            if (!localName.Contains('-'))
+            {
+                return false;
+            }
+
+            var requestedState = args.Trim().Trim('"', '\'');
+            if (string.IsNullOrWhiteSpace(requestedState) ||
+                requestedState.Contains(',') ||
+                requestedState.Any(char.IsWhiteSpace))
+            {
+                return false;
+            }
+
+            var declaredStates = element.GetAttribute("data-custom-states");
+            if (string.IsNullOrWhiteSpace(declaredStates))
+            {
+                return false;
+            }
+
+            return declaredStates
+                .Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                .Any(state => string.Equals(state, requestedState, StringComparison.Ordinal));
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
