@@ -8144,7 +8144,13 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
-                data[i] = (byte)item.ToNumber();
+                var itemNumber = item.ToNumber();
+                if (double.IsNaN(itemNumber) || double.IsInfinity(itemNumber))
+                {
+                    return false;
+                }
+
+                data[i] = (byte)itemNumber;
             }
 
             return true;

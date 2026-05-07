@@ -7848,3 +7848,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `52/52` in this crypto compatibility class.
+
+## 2.277 SubtleCrypto Array-Like Non-Finite Byte Rejection (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Hardened array-like byte extraction to reject `NaN`/`Infinity` numeric elements.
+  - Prevents non-finite coercions from silently corrupting imported key material.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added explicit rejection coverage for array-like input containing `Infinity`.
+  - Crypto compatibility slice now totals `53` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `53/53` in this crypto compatibility class.
