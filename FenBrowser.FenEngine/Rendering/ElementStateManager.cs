@@ -895,6 +895,29 @@ namespace FenBrowser.FenEngine.Rendering
                 "true",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsPopoverOpen(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!element.HasAttribute("popover"))
+            {
+                return false;
+            }
+
+            if (element.HasAttribute("open"))
+            {
+                return true;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-popover-open"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute

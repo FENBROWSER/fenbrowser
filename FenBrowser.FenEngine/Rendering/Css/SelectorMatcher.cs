@@ -913,6 +913,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "future": return ElementStateManager.IsTimelineFuture(el);
                 case "fullscreen": return ElementStateManager.IsFullscreenElement(el);
                 case "picture-in-picture": return ElementStateManager.IsPictureInPictureElement(el);
+                case "popover-open": return ElementStateManager.IsPopoverOpen(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);

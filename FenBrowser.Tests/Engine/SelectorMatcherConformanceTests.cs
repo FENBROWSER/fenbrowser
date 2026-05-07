@@ -1117,6 +1117,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PopoverOpenPseudoClass_MatchesOpenPopovers()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='open-popover' popover data-popover-open='true'></div>
+    <div id='closed-popover' popover></div>
+</body></html>");
+
+            var openPopover = ById(doc, "open-popover");
+            var closedPopover = ById(doc, "closed-popover");
+
+            Assert.True(SelectorMatcher.Matches(openPopover, ":popover-open"));
+            Assert.False(SelectorMatcher.Matches(closedPopover, ":popover-open"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
