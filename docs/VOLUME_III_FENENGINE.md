@@ -7576,3 +7576,27 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `27/27` in this crypto compatibility class.
+
+## 2.262 SubtleCrypto RSA-PSS Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `RSA-PSS` support to `generateKey(...)` and `importKey(...)` with PKCS8/SPKI RSA key transport parity and strict `sign`/`verify` usage gating.
+  - Extended `exportKey(...)` RSA branches to include `RSA-PSS` key material export under existing `pkcs8`/`spki` format constraints.
+  - Extended `sign(...)` / `verify(...)` for `RSA-PSS` using hash-aware fallback from key metadata and strict salt-length validation.
+  - Enforced fail-closed salt-length semantics:
+    - malformed/non-integer/negative `saltLength` rejects with `TypeError`
+    - non-default salt lengths reject with `NotSupportedError` until variable-salt backend parity is implemented.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused RSA-PSS coverage for:
+    - generated-key sign/verify round-trip
+    - imported PKCS8/SPKI sign/verify round-trip
+    - explicit rejection when unsupported salt length is requested.
+  - Crypto compatibility slice now totals `30` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `RSA-PSS`.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `30/30` in this crypto compatibility class.

@@ -4782,6 +4782,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateHmacKey(args[0], extractable, usages);
                     case "RSASSAPKCS1V15":
                         return GenerateRsaSsaKey(args[0], extractable, usages);
+                    case "RSAPSS":
+                        return GenerateRsaPssKey(args[0], extractable, usages);
                     case "RSAOAEP":
                         return GenerateRsaOaepKey(args[0], extractable, usages);
                     case "AESGCM":
@@ -4829,6 +4831,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportHmacKey(format, args[1], args[2], extractable, usages);
                     case "RSASSAPKCS1V15":
                         return ImportRsaSsaKey(format, args[1], args[2], extractable, usages);
+                    case "RSAPSS":
+                        return ImportRsaPssKey(format, args[1], args[2], extractable, usages);
                     case "RSAOAEP":
                         return ImportRsaOaepKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
@@ -4895,6 +4899,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
 
                     case "RSASSAPKCS1V15":
+                    case "RSAPSS":
                     case "RSAOAEP":
                     {
                         if (string.Equals(format, "pkcs8", StringComparison.Ordinal))
@@ -5182,6 +5187,25 @@ namespace FenBrowser.FenEngine.Scripting
 
                     signature = keyState.RsaKey.SignData(data, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
                 }
+                else if (string.Equals(keyState.AlgorithmName, "RSAPSS", StringComparison.Ordinal))
+                {
+                    if (!keyState.IsPrivateKey)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Signing requires a private key"));
+                    }
+
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    if (!TryResolveRsaPssSaltLength(args[0], hashName, out _, out var saltLengthError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(saltLengthError));
+                    }
+
+                    signature = keyState.RsaKey.SignData(data, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pss);
+                }
                 else
                 {
                     return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
@@ -5259,6 +5283,20 @@ namespace FenBrowser.FenEngine.Scripting
                     }
 
                     valid = keyState.RsaKey.VerifyData(data, signature, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+                }
+                else if (string.Equals(keyState.AlgorithmName, "RSAPSS", StringComparison.Ordinal))
+                {
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    if (!TryResolveRsaPssSaltLength(args[0], hashName, out _, out var saltLengthError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(saltLengthError));
+                    }
+
+                    valid = keyState.RsaKey.VerifyData(data, signature, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pss);
                 }
                 else
                 {
@@ -5813,6 +5851,56 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue ImportRsaPssKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
+            var isPublic = string.Equals(format, "spki", StringComparison.Ordinal);
+
+            if (!isPrivate && !isPublic)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-PSS import supports pkcs8 and spki formats"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            var allowedUsages = isPrivate ? RsaPrivateAllowedUsages : RsaPublicAllowedUsages;
+            if (!ValidateKeyUsages(usages, allowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSA-PSS"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-PSS hash algorithm is invalid"));
+            }
+
+            var rsa = System.Security.Cryptography.RSA.Create();
+            if (isPrivate)
+            {
+                rsa.ImportPkcs8PrivateKey(keyBytes, out _);
+            }
+            else
+            {
+                rsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAPSS",
+                HashName = hashName,
+                KeyType = isPrivate ? "private" : "public",
+                Extractable = extractable,
+                RsaKey = rsa,
+                IsPrivateKey = isPrivate,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportAesGcmKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             if (!string.Equals(format, "raw", StringComparison.Ordinal))
@@ -6091,6 +6179,88 @@ namespace FenBrowser.FenEngine.Scripting
             var publicState = new LegacyCryptoKeyState
             {
                 AlgorithmName = "RSAOAEP",
+                HashName = hashName,
+                KeyType = "public",
+                Extractable = true,
+                RsaKey = publicRsa,
+                IsPrivateKey = false,
+                Usages = publicUsages
+            };
+
+            var keyPair = new FenObject();
+            keyPair.Set("privateKey", FenValue.FromObject(CreateCryptoKeyObject(privateState)));
+            keyPair.Set("publicKey", FenValue.FromObject(CreateCryptoKeyObject(publicState)));
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
+        }
+
+        private static FenValue GenerateRsaPssKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA-PSS generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, new HashSet<string>(new[] { "sign", "verify" }, StringComparer.Ordinal), out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSA-PSS"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-PSS hash algorithm is invalid"));
+            }
+
+            if (!TryResolveRsaModulusLength(algorithmArg, out var modulusLength))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA modulusLength must be a positive integer"));
+            }
+
+            if (!TryResolveRsaPublicExponent(algorithmArg, out var publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA publicExponent is invalid"));
+            }
+
+            if (!IsSupportedRsaPublicExponent(publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA publicExponent currently supports 65537 only"));
+            }
+
+            using var generatedRsa = System.Security.Cryptography.RSA.Create(modulusLength);
+            var privatePkcs8 = generatedRsa.ExportPkcs8PrivateKey();
+            var publicSpki = generatedRsa.ExportSubjectPublicKeyInfo();
+
+            var privateRsa = System.Security.Cryptography.RSA.Create();
+            privateRsa.ImportPkcs8PrivateKey(privatePkcs8, out _);
+
+            var publicRsa = System.Security.Cryptography.RSA.Create();
+            publicRsa.ImportSubjectPublicKeyInfo(publicSpki, out _);
+
+            var privateUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("sign"))
+            {
+                privateUsages.Add("sign");
+            }
+
+            var publicUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("verify"))
+            {
+                publicUsages.Add("verify");
+            }
+
+            var privateState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAPSS",
+                HashName = hashName,
+                KeyType = "private",
+                Extractable = extractable,
+                RsaKey = privateRsa,
+                IsPrivateKey = true,
+                Usages = privateUsages
+            };
+
+            var publicState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAPSS",
                 HashName = hashName,
                 KeyType = "public",
                 Extractable = true,
@@ -6397,6 +6567,7 @@ namespace FenBrowser.FenEngine.Scripting
                 "HMAC" => "HMAC",
                 "AESGCM" => "AES-GCM",
                 "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
+                "RSAPSS" => "RSA-PSS",
                 "RSAOAEP" => "RSA-OAEP",
                 _ => normalizedAlgorithmName
             };
@@ -6772,6 +6943,58 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return TryExtractDigestBytes(labelValue, out label);
+        }
+
+        private static bool TryResolveRsaPssSaltLength(FenValue algorithmArg, string normalizedHashName, out int saltLengthBytes, out string error)
+        {
+            saltLengthBytes = 0;
+            error = string.Empty;
+
+            if (!TryGetHashOutputLengthBytes(normalizedHashName, out var hashLengthBytes))
+            {
+                error = "NotSupportedError: Hash algorithm not supported";
+                return false;
+            }
+
+            saltLengthBytes = hashLengthBytes;
+            if (!algorithmArg.IsObject)
+            {
+                return true;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return true;
+            }
+
+            var saltLengthValue = algorithmObject.Get("saltLength");
+            if (saltLengthValue.IsUndefined || saltLengthValue.IsNull)
+            {
+                return true;
+            }
+
+            if (!saltLengthValue.IsNumber)
+            {
+                error = "TypeError: RSA-PSS saltLength must be a non-negative integer";
+                return false;
+            }
+
+            var requestedSaltLength = (int)Math.Floor(saltLengthValue.ToNumber());
+            if (requestedSaltLength < 0 || requestedSaltLength != saltLengthValue.ToNumber())
+            {
+                error = "TypeError: RSA-PSS saltLength must be a non-negative integer";
+                return false;
+            }
+
+            if (requestedSaltLength != hashLengthBytes)
+            {
+                error = "NotSupportedError: RSA-PSS currently supports saltLength equal to hash length only";
+                return false;
+            }
+
+            saltLengthBytes = requestedSaltLength;
+            return true;
         }
 
         private static bool TryResolveAesGcmParams(FenValue algorithmArg, out byte[] iv, out byte[] additionalData, out int tagLengthBits)
