@@ -527,6 +527,20 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_InvalidWeekLexicalValue_IsInvalid()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='week-invalid-lexical' type='week' min='2026-W01' max='2026-W52' value='2026-W1' />
+</body></html>");
+
+            var invalid = ById(doc, "week-invalid-lexical");
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"

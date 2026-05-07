@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -1701,6 +1702,11 @@ namespace FenBrowser.FenEngine.Rendering
         {
             value = 0;
             if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            if (!Regex.IsMatch(raw, @"^\d{4}-W\d{2}$"))
             {
                 return false;
             }
