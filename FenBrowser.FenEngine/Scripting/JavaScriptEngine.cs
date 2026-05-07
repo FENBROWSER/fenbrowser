@@ -7833,7 +7833,13 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
-                var parsedTagLength = (int)Math.Floor(tagLengthValue.ToNumber());
+                var tagLengthNumber = tagLengthValue.ToNumber();
+                if (double.IsNaN(tagLengthNumber) || double.IsInfinity(tagLengthNumber))
+                {
+                    return false;
+                }
+
+                var parsedTagLength = (int)Math.Floor(tagLengthNumber);
                 if (parsedTagLength < 32 || parsedTagLength > 128 || parsedTagLength % 8 != 0)
                 {
                     return false;
