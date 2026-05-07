@@ -838,6 +838,19 @@ namespace FenBrowser.FenEngine.Rendering
             ariaCurrent = ariaCurrent.Trim().ToLowerInvariant();
             return ariaCurrent != "false";
         }
+
+        public static bool IsTimelinePast(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-timeline-state"),
+                "past",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute

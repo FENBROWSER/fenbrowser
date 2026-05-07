@@ -1049,6 +1049,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PastPseudoClass_MatchesPastTimelineMarkers()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='past' data-timeline-state='past'></li>
+    <li id='current' data-timeline-state='current'></li>
+</body></html>");
+
+            var past = ById(doc, "past");
+            var current = ById(doc, "current");
+
+            Assert.True(SelectorMatcher.Matches(past, ":past"));
+            Assert.False(SelectorMatcher.Matches(current, ":past"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

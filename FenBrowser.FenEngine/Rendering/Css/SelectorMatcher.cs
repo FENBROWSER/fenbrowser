@@ -909,6 +909,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "muted": return ElementStateManager.IsMutedMedia(el);
                 case "volume-locked": return ElementStateManager.IsVolumeLockedMedia(el);
                 case "current": return ElementStateManager.IsTimelineCurrent(el);
+                case "past": return ElementStateManager.IsTimelinePast(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);
