@@ -5635,7 +5635,13 @@ namespace FenBrowser.FenEngine.Scripting
                     return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: length must be a number"));
                 }
 
-                var requestedBits = (int)Math.Floor(args[2].ToNumber());
+                var requestedBitsNumber = args[2].ToNumber();
+                if (double.IsNaN(requestedBitsNumber) || double.IsInfinity(requestedBitsNumber))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: length must be a positive multiple of 8"));
+                }
+
+                var requestedBits = (int)Math.Floor(requestedBitsNumber);
                 if (requestedBits <= 0 || requestedBits % 8 != 0)
                 {
                     return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: length must be a positive multiple of 8"));

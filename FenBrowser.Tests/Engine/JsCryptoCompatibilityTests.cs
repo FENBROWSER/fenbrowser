@@ -2385,6 +2385,44 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleDeriveBits_Pbkdf2_NonFiniteLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var deriveBits = subtle.Get("deriveBits").AsFunction();
+
+            var baseKeyResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-password-material-nonfinite-len"))),
+                    FenValue.FromObject(CreateAlgorithm("PBKDF2")),
+                    FenValue.FromBoolean(false),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var baseKeyThenable = AssertThenableState(baseKeyResult, "fulfilled");
+            var baseKey = Assert.IsType<FenObject>(baseKeyThenable.Get("__result").AsObject());
+
+            var deriveAlgorithm = CreateAlgorithm("PBKDF2", "SHA-256");
+            deriveAlgorithm.Set("salt", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-salt-value"))));
+            deriveAlgorithm.Set("iterations", FenValue.FromNumber(1000));
+
+            var deriveResult = deriveBits.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(deriveAlgorithm),
+                    FenValue.FromObject(baseKey),
+                    FenValue.FromNumber(double.PositiveInfinity)
+                },
+                null);
+
+            var thenable = AssertThenableState(deriveResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleDeriveKey_Pbkdf2_ToAesGcm_EncryptDecrypt_RoundTrips()
         {
             var subtle = GetSubtle(new JsCrypto());
