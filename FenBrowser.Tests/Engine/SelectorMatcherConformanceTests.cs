@@ -927,6 +927,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PlayingPseudoClass_MatchesMediaInPlayingState()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='playing' data-media-paused='false'></video>
+    <video id='paused' data-media-paused='true'></video>
+</body></html>");
+
+            var playing = ById(doc, "playing");
+            var paused = ById(doc, "paused");
+
+            Assert.True(SelectorMatcher.Matches(playing, ":playing"));
+            Assert.False(SelectorMatcher.Matches(paused, ":playing"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

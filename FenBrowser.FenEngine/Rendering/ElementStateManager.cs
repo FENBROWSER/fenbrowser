@@ -712,6 +712,34 @@ namespace FenBrowser.FenEngine.Rendering
                 "true",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsPlayingMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "playing", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.Equals(element.GetAttribute("data-media-paused"), "false", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (HasBooleanStateAttribute(element, "ended") ||
+                HasBooleanStateAttribute(element, "seeking") ||
+                HasBooleanStateAttribute(element, "stalled"))
+            {
+                return false;
+            }
+
+            return true;
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
@@ -1094,6 +1122,32 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var marker = element?.GetAttribute("data-user-interacted");
             return string.Equals(marker, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMediaElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return string.Equals(element.TagName, "audio", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(element.TagName, "video", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasBooleanStateAttribute(Element element, string name)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (element.HasAttribute(name))
+            {
+                return true;
+            }
+
+            return string.Equals(element.GetAttribute("data-media-" + name), "true", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool SupportsEnabledDisabledPseudoClass(Element element)
