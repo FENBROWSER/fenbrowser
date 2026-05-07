@@ -1151,6 +1151,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void InRangePseudoClass_SupportsDateTimeLocalInputType()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='dt-in-range' type='datetime-local' min='2026-01-01T00:00' max='2026-12-31T23:59' value='2026-06-15T12:30' />
+    <input id='dt-out-range' type='datetime-local' min='2026-01-01T00:00' max='2026-12-31T23:59' value='2027-01-01T00:00' />
+</body></html>");
+
+            var inRange = ById(doc, "dt-in-range");
+            var outRange = ById(doc, "dt-out-range");
+
+            Assert.True(SelectorMatcher.Matches(inRange, ":in-range"));
+            Assert.False(SelectorMatcher.Matches(outRange, ":in-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

@@ -1374,7 +1374,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
-            if (type != "number" && type != "range" && type != "date")
+            if (type != "number" && type != "range" && type != "date" && type != "datetime-local")
             {
                 return false;
             }
@@ -1414,6 +1414,14 @@ namespace FenBrowser.FenEngine.Rendering
                     if (DateOnly.TryParse(raw, out var date))
                     {
                         value = date.DayNumber;
+                        return true;
+                    }
+
+                    return false;
+                case "datetime-local":
+                    if (DateTime.TryParse(raw, out var dateTime))
+                    {
+                        value = dateTime.ToOADate();
                         return true;
                     }
 
