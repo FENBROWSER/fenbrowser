@@ -346,6 +346,33 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleImportKey_ArrayLikeOverflowElement_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            var keyData = new FenObject();
+            keyData.Set("length", FenValue.FromNumber(3));
+            keyData.Set("0", FenValue.FromNumber(1));
+            keyData.Set("1", FenValue.FromNumber(300));
+            keyData.Set("2", FenValue.FromNumber(3));
+
+            var result = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(keyData),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var thenable = AssertThenableState(result, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleSign_AlgorithmMismatchRejects()
         {
             var subtle = GetSubtle(new JsCrypto());

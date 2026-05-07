@@ -8155,7 +8155,7 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
-                if (itemNumber < 0)
+                if (itemNumber < 0 || itemNumber > byte.MaxValue)
                 {
                     return false;
                 }
