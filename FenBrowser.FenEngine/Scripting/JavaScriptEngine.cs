@@ -5114,6 +5114,11 @@ namespace FenBrowser.FenEngine.Scripting
                         return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
                     }
 
+                    if (!TryValidateAesCtrCounterCapacity(counter, counterLengthBits, plaintext.Length, out var ctrCapacityError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(ctrCapacityError));
+                    }
+
                     var ciphertext = TransformAesCtr(keyState.SecretKey, counter, counterLengthBits, plaintext);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
                 }
@@ -5237,6 +5242,11 @@ namespace FenBrowser.FenEngine.Scripting
                     if (!TryResolveAesCtrParams(args[0], out var counter, out var counterLengthBits, out var ctrParamError))
                     {
                         return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
+                    }
+
+                    if (!TryValidateAesCtrCounterCapacity(counter, counterLengthBits, encryptedPayload.Length, out var ctrCapacityError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(ctrCapacityError));
                     }
 
                     var plaintext = TransformAesCtr(keyState.SecretKey, counter, counterLengthBits, encryptedPayload);
@@ -7812,6 +7822,45 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return output;
+        }
+
+        private static bool TryValidateAesCtrCounterCapacity(byte[] counter, int counterLengthBits, int payloadLengthBytes, out string error)
+        {
+            error = string.Empty;
+            if (payloadLengthBytes <= 0)
+            {
+                return true;
+            }
+
+            var blocksRequired = (payloadLengthBytes + 15L) / 16L;
+            var initialCounterValue = ExtractAesCtrCounterValue(counter, counterLengthBits);
+            var maxCounterValues = System.Numerics.BigInteger.One << counterLengthBits;
+            var terminalCounter = initialCounterValue + blocksRequired - 1;
+            if (terminalCounter >= maxCounterValues)
+            {
+                error = "OperationError: AES-CTR counter would overflow configured counter length";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static System.Numerics.BigInteger ExtractAesCtrCounterValue(byte[] counter, int counterLengthBits)
+        {
+            var bitsRemaining = counterLengthBits;
+            var bitShift = 0;
+            var value = System.Numerics.BigInteger.Zero;
+            for (var i = counter.Length - 1; i >= 0 && bitsRemaining > 0; i--)
+            {
+                var bitsInByte = bitsRemaining >= 8 ? 8 : bitsRemaining;
+                var lowBitsMask = (1 << bitsInByte) - 1;
+                var part = counter[i] & lowBitsMask;
+                value |= (System.Numerics.BigInteger)part << bitShift;
+                bitShift += bitsInByte;
+                bitsRemaining -= bitsInByte;
+            }
+
+            return value;
         }
 
         private static void IncrementCounterBlock(byte[] counterBlock, int counterLengthBits)

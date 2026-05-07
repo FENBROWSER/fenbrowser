@@ -7725,3 +7725,19 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `44/44` in this crypto compatibility class.
+
+## 2.269 SubtleCrypto AES-CTR Counter-Overflow Guard (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added preflight AES-CTR counter-capacity validation for `encrypt(...)` and `decrypt(...)`.
+  - The runtime now computes required block count against the configured counter bit-width and rejects before execution when the counter would wrap.
+  - Added deterministic fail-closed rejection message for overflow: `OperationError: AES-CTR counter would overflow configured counter length`.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused rejection coverage for an 8-bit counter starting at `0xFF` with a payload spanning two blocks.
+  - Crypto compatibility slice now totals `45` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `45/45` in this crypto compatibility class.

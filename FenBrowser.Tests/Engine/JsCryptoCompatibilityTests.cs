@@ -1244,6 +1244,45 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleEncrypt_AesCtrCounterOverflow_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CTR");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CTR");
+            operationAlgorithm.Set("counter", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF })));
+            operationAlgorithm.Set("length", FenValue.FromNumber(8));
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromString("ctr-overflow-two-blocks")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("OperationError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            Assert.Contains("overflow", thenable.Get("__reason").ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateAesGcmKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
