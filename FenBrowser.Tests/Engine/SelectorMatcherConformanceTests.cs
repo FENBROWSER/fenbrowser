@@ -995,6 +995,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void MutedPseudoClass_MatchesMutedMediaElements()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='muted' muted></video>
+    <video id='audible'></video>
+</body></html>");
+
+            var muted = ById(doc, "muted");
+            var audible = ById(doc, "audible");
+
+            Assert.True(SelectorMatcher.Matches(muted, ":muted"));
+            Assert.False(SelectorMatcher.Matches(audible, ":muted"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

@@ -789,6 +789,22 @@ namespace FenBrowser.FenEngine.Rendering
 
             return HasBooleanStateAttribute(element, "stalled");
         }
+
+        public static bool IsMutedMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "muted", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return HasBooleanStateAttribute(element, "muted");
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
