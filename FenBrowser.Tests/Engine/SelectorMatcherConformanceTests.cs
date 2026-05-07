@@ -851,6 +851,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void AutofillPseudoClass_MatchesControlsMarkedAutofilled()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='filled' data-autofill='true' />
+    <input id='plain' />
+</body></html>");
+
+            var filled = ById(doc, "filled");
+            var plain = ById(doc, "plain");
+
+            Assert.True(SelectorMatcher.Matches(filled, ":autofill"));
+            Assert.False(SelectorMatcher.Matches(plain, ":autofill"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

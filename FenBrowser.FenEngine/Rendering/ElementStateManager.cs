@@ -689,6 +689,29 @@ namespace FenBrowser.FenEngine.Rendering
 
             return IsInvalid(element);
         }
+
+        public static bool IsAutofilled(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (element.HasAttribute("autofilled"))
+            {
+                return true;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-autofill"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
