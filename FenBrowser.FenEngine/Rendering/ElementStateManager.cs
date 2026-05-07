@@ -882,6 +882,19 @@ namespace FenBrowser.FenEngine.Rendering
                 "true",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsPictureInPictureElement(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-picture-in-picture"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute

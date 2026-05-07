@@ -1100,6 +1100,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PictureInPicturePseudoClass_MatchesMarkedMediaElement()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='pip' data-picture-in-picture='true'></video>
+    <video id='normal'></video>
+</body></html>");
+
+            var pip = ById(doc, "pip");
+            var normal = ById(doc, "normal");
+
+            Assert.True(SelectorMatcher.Matches(pip, ":picture-in-picture"));
+            Assert.False(SelectorMatcher.Matches(normal, ":picture-in-picture"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
