@@ -7310,7 +7310,13 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            var bits = (int)Math.Floor(lengthValue.ToNumber());
+            var bitsNumber = lengthValue.ToNumber();
+            if (double.IsNaN(bitsNumber) || double.IsInfinity(bitsNumber))
+            {
+                return false;
+            }
+
+            var bits = (int)Math.Floor(bitsNumber);
             if (bits <= 0 || bits % 8 != 0)
             {
                 return false;
