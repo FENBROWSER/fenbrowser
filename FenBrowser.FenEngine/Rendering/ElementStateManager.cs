@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using FenBrowser.Core;
@@ -1374,7 +1375,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
-            if (type != "number" && type != "range" && type != "date" && type != "datetime-local" && type != "month")
+            if (type != "number" && type != "range" && type != "date" && type != "datetime-local" && type != "month" && type != "week")
             {
                 return false;
             }
@@ -1434,8 +1435,44 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     return false;
+                case "week":
+                    if (TryParseIsoWeek(raw, out var weekValue))
+                    {
+                        value = weekValue;
+                        return true;
+                    }
+
+                    return false;
                 default:
                     return false;
+            }
+        }
+
+        private static bool TryParseIsoWeek(string raw, out double value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            var parts = raw.Split("-W", StringSplitOptions.None);
+            if (parts.Length != 2 ||
+                !int.TryParse(parts[0], out var year) ||
+                !int.TryParse(parts[1], out var week))
+            {
+                return false;
+            }
+
+            try
+            {
+                var monday = ISOWeek.ToDateTime(year, week, DayOfWeek.Monday);
+                value = monday.ToOADate();
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
             }
         }
 

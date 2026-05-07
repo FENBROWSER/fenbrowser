@@ -1185,6 +1185,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void InRangePseudoClass_SupportsWeekInputType()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='week-in-range' type='week' min='2026-W01' max='2026-W52' value='2026-W24' />
+    <input id='week-out-range' type='week' min='2026-W01' max='2026-W52' value='2027-W01' />
+</body></html>");
+
+            var inRange = ById(doc, "week-in-range");
+            var outRange = ById(doc, "week-out-range");
+
+            Assert.True(SelectorMatcher.Matches(inRange, ":in-range"));
+            Assert.False(SelectorMatcher.Matches(outRange, ":in-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
