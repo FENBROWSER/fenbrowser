@@ -773,6 +773,22 @@ namespace FenBrowser.FenEngine.Rendering
 
             return HasBooleanStateAttribute(element, "seeking");
         }
+
+        public static bool IsStalledMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "stalled", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return HasBooleanStateAttribute(element, "stalled");
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
