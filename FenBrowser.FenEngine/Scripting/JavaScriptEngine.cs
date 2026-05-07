@@ -7396,7 +7396,13 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            var requestedBits = (int)Math.Floor(lengthValue.ToNumber());
+            var requestedBitsNumber = lengthValue.ToNumber();
+            if (double.IsNaN(requestedBitsNumber) || double.IsInfinity(requestedBitsNumber))
+            {
+                return false;
+            }
+
+            var requestedBits = (int)Math.Floor(requestedBitsNumber);
             if (requestedBits != 128 && requestedBits != 192 && requestedBits != 256)
             {
                 return false;
