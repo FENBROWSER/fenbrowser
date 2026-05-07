@@ -884,6 +884,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "valid": return ElementStateManager.IsValid(el);
                 case "invalid": return ElementStateManager.IsInvalid(el);
                 case "user-valid": return ElementStateManager.IsUserValid(el);
+                case "user-invalid": return ElementStateManager.IsUserInvalid(el);
                 case "in-range": return ElementStateManager.IsInRange(el);
                 case "out-of-range": return ElementStateManager.IsOutOfRange(el);
                 case "read-only": return ElementStateManager.IsReadOnly(el);
