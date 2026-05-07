@@ -7833,3 +7833,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `51/51` in this crypto compatibility class.
+
+## 2.276 SubtleCrypto Array-Like Non-Numeric Byte Rejection (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Hardened array-like byte extraction to reject non-numeric element values instead of coercing them to `0`.
+  - This prevents silent key/nonce corruption when callers provide malformed byte sources.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added explicit rejection coverage for array-like `keyData` containing a string element.
+  - Crypto compatibility slice now totals `52` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `52/52` in this crypto compatibility class.

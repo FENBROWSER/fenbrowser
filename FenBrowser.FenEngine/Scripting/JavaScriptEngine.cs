@@ -8139,7 +8139,12 @@ namespace FenBrowser.FenEngine.Scripting
             for (var i = 0; i < len; i++)
             {
                 var item = obj.Get(i.ToString());
-                data[i] = (byte)(item.IsNumber ? item.ToNumber() : 0);
+                if (!item.IsNumber)
+                {
+                    return false;
+                }
+
+                data[i] = (byte)item.ToNumber();
             }
 
             return true;
