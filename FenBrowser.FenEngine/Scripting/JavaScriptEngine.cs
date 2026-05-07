@@ -5331,6 +5331,12 @@ namespace FenBrowser.FenEngine.Scripting
                     return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
                 }
 
+                if (string.Equals(keyState.AlgorithmName, "RSASSAPKCS1V15", StringComparison.Ordinal)
+                    && !TryEnsureRsaOperationHashMatchesKey(args[0], keyState.HashName, out var rsaHashMismatchError))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected(rsaHashMismatchError));
+                }
+
                 if (!TryResolveHashNameForOperation(args[0], keyState.HashName, out var hashName))
                 {
                     return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
@@ -5444,6 +5450,12 @@ namespace FenBrowser.FenEngine.Scripting
                 if (!string.Equals(operationAlgorithm, keyState.AlgorithmName, StringComparison.Ordinal))
                 {
                     return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (string.Equals(keyState.AlgorithmName, "RSASSAPKCS1V15", StringComparison.Ordinal)
+                    && !TryEnsureRsaOperationHashMatchesKey(args[0], keyState.HashName, out var rsaHashMismatchError))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected(rsaHashMismatchError));
                 }
 
                 if (!TryResolveHashNameForOperation(args[0], keyState.HashName, out var hashName))

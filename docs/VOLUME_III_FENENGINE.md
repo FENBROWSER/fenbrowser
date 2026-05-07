@@ -7756,3 +7756,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `46/46` in this crypto compatibility class.
+
+## 2.271 SubtleCrypto RSASSA Hash-Binding Hardening (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added strict RSASSA-PKCS1-v1_5 hash binding in both `sign(...)` and `verify(...)`.
+  - Operations now fail-closed when a caller provides an operation hash different from the imported/generated key hash.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added explicit RSASSA operation-hash mismatch rejection coverage (`key=SHA-256`, `op=SHA-384`).
+  - Crypto compatibility slice now totals `47` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `47/47` in this crypto compatibility class.

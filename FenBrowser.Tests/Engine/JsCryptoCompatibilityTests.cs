@@ -299,6 +299,43 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleRsa_OperationHashMismatch_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+
+            using var rsa = RSA.Create(2048);
+            var privateBytes = rsa.ExportPkcs8PrivateKey();
+            var privateKeyImport = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("pkcs8"),
+                    FenValue.FromObject(CreateArrayBuffer(privateBytes)),
+                    FenValue.FromObject(CreateAlgorithm("RSASSA-PKCS1-v1_5", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign"))
+                },
+                null);
+
+            var privateThenable = AssertThenableState(privateKeyImport, "fulfilled");
+            var privateKey = Assert.IsType<FenObject>(privateThenable.Get("__result").AsObject());
+
+            var signResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithm("RSASSA-PKCS1-v1_5", "SHA-384")),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromString("rsa-hash-mismatch")
+                },
+                null);
+
+            var thenable = AssertThenableState(signResult, "rejected");
+            Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            Assert.Contains("hash", thenable.Get("__reason").ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateHmacKey_SignVerify_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
