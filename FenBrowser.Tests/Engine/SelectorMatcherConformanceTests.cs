@@ -1281,6 +1281,19 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ActiveViewTransitionPseudoClass_MatchesWhenTransitionMarkedActive()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html data-active-view-transition='true'><body>
+    <div id='target'></div>
+</body></html>");
+
+            var target = ById(doc, "target");
+            Assert.True(SelectorMatcher.Matches(target, ":active-view-transition"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_SupportsDateInputType()
         {
             var doc = Parse(@"

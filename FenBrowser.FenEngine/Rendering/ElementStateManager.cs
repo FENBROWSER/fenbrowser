@@ -935,6 +935,24 @@ namespace FenBrowser.FenEngine.Rendering
                 "true",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsActiveViewTransition(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(element.GetAttribute("data-active-view-transition"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(
+                element.OwnerDocument?.DocumentElement?.GetAttribute("data-active-view-transition"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
