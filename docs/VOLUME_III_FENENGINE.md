@@ -8223,3 +8223,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `77/77` in this crypto compatibility class.
+
+## 2.302 SubtleCrypto RSA Oversized modulusLength Guard (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added explicit `Int32` upper-bound validation for RSA `modulusLength`.
+  - Prevents oversized modulus requests from hitting overflow-cast paths.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added rejection coverage for RSA key generation with `modulusLength = 3_000_000_000`.
+  - Crypto compatibility slice now totals `78` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `78/78` in this crypto compatibility class.
