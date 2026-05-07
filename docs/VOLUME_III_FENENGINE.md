@@ -8073,3 +8073,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `67/67` in this crypto compatibility class.
+
+## 2.292 SubtleCrypto deriveBits Oversized-Length Guard (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added explicit `Int32` upper-bound validation for `deriveBits` length before casting.
+  - Prevents overflow-driven faults on oversized derivation requests.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added rejection coverage for PBKDF2 `deriveBits` with a `3_000_000_000` bit length request.
+  - Crypto compatibility slice now totals `68` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `68/68` in this crypto compatibility class.
