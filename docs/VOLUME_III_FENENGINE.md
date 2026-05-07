@@ -7623,3 +7623,28 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `33/33` in this crypto compatibility class.
+
+## 2.264 SubtleCrypto ECDH Derivation Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `ECDH` support to `generateKey(...)`, `importKey(...)`, and `exportKey(...)` with `pkcs8`/`spki` transport and strict private/public usage semantics.
+  - Added named-curve support for ECDH key descriptors and validation (`P-256`, `P-384`, `P-521`).
+  - Extended `deriveBits(...)` with ECDH shared-secret derivation:
+    - requires private base key + public peer key
+    - enforces algorithm and named-curve compatibility
+    - fail-closes over-length output requests.
+  - Enabled `deriveKey(...)` ECDH by reusing the same `deriveBits(...)` enforcement path for AES/HMAC derived key imports.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused ECDH coverage for:
+    - cross-peer `deriveBits` equivalence
+    - cross-peer `deriveKey` to AES-GCM encrypt/decrypt round-trip
+    - rejection when importing ECDH public keys with non-empty key usages.
+  - Crypto compatibility slice now totals `36` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `ECDH`.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `36/36` in this crypto compatibility class.

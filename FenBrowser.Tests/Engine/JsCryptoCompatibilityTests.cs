@@ -1255,6 +1255,224 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleDeriveBits_Ecdh_ResolvesAndMatchesAcrossPeers()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var deriveBits = subtle.Get("deriveBits").AsFunction();
+
+            var ecdhAlgorithm = CreateAlgorithm("ECDH");
+            ecdhAlgorithm.Set("namedCurve", FenValue.FromString("P-256"));
+
+            var aliceKeyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(ecdhAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+            var aliceThenable = AssertThenableState(aliceKeyPairResult, "fulfilled");
+            var aliceKeyPair = Assert.IsType<FenObject>(aliceThenable.Get("__result").AsObject());
+            var alicePrivateKey = Assert.IsType<FenObject>(aliceKeyPair.Get("privateKey").AsObject());
+            var alicePublicKey = Assert.IsType<FenObject>(aliceKeyPair.Get("publicKey").AsObject());
+
+            var bobKeyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithmWithNamedCurve("ECDH", "P-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+            var bobThenable = AssertThenableState(bobKeyPairResult, "fulfilled");
+            var bobKeyPair = Assert.IsType<FenObject>(bobThenable.Get("__result").AsObject());
+            var bobPrivateKey = Assert.IsType<FenObject>(bobKeyPair.Get("privateKey").AsObject());
+            var bobPublicKey = Assert.IsType<FenObject>(bobKeyPair.Get("publicKey").AsObject());
+
+            var aliceDeriveAlgorithm = CreateAlgorithm("ECDH");
+            aliceDeriveAlgorithm.Set("public", FenValue.FromObject(bobPublicKey));
+            var aliceBitsResult = deriveBits.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(aliceDeriveAlgorithm),
+                    FenValue.FromObject(alicePrivateKey),
+                    FenValue.FromNumber(128)
+                },
+                null);
+
+            var aliceBitsThenable = AssertThenableState(aliceBitsResult, "fulfilled");
+            var aliceBits = Assert.IsType<JsArrayBuffer>(aliceBitsThenable.Get("__result").AsObject());
+
+            var bobDeriveAlgorithm = CreateAlgorithm("ECDH");
+            bobDeriveAlgorithm.Set("public", FenValue.FromObject(alicePublicKey));
+            var bobBitsResult = deriveBits.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(bobDeriveAlgorithm),
+                    FenValue.FromObject(bobPrivateKey),
+                    FenValue.FromNumber(128)
+                },
+                null);
+
+            var bobBitsThenable = AssertThenableState(bobBitsResult, "fulfilled");
+            var bobBits = Assert.IsType<JsArrayBuffer>(bobBitsThenable.Get("__result").AsObject());
+
+            Assert.Equal(16, aliceBits.Data.Length);
+            Assert.Equal(aliceBits.Data, bobBits.Data);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleDeriveKey_Ecdh_ToAesGcm_EncryptDecrypt_RoundTripsAcrossPeers()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var deriveKey = subtle.Get("deriveKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var ecdhAlgorithm = CreateAlgorithm("ECDH");
+            ecdhAlgorithm.Set("namedCurve", FenValue.FromString("P-256"));
+
+            var aliceKeyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(ecdhAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveKey"))
+                },
+                null);
+            var aliceThenable = AssertThenableState(aliceKeyPairResult, "fulfilled");
+            var aliceKeyPair = Assert.IsType<FenObject>(aliceThenable.Get("__result").AsObject());
+            var alicePrivateKey = Assert.IsType<FenObject>(aliceKeyPair.Get("privateKey").AsObject());
+            var alicePublicKey = Assert.IsType<FenObject>(aliceKeyPair.Get("publicKey").AsObject());
+
+            var bobKeyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithmWithNamedCurve("ECDH", "P-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveKey"))
+                },
+                null);
+            var bobThenable = AssertThenableState(bobKeyPairResult, "fulfilled");
+            var bobKeyPair = Assert.IsType<FenObject>(bobThenable.Get("__result").AsObject());
+            var bobPrivateKey = Assert.IsType<FenObject>(bobKeyPair.Get("privateKey").AsObject());
+            var bobPublicKey = Assert.IsType<FenObject>(bobKeyPair.Get("publicKey").AsObject());
+
+            var derivedAesAlgorithm = CreateAlgorithm("AES-GCM");
+            derivedAesAlgorithm.Set("length", FenValue.FromNumber(128));
+
+            var aliceDeriveAlgorithm = CreateAlgorithm("ECDH");
+            aliceDeriveAlgorithm.Set("public", FenValue.FromObject(bobPublicKey));
+            var aliceDerivedKeyResult = deriveKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(aliceDeriveAlgorithm),
+                    FenValue.FromObject(alicePrivateKey),
+                    FenValue.FromObject(derivedAesAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+            var aliceDerivedKeyThenable = AssertThenableState(aliceDerivedKeyResult, "fulfilled");
+            var aliceDerivedKey = Assert.IsType<FenObject>(aliceDerivedKeyThenable.Get("__result").AsObject());
+
+            var bobDeriveAlgorithm = CreateAlgorithm("ECDH");
+            bobDeriveAlgorithm.Set("public", FenValue.FromObject(alicePublicKey));
+            var bobDerivedKeyResult = deriveKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(bobDeriveAlgorithm),
+                    FenValue.FromObject(bobPrivateKey),
+                    FenValue.FromObject(CreateAesGcmAlgorithm(128)),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+            var bobDerivedKeyThenable = AssertThenableState(bobDerivedKeyResult, "fulfilled");
+            var bobDerivedKey = Assert.IsType<FenObject>(bobDerivedKeyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-GCM");
+            operationAlgorithm.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x61, 0x62, 0x63, 0x64 })));
+            var plaintext = FenValue.FromString("ecdh-derived-key-message");
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(aliceDerivedKey),
+                    plaintext
+                },
+                null);
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var encryptedPayload = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(bobDerivedKey),
+                    FenValue.FromObject(encryptedPayload)
+                },
+                null);
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decryptedPayload = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("ecdh-derived-key-message", Encoding.UTF8.GetString(decryptedPayload.Data));
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleImportEcdhPublicKey_WithUsages_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var exportKey = subtle.Get("exportKey").AsFunction();
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            var ecdhAlgorithm = CreateAlgorithm("ECDH");
+            ecdhAlgorithm.Set("namedCurve", FenValue.FromString("P-256"));
+            var keyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(ecdhAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(keyPairResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var publicExportResult = exportKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("spki"),
+                    FenValue.FromObject(publicKey)
+                },
+                null);
+
+            var publicExportThenable = AssertThenableState(publicExportResult, "fulfilled");
+            var publicSpki = Assert.IsType<JsArrayBuffer>(publicExportThenable.Get("__result").AsObject());
+
+            var importAlgorithm = CreateAlgorithm("ECDH");
+            importAlgorithm.Set("namedCurve", FenValue.FromString("P-256"));
+            var importResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("spki"),
+                    FenValue.FromObject(publicSpki),
+                    FenValue.FromObject(importAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var thenable = AssertThenableState(importResult, "rejected");
+            Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleDeriveBits_Pbkdf2_ResolvesArrayBuffer()
         {
             var subtle = GetSubtle(new JsCrypto());
@@ -1595,6 +1813,20 @@ namespace FenBrowser.Tests.Engine
                 algorithm.Set("hash", FenValue.FromObject(hash));
             }
 
+            return algorithm;
+        }
+
+        private static FenObject CreateAlgorithmWithNamedCurve(string name, string namedCurve)
+        {
+            var algorithm = CreateAlgorithm(name);
+            algorithm.Set("namedCurve", FenValue.FromString(namedCurve));
+            return algorithm;
+        }
+
+        private static FenObject CreateAesGcmAlgorithm(int lengthBits)
+        {
+            var algorithm = CreateAlgorithm("AES-GCM");
+            algorithm.Set("length", FenValue.FromNumber(lengthBits));
             return algorithm;
         }
 

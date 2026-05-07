@@ -4639,6 +4639,7 @@ namespace FenBrowser.FenEngine.Scripting
             public byte[] SecretKey { get; set; } = Array.Empty<byte>();
             public System.Security.Cryptography.RSA RsaKey { get; set; }
             public System.Security.Cryptography.ECDsa EcdsaKey { get; set; }
+            public System.Security.Cryptography.ECDiffieHellman EcdhKey { get; set; }
             public bool IsPrivateKey { get; set; }
         }
 
@@ -4667,6 +4668,9 @@ namespace FenBrowser.FenEngine.Scripting
             new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
 
         private static readonly HashSet<string> HkdfAllowedUsages =
+            new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> EcdhPrivateAllowedUsages =
             new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
 
         public JsCrypto()
@@ -4790,6 +4794,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateRsaOaepKey(args[0], extractable, usages);
                     case "ECDSA":
                         return GenerateEcdsaKey(args[0], extractable, usages);
+                    case "ECDH":
+                        return GenerateEcdhKey(args[0], extractable, usages);
                     case "AESGCM":
                         return GenerateAesGcmKey(args[0], extractable, usages);
                     default:
@@ -4841,6 +4847,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportRsaOaepKey(format, args[1], args[2], extractable, usages);
                     case "ECDSA":
                         return ImportEcdsaKey(format, args[1], args[2], extractable, usages);
+                    case "ECDH":
+                        return ImportEcdhKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
@@ -4958,6 +4966,33 @@ namespace FenBrowser.FenEngine.Scripting
                         }
 
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDSA export supports pkcs8 or spki only"));
+                    }
+
+                    case "ECDH":
+                    {
+                        if (string.Equals(format, "pkcs8", StringComparison.Ordinal))
+                        {
+                            if (!keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: pkcs8 export requires a private key"));
+                            }
+
+                            var pkcs8 = keyState.EcdhKey.ExportPkcs8PrivateKey();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(pkcs8))));
+                        }
+
+                        if (string.Equals(format, "spki", StringComparison.Ordinal))
+                        {
+                            if (keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: spki export requires a public key"));
+                            }
+
+                            var spki = keyState.EcdhKey.ExportSubjectPublicKeyInfo();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(spki))));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDH export supports pkcs8 or spki only"));
                     }
 
                     default:
@@ -5553,6 +5588,34 @@ namespace FenBrowser.FenEngine.Scripting
 
                         return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(derived))));
                     }
+                    case "ECDH":
+                    {
+                        if (!baseKeyState.IsPrivateKey)
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: ECDH deriveBits requires a private key"));
+                        }
+
+                        if (!TryResolveEcdhPublicKey(args[0], out var publicKeyState, out var resolveError))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected(resolveError));
+                        }
+
+                        if (!string.Equals(baseKeyState.NamedCurve, publicKeyState.NamedCurve, StringComparison.Ordinal))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: ECDH keys must use the same namedCurve"));
+                        }
+
+                        var sharedSecret = baseKeyState.EcdhKey.DeriveKeyMaterial(publicKeyState.EcdhKey.PublicKey);
+                        var requestedBytes = requestedBits / 8;
+                        if (requestedBytes > sharedSecret.Length)
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: Requested ECDH output length exceeds available shared secret length"));
+                        }
+
+                        var output = new byte[requestedBytes];
+                        Buffer.BlockCopy(sharedSecret, 0, output, 0, requestedBytes);
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(output))));
+                    }
 
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
@@ -6007,6 +6070,67 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue ImportEcdhKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
+            var isPublic = string.Equals(format, "spki", StringComparison.Ordinal);
+
+            if (!isPrivate && !isPublic)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDH import supports pkcs8 and spki formats"));
+            }
+
+            if (!TryResolveNamedCurve(algorithmArg, out var namedCurve, out _))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDH namedCurve is invalid"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (isPrivate)
+            {
+                if (usages.Count == 0)
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: ECDH private key import requires at least one key usage"));
+                }
+
+                if (!ValidateKeyUsages(usages, EcdhPrivateAllowedUsages, out var unsupportedUsage))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for ECDH"));
+                }
+            }
+            else if (usages.Count != 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: ECDH public key import does not support key usages"));
+            }
+
+            var ecdh = System.Security.Cryptography.ECDiffieHellman.Create();
+            if (isPrivate)
+            {
+                ecdh.ImportPkcs8PrivateKey(keyBytes, out _);
+            }
+            else
+            {
+                ecdh.ImportSubjectPublicKeyInfo(keyBytes, out _);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDH",
+                NamedCurve = namedCurve,
+                KeyType = isPrivate ? "private" : "public",
+                Extractable = extractable,
+                EcdhKey = ecdh,
+                IsPrivateKey = isPrivate,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportAesGcmKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             if (!string.Equals(format, "raw", StringComparison.Ordinal))
@@ -6448,6 +6572,61 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
         }
 
+        private static FenValue GenerateEcdhKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: ECDH generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, EcdhPrivateAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for ECDH"));
+            }
+
+            if (!TryResolveNamedCurve(algorithmArg, out var namedCurve, out var curve))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDH namedCurve is invalid"));
+            }
+
+            using var generatedEcdh = System.Security.Cryptography.ECDiffieHellman.Create(curve);
+            var privatePkcs8 = generatedEcdh.ExportPkcs8PrivateKey();
+            var publicSpki = generatedEcdh.ExportSubjectPublicKeyInfo();
+
+            var privateEcdh = System.Security.Cryptography.ECDiffieHellman.Create();
+            privateEcdh.ImportPkcs8PrivateKey(privatePkcs8, out _);
+
+            var publicEcdh = System.Security.Cryptography.ECDiffieHellman.Create();
+            publicEcdh.ImportSubjectPublicKeyInfo(publicSpki, out _);
+
+            var privateState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDH",
+                NamedCurve = namedCurve,
+                KeyType = "private",
+                Extractable = extractable,
+                EcdhKey = privateEcdh,
+                IsPrivateKey = true,
+                Usages = usages
+            };
+
+            var publicState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDH",
+                NamedCurve = namedCurve,
+                KeyType = "public",
+                Extractable = true,
+                EcdhKey = publicEcdh,
+                IsPrivateKey = false,
+                Usages = new HashSet<string>(StringComparer.Ordinal)
+            };
+
+            var keyPair = new FenObject();
+            keyPair.Set("privateKey", FenValue.FromObject(CreateCryptoKeyObject(privateState)));
+            keyPair.Set("publicKey", FenValue.FromObject(CreateCryptoKeyObject(publicState)));
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
+        }
+
         private static bool TryGetCryptoKeyState(FenValue keyArg, out LegacyCryptoKeyState state)
         {
             state = null;
@@ -6502,7 +6681,8 @@ namespace FenBrowser.FenEngine.Scripting
                 var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
                 descriptor.Set("length", FenValue.FromNumber(length));
             }
-            else if (string.Equals(state.AlgorithmName, "ECDSA", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(state.NamedCurve))
+            else if ((string.Equals(state.AlgorithmName, "ECDSA", StringComparison.Ordinal) || string.Equals(state.AlgorithmName, "ECDH", StringComparison.Ordinal))
+                && !string.IsNullOrWhiteSpace(state.NamedCurve))
             {
                 descriptor.Set("namedCurve", FenValue.FromString(state.NamedCurve));
             }
@@ -6747,6 +6927,7 @@ namespace FenBrowser.FenEngine.Scripting
                 "RSAPSS" => "RSA-PSS",
                 "RSAOAEP" => "RSA-OAEP",
                 "ECDSA" => "ECDSA",
+                "ECDH" => "ECDH",
                 _ => normalizedAlgorithmName
             };
         }
@@ -7172,6 +7353,46 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             saltLengthBytes = requestedSaltLength;
+            return true;
+        }
+
+        private static bool TryResolveEcdhPublicKey(FenValue algorithmArg, out LegacyCryptoKeyState publicKeyState, out string error)
+        {
+            publicKeyState = null;
+            error = string.Empty;
+
+            if (!algorithmArg.IsObject)
+            {
+                error = "TypeError: ECDH parameters are invalid";
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                error = "TypeError: ECDH parameters are invalid";
+                return false;
+            }
+
+            var publicKeyValue = algorithmObject.Get("public");
+            if (!TryGetCryptoKeyState(publicKeyValue, out publicKeyState))
+            {
+                error = "TypeError: ECDH public key is invalid";
+                return false;
+            }
+
+            if (!string.Equals(publicKeyState.AlgorithmName, "ECDH", StringComparison.Ordinal))
+            {
+                error = "InvalidAccessError: ECDH public key algorithm mismatch";
+                return false;
+            }
+
+            if (publicKeyState.IsPrivateKey)
+            {
+                error = "InvalidAccessError: ECDH public parameter must be a public key";
+                return false;
+            }
+
             return true;
         }
 
