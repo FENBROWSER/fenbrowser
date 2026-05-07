@@ -466,6 +466,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_RespectTimeMinMaxConstraints()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='time-valid' type='time' min='09:00' max='17:00' value='12:30' />
+    <input id='time-invalid' type='time' min='09:00' max='17:00' value='18:15' />
+</body></html>");
+
+            var valid = ById(doc, "time-valid");
+            var invalid = ById(doc, "time-invalid");
+
+            Assert.True(SelectorMatcher.Matches(valid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(valid, ":invalid"));
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"

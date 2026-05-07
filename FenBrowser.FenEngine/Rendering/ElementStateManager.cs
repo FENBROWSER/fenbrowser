@@ -706,6 +706,24 @@ namespace FenBrowser.FenEngine.Rendering
                         return false;
                     }
                 }
+
+                if (type == "time" && !string.IsNullOrEmpty(value))
+                {
+                    if (!TryGetRangedInputValue(element, out var timeValue, out var timeMin, out var timeMax))
+                    {
+                        return false;
+                    }
+
+                    if (timeMin.HasValue && timeValue < timeMin.Value)
+                    {
+                        return false;
+                    }
+
+                    if (timeMax.HasValue && timeValue > timeMax.Value)
+                    {
+                        return false;
+                    }
+                }
             }
             else if (element.TagName?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
                      element.TagName?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)
