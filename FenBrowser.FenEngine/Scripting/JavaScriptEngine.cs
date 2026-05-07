@@ -7478,6 +7478,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (iterationsNumber > int.MaxValue)
+            {
+                return false;
+            }
+
             iterations = (int)Math.Floor(iterationsNumber);
             if (iterations <= 0)
             {
