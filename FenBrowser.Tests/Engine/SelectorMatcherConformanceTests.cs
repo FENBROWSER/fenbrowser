@@ -1339,6 +1339,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void StatePseudoClass_RejectsInvalidUsage()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='builtin' data-custom-states='selected'></div>
+    <x-tabs id='custom' data-custom-states='selected'></x-tabs>
+</body></html>");
+
+            var builtin = ById(doc, "builtin");
+            var custom = ById(doc, "custom");
+
+            Assert.False(SelectorMatcher.Matches(builtin, ":state(selected)"));
+            Assert.False(SelectorMatcher.Matches(custom, ":state(selected busy)"));
+            Assert.False(SelectorMatcher.Matches(custom, ":state(selected,busy)"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_SupportsDateInputType()
         {
             var doc = Parse(@"
