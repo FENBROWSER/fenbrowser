@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 using FenBrowser.Core;
+using FenBrowser.Core.Memory;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
@@ -1092,6 +1093,7 @@ public class BrowserIntegration
     /// </summary>
     public void RecordFrame(SKSize viewportSize)
     {
+        using var frameTimeline = TimelineTracer.Instance.Begin("BrowserIntegration.RecordFrame", "host");
         var invalidationReasons = _pendingInvalidationReasons == RenderFrameInvalidationReason.None
             ? RenderFrameInvalidationReason.Unknown
             : _pendingInvalidationReasons;
@@ -1372,6 +1374,10 @@ public class BrowserIntegration
                 ["damageRegionCount"] = telemetry.DamageRegionCount,
                 ["damageAreaRatio"] = telemetry.DamageAreaRatio,
                 ["usedDamageRasterization"] = frameResult.UsedDamageRasterization,
+                ["compositedLayerCount"] = telemetry.CompositedLayerCount,
+                ["promotedLayerCount"] = telemetry.PromotedLayerCount,
+                ["usedIncrementalLayout"] = telemetry.UsedIncrementalLayout,
+                ["incrementalLayoutRootCount"] = telemetry.IncrementalLayoutRootCount,
                 ["domNodeCount"] = telemetry.DomNodeCount,
                 ["boxCount"] = telemetry.BoxCount,
                 ["paintNodeCount"] = telemetry.PaintNodeCount,

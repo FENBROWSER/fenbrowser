@@ -13,8 +13,10 @@ using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
+using FenBrowser.Core.Memory;
 using System.Diagnostics;
 using System.Linq;
+using FenBrowser.FenEngine.Rendering.Performance;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -34,10 +36,13 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly ScrollDamageComputer _scrollDamageComputer = new ScrollDamageComputer();
         private readonly DamageRegionNormalizationPolicy _damageNormalizationPolicy = new DamageRegionNormalizationPolicy();
         private readonly FrameBudgetAdaptivePolicy _frameBudgetAdaptivePolicy = new FrameBudgetAdaptivePolicy();
+        private readonly IncrementalLayoutManager _incrementalLayoutManager = new IncrementalLayoutManager();
+        private readonly PaintTreeLayerizer _paintTreeLayerizer = new PaintTreeLayerizer();
 
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
         private ImmutablePaintTree _lastPaintTree;
+        private IReadOnlyList<CompositedLayer> _lastCompositedLayers = Array.Empty<CompositedLayer>();
         private IReadOnlyList<SKRect> _lastDamageRegions = Array.Empty<SKRect>();
         private float _viewportWidth;
         private float _viewportHeight;
@@ -53,6 +58,9 @@ namespace FenBrowser.FenEngine.Rendering
         public bool LastFrameWatchdogTriggered { get; private set; }
         public string LastFrameWatchdogReason { get; private set; }
         public RenderFrameTelemetry LastFrameTelemetry { get; private set; }
+        public bool LastFrameUsedIncrementalLayout { get; private set; }
+        public int LastFrameIncrementalLayoutRootCount { get; private set; }
+        public int LastPromotedLayerCount { get; private set; }
         private readonly Stopwatch _lastDomDumpWatch = new Stopwatch();
         
         /// <summary>
@@ -71,6 +79,7 @@ namespace FenBrowser.FenEngine.Rendering
         public IReadOnlyList<SKRect> LastDamageRegions => _lastDamageRegions;
         public bool LastFrameUsedDamageRasterization { get; private set; }
         public float LastDamageAreaRatio { get; private set; }
+        public IReadOnlyList<CompositedLayer> LastCompositedLayers => _lastCompositedLayers;
         
 
         
@@ -191,8 +200,11 @@ namespace FenBrowser.FenEngine.Rendering
             var rasterMode = RenderFrameRasterMode.None;
             LastFrameWatchdogTriggered = false;
             LastFrameWatchdogReason = null;
+            LastFrameUsedIncrementalLayout = false;
+            LastFrameIncrementalLayoutRootCount = 0;
             try
             {
+            using var frameTimeline = TimelineTracer.Instance.Begin("RenderFrame.Total", "render");
             using var _frameScope = pipelineContext.BeginScopedFrame();
             DiagnosticPaths.AppendRootText("debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n");
             CurrentOverlays.Clear();
@@ -337,115 +349,118 @@ namespace FenBrowser.FenEngine.Rendering
                     isLayoutDirty = true;
                 }
 
+                var incrementalPlan = BuildIncrementalLayoutPlan(
+                    root,
+                    styles,
+                    forceLayout,
+                    styleInvalidation,
+                    (animationInvalidation & InvalidationKind.Layout) != 0);
+
+                if (incrementalPlan.FullLayoutRequired)
+                {
+                    _incrementalLayoutManager.MarkFullLayoutRequired();
+                }
+
                 // PHASE 1: Layout using the new LayoutEngine
                 using (pipelineContext.BeginScopedStage(PipelineStage.Layout))
                 {
-                layoutStageWatchdog.Restart();
-                RenderPipeline.EnterLayout();
-                if (isLayoutDirty)
-                {
-                    pipelineContext.DirtyFlags.InvalidateLayout();
-                    // [ANCHORING] Before layout, select anchor
-                    // Use ROOT element or Document as container? 
-                    // SkiaDomRenderer handles viewport scroll on 'root' (usually Document or Body?).
-                    // Let's assume 'root' is the scroll container if it's Document, or Body.
-                    // Actually, if root is Document, we use document.DocumentElement ??
-                    Element scrollable = (root as Document)?.DocumentElement ?? root as Element;
-                    
-                    if (scrollable != null)
+                    using var layoutTimeline = TimelineTracer.Instance.Begin("RenderFrame.Layout", "render");
+                    layoutStageWatchdog.Restart();
+                    RenderPipeline.EnterLayout();
+                    if (isLayoutDirty)
                     {
-                        // We need OLD boxes for selection
-                        _scrollManager.SelectAnchor(scrollable, root, (n) => {
-                             if (_boxes.TryGetValue(n, out var b)) return b.BorderBox;
-                             return SKRect.Empty;
-                        });
-                    }
+                        pipelineContext.DirtyFlags.InvalidateLayout();
+                        Element scrollable = (root as Document)?.DocumentElement ?? root as Element;
 
-                    var layoutEngine = new LayoutEngine(
-                        styles ?? new Dictionary<Node, CssComputed>(),
-                        _viewportWidth,
-                        _viewportHeight,
-                        null,
-                        baseUrl);
-                    
-                    _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, 
-                        _viewportHeight);
-                    layoutUpdated = true;
-                        
-
-                        
-
-
-
-                    
-                    // Copy boxes for hit testing
-                    _boxes.Clear();
-                    int boxCount = 0;
-                    foreach (var box in layoutEngine.AllBoxes)
-                    {
-                        _boxes[box.Key] = box.Value;
-                        boxCount++;
-                    }
-
-                    // Populate a shared RenderContext for InputManager usage?
-                    // For now, we construct it on demand in HitTest.
-                    
-                    // [ANCHORING] After layout, adjust scroll
-                    if (scrollable != null)
-                    {
-                         _scrollManager.AdjustScroll(scrollable, (n) => {
-                             if (_boxes.TryGetValue(n, out var b)) return b.BorderBox;
-                             return SKRect.Empty;
-                         });
-                    }
-                    
-                    // [L-04] VALIDATION GATE (Optimized)
-                    if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints && _boxes.ContainsKey(root))
-                    {
-                        var rootBox = _boxes[root];
-                        bool almostFullCheck = Math.Abs(rootBox.PaddingBox.Height - _viewportHeight) < 1.0f;
-                        // EngineLogCompat.Debug($"[L-04 CHECK-LATE] RootHeight={rootBox.PaddingBox.Height} Viewport={_viewportHeight} Match={almostFullCheck}");
-                    }
-
-                    // PERF: Throttle DOM dumping to stay within frame budget during animations
-                    bool shouldDump = FenBrowser.Core.Logging.DebugConfig.LogDomTree;
-                    if (shouldDump && _lastDomDumpWatch.IsRunning && _lastDomDumpWatch.ElapsedMilliseconds < 1000)
-                        shouldDump = false;
-
-                    if (shouldDump)
-                    {
-                        try
+                        if (scrollable != null)
                         {
-                            var sb = new System.Text.StringBuilder();
-                            DumpDom(root, 0, sb, styles, _boxes);
-                            System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
-                            _lastDomDumpWatch.Restart();
-
-                            if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
+                            _scrollManager.SelectAnchor(scrollable, root, n =>
                             {
-                                EngineLogCompat.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
+                                if (_boxes.TryGetValue(n, out var b)) return b.BorderBox;
+                                return SKRect.Empty;
+                            });
+                        }
+
+                        bool usedIncrementalLayout = false;
+                        if (!incrementalPlan.FullLayoutRequired && !incrementalPlan.IsClean)
+                        {
+                            usedIncrementalLayout = TryRunIncrementalLayout(
+                                incrementalPlan,
+                                root,
+                                styles ?? new Dictionary<Node, CssComputed>(),
+                                baseUrl);
+                        }
+
+                        if (!usedIncrementalLayout)
+                        {
+                            var layoutEngine = new LayoutEngine(
+                                styles ?? new Dictionary<Node, CssComputed>(),
+                                _viewportWidth,
+                                _viewportHeight,
+                                null,
+                                baseUrl);
+
+                            _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, _viewportHeight);
+                            _boxes.Clear();
+                            foreach (var box in layoutEngine.AllBoxes)
+                            {
+                                _boxes[box.Key] = box.Value;
+                            }
+
+                            CaptureLayoutCaches();
+                            LastFrameUsedIncrementalLayout = false;
+                            LastFrameIncrementalLayoutRootCount = 0;
+                        }
+
+                        layoutUpdated = true;
+
+                        if (scrollable != null)
+                        {
+                            _scrollManager.AdjustScroll(scrollable, n =>
+                            {
+                                if (_boxes.TryGetValue(n, out var b)) return b.BorderBox;
+                                return SKRect.Empty;
+                            });
+                        }
+
+                        if (FenBrowser.Core.Logging.DebugConfig.LogLayoutConstraints && _boxes.ContainsKey(root))
+                        {
+                            var rootBox = _boxes[root];
+                            _ = Math.Abs(rootBox.PaddingBox.Height - _viewportHeight) < 1.0f;
+                        }
+
+                        bool shouldDump = FenBrowser.Core.Logging.DebugConfig.LogDomTree;
+                        if (shouldDump && _lastDomDumpWatch.IsRunning && _lastDomDumpWatch.ElapsedMilliseconds < 1000)
+                        {
+                            shouldDump = false;
+                        }
+
+                        if (shouldDump)
+                        {
+                            try
+                            {
+                                var sb = new System.Text.StringBuilder();
+                                DumpDom(root, 0, sb, styles, _boxes);
+                                System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
+                                _lastDomDumpWatch.Restart();
+
+                                if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
+                                {
+                                    EngineLogCompat.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                EngineLogCompat.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
-                        }
-                    }
-                    
-                    EngineLogCompat.Debug($"[SkiaDomRenderer] Copied {boxCount} boxes for rendering.", LogCategory.Rendering);
-                    Console.WriteLine($"[DBG-RENDER] Layout boxes: {boxCount}, Root={root?.GetType().Name}/{(root as Element)?.TagName}");
-                    
-                    // Clear Layout Dirty Flags
-                    RecursivelyClearDirty(root, InvalidationKind.Layout);
-                }
-                else
-                {
-                    // EngineLogCompat.Debug("[SkiaDomRenderer] Skipping Layout (Clean/Cached)");
 
-                }
-                RenderPipeline.EndLayout(); // State -> LayoutFrozen
-                pipelineContext.SetLayoutSnapshot(_lastLayout);
-                layoutStageWatchdog.Stop();
+                        EngineLogCompat.Debug($"[SkiaDomRenderer] Layout ready. Boxes={_boxes.Count}, Incremental={LastFrameUsedIncrementalLayout}, Roots={LastFrameIncrementalLayoutRootCount}", LogCategory.Rendering);
+                        RecursivelyClearDirty(root, InvalidationKind.Layout);
+                    }
+                    RenderPipeline.EndLayout(); // State -> LayoutFrozen
+                    pipelineContext.SetLayoutSnapshot(_lastLayout);
+                    layoutStageWatchdog.Stop();
                 }
                 
                 // Update Scroll Animations
@@ -459,123 +474,118 @@ namespace FenBrowser.FenEngine.Rendering
                 // PHASE 2: Build Paint Tree
                 using (pipelineContext.BeginScopedStage(PipelineStage.Painting))
                 {
-                paintStageWatchdog.Restart();
-                RenderPipeline.EnterPaint(); // Checks LayoutFrozen
-                paintInvalidationSignal = isLayoutDirty
-                                          || styleInvalidation
-                                          || root.PaintDirty
-                                          || root.ChildPaintDirty
-                                          || ImageLoader.HasActiveAnimatedImages
-                                          || scrollAnimationActive
-                                          || (animationInvalidation & InvalidationKind.Paint) != 0;
-                // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
-                bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
-                bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
-                bool isPaintDirty = paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild;
-                // If scroll changed, we usually repaint. But ScrollManager handles offsets in PaintTreeBuilder.
-                // If we skip build, we use old PaintTree with old scroll offsets? 
-                // Currently NewPaintTreeBuilder reads scroll offsets.
-                // So strictly, if Scroll changed, we MUST rebuild paint tree.
-                // Assuming ScrollManager.OnFrame returning true means something changed.
-                // But checking flag availability? 
-                // Let's assume always build paint tree if animations/scroll active for safety, or implement dirty tracking there.
-                // For now: Always repaint if layout changed OR dirty flags OR scroll active?
-                // Let's stick to dirty flags + layout changed.
-                
-                if (isPaintDirty)
-                {
-                    pipelineContext.DirtyFlags.InvalidatePaint();
-                    EngineLogCompat.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
-                    var previousPaintTree = _lastPaintTree;
-                    var paintTree = NewPaintTreeBuilder.Build(
-                        root,
-                        _boxes,
-                        styles,
-                        _viewportWidth,
-                        _viewportHeight,
-                        _scrollManager,
-                        baseUrl);
-                    _lastPaintTree = paintTree;
-                    rebuiltPaintTree = true;
-                    Console.WriteLine($"[DBG-RENDER] PaintTree nodes: {paintTree?.NodeCount ?? 0}");
+                    using var paintTimeline = TimelineTracer.Instance.Begin("RenderFrame.Paint", "render");
+                    paintStageWatchdog.Restart();
+                    RenderPipeline.EnterPaint(); // Checks LayoutFrozen
+                    paintInvalidationSignal = isLayoutDirty
+                                              || styleInvalidation
+                                              || root.PaintDirty
+                                              || root.ChildPaintDirty
+                                              || ImageLoader.HasActiveAnimatedImages
+                                              || scrollAnimationActive
+                                              || (animationInvalidation & InvalidationKind.Paint) != 0;
+                    // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
+                    bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
+                    bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
+                    bool isPaintDirty = paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild;
 
-                    // PC-3: Tree-diff damage.
-                    var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
-                    var treeDiffDamage = _paintDamageTracker.ComputeDamageRegions(
-                        previousPaintTree,
-                        paintTree,
-                        currentViewport);
-
-                    // PC-3: Scroll-aware damage strips merged with tree-diff damage.
-                    float currentScrollY = GetDocumentScrollY(root);
-                    var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
-                        _lastScrollY,
-                        currentScrollY,
-                        new SKSize(_lastViewportWidth, _lastViewportHeight),
-                        currentViewport);
-                    _lastScrollY = currentScrollY;
-
-                    var allDamage = new System.Collections.Generic.List<SKRect>(treeDiffDamage);
-                    foreach (var r in scrollDamage) allDamage.Add(r);
-
-                    bool interactionFullRepaintRequested = ElementStateManager.Instance.ConsumeFullRepaintRequest();
-                    _lastDamageRegions = allDamage.Count > 0
-                        ? _damageNormalizationPolicy.Normalize(allDamage, currentViewport)
-                        : treeDiffDamage;
-
-                    if (interactionFullRepaintRequested)
+                    if (isPaintDirty)
                     {
-                        _lastDamageRegions = new[] { currentViewport };
-                        EngineLogCompat.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
-                    }
-                    else if (rebuiltPaintTree &&
-                             paintInvalidationSignal &&
-                             (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
-                    {
-                        _lastDamageRegions = new[] { currentViewport };
-                        EngineLogCompat.Warn(
-                            "[SkiaDomRenderer] Paint tree rebuilt without localized damage; upgrading to full-viewport damage to avoid presenting a stale base frame.",
-                            LogCategory.Rendering);
-                    }
+                        pipelineContext.DirtyFlags.InvalidatePaint();
+                        EngineLogCompat.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
+                        var previousPaintTree = _lastPaintTree;
+                        var paintTree = NewPaintTreeBuilder.Build(
+                            root,
+                            _boxes,
+                            styles,
+                            _viewportWidth,
+                            _viewportHeight,
+                            _scrollManager,
+                            baseUrl);
+                        _lastPaintTree = paintTree;
+                        rebuiltPaintTree = true;
+                        Console.WriteLine($"[DBG-RENDER] PaintTree nodes: {paintTree?.NodeCount ?? 0}");
 
-                    // Clear Paint Dirty Flags
-                    RecursivelyClearDirty(root, InvalidationKind.Paint);
-                }
-                else
-                {
-                     _lastDamageRegions = Array.Empty<SKRect>();
-                     // EngineLogCompat.Debug("[SkiaDomRenderer] Skipping Paint Tree Build (Clean)");
-                }
-                _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
-                pipelineContext.SetPaintSnapshot(_lastPaintTree);
-                paintStageWatchdog.Stop();
+                        var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
+                        _lastCompositedLayers = layerization.Layers;
+                        LastPromotedLayerCount = layerization.PromotedLayerCount;
 
-                if (SafetyPolicy?.EnableWatchdog == true)
-                {
-                    var paintMs = paintStageWatchdog.Elapsed.TotalMilliseconds;
-                    if (paintMs > SafetyPolicy.MaxPaintStageMs)
-                    {
-                        LastFrameWatchdogTriggered = true;
-                        LastFrameWatchdogReason = $"Paint stage exceeded budget ({paintMs:F2}ms > {SafetyPolicy.MaxPaintStageMs:F2}ms)";
-                        EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
-                        if (SafetyPolicy.SkipRasterWhenOverBudget)
+                        // PC-3: Tree-diff damage.
+                        var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
+                        var treeDiffDamage = _paintDamageTracker.ComputeDamageRegions(
+                            previousPaintTree,
+                            paintTree,
+                            currentViewport);
+
+                        // PC-3: Scroll-aware damage strips merged with tree-diff damage.
+                        float currentScrollY = GetDocumentScrollY(root);
+                        var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
+                            _lastScrollY,
+                            currentScrollY,
+                            new SKSize(_lastViewportWidth, _lastViewportHeight),
+                            currentViewport);
+                        _lastScrollY = currentScrollY;
+
+                        var allDamage = new System.Collections.Generic.List<SKRect>(treeDiffDamage);
+                        foreach (var r in scrollDamage) allDamage.Add(r);
+
+                        bool interactionFullRepaintRequested = ElementStateManager.Instance.ConsumeFullRepaintRequest();
+                        _lastDamageRegions = allDamage.Count > 0
+                            ? _damageNormalizationPolicy.Normalize(allDamage, currentViewport)
+                            : treeDiffDamage;
+
+                        if (interactionFullRepaintRequested)
                         {
-                            watchdogAbortBeforeRaster = true;
+                            _lastDamageRegions = new[] { currentViewport };
+                            EngineLogCompat.Debug("[SkiaDomRenderer] Forcing full repaint for interaction-state visual change", LogCategory.Rendering);
+                        }
+                        else if (rebuiltPaintTree &&
+                                 paintInvalidationSignal &&
+                                 (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
+                        {
+                            _lastDamageRegions = new[] { currentViewport };
+                            EngineLogCompat.Warn(
+                                "[SkiaDomRenderer] Paint tree rebuilt without localized damage; upgrading to full-viewport damage to avoid presenting a stale base frame.",
+                                LogCategory.Rendering);
+                        }
+
+                        // Clear Paint Dirty Flags
+                        RecursivelyClearDirty(root, InvalidationKind.Paint);
+                    }
+                    else
+                    {
+                        _lastDamageRegions = Array.Empty<SKRect>();
+                    }
+                    _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
+                    pipelineContext.SetPaintSnapshot(_lastPaintTree);
+                    paintStageWatchdog.Stop();
+
+                    if (SafetyPolicy?.EnableWatchdog == true)
+                    {
+                        var paintMs = paintStageWatchdog.Elapsed.TotalMilliseconds;
+                        if (paintMs > SafetyPolicy.MaxPaintStageMs)
+                        {
+                            LastFrameWatchdogTriggered = true;
+                            LastFrameWatchdogReason = $"Paint stage exceeded budget ({paintMs:F2}ms > {SafetyPolicy.MaxPaintStageMs:F2}ms)";
+                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            if (SafetyPolicy.SkipRasterWhenOverBudget)
+                            {
+                                watchdogAbortBeforeRaster = true;
+                            }
+                        }
+
+                        var frameMsAfterPaint = frameWatchdog.Elapsed.TotalMilliseconds;
+                        if (frameMsAfterPaint > SafetyPolicy.MaxFrameBudgetMs)
+                        {
+                            LastFrameWatchdogTriggered = true;
+                            LastFrameWatchdogReason = $"Frame exceeded budget before raster ({frameMsAfterPaint:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
+                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            if (SafetyPolicy.SkipRasterWhenOverBudget)
+                            {
+                                watchdogAbortBeforeRaster = true;
+                            }
                         }
                     }
-
-                    var frameMsAfterPaint = frameWatchdog.Elapsed.TotalMilliseconds;
-                    if (frameMsAfterPaint > SafetyPolicy.MaxFrameBudgetMs)
-                    {
-                        LastFrameWatchdogTriggered = true;
-                        LastFrameWatchdogReason = $"Frame exceeded budget before raster ({frameMsAfterPaint:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
-                        EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
-                        if (SafetyPolicy.SkipRasterWhenOverBudget)
-                        {
-                            watchdogAbortBeforeRaster = true;
-                        }
-                    }
-                }
                 }
 
 
@@ -585,6 +595,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
+                    using var rasterTimeline = TimelineTracer.Instance.Begin("RenderFrame.Raster", "render");
                     rasterStageWatchdog.Restart();
                     bool useDamageRasterization = _damageRasterizationPolicy.ShouldUseDamageRasterization(
                         hasBaseFrame,
@@ -659,6 +670,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Presenting))
                 {
+                    using var presentTimeline = TimelineTracer.Instance.Begin("RenderFrame.Present", "render");
                     RenderPipeline.EnterPresent();
                     // Callback with layout info
                     CurrentOverlays.Clear();
@@ -682,6 +694,10 @@ namespace FenBrowser.FenEngine.Rendering
                         _lastPaintTree?.NodeCount ?? 0,
                         CurrentOverlays.Count,
                         _lastDamageRegions?.Count ?? 0,
+                        _lastCompositedLayers?.Count ?? 0,
+                        LastPromotedLayerCount,
+                        LastFrameUsedIncrementalLayout,
+                        LastFrameIncrementalLayoutRootCount,
                         layoutStageWatchdog.Elapsed.TotalMilliseconds,
                         paintStageWatchdog.Elapsed.TotalMilliseconds,
                         rasterStageWatchdog.Elapsed.TotalMilliseconds,
@@ -723,6 +739,10 @@ namespace FenBrowser.FenEngine.Rendering
                     _lastPaintTree?.NodeCount ?? 0,
                     0,
                     0,
+                    _lastCompositedLayers?.Count ?? 0,
+                    LastPromotedLayerCount,
+                    LastFrameUsedIncrementalLayout,
+                    LastFrameIncrementalLayoutRootCount,
                     layoutStageWatchdog.Elapsed.TotalMilliseconds,
                     paintStageWatchdog.Elapsed.TotalMilliseconds,
                     rasterStageWatchdog.Elapsed.TotalMilliseconds,
@@ -865,6 +885,10 @@ namespace FenBrowser.FenEngine.Rendering
             int paintNodeCount,
             int overlayCount,
             int damageRegionCount,
+            int compositedLayerCount,
+            int promotedLayerCount,
+            bool usedIncrementalLayout,
+            int incrementalLayoutRootCount,
             double layoutDurationMs,
             double paintDurationMs,
             double rasterDurationMs,
@@ -882,6 +906,10 @@ namespace FenBrowser.FenEngine.Rendering
                 PaintNodeCount = paintNodeCount,
                 OverlayCount = overlayCount,
                 DamageRegionCount = damageRegionCount,
+                CompositedLayerCount = compositedLayerCount,
+                PromotedLayerCount = promotedLayerCount,
+                UsedIncrementalLayout = usedIncrementalLayout,
+                IncrementalLayoutRootCount = incrementalLayoutRootCount,
                 LayoutUpdated = layoutUpdated,
                 PaintTreeRebuilt = rebuiltPaintTree,
                 BaseFrameSeeded = hasBaseFrame,
@@ -893,6 +921,341 @@ namespace FenBrowser.FenEngine.Rendering
                 TotalDurationMs = totalDurationMs,
                 DamageAreaRatio = LastDamageAreaRatio
             };
+        }
+
+        private IncrementalLayoutPlan BuildIncrementalLayoutPlan(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            bool forceLayout,
+            bool styleInvalidation,
+            bool animationLayoutInvalidation)
+        {
+            if (forceLayout || styleInvalidation || animationLayoutInvalidation)
+            {
+                return IncrementalLayoutPlan.Full("global-invalidation");
+            }
+
+            if (_lastLayout == null || _boxes.Count == 0)
+            {
+                return IncrementalLayoutPlan.Full("missing-base-layout");
+            }
+
+            if (!(root.LayoutDirty || root.ChildLayoutDirty))
+            {
+                return IncrementalLayoutPlan.Clean();
+            }
+
+            var dirtyElements = new List<Element>();
+            CollectLayoutDirtyElements(root, dirtyElements);
+            if (dirtyElements.Count == 0)
+            {
+                return IncrementalLayoutPlan.Full("layout-dirty-without-elements");
+            }
+
+            var dirtySet = new HashSet<Element>(dirtyElements);
+            var roots = new List<Element>(dirtyElements.Count);
+            for (var i = 0; i < dirtyElements.Count; i++)
+            {
+                var element = dirtyElements[i];
+                if (element == null)
+                {
+                    continue;
+                }
+
+                if (!HasLayoutDirtyAncestor(element, dirtySet))
+                {
+                    roots.Add(element);
+                }
+            }
+
+            if (roots.Count == 0)
+            {
+                return IncrementalLayoutPlan.Full("no-root-dirty-elements");
+            }
+
+            if (roots.Count > 16)
+            {
+                return IncrementalLayoutPlan.Full("too-many-dirty-roots");
+            }
+
+            for (var i = 0; i < roots.Count; i++)
+            {
+                var rootElement = roots[i];
+                if (!IsSafeIncrementalLayoutRoot(rootElement, styles))
+                {
+                    return IncrementalLayoutPlan.Full($"unsupported-root:{rootElement.TagName}");
+                }
+
+                var parent = rootElement.ParentElement;
+                if (parent == null || !_boxes.ContainsKey(parent))
+                {
+                    return IncrementalLayoutPlan.Full("missing-parent-box");
+                }
+            }
+
+            return IncrementalLayoutPlan.Incremental(roots);
+        }
+
+        private bool TryRunIncrementalLayout(
+            IncrementalLayoutPlan plan,
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            string baseUrl)
+        {
+            if (plan == null || plan.DirtyRoots == null || plan.DirtyRoots.Count == 0)
+            {
+                return false;
+            }
+
+            if (_lastLayout == null)
+            {
+                return false;
+            }
+
+            var mergedRects = new Dictionary<Element, ElementGeometry>(_lastLayout.ElementRects);
+            var workingContentHeight = _lastLayout.ContentHeight;
+            var appliedRoots = 0;
+
+            for (var i = 0; i < plan.DirtyRoots.Count; i++)
+            {
+                var dirtyRoot = plan.DirtyRoots[i];
+                if (dirtyRoot == null)
+                {
+                    continue;
+                }
+
+                var parent = dirtyRoot.ParentElement;
+                if (parent == null || !_boxes.TryGetValue(parent, out var parentBox))
+                {
+                    return false;
+                }
+
+                _incrementalLayoutManager.MarkDirty(dirtyRoot);
+                _incrementalLayoutManager.InvalidateLayout(dirtyRoot);
+
+                var availableWidth = Math.Max(1f, parentBox.ContentBox.Width);
+                var availableHeight = Math.Max(1f, parentBox.ContentBox.Height);
+                if (!float.IsFinite(availableWidth) || availableWidth <= 0f)
+                {
+                    availableWidth = _viewportWidth;
+                }
+
+                if (!float.IsFinite(availableHeight) || availableHeight <= 0f)
+                {
+                    availableHeight = _viewportHeight;
+                }
+
+                var layoutEngine = new LayoutEngine(styles, _viewportWidth, _viewportHeight, null, baseUrl);
+                var partial = layoutEngine.ComputeLayout(dirtyRoot, availableWidth, availableHeight);
+                if (partial == null)
+                {
+                    return false;
+                }
+
+                RemoveBoxesForSubtree(dirtyRoot);
+                RemoveElementRectsForSubtree(dirtyRoot, mergedRects);
+
+                foreach (var boxEntry in layoutEngine.AllBoxes)
+                {
+                    _boxes[boxEntry.Key] = boxEntry.Value;
+                    if (boxEntry.Key is Element boxElement)
+                    {
+                        _incrementalLayoutManager.CacheLayout(boxElement, boxEntry.Value.BorderBox, boxEntry.Value.ContentBox.Height);
+                    }
+                }
+
+                foreach (var rectEntry in partial.ElementRects)
+                {
+                    mergedRects[rectEntry.Key] = rectEntry.Value;
+                }
+
+                workingContentHeight = Math.Max(workingContentHeight, partial.ContentHeight);
+                appliedRoots++;
+            }
+
+            if (appliedRoots == 0)
+            {
+                return false;
+            }
+
+            _lastLayout = new LayoutResult(
+                mergedRects,
+                _viewportWidth,
+                _viewportHeight,
+                _lastLayout.ScrollOffsetY,
+                Math.Max(workingContentHeight, _viewportHeight));
+
+            _incrementalLayoutManager.ClearDirtyState();
+            LastFrameUsedIncrementalLayout = true;
+            LastFrameIncrementalLayoutRootCount = appliedRoots;
+            return true;
+        }
+
+        private void CaptureLayoutCaches()
+        {
+            foreach (var entry in _boxes)
+            {
+                if (entry.Key is not Element element || entry.Value == null)
+                {
+                    continue;
+                }
+
+                _incrementalLayoutManager.CacheLayout(element, entry.Value.BorderBox, entry.Value.ContentBox.Height);
+            }
+        }
+
+        private static void CollectLayoutDirtyElements(Node root, List<Element> target)
+        {
+            if (root == null || target == null)
+            {
+                return;
+            }
+
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                if (current.LayoutDirty && current is Element element)
+                {
+                    target.Add(element);
+                }
+
+                var children = current.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+        }
+
+        private static bool HasLayoutDirtyAncestor(Element element, HashSet<Element> dirtySet)
+        {
+            var parent = element?.ParentElement;
+            while (parent != null)
+            {
+                if (dirtySet.Contains(parent))
+                {
+                    return true;
+                }
+
+                parent = parent.ParentElement;
+            }
+
+            return false;
+        }
+
+        private static bool IsSafeIncrementalLayoutRoot(Element element, IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            if (element == null || styles == null || !styles.TryGetValue(element, out var style) || style == null)
+            {
+                return false;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(style);
+            return string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RemoveBoxesForSubtree(Node root)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                _boxes.Remove(current);
+
+                var children = current.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+        }
+
+        private static void RemoveElementRectsForSubtree(Node root, Dictionary<Element, ElementGeometry> rects)
+        {
+            if (root == null || rects == null)
+            {
+                return;
+            }
+
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                if (current == null)
+                {
+                    continue;
+                }
+
+                if (current is Element element)
+                {
+                    rects.Remove(element);
+                }
+
+                var children = current.ChildNodes;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+        }
+
+        private sealed class IncrementalLayoutPlan
+        {
+            private IncrementalLayoutPlan(bool fullLayoutRequired, List<Element> dirtyRoots, string reason)
+            {
+                FullLayoutRequired = fullLayoutRequired;
+                DirtyRoots = dirtyRoots ?? new List<Element>();
+                Reason = reason ?? string.Empty;
+            }
+
+            public bool FullLayoutRequired { get; }
+
+            public List<Element> DirtyRoots { get; }
+
+            public string Reason { get; }
+
+            public bool IsClean => !FullLayoutRequired && DirtyRoots.Count == 0;
+
+            public static IncrementalLayoutPlan Full(string reason) => new(true, new List<Element>(), reason);
+
+            public static IncrementalLayoutPlan Clean() => new(false, new List<Element>(), "clean");
+
+            public static IncrementalLayoutPlan Incremental(List<Element> roots) => new(false, roots, "incremental");
         }
 
         private static int CountNodes(Node root)

@@ -60,6 +60,14 @@ namespace FenBrowser.FenEngine.Rendering.Core
 
         public int DamageRegionCount { get; init; }
 
+        public int CompositedLayerCount { get; init; }
+
+        public int PromotedLayerCount { get; init; }
+
+        public bool UsedIncrementalLayout { get; init; }
+
+        public int IncrementalLayoutRootCount { get; init; }
+
         public bool LayoutUpdated { get; init; }
 
         public bool PaintTreeRebuilt { get; init; }

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.Adapters;
 using FenBrowser.FenEngine.Typography;
@@ -89,6 +90,26 @@ namespace FenBrowser.Tests.Rendering
             Assert.True(snapshot.WidthEntries <= 2);
             Assert.True(snapshot.GlyphRunEntries <= 2);
             Assert.True(snapshot.EvictionCount > 0);
+        }
+
+        [Fact]
+        public void SkiaFontService_ShapesComplexScript_WithFiniteGlyphMetrics()
+        {
+            var fontService = new SkiaFontService();
+            var run = fontService.ShapeText("مرحبا بالعالم", "Arial, Segoe UI, sans-serif", 18);
+
+            Assert.NotNull(run);
+            Assert.NotNull(run.Glyphs);
+            Assert.True(run.Glyphs.Length > 0);
+            Assert.True(float.IsFinite(run.Width));
+            Assert.True(run.Width >= 0);
+
+            foreach (var glyph in run.Glyphs)
+            {
+                Assert.True(float.IsFinite(glyph.X));
+                Assert.True(float.IsFinite(glyph.Y));
+                Assert.True(float.IsFinite(glyph.AdvanceX));
+            }
         }
 
         private static int GetConcurrentDictionaryCount(object target, string fieldName)

@@ -8313,3 +8313,36 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `83/83` in this crypto compatibility class.
+
+## 2.308 Render Pipeline Hardening: Layerization, Incremental Layout, HarfBuzz Shaping, and Stage Tracing (2026-05-08)
+
+- `FenBrowser.FenEngine/Rendering/Compositing/PaintTreeLayerizer.cs` (new)
+  - Added paint-tree layerization to produce compositor-facing `CompositedLayer` metadata from immutable paint nodes.
+  - Promotion reasons now include transform/opacity/stacking-context/opacity-group/scroll and `will-change` hints (`transform`, `opacity`, `scroll-position`).
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Added fail-closed incremental-layout planning and execution:
+    - full-layout fallback on global invalidation or unsupported roots
+    - incremental relayout only for safe out-of-flow dirty roots (`position:absolute|fixed`)
+    - subtree box/rect replacement and incremental layout-cache refresh.
+  - Added per-frame compositor metadata capture (`LastCompositedLayers`, promoted-layer count).
+  - Added `TimelineTracer` spans for `RenderFrame.Total`, `RenderFrame.Layout`, `RenderFrame.Paint`, `RenderFrame.Raster`, and `RenderFrame.Present`.
+- `FenBrowser.FenEngine/Rendering/Core/IRenderFramePipeline.cs`
+  - Expanded `RenderFrameTelemetry` with compositor/incremental fields:
+    - `CompositedLayerCount`
+    - `PromotedLayerCount`
+    - `UsedIncrementalLayout`
+    - `IncrementalLayoutRootCount`.
+- `FenBrowser.FenEngine/Typography/SkiaFontService.cs`
+  - Added HarfBuzz-backed shaping path (`SKShaper`) with deterministic fallback to legacy glyph extraction when shaping is unavailable.
+  - Enabled subpixel text-positioning flags on measurement/shaping paints.
+  - Hardened typeface resolution through ordered family-candidate fallback mapping (`Segoe UI`, `Arial`, `Helvetica`, `sans-serif`).
+- `FenBrowser.Tests/Rendering/CompositorLayerAndIncrementalLayoutTests.cs` (new)
+  - Added coverage for composited-layer promotion telemetry and incremental-layout usage on out-of-flow dirty subtrees.
+- `FenBrowser.Tests/Rendering/TypographyCachingTests.cs`
+  - Added complex-script shaping guard to require finite glyph metrics for Arabic text input.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore`: pass on `2026-05-08`.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~TypographyCachingTests" --logger "console;verbosity=minimal"`: pass (`17/17`) on `2026-05-08`.

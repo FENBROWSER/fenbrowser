@@ -5,6 +5,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Cache;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
+using SkiaSharp.HarfBuzz;
 
 namespace FenBrowser.FenEngine.Typography
 {
@@ -95,7 +96,9 @@ namespace FenBrowser.FenEngine.Typography
             {
                 TextSize = fontSize,
                 Typeface = typeface,
-                IsAntialias = true
+                IsAntialias = true,
+                SubpixelText = true,
+                LcdRenderText = false
             };
 
             var width = paint.MeasureText(text);
@@ -133,24 +136,29 @@ namespace FenBrowser.FenEngine.Typography
             {
                 TextSize = fontSize,
                 Typeface = typeface,
-                IsAntialias = true
+                IsAntialias = true,
+                SubpixelText = true,
+                LcdRenderText = false
             };
 
-            var glyphIds = paint.GetGlyphs(text);
-            var widths = paint.GetGlyphWidths(text);
-            var glyphs = new PositionedGlyph[glyphIds.Length];
-            float x = 0;
-
-            for (int i = 0; i < glyphIds.Length; i++)
+            if (!TryShapeWithHarfBuzz(text, paint, out var glyphs, out var width))
             {
-                glyphs[i] = new PositionedGlyph
+                var glyphIds = paint.GetGlyphs(text);
+                var widths = paint.GetGlyphWidths(text);
+                glyphs = new PositionedGlyph[glyphIds.Length];
+                width = 0;
+
+                for (int i = 0; i < glyphIds.Length; i++)
                 {
-                    GlyphId = glyphIds[i],
-                    X = x,
-                    Y = 0,
-                    AdvanceX = widths[i]
-                };
-                x += widths[i];
+                    glyphs[i] = new PositionedGlyph
+                    {
+                        GlyphId = glyphIds[i],
+                        X = width,
+                        Y = 0,
+                        AdvanceX = widths[i]
+                    };
+                    width += widths[i];
+                }
             }
 
             var glyphRun = new GlyphRun
@@ -158,7 +166,7 @@ namespace FenBrowser.FenEngine.Typography
                 Glyphs = glyphs,
                 Typeface = typeface,
                 FontSize = fontSize,
-                Width = x,
+                Width = width,
                 Metrics = metrics,
                 SourceText = text
             };
@@ -180,9 +188,135 @@ namespace FenBrowser.FenEngine.Typography
                 return cached;
             }
 
-            var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, string.Empty, fontWeight, fontStyle);
+            var style = new SKFontStyle((SKFontStyleWeight)fontWeight, SKFontStyleWidth.Normal, fontStyle);
+            SKTypeface typeface = null;
+            foreach (var candidate in EnumerateFamilyCandidates(fontFamily))
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
+                typeface = SKFontManager.Default.MatchFamily(candidate, style);
+                if (typeface != null && !string.IsNullOrWhiteSpace(typeface.FamilyName))
+                {
+                    break;
+                }
+            }
+
+            if (typeface == null)
+            {
+                typeface = TextLayoutHelper.ResolveTypeface(fontFamily, string.Empty, fontWeight, fontStyle);
+            }
+
             _typefaceCache[cacheKey] = typeface;
             return typeface;
+        }
+
+        private static bool TryShapeWithHarfBuzz(
+            string text,
+            SKPaint paint,
+            out PositionedGlyph[] glyphs,
+            out float width)
+        {
+            glyphs = Array.Empty<PositionedGlyph>();
+            width = 0;
+
+            if (string.IsNullOrEmpty(text) || paint == null || paint.Typeface == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                using var shaper = new SKShaper(paint.Typeface);
+                var result = shaper.Shape(text, 0, 0, paint);
+                if (result == null || result.Codepoints == null || result.Codepoints.Length == 0 || result.Points == null)
+                {
+                    return false;
+                }
+
+                var codepoints = result.Codepoints;
+                var points = result.Points;
+                var count = Math.Min(codepoints.Length, points.Length);
+                if (count <= 0)
+                {
+                    return false;
+                }
+
+                width = float.IsFinite(result.Width) && result.Width > 0
+                    ? result.Width
+                    : paint.MeasureText(text);
+
+                glyphs = new PositionedGlyph[count];
+                for (var i = 0; i < count; i++)
+                {
+                    var currentX = points[i].X;
+                    var nextX = i + 1 < count ? points[i + 1].X : width;
+                    var advance = nextX - currentX;
+                    if (!float.IsFinite(advance) || advance < 0f)
+                    {
+                        advance = 0f;
+                    }
+
+                    glyphs[i] = new PositionedGlyph
+                    {
+                        GlyphId = (ushort)(codepoints[i] & 0xFFFF),
+                        X = currentX,
+                        Y = points[i].Y,
+                        AdvanceX = advance
+                    };
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static IEnumerable<string> EnumerateFamilyCandidates(string fontFamily)
+        {
+            if (!string.IsNullOrWhiteSpace(fontFamily))
+            {
+                var families = fontFamily.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                for (var i = 0; i < families.Length; i++)
+                {
+                    var clean = families[i].Trim().Trim('\'', '"');
+                    if (string.IsNullOrWhiteSpace(clean))
+                    {
+                        continue;
+                    }
+
+                    yield return MapGenericFamily(clean);
+                }
+            }
+
+            yield return "Segoe UI";
+            yield return "Arial";
+            yield return "Helvetica";
+            yield return "sans-serif";
+        }
+
+        private static string MapGenericFamily(string family)
+        {
+            if (family.Equals("sans-serif", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Segoe UI";
+            }
+
+            if (family.Equals("serif", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Georgia";
+            }
+
+            if (family.Equals("monospace", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Consolas";
+            }
+
+            return family;
         }
 
         public FontServiceCacheSnapshot GetCacheSnapshot()

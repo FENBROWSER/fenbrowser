@@ -1025,3 +1025,27 @@ _End of Volume IV_
 - Runtime effect:
   - IPC channels now fail closed at envelope boundary and preserve deterministic startup/runtime behavior when malformed input is received.
   - Broker-side renderer/network/target sessions now also enforce per-channel inbound message allowlists, rejecting structurally valid but role-invalid message types.
+
+### 6.48 Brokered-Mode Default and Frame Telemetry Expansion (2026-05-08)
+
+- `FenBrowser.Host/ProcessIsolation/ProcessIsolationCoordinatorFactory.cs`
+  - Process isolation selection now defaults to `BrokeredProcessIsolationCoordinator` when `FEN_PROCESS_ISOLATION` is unset or blank.
+  - Added explicit in-process opt-out aliases (`in-process`, `inproc`, `off`, `0`, `disabled`).
+  - Added explicit brokered aliases (`brokered`, `auto`, `on`, `1`, `enabled`).
+  - Unknown values now warn and fail closed to brokered mode.
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Added `TimelineTracer` span `BrowserIntegration.RecordFrame` for host-side frame-commit tracing.
+  - Expanded structured frame-commit telemetry logging with renderer-supplied compositor and incremental-layout fields:
+    - `compositedLayerCount`
+    - `promotedLayerCount`
+    - `usedIncrementalLayout`
+    - `incrementalLayoutRootCount`.
+
+- Net effect:
+  - Host startup now prefers out-of-process renderer orchestration by default, with explicit env-var opt-out for in-process mode.
+  - Frame diagnostics now surface compositor promotion and incremental-layout behavior at the host logging boundary.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~TypographyCachingTests" --logger "console;verbosity=minimal"`: pass (`17/17`) on `2026-05-08`.
