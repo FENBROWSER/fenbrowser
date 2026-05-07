@@ -5109,12 +5109,12 @@ namespace FenBrowser.FenEngine.Scripting
 
                 if (string.Equals(operationAlgorithm, "AESCTR", StringComparison.Ordinal))
                 {
-                    if (!TryResolveAesCtrParams(args[0], out var counter, out _, out var ctrParamError))
+                    if (!TryResolveAesCtrParams(args[0], out var counter, out var counterLengthBits, out var ctrParamError))
                     {
                         return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
                     }
 
-                    var ciphertext = TransformAesCtr(keyState.SecretKey, counter, plaintext);
+                    var ciphertext = TransformAesCtr(keyState.SecretKey, counter, counterLengthBits, plaintext);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
                 }
 
@@ -5234,12 +5234,12 @@ namespace FenBrowser.FenEngine.Scripting
 
                 if (string.Equals(operationAlgorithm, "AESCTR", StringComparison.Ordinal))
                 {
-                    if (!TryResolveAesCtrParams(args[0], out var counter, out _, out var ctrParamError))
+                    if (!TryResolveAesCtrParams(args[0], out var counter, out var counterLengthBits, out var ctrParamError))
                     {
                         return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
                     }
 
-                    var plaintext = TransformAesCtr(keyState.SecretKey, counter, encryptedPayload);
+                    var plaintext = TransformAesCtr(keyState.SecretKey, counter, counterLengthBits, encryptedPayload);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
                 }
 
@@ -7782,17 +7782,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            if (parsedLength != 128)
-            {
-                error = "NotSupportedError: AES-CTR currently supports length=128 only";
-                return false;
-            }
-
             counterLengthBits = parsedLength;
             return true;
         }
 
-        private static byte[] TransformAesCtr(byte[] key, byte[] counter, byte[] input)
+        private static byte[] TransformAesCtr(byte[] key, byte[] counter, int counterLengthBits, byte[] input)
         {
             var output = new byte[input.Length];
             var counterBlock = (byte[])counter.Clone();
@@ -7814,21 +7808,30 @@ namespace FenBrowser.FenEngine.Scripting
                     output[offset + i] = (byte)(input[offset + i] ^ keystreamBlock[i]);
                 }
 
-                IncrementCounterBlock(counterBlock);
+                IncrementCounterBlock(counterBlock, counterLengthBits);
             }
 
             return output;
         }
 
-        private static void IncrementCounterBlock(byte[] counterBlock)
+        private static void IncrementCounterBlock(byte[] counterBlock, int counterLengthBits)
         {
-            for (var i = counterBlock.Length - 1; i >= 0; i--)
+            var bitsRemaining = counterLengthBits;
+            var carry = true;
+            for (var i = counterBlock.Length - 1; i >= 0 && bitsRemaining > 0; i--)
             {
-                counterBlock[i]++;
-                if (counterBlock[i] != 0)
+                var bitsInByte = bitsRemaining >= 8 ? 8 : bitsRemaining;
+                var lowBitsMask = (1 << bitsInByte) - 1;
+                var original = counterBlock[i];
+                var counterPart = original & lowBitsMask;
+                if (carry)
                 {
-                    break;
+                    counterPart = (counterPart + 1) & lowBitsMask;
+                    carry = counterPart == 0;
                 }
+
+                counterBlock[i] = (byte)((original & ~lowBitsMask) | counterPart);
+                bitsRemaining -= bitsInByte;
             }
         }
 

@@ -1190,11 +1190,12 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void JsCrypto_SubtleEncrypt_AesCtrUnsupportedLength_Rejects()
+        public void JsCrypto_SubtleEncryptDecrypt_AesCtrLength64_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
             var generateKey = subtle.Get("generateKey").AsFunction();
             var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
 
             var generateAlgorithm = CreateAlgorithm("AES-CTR");
             generateAlgorithm.Set("length", FenValue.FromNumber(128));
@@ -1214,17 +1215,32 @@ namespace FenBrowser.Tests.Engine
             operationAlgorithm.Set("counter", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F })));
             operationAlgorithm.Set("length", FenValue.FromNumber(64));
 
+            var plaintext = FenValue.FromString("supported-ctr-length");
+
             var encryptResult = encrypt.Invoke(
                 new[]
                 {
                     FenValue.FromObject(operationAlgorithm),
                     FenValue.FromObject(key),
-                    FenValue.FromString("unsupported-ctr-length")
+                    plaintext
                 },
                 null);
 
-            var thenable = AssertThenableState(encryptResult, "rejected");
-            Assert.Contains("NotSupportedError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var ciphertext = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromObject(ciphertext)
+                },
+                null);
+
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decrypted = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("supported-ctr-length", Encoding.UTF8.GetString(decrypted.Data));
         }
 
         [Fact]

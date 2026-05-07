@@ -7709,3 +7709,19 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `44/44` in this crypto compatibility class.
+
+## 2.268 SubtleCrypto AES-CTR Variable Counter-Length Support (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Removed the previous `length=128` limitation for `AES-CTR` operations.
+  - Added counter increment semantics that honor the caller-provided rightmost `length` bits and preserve higher nonce bits across blocks.
+  - Applied the same parameter/transform path to both `encrypt(...)` and `decrypt(...)` so non-`128` lengths are behaviorally symmetric.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Replaced the old rejection test with a positive interoperability check proving `length=64` AES-CTR encrypt/decrypt round-trips successfully.
+  - Crypto compatibility slice remains `44` total tests with expanded AES-CTR behavioral coverage.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `44/44` in this crypto compatibility class.
