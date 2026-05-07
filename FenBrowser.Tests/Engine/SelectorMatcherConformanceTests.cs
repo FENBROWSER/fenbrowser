@@ -428,6 +428,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_RespectMonthMinMaxConstraints()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='month-valid' type='month' min='2026-01' max='2026-12' value='2026-06' />
+    <input id='month-invalid' type='month' min='2026-01' max='2026-12' value='2027-01' />
+</body></html>");
+
+            var valid = ById(doc, "month-valid");
+            var invalid = ById(doc, "month-invalid");
+
+            Assert.True(SelectorMatcher.Matches(valid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(valid, ":invalid"));
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"

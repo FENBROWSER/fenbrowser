@@ -670,6 +670,24 @@ namespace FenBrowser.FenEngine.Rendering
                         return false;
                     }
                 }
+
+                if (type == "month" && !string.IsNullOrEmpty(value))
+                {
+                    if (!TryGetRangedInputValue(element, out var monthValue, out var monthMin, out var monthMax))
+                    {
+                        return false;
+                    }
+
+                    if (monthMin.HasValue && monthValue < monthMin.Value)
+                    {
+                        return false;
+                    }
+
+                    if (monthMax.HasValue && monthValue > monthMax.Value)
+                    {
+                        return false;
+                    }
+                }
             }
             else if (element.TagName?.Equals("textarea", StringComparison.OrdinalIgnoreCase) == true ||
                      element.TagName?.Equals("select", StringComparison.OrdinalIgnoreCase) == true)
