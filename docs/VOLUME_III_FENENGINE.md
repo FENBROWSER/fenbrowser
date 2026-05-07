@@ -7495,3 +7495,32 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `18/18` in this crypto compatibility class.
+
+## 2.259 SubtleCrypto PBKDF2 Derivation Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `crypto.subtle.deriveBits(...)` and `crypto.subtle.deriveKey(...)` to the legacy runtime crypto bridge.
+  - Added `PBKDF2` `importKey("raw", ...)` support for base key material with strict usage gating (`deriveBits` / `deriveKey` only).
+  - `deriveBits` now enforces:
+    - key usage (`deriveBits`)
+    - algorithm/key match (`PBKDF2`)
+    - strict salt/iteration/hash validation
+    - positive byte-aligned output length.
+  - `deriveKey` now derives raw key bytes through the same PBKDF2 path and imports them as:
+    - `AES-GCM` keys (length validated to 128/192/256)
+    - `HMAC` keys (hash + length validation),
+    while keeping fail-closed errors for unsupported targets.
+  - Updated AES usage validation to include key wrapping usages (`wrapKey`/`unwrapKey`) and kept operation-level usage checks strict.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused PBKDF2 derivation coverage for:
+    - successful `deriveBits` array-buffer output
+    - `deriveKey` to AES-GCM plus encrypt/decrypt round-trip
+    - rejection when `deriveKey` is attempted without `deriveKey` usage.
+  - Crypto compatibility slice now totals `21` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `deriveBits`/`deriveKey` (PBKDF2-backed) and clarify that non-PBKDF2 derive families remain pending.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `21/21` in this crypto compatibility class.

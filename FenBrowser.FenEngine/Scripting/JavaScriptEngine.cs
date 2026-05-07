@@ -4652,6 +4652,9 @@ namespace FenBrowser.FenEngine.Scripting
         private static readonly HashSet<string> AesAllowedUsages =
             new HashSet<string>(new[] { "encrypt", "decrypt", "wrapkey", "unwrapkey" }, StringComparer.Ordinal);
 
+        private static readonly HashSet<string> Pbkdf2AllowedUsages =
+            new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
+
         public JsCrypto()
         {
             Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", GetRandomValues)));
@@ -4734,6 +4737,8 @@ namespace FenBrowser.FenEngine.Scripting
             subtle.Set("decrypt", FenValue.FromFunction(new FenFunction("decrypt", Decrypt)));
             subtle.Set("wrapKey", FenValue.FromFunction(new FenFunction("wrapKey", WrapKey)));
             subtle.Set("unwrapKey", FenValue.FromFunction(new FenFunction("unwrapKey", UnwrapKey)));
+            subtle.Set("deriveBits", FenValue.FromFunction(new FenFunction("deriveBits", DeriveBits)));
+            subtle.Set("deriveKey", FenValue.FromFunction(new FenFunction("deriveKey", DeriveKey)));
             subtle.Set("sign", FenValue.FromFunction(new FenFunction("sign", Sign)));
             subtle.Set("verify", FenValue.FromFunction(new FenFunction("verify", Verify)));
             return subtle;
@@ -4812,6 +4817,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportRsaSsaKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
+                    case "PBKDF2":
+                        return ImportPbkdf2Key(format, args[1], extractable, usages);
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
                 }
@@ -5297,6 +5304,154 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
+        private static FenValue DeriveBits(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 3)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: deriveBits requires algorithm, baseKey, and length"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var baseKeyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: baseKey is not a CryptoKey"));
+                }
+
+                if (!baseKeyState.Usages.Contains("derivebits"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow bit derivation"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[0], out var operationAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Algorithm is invalid"));
+                }
+
+                if (!string.Equals(operationAlgorithm, baseKeyState.AlgorithmName, StringComparison.Ordinal))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Operation algorithm does not match key algorithm"));
+                }
+
+                if (!args[2].IsNumber)
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: length must be a number"));
+                }
+
+                var requestedBits = (int)Math.Floor(args[2].ToNumber());
+                if (requestedBits <= 0 || requestedBits % 8 != 0)
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: length must be a positive multiple of 8"));
+                }
+
+                switch (operationAlgorithm)
+                {
+                    case "PBKDF2":
+                    {
+                        if (!TryResolvePbkdf2Params(args[0], out var salt, out var iterations, out var hashName))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: PBKDF2 parameters are invalid"));
+                        }
+
+                        if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                        }
+
+                        using var kdf = new System.Security.Cryptography.Rfc2898DeriveBytes(baseKeyState.SecretKey, salt, iterations, hashAlgorithm);
+                        var derived = kdf.GetBytes(requestedBits / 8);
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(derived))));
+                    }
+
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
+                }
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
+        private static FenValue DeriveKey(FenValue[] args, FenValue thisVal)
+        {
+            if (args.Length < 5)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: deriveKey requires algorithm, baseKey, derivedKeyAlgorithm, extractable, and keyUsages"));
+            }
+
+            try
+            {
+                if (!TryGetCryptoKeyState(args[1], out var baseKeyState))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: baseKey is not a CryptoKey"));
+                }
+
+                if (!baseKeyState.Usages.Contains("derivekey"))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Key does not allow key derivation"));
+                }
+
+                if (!TryNormalizeAlgorithmName(args[2], out var derivedAlgorithm))
+                {
+                    return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Derived key algorithm is invalid"));
+                }
+
+                int requiredBits;
+                switch (derivedAlgorithm)
+                {
+                    case "AESGCM":
+                        if (!TryResolveAesKeyLengthBitsForGenerate(args[2], out requiredBits))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-GCM key length must be 128, 192, or 256"));
+                        }
+
+                        break;
+                    case "HMAC":
+                    {
+                        if (!TryResolveHashNameForOperation(args[2], null, out var hashName))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HMAC hash algorithm is invalid"));
+                        }
+
+                        if (!TryResolveHmacLengthBits(args[2], hashName, out requiredBits))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HMAC length must be a positive multiple of 8"));
+                        }
+
+                        break;
+                    }
+                    default:
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Derived key algorithm not supported"));
+                }
+
+                var addedDeriveBitsUsage = baseKeyState.Usages.Add("derivebits");
+                FenValue deriveBitsResult;
+                try
+                {
+                    deriveBitsResult = DeriveBits(new[] { args[0], args[1], FenValue.FromNumber(requiredBits) }, thisVal);
+                }
+                finally
+                {
+                    if (addedDeriveBitsUsage)
+                    {
+                        baseKeyState.Usages.Remove("derivebits");
+                    }
+                }
+
+                if (!TryGetFulfilledThenableResult(deriveBitsResult, out var rawKeyData, out _))
+                {
+                    return deriveBitsResult;
+                }
+
+                return ImportKey(new[] { FenValue.FromString("raw"), rawKeyData, args[2], args[3], args[4] }, thisVal);
+            }
+            catch (Exception ex)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"OperationError: {ex.Message}"));
+            }
+        }
+
         private static FenValue Digest(FenValue[] args, FenValue thisVal)
         {
             if (args.Length < 2)
@@ -5543,6 +5698,45 @@ namespace FenBrowser.FenEngine.Scripting
                 AlgorithmName = "AESGCM",
                 KeyType = "secret",
                 KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportPbkdf2Key(string format, FenValue keyData, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: PBKDF2 import supports raw format only"));
+            }
+
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: PBKDF2 import requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, Pbkdf2AllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for PBKDF2"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (keyBytes.Length == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: PBKDF2 key material must not be empty"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "PBKDF2",
+                KeyType = "secret",
                 Extractable = extractable,
                 SecretKey = (byte[])keyBytes.Clone(),
                 Usages = usages
@@ -6086,6 +6280,49 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             keyLengthBits = requestedBits;
+            return true;
+        }
+
+        private static bool TryResolvePbkdf2Params(FenValue algorithmArg, out byte[] salt, out int iterations, out string hashName)
+        {
+            salt = Array.Empty<byte>();
+            iterations = 0;
+            hashName = string.Empty;
+
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var saltValue = algorithmObject.Get("salt");
+            if (saltValue.IsUndefined || saltValue.IsNull || !TryExtractDigestBytes(saltValue, out salt) || salt.Length == 0)
+            {
+                return false;
+            }
+
+            var iterationsValue = algorithmObject.Get("iterations");
+            if (!iterationsValue.IsNumber)
+            {
+                return false;
+            }
+
+            iterations = (int)Math.Floor(iterationsValue.ToNumber());
+            if (iterations <= 0)
+            {
+                return false;
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, null, out hashName))
+            {
+                return false;
+            }
+
             return true;
         }
 

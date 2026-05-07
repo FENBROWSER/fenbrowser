@@ -70,7 +70,7 @@ HostApiImplementationClass.CompatibilityShim,
 "crypto.subtle",
 HostApiImplementationClass.CompatibilityShim,
 "Scripting/JavaScriptEngine.cs",
-"Legacy JavaScriptEngine crypto bridge now provides digest(), generateKey(), importKey(), exportKey(), wrapKey(), unwrapKey(), encrypt(), decrypt(), sign(), and verify() for HMAC, AES-GCM, and RSASSA-PKCS1-v1_5 (65537 exponent), with fail-closed usage/extractability/parameter checks and deterministic thenable settlement; derive families remain pending."),
+"Legacy JavaScriptEngine crypto bridge now provides digest(), generateKey(), importKey(), exportKey(), deriveBits(), deriveKey(), wrapKey(), unwrapKey(), encrypt(), decrypt(), sign(), and verify() for HMAC, AES-GCM, PBKDF2, and RSASSA-PKCS1-v1_5 (65537 exponent), with fail-closed usage/extractability/parameter checks and deterministic thenable settlement; non-PBKDF2 derive families remain pending."),
 ["window.open"] = new HostApiSurfaceDescriptor(
 "window.open",
 HostApiImplementationClass.CompatibilityShim,
