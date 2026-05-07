@@ -5130,6 +5130,11 @@ namespace FenBrowser.FenEngine.Scripting
                         return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: RSA-OAEP encrypt requires a public key"));
                     }
 
+                    if (!TryEnsureRsaOperationHashMatchesKey(args[0], keyState.HashName, out var hashMismatchError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(hashMismatchError));
+                    }
+
                     if (!TryResolveRsaOaepPadding(args[0], keyState.HashName, out var padding))
                     {
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
@@ -5258,6 +5263,11 @@ namespace FenBrowser.FenEngine.Scripting
                     if (!keyState.IsPrivateKey)
                     {
                         return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: RSA-OAEP decrypt requires a private key"));
+                    }
+
+                    if (!TryEnsureRsaOperationHashMatchesKey(args[0], keyState.HashName, out var hashMismatchError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(hashMismatchError));
                     }
 
                     if (!TryResolveRsaOaepPadding(args[0], keyState.HashName, out var padding))
@@ -7559,6 +7569,41 @@ namespace FenBrowser.FenEngine.Scripting
             };
 
             return padding != null;
+        }
+
+        private static bool TryEnsureRsaOperationHashMatchesKey(FenValue algorithmArg, string keyHashName, out string error)
+        {
+            error = string.Empty;
+            if (string.IsNullOrWhiteSpace(keyHashName) || !algorithmArg.IsObject)
+            {
+                return true;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return true;
+            }
+
+            var hashValue = algorithmObject.Get("hash");
+            if (hashValue.IsUndefined || hashValue.IsNull)
+            {
+                return true;
+            }
+
+            if (!TryNormalizeHashName(hashValue, out var requestedHash))
+            {
+                error = "TypeError: Hash algorithm is invalid";
+                return false;
+            }
+
+            if (!string.Equals(requestedHash, keyHashName, StringComparison.Ordinal))
+            {
+                error = "InvalidAccessError: Operation hash does not match key hash";
+                return false;
+            }
+
+            return true;
         }
 
         private static bool TryResolveRsaOaepLabel(FenValue algorithmArg, out byte[] label)

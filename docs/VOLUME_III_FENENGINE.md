@@ -7741,3 +7741,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `45/45` in this crypto compatibility class.
+
+## 2.270 SubtleCrypto RSA-OAEP Hash-Binding Hardening (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added strict operation-hash binding for RSA-OAEP encrypt/decrypt.
+  - If a caller supplies `algorithm.hash` that differs from the key’s configured hash, operations now fail-closed with `InvalidAccessError` instead of silently switching hash behavior.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added explicit rejection coverage for RSA-OAEP operation hash mismatch (`key=SHA-256`, `op=SHA-384`).
+  - Crypto compatibility slice now totals `46` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `46/46` in this crypto compatibility class.

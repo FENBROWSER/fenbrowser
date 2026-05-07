@@ -618,6 +618,44 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleRsaOaep_OperationHashMismatch_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+            var keyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(keyPairResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("RSA-OAEP", "SHA-384");
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromString("hash-mismatch")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            Assert.Contains("hash", thenable.Get("__reason").ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateRsaPssKey_SignVerify_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
