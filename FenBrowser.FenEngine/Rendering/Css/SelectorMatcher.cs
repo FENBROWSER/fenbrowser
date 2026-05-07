@@ -922,6 +922,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "picture-in-picture": return ElementStateManager.IsPictureInPictureElement(el);
                 case "popover-open": return ElementStateManager.IsPopoverOpen(el);
                 case "active-view-transition": return ElementStateManager.IsActiveViewTransition(el);
+                case "active-view-transition-type": return ElementStateManager.IsActiveViewTransitionType(el, args);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);

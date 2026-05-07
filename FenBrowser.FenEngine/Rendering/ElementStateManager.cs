@@ -953,6 +953,35 @@ namespace FenBrowser.FenEngine.Rendering
                 "true",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsActiveViewTransitionType(Element element, string args)
+        {
+            if (!IsActiveViewTransition(element) || string.IsNullOrWhiteSpace(args))
+            {
+                return false;
+            }
+
+            var requestedType = args.Trim().Trim('"', '\'');
+            if (string.IsNullOrWhiteSpace(requestedType) || requestedType.Contains(','))
+            {
+                return false;
+            }
+
+            var declaredTypes = element.GetAttribute("data-active-view-transition-types");
+            if (string.IsNullOrWhiteSpace(declaredTypes))
+            {
+                declaredTypes = element.OwnerDocument?.DocumentElement?.GetAttribute("data-active-view-transition-types");
+            }
+
+            if (string.IsNullOrWhiteSpace(declaredTypes))
+            {
+                return false;
+            }
+
+            return declaredTypes
+                .Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                .Any(type => string.Equals(type, requestedType, StringComparison.OrdinalIgnoreCase));
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
