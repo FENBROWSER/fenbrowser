@@ -961,6 +961,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void SeekingPseudoClass_MatchesMediaSeekingState()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <video id='seeking' data-media-seeking='true'></video>
+    <video id='steady'></video>
+</body></html>");
+
+            var seeking = ById(doc, "seeking");
+            var steady = ById(doc, "steady");
+
+            Assert.True(SelectorMatcher.Matches(seeking, ":seeking"));
+            Assert.False(SelectorMatcher.Matches(steady, ":seeking"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

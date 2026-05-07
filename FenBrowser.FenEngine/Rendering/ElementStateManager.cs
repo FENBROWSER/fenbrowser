@@ -757,6 +757,22 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Equals(element.GetAttribute("data-media-paused"), "true", StringComparison.OrdinalIgnoreCase) ||
                    element.HasAttribute("paused");
         }
+
+        public static bool IsSeekingMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "seeking", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return HasBooleanStateAttribute(element, "seeking");
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
