@@ -722,7 +722,9 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var explicitState = element.GetAttribute("data-media-state");
-            if (string.Equals(explicitState, "playing", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(explicitState, "playing", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(explicitState, "buffering", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(explicitState, "stalled", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -732,9 +734,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            if (HasBooleanStateAttribute(element, "ended") ||
-                HasBooleanStateAttribute(element, "seeking") ||
-                HasBooleanStateAttribute(element, "stalled"))
+            if (HasBooleanStateAttribute(element, "ended"))
             {
                 return false;
             }

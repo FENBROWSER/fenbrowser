@@ -933,13 +933,19 @@ namespace FenBrowser.Tests.Engine
 <!doctype html>
 <html><body>
     <video id='playing' data-media-paused='false'></video>
+    <video id='buffering' data-media-paused='false' data-media-buffering='true'></video>
+    <video id='stalled' data-media-paused='false' data-media-stalled='true'></video>
     <video id='paused' data-media-paused='true'></video>
 </body></html>");
 
             var playing = ById(doc, "playing");
+            var buffering = ById(doc, "buffering");
+            var stalled = ById(doc, "stalled");
             var paused = ById(doc, "paused");
 
             Assert.True(SelectorMatcher.Matches(playing, ":playing"));
+            Assert.True(SelectorMatcher.Matches(buffering, ":playing"));
+            Assert.True(SelectorMatcher.Matches(stalled, ":playing"));
             Assert.False(SelectorMatcher.Matches(paused, ":playing"));
         }
 
