@@ -7004,7 +7004,13 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            var length = (int)lengthValue.ToNumber();
+            var lengthNumber = lengthValue.ToNumber();
+            if (double.IsNaN(lengthNumber) || double.IsInfinity(lengthNumber))
+            {
+                return false;
+            }
+
+            var length = (int)lengthNumber;
             if (length < 0)
             {
                 return false;

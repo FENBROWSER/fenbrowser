@@ -211,6 +211,31 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleImportKey_KeyUsagesNonFiniteLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            var keyUsages = new FenObject();
+            keyUsages.Set("length", FenValue.FromNumber(double.PositiveInfinity));
+            keyUsages.Set("0", FenValue.FromString("sign"));
+
+            var result = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("bad-usage-length-key"))),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(keyUsages)
+                },
+                null);
+
+            var thenable = AssertThenableState(result, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleImportKey_ArrayLikeNonIntegerLength_Rejects()
         {
             var subtle = GetSubtle(new JsCrypto());
