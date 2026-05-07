@@ -7998,3 +7998,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `62/62` in this crypto compatibility class.
+
+## 2.287 SubtleCrypto AES Keygen Fractional-Length Rejection (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Hardened AES keygen length parsing to require integer lengths.
+  - Prevents fractional input truncation from silently selecting valid key sizes.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added rejection coverage for `generateKey({ name: "AES-GCM", length: 128.5 }, ...)`.
+  - Crypto compatibility slice now totals `63` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `63/63` in this crypto compatibility class.

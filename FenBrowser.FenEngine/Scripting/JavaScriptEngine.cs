@@ -7357,6 +7357,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (Math.Floor(lengthNumber) != lengthNumber)
+            {
+                return false;
+            }
+
             keyLengthBits = (int)Math.Floor(lengthNumber);
             return keyLengthBits == 128 || keyLengthBits == 192 || keyLengthBits == 256;
         }
