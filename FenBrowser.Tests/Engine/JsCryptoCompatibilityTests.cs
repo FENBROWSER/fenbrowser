@@ -941,6 +941,135 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateAesCbcKey_EncryptDecrypt_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CBC");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CBC");
+            operationAlgorithm.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE })));
+            var plaintext = FenValue.FromString("fen-aes-cbc-message");
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    plaintext
+                },
+                null);
+
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var encryptedPayload = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+            Assert.True(encryptedPayload.Data.Length > 0);
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromObject(encryptedPayload)
+                },
+                null);
+
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decryptedPayload = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("fen-aes-cbc-message", Encoding.UTF8.GetString(decryptedPayload.Data));
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleAesCbcImportExportRaw_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var exportKey = subtle.Get("exportKey").AsFunction();
+
+            var rawKey = new byte[] { 0x11, 0x72, 0xE1, 0x4A, 0x90, 0x22, 0x8D, 0x07, 0xD0, 0x12, 0x21, 0x34, 0x68, 0x45, 0x13, 0xAE };
+            var algorithm = CreateAlgorithm("AES-CBC");
+            algorithm.Set("length", FenValue.FromNumber(128));
+
+            var importResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(rawKey)),
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var importThenable = AssertThenableState(importResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(importThenable.Get("__result").AsObject());
+
+            var exportResult = exportKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(key)
+                },
+                null);
+
+            var exportThenable = AssertThenableState(exportResult, "fulfilled");
+            var exported = Assert.IsType<JsArrayBuffer>(exportThenable.Get("__result").AsObject());
+            Assert.Equal(rawKey, exported.Data);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleEncrypt_AesCbcInvalidIv_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CBC");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CBC");
+            operationAlgorithm.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x10, 0x20, 0x30, 0x40 })));
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromString("invalid-iv-test")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateAesGcmKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

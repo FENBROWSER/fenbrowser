@@ -4798,6 +4798,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateEcdhKey(args[0], extractable, usages);
                     case "AESGCM":
                         return GenerateAesGcmKey(args[0], extractable, usages);
+                    case "AESCBC":
+                        return GenerateAesCbcKey(args[0], extractable, usages);
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
                 }
@@ -4851,6 +4853,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportEcdhKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
+                    case "AESCBC":
+                        return ImportAesCbcKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
                         return ImportPbkdf2Key(format, args[1], extractable, usages);
                     case "HKDF":
@@ -4907,6 +4911,16 @@ namespace FenBrowser.FenEngine.Scripting
                         if (!string.Equals(format, "raw", StringComparison.Ordinal))
                         {
                             return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-GCM export only supports raw format"));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
+                    }
+
+                    case "AESCBC":
+                    {
+                        if (!string.Equals(format, "raw", StringComparison.Ordinal))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-CBC export only supports raw format"));
                         }
 
                         return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
@@ -5061,6 +5075,24 @@ namespace FenBrowser.FenEngine.Scripting
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(payload))));
                 }
 
+                if (string.Equals(operationAlgorithm, "AESCBC", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesCbcParams(args[0], out var iv))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC parameters are invalid"));
+                    }
+
+                    using var aes = System.Security.Cryptography.Aes.Create();
+                    aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+                    aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+                    aes.Key = keyState.SecretKey;
+                    aes.IV = iv;
+
+                    using var encryptor = aes.CreateEncryptor();
+                    var ciphertext = encryptor.TransformFinalBlock(plaintext, 0, plaintext.Length);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
+                }
+
                 if (string.Equals(operationAlgorithm, "RSAOAEP", StringComparison.Ordinal))
                 {
                     if (keyState.IsPrivateKey)
@@ -5154,6 +5186,24 @@ namespace FenBrowser.FenEngine.Scripting
                         aes.Decrypt(iv, ciphertext, tag, plaintext, additionalData.Length == 0 ? null : additionalData);
                     }
 
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
+                }
+
+                if (string.Equals(operationAlgorithm, "AESCBC", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesCbcParams(args[0], out var iv))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC parameters are invalid"));
+                    }
+
+                    using var aes = System.Security.Cryptography.Aes.Create();
+                    aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+                    aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+                    aes.Key = keyState.SecretKey;
+                    aes.IV = iv;
+
+                    using var decryptor = aes.CreateDecryptor();
+                    var plaintext = decryptor.TransformFinalBlock(encryptedPayload, 0, encryptedPayload.Length);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
                 }
 
@@ -5870,6 +5920,42 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue GenerateAesCbcKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-CBC"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForGenerate(algorithmArg, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC key length must be 128, 192, or 256"));
+            }
+
+            var keyBytes = new byte[keyLengthBits / 8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(keyBytes);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESCBC",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = keyBytes,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportRsaSsaKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
@@ -6161,6 +6247,46 @@ namespace FenBrowser.FenEngine.Scripting
             var state = new LegacyCryptoKeyState
             {
                 AlgorithmName = "AESGCM",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportAesCbcKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-CBC import supports raw format only"));
+            }
+
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC import requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-CBC"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForImport(algorithmArg, keyBytes.Length, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CBC key length must be 128, 192, or 256 and match raw key data"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESCBC",
                 KeyType = "secret",
                 KeyLengthBits = keyLengthBits,
                 Extractable = extractable,
@@ -6681,6 +6807,11 @@ namespace FenBrowser.FenEngine.Scripting
                 var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
                 descriptor.Set("length", FenValue.FromNumber(length));
             }
+            else if (string.Equals(state.AlgorithmName, "AESCBC", StringComparison.Ordinal))
+            {
+                var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
+                descriptor.Set("length", FenValue.FromNumber(length));
+            }
             else if ((string.Equals(state.AlgorithmName, "ECDSA", StringComparison.Ordinal) || string.Equals(state.AlgorithmName, "ECDH", StringComparison.Ordinal))
                 && !string.IsNullOrWhiteSpace(state.NamedCurve))
             {
@@ -6923,6 +7054,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 "HMAC" => "HMAC",
                 "AESGCM" => "AES-GCM",
+                "AESCBC" => "AES-CBC",
                 "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
                 "RSAPSS" => "RSA-PSS",
                 "RSAOAEP" => "RSA-OAEP",
@@ -7446,6 +7578,29 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return true;
+        }
+
+        private static bool TryResolveAesCbcParams(FenValue algorithmArg, out byte[] iv)
+        {
+            iv = Array.Empty<byte>();
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var ivValue = algorithmObject.Get("iv");
+            if (ivValue.IsUndefined || ivValue.IsNull || !TryExtractDigestBytes(ivValue, out iv))
+            {
+                return false;
+            }
+
+            return iv.Length == 16;
         }
 
         private static bool TryResolveRsaModulusLength(FenValue algorithmArg, out int modulusLength)
