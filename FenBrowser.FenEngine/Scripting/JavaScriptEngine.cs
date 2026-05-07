@@ -7743,8 +7743,14 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (requestedSaltLengthNumber > int.MaxValue)
+            {
+                error = "TypeError: RSA-PSS saltLength must be a non-negative integer";
+                return false;
+            }
+
             var requestedSaltLength = (int)Math.Floor(requestedSaltLengthNumber);
-            if (requestedSaltLength < 0 || requestedSaltLength != saltLengthValue.ToNumber())
+            if (requestedSaltLength < 0 || requestedSaltLength != requestedSaltLengthNumber)
             {
                 error = "TypeError: RSA-PSS saltLength must be a non-negative integer";
                 return false;

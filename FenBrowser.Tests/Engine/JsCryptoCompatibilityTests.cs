@@ -1301,6 +1301,44 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleRsaPss_SignWithOversizedSaltLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-PSS", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+
+            var signAlgorithm = CreateAlgorithm("RSA-PSS");
+            signAlgorithm.Set("saltLength", FenValue.FromNumber(3_000_000_000d));
+            var signResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(signAlgorithm),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromString("rsa-pss-oversized-salt-length")
+                },
+                null);
+
+            var thenable = AssertThenableState(signResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateEcdsaKey_SignVerify_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

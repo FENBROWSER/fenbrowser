@@ -8253,3 +8253,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `79/79` in this crypto compatibility class.
+
+## 2.304 SubtleCrypto RSA-PSS Oversized saltLength Guard (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added explicit `Int32` upper-bound validation for RSA-PSS `saltLength` and normalized integer comparison.
+  - Prevents overflow-cast behavior on oversized salt-length inputs.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added rejection coverage for RSA-PSS sign with `saltLength = 3_000_000_000`.
+  - Crypto compatibility slice now totals `80` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `80/80` in this crypto compatibility class.
