@@ -815,6 +815,29 @@ namespace FenBrowser.FenEngine.Rendering
 
             return HasBooleanStateAttribute(element, "volume-locked");
         }
+
+        public static bool IsTimelineCurrent(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var marker = element.GetAttribute("data-timeline-state");
+            if (string.Equals(marker, "current", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var ariaCurrent = element.GetAttribute("aria-current");
+            if (string.IsNullOrWhiteSpace(ariaCurrent))
+            {
+                return false;
+            }
+
+            ariaCurrent = ariaCurrent.Trim().ToLowerInvariant();
+            return ariaCurrent != "false";
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute

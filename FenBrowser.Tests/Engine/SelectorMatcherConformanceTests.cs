@@ -1029,6 +1029,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void CurrentPseudoClass_MatchesAriaCurrentAndTimelineCurrentMarkers()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <li id='aria-current' aria-current='page'></li>
+    <li id='timeline-current' data-timeline-state='current'></li>
+    <li id='other'></li>
+</body></html>");
+
+            var ariaCurrent = ById(doc, "aria-current");
+            var timelineCurrent = ById(doc, "timeline-current");
+            var other = ById(doc, "other");
+
+            Assert.True(SelectorMatcher.Matches(ariaCurrent, ":current"));
+            Assert.True(SelectorMatcher.Matches(timelineCurrent, ":current"));
+            Assert.False(SelectorMatcher.Matches(other, ":current"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
