@@ -4631,12 +4631,14 @@ namespace FenBrowser.FenEngine.Scripting
         {
             public string AlgorithmName { get; set; } = string.Empty;
             public string HashName { get; set; } = string.Empty;
+            public string NamedCurve { get; set; } = string.Empty;
             public string KeyType { get; set; } = string.Empty;
             public int KeyLengthBits { get; set; }
             public bool Extractable { get; set; }
             public HashSet<string> Usages { get; set; } = new HashSet<string>(StringComparer.Ordinal);
             public byte[] SecretKey { get; set; } = Array.Empty<byte>();
             public System.Security.Cryptography.RSA RsaKey { get; set; }
+            public System.Security.Cryptography.ECDsa EcdsaKey { get; set; }
             public bool IsPrivateKey { get; set; }
         }
 
@@ -4786,6 +4788,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateRsaPssKey(args[0], extractable, usages);
                     case "RSAOAEP":
                         return GenerateRsaOaepKey(args[0], extractable, usages);
+                    case "ECDSA":
+                        return GenerateEcdsaKey(args[0], extractable, usages);
                     case "AESGCM":
                         return GenerateAesGcmKey(args[0], extractable, usages);
                     default:
@@ -4835,6 +4839,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportRsaPssKey(format, args[1], args[2], extractable, usages);
                     case "RSAOAEP":
                         return ImportRsaOaepKey(format, args[1], args[2], extractable, usages);
+                    case "ECDSA":
+                        return ImportEcdsaKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
@@ -4925,6 +4931,33 @@ namespace FenBrowser.FenEngine.Scripting
                         }
 
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA export supports pkcs8 or spki only"));
+                    }
+
+                    case "ECDSA":
+                    {
+                        if (string.Equals(format, "pkcs8", StringComparison.Ordinal))
+                        {
+                            if (!keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: pkcs8 export requires a private key"));
+                            }
+
+                            var pkcs8 = keyState.EcdsaKey.ExportPkcs8PrivateKey();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(pkcs8))));
+                        }
+
+                        if (string.Equals(format, "spki", StringComparison.Ordinal))
+                        {
+                            if (keyState.IsPrivateKey)
+                            {
+                                return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: spki export requires a public key"));
+                            }
+
+                            var spki = keyState.EcdsaKey.ExportSubjectPublicKeyInfo();
+                            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(spki))));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDSA export supports pkcs8 or spki only"));
                     }
 
                     default:
@@ -5206,6 +5239,20 @@ namespace FenBrowser.FenEngine.Scripting
 
                     signature = keyState.RsaKey.SignData(data, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pss);
                 }
+                else if (string.Equals(keyState.AlgorithmName, "ECDSA", StringComparison.Ordinal))
+                {
+                    if (!keyState.IsPrivateKey)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: Signing requires a private key"));
+                    }
+
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    signature = keyState.EcdsaKey.SignData(data, hashAlgorithm);
+                }
                 else
                 {
                     return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
@@ -5297,6 +5344,15 @@ namespace FenBrowser.FenEngine.Scripting
                     }
 
                     valid = keyState.RsaKey.VerifyData(data, signature, hashAlgorithm, System.Security.Cryptography.RSASignaturePadding.Pss);
+                }
+                else if (string.Equals(keyState.AlgorithmName, "ECDSA", StringComparison.Ordinal))
+                {
+                    if (!TryResolveHashAlgorithm(hashName, out var hashAlgorithm))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                    }
+
+                    valid = keyState.EcdsaKey.VerifyData(data, signature, hashAlgorithm);
                 }
                 else
                 {
@@ -5901,6 +5957,56 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue ImportEcdsaKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
+            var isPublic = string.Equals(format, "spki", StringComparison.Ordinal);
+
+            if (!isPrivate && !isPublic)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDSA import supports pkcs8 and spki formats"));
+            }
+
+            if (!TryResolveNamedCurve(algorithmArg, out var namedCurve, out _))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDSA namedCurve is invalid"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            var allowedUsages = isPrivate ? RsaPrivateAllowedUsages : RsaPublicAllowedUsages;
+            if (!ValidateKeyUsages(usages, allowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for ECDSA"));
+            }
+
+            var ecdsa = System.Security.Cryptography.ECDsa.Create();
+            if (isPrivate)
+            {
+                ecdsa.ImportPkcs8PrivateKey(keyBytes, out _);
+            }
+            else
+            {
+                ecdsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDSA",
+                NamedCurve = namedCurve,
+                KeyType = isPrivate ? "private" : "public",
+                Extractable = extractable,
+                EcdsaKey = ecdsa,
+                IsPrivateKey = isPrivate,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportAesGcmKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             if (!string.Equals(format, "raw", StringComparison.Ordinal))
@@ -6275,6 +6381,73 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
         }
 
+        private static FenValue GenerateEcdsaKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: ECDSA generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, new HashSet<string>(new[] { "sign", "verify" }, StringComparer.Ordinal), out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for ECDSA"));
+            }
+
+            if (!TryResolveNamedCurve(algorithmArg, out var namedCurve, out var curve))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: ECDSA namedCurve is invalid"));
+            }
+
+            using var generatedEcdsa = System.Security.Cryptography.ECDsa.Create(curve);
+            var privatePkcs8 = generatedEcdsa.ExportPkcs8PrivateKey();
+            var publicSpki = generatedEcdsa.ExportSubjectPublicKeyInfo();
+
+            var privateEcdsa = System.Security.Cryptography.ECDsa.Create();
+            privateEcdsa.ImportPkcs8PrivateKey(privatePkcs8, out _);
+
+            var publicEcdsa = System.Security.Cryptography.ECDsa.Create();
+            publicEcdsa.ImportSubjectPublicKeyInfo(publicSpki, out _);
+
+            var privateUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("sign"))
+            {
+                privateUsages.Add("sign");
+            }
+
+            var publicUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("verify"))
+            {
+                publicUsages.Add("verify");
+            }
+
+            var privateState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDSA",
+                NamedCurve = namedCurve,
+                KeyType = "private",
+                Extractable = extractable,
+                EcdsaKey = privateEcdsa,
+                IsPrivateKey = true,
+                Usages = privateUsages
+            };
+
+            var publicState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "ECDSA",
+                NamedCurve = namedCurve,
+                KeyType = "public",
+                Extractable = true,
+                EcdsaKey = publicEcdsa,
+                IsPrivateKey = false,
+                Usages = publicUsages
+            };
+
+            var keyPair = new FenObject();
+            keyPair.Set("privateKey", FenValue.FromObject(CreateCryptoKeyObject(privateState)));
+            keyPair.Set("publicKey", FenValue.FromObject(CreateCryptoKeyObject(publicState)));
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
+        }
+
         private static bool TryGetCryptoKeyState(FenValue keyArg, out LegacyCryptoKeyState state)
         {
             state = null;
@@ -6328,6 +6501,10 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
                 descriptor.Set("length", FenValue.FromNumber(length));
+            }
+            else if (string.Equals(state.AlgorithmName, "ECDSA", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(state.NamedCurve))
+            {
+                descriptor.Set("namedCurve", FenValue.FromString(state.NamedCurve));
             }
 
             return descriptor;
@@ -6569,6 +6746,7 @@ namespace FenBrowser.FenEngine.Scripting
                 "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
                 "RSAPSS" => "RSA-PSS",
                 "RSAOAEP" => "RSA-OAEP",
+                "ECDSA" => "ECDSA",
                 _ => normalizedAlgorithmName
             };
         }
@@ -7100,6 +7278,57 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return publicExponent.Length > 0;
+        }
+
+        private static bool TryResolveNamedCurve(FenValue algorithmArg, out string namedCurve, out System.Security.Cryptography.ECCurve curve)
+        {
+            namedCurve = string.Empty;
+            curve = default;
+
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var namedCurveValue = algorithmObject.Get("namedCurve");
+            if (!namedCurveValue.IsString)
+            {
+                return false;
+            }
+
+            var normalized = namedCurveValue.ToString()
+                .Replace("-", string.Empty)
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .Trim()
+                .ToUpperInvariant();
+
+            switch (normalized)
+            {
+                case "P256":
+                case "SECP256R1":
+                    namedCurve = "P-256";
+                    curve = System.Security.Cryptography.ECCurve.NamedCurves.nistP256;
+                    return true;
+                case "P384":
+                case "SECP384R1":
+                    namedCurve = "P-384";
+                    curve = System.Security.Cryptography.ECCurve.NamedCurves.nistP384;
+                    return true;
+                case "P521":
+                case "SECP521R1":
+                    namedCurve = "P-521";
+                    curve = System.Security.Cryptography.ECCurve.NamedCurves.nistP521;
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static bool IsSupportedRsaPublicExponent(byte[] exponent)

@@ -781,6 +781,166 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateEcdsaKey_SignVerify_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+            var verify = subtle.Get("verify").AsFunction();
+
+            var algorithm = CreateAlgorithm("ECDSA");
+            algorithm.Set("namedCurve", FenValue.FromString("P-256"));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var signAlgorithm = CreateAlgorithm("ECDSA", "SHA-256");
+            var data = FenValue.FromString("ecdsa-generated-signature-data");
+            var signResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(signAlgorithm),
+                    FenValue.FromObject(privateKey),
+                    data
+                },
+                null);
+
+            var signThenable = AssertThenableState(signResult, "fulfilled");
+            var signature = Assert.IsType<JsArrayBuffer>(signThenable.Get("__result").AsObject());
+
+            var verifyResult = verify.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(signAlgorithm),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromObject(signature),
+                    data
+                },
+                null);
+
+            var verifyThenable = AssertThenableState(verifyResult, "fulfilled");
+            Assert.True(verifyThenable.Get("__result").ToBoolean());
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleEcdsa_ImportSignVerify_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+            var verify = subtle.Get("verify").AsFunction();
+
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+            var privateBytes = ecdsa.ExportPkcs8PrivateKey();
+            var publicBytes = ecdsa.ExportSubjectPublicKeyInfo();
+
+            var privateAlgorithm = CreateAlgorithm("ECDSA");
+            privateAlgorithm.Set("namedCurve", FenValue.FromString("P-384"));
+            var privateImportResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("pkcs8"),
+                    FenValue.FromObject(CreateArrayBuffer(privateBytes)),
+                    FenValue.FromObject(privateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign"))
+                },
+                null);
+
+            var privateThenable = AssertThenableState(privateImportResult, "fulfilled");
+            var privateKey = Assert.IsType<FenObject>(privateThenable.Get("__result").AsObject());
+
+            var publicAlgorithm = CreateAlgorithm("ECDSA");
+            publicAlgorithm.Set("namedCurve", FenValue.FromString("P-384"));
+            var publicImportResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("spki"),
+                    FenValue.FromObject(CreateArrayBuffer(publicBytes)),
+                    FenValue.FromObject(publicAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("verify"))
+                },
+                null);
+
+            var publicThenable = AssertThenableState(publicImportResult, "fulfilled");
+            var publicKey = Assert.IsType<FenObject>(publicThenable.Get("__result").AsObject());
+
+            var signAlgorithm = CreateAlgorithm("ECDSA", "SHA-384");
+            var data = FenValue.FromString("ecdsa-import-signature-data");
+            var signResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(signAlgorithm),
+                    FenValue.FromObject(privateKey),
+                    data
+                },
+                null);
+
+            var signThenable = AssertThenableState(signResult, "fulfilled");
+            var signature = Assert.IsType<JsArrayBuffer>(signThenable.Get("__result").AsObject());
+
+            var verifyResult = verify.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(signAlgorithm),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromObject(signature),
+                    data
+                },
+                null);
+
+            var verifyThenable = AssertThenableState(verifyResult, "fulfilled");
+            Assert.True(verifyThenable.Get("__result").ToBoolean());
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleEcdsa_SignWithoutHash_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+
+            var algorithm = CreateAlgorithm("ECDSA");
+            algorithm.Set("namedCurve", FenValue.FromString("P-256"));
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+
+            var signResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithm("ECDSA")),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromString("ecdsa-missing-hash")
+                },
+                null);
+
+            var thenable = AssertThenableState(signResult, "rejected");
+            Assert.Contains("NotSupportedError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateAesGcmKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

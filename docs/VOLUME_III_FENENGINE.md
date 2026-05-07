@@ -7600,3 +7600,26 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `30/30` in this crypto compatibility class.
+
+## 2.263 SubtleCrypto ECDSA Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `ECDSA` support to `generateKey(...)` with named-curve keypair generation (`P-256`, `P-384`, `P-521`) and strict public/private usage partitioning (`sign` vs `verify`).
+  - Added `ECDSA` support to `importKey(...)` for `pkcs8`/`spki` and strict named-curve validation.
+  - Added `ECDSA` support to `exportKey(...)` with explicit private/public format gating (`pkcs8`/`spki`).
+  - Extended `sign(...)` / `verify(...)` to perform ECDSA operations with explicit operation-hash validation (`SHA-1/256/384/512`), fail-closing missing/invalid hash requests.
+  - Extended CryptoKey algorithm descriptors to expose `namedCurve` for ECDSA keys.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused ECDSA coverage for:
+    - generated-key sign/verify round-trip
+    - imported PKCS8/SPKI sign/verify round-trip
+    - rejection when ECDSA sign is requested without an operation hash.
+  - Crypto compatibility slice now totals `33` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `ECDSA`.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `33/33` in this crypto compatibility class.
