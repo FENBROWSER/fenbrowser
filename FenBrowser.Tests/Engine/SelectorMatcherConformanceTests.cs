@@ -799,6 +799,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void FocusVisiblePseudoClass_TracksKeyboardFocusHeuristic()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <button id='button'>Go</button>
+</body></html>");
+
+            var button = ById(doc, "button");
+
+            ElementStateManager.Instance.SetFocusedElement(button, fromKeyboard: false);
+            Assert.False(SelectorMatcher.Matches(button, ":focus-visible"));
+
+            ElementStateManager.Instance.SetFocusedElement(button, fromKeyboard: true);
+            Assert.True(SelectorMatcher.Matches(button, ":focus-visible"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
