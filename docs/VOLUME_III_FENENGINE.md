@@ -7669,3 +7669,25 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `39/39` in this crypto compatibility class.
+
+## 2.266 SubtleCrypto AES-CTR Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `AES-CTR` support to `generateKey(...)`, `importKey(...)`, and `exportKey(...)` with raw key transport and strict 128/192/256 key-length enforcement.
+  - Extended `encrypt(...)` / `decrypt(...)` with AES-CTR execution via deterministic counter-mode transform and strict counter validation (`16` bytes required).
+  - Added strict parameter gating for CTR counter length, currently fail-closing unsupported non-`128`-bit counter lengths.
+  - Exposed AES-CTR key algorithm descriptors with deterministic `length` metadata.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused AES-CTR coverage for:
+    - generated-key encrypt/decrypt round-trip
+    - raw import/export round-trip
+    - rejection of unsupported CTR length requests.
+  - Crypto compatibility slice now totals `42` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `AES-CTR`.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `42/42` in this crypto compatibility class.

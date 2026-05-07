@@ -1070,6 +1070,137 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateAesCtrKey_EncryptDecrypt_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CTR");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CTR");
+            operationAlgorithm.Set("counter", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F })));
+            operationAlgorithm.Set("length", FenValue.FromNumber(128));
+            var plaintext = FenValue.FromString("fen-aes-ctr-message");
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    plaintext
+                },
+                null);
+
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var encryptedPayload = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+            Assert.True(encryptedPayload.Data.Length > 0);
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromObject(encryptedPayload)
+                },
+                null);
+
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decryptedPayload = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("fen-aes-ctr-message", Encoding.UTF8.GetString(decryptedPayload.Data));
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleAesCtrImportExportRaw_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var exportKey = subtle.Get("exportKey").AsFunction();
+
+            var rawKey = new byte[] { 0x21, 0x62, 0xE2, 0x5A, 0x80, 0x12, 0x8D, 0x0A, 0xC1, 0x10, 0x24, 0x37, 0x69, 0x48, 0x15, 0xAD };
+            var algorithm = CreateAlgorithm("AES-CTR");
+            algorithm.Set("length", FenValue.FromNumber(128));
+
+            var importResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(rawKey)),
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var importThenable = AssertThenableState(importResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(importThenable.Get("__result").AsObject());
+
+            var exportResult = exportKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(key)
+                },
+                null);
+
+            var exportThenable = AssertThenableState(exportResult, "fulfilled");
+            var exported = Assert.IsType<JsArrayBuffer>(exportThenable.Get("__result").AsObject());
+            Assert.Equal(rawKey, exported.Data);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleEncrypt_AesCtrUnsupportedLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CTR");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CTR");
+            operationAlgorithm.Set("counter", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F })));
+            operationAlgorithm.Set("length", FenValue.FromNumber(64));
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromString("unsupported-ctr-length")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("NotSupportedError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateAesGcmKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

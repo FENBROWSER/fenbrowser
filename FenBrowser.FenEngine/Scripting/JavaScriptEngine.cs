@@ -4800,6 +4800,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateAesGcmKey(args[0], extractable, usages);
                     case "AESCBC":
                         return GenerateAesCbcKey(args[0], extractable, usages);
+                    case "AESCTR":
+                        return GenerateAesCtrKey(args[0], extractable, usages);
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
                 }
@@ -4855,6 +4857,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
                     case "AESCBC":
                         return ImportAesCbcKey(format, args[1], args[2], extractable, usages);
+                    case "AESCTR":
+                        return ImportAesCtrKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
                         return ImportPbkdf2Key(format, args[1], extractable, usages);
                     case "HKDF":
@@ -4921,6 +4925,16 @@ namespace FenBrowser.FenEngine.Scripting
                         if (!string.Equals(format, "raw", StringComparison.Ordinal))
                         {
                             return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-CBC export only supports raw format"));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
+                    }
+
+                    case "AESCTR":
+                    {
+                        if (!string.Equals(format, "raw", StringComparison.Ordinal))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-CTR export only supports raw format"));
                         }
 
                         return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(keyState.SecretKey))));
@@ -5093,6 +5107,17 @@ namespace FenBrowser.FenEngine.Scripting
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
                 }
 
+                if (string.Equals(operationAlgorithm, "AESCTR", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesCtrParams(args[0], out var counter, out _, out var ctrParamError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
+                    }
+
+                    var ciphertext = TransformAesCtr(keyState.SecretKey, counter, plaintext);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
+                }
+
                 if (string.Equals(operationAlgorithm, "RSAOAEP", StringComparison.Ordinal))
                 {
                     if (keyState.IsPrivateKey)
@@ -5204,6 +5229,17 @@ namespace FenBrowser.FenEngine.Scripting
 
                     using var decryptor = aes.CreateDecryptor();
                     var plaintext = decryptor.TransformFinalBlock(encryptedPayload, 0, encryptedPayload.Length);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
+                }
+
+                if (string.Equals(operationAlgorithm, "AESCTR", StringComparison.Ordinal))
+                {
+                    if (!TryResolveAesCtrParams(args[0], out var counter, out _, out var ctrParamError))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected(ctrParamError));
+                    }
+
+                    var plaintext = TransformAesCtr(keyState.SecretKey, counter, encryptedPayload);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
                 }
 
@@ -5956,6 +5992,42 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue GenerateAesCtrKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CTR generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-CTR"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForGenerate(algorithmArg, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CTR key length must be 128, 192, or 256"));
+            }
+
+            var keyBytes = new byte[keyLengthBits / 8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(keyBytes);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESCTR",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = keyBytes,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportRsaSsaKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
@@ -6287,6 +6359,46 @@ namespace FenBrowser.FenEngine.Scripting
             var state = new LegacyCryptoKeyState
             {
                 AlgorithmName = "AESCBC",
+                KeyType = "secret",
+                KeyLengthBits = keyLengthBits,
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportAesCtrKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: AES-CTR import supports raw format only"));
+            }
+
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CTR import requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, AesAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for AES-CTR"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (!TryResolveAesKeyLengthBitsForImport(algorithmArg, keyBytes.Length, out var keyLengthBits))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: AES-CTR key length must be 128, 192, or 256 and match raw key data"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "AESCTR",
                 KeyType = "secret",
                 KeyLengthBits = keyLengthBits,
                 Extractable = extractable,
@@ -6812,6 +6924,11 @@ namespace FenBrowser.FenEngine.Scripting
                 var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
                 descriptor.Set("length", FenValue.FromNumber(length));
             }
+            else if (string.Equals(state.AlgorithmName, "AESCTR", StringComparison.Ordinal))
+            {
+                var length = state.KeyLengthBits > 0 ? state.KeyLengthBits : state.SecretKey.Length * 8;
+                descriptor.Set("length", FenValue.FromNumber(length));
+            }
             else if ((string.Equals(state.AlgorithmName, "ECDSA", StringComparison.Ordinal) || string.Equals(state.AlgorithmName, "ECDH", StringComparison.Ordinal))
                 && !string.IsNullOrWhiteSpace(state.NamedCurve))
             {
@@ -7055,6 +7172,7 @@ namespace FenBrowser.FenEngine.Scripting
                 "HMAC" => "HMAC",
                 "AESGCM" => "AES-GCM",
                 "AESCBC" => "AES-CBC",
+                "AESCTR" => "AES-CTR",
                 "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
                 "RSAPSS" => "RSA-PSS",
                 "RSAOAEP" => "RSA-OAEP",
@@ -7601,6 +7719,97 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return iv.Length == 16;
+        }
+
+        private static bool TryResolveAesCtrParams(FenValue algorithmArg, out byte[] counter, out int counterLengthBits, out string error)
+        {
+            counter = Array.Empty<byte>();
+            counterLengthBits = 0;
+            error = string.Empty;
+
+            if (!algorithmArg.IsObject)
+            {
+                error = "TypeError: AES-CTR parameters are invalid";
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                error = "TypeError: AES-CTR parameters are invalid";
+                return false;
+            }
+
+            var counterValue = algorithmObject.Get("counter");
+            if (counterValue.IsUndefined || counterValue.IsNull || !TryExtractDigestBytes(counterValue, out counter) || counter.Length != 16)
+            {
+                error = "TypeError: AES-CTR counter must be 16 bytes";
+                return false;
+            }
+
+            var lengthValue = algorithmObject.Get("length");
+            if (!lengthValue.IsNumber)
+            {
+                error = "TypeError: AES-CTR length must be a number";
+                return false;
+            }
+
+            var lengthNumber = lengthValue.ToNumber();
+            var parsedLength = (int)Math.Floor(lengthNumber);
+            if (parsedLength < 1 || parsedLength > 128 || parsedLength != lengthNumber)
+            {
+                error = "TypeError: AES-CTR length must be an integer between 1 and 128";
+                return false;
+            }
+
+            if (parsedLength != 128)
+            {
+                error = "NotSupportedError: AES-CTR currently supports length=128 only";
+                return false;
+            }
+
+            counterLengthBits = parsedLength;
+            return true;
+        }
+
+        private static byte[] TransformAesCtr(byte[] key, byte[] counter, byte[] input)
+        {
+            var output = new byte[input.Length];
+            var counterBlock = (byte[])counter.Clone();
+            var keystreamBlock = new byte[16];
+
+            using var aes = System.Security.Cryptography.Aes.Create();
+            aes.Mode = System.Security.Cryptography.CipherMode.ECB;
+            aes.Padding = System.Security.Cryptography.PaddingMode.None;
+            aes.Key = key;
+            aes.IV = new byte[16];
+
+            using var encryptor = aes.CreateEncryptor();
+            for (var offset = 0; offset < input.Length; offset += 16)
+            {
+                encryptor.TransformBlock(counterBlock, 0, 16, keystreamBlock, 0);
+                var blockSize = Math.Min(16, input.Length - offset);
+                for (var i = 0; i < blockSize; i++)
+                {
+                    output[offset + i] = (byte)(input[offset + i] ^ keystreamBlock[i]);
+                }
+
+                IncrementCounterBlock(counterBlock);
+            }
+
+            return output;
+        }
+
+        private static void IncrementCounterBlock(byte[] counterBlock)
+        {
+            for (var i = counterBlock.Length - 1; i >= 0; i--)
+            {
+                counterBlock[i]++;
+                if (counterBlock[i] != 0)
+                {
+                    break;
+                }
+            }
         }
 
         private static bool TryResolveRsaModulusLength(FenValue algorithmArg, out int modulusLength)
