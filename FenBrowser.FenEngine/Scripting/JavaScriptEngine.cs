@@ -6214,10 +6214,20 @@ namespace FenBrowser.FenEngine.Scripting
                 ecdsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
             }
 
+            if (!TryGetNamedCurveFromCurve(ecdsa.ExportParameters(false).Curve, out var actualNamedCurve))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Imported ECDSA key curve is unsupported"));
+            }
+
+            if (!string.Equals(namedCurve, actualNamedCurve, StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("DataError: Imported ECDSA key curve does not match requested namedCurve"));
+            }
+
             var state = new LegacyCryptoKeyState
             {
                 AlgorithmName = "ECDSA",
-                NamedCurve = namedCurve,
+                NamedCurve = actualNamedCurve,
                 KeyType = isPrivate ? "private" : "public",
                 Extractable = extractable,
                 EcdsaKey = ecdsa,
@@ -6275,10 +6285,20 @@ namespace FenBrowser.FenEngine.Scripting
                 ecdh.ImportSubjectPublicKeyInfo(keyBytes, out _);
             }
 
+            if (!TryGetNamedCurveFromCurve(ecdh.ExportParameters(false).Curve, out var actualNamedCurve))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Imported ECDH key curve is unsupported"));
+            }
+
+            if (!string.Equals(namedCurve, actualNamedCurve, StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("DataError: Imported ECDH key curve does not match requested namedCurve"));
+            }
+
             var state = new LegacyCryptoKeyState
             {
                 AlgorithmName = "ECDH",
-                NamedCurve = namedCurve,
+                NamedCurve = actualNamedCurve,
                 KeyType = isPrivate ? "private" : "public",
                 Extractable = extractable,
                 EcdhKey = ecdh,
@@ -7914,6 +7934,45 @@ namespace FenBrowser.FenEngine.Scripting
                 default:
                     return false;
             }
+        }
+
+        private static bool TryGetNamedCurveFromCurve(System.Security.Cryptography.ECCurve curve, out string namedCurve)
+        {
+            namedCurve = string.Empty;
+            var friendlyName = curve.Oid.FriendlyName?.Trim();
+            var oidValue = curve.Oid.Value?.Trim();
+
+            if (string.Equals(oidValue, "1.2.840.10045.3.1.7", StringComparison.Ordinal)
+                || string.Equals(friendlyName, "nistP256", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDSA_P256", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDH_P256", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "secp256r1", StringComparison.OrdinalIgnoreCase))
+            {
+                namedCurve = "P-256";
+                return true;
+            }
+
+            if (string.Equals(oidValue, "1.3.132.0.34", StringComparison.Ordinal)
+                || string.Equals(friendlyName, "nistP384", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDSA_P384", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDH_P384", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "secp384r1", StringComparison.OrdinalIgnoreCase))
+            {
+                namedCurve = "P-384";
+                return true;
+            }
+
+            if (string.Equals(oidValue, "1.3.132.0.35", StringComparison.Ordinal)
+                || string.Equals(friendlyName, "nistP521", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDSA_P521", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "ECDH_P521", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(friendlyName, "secp521r1", StringComparison.OrdinalIgnoreCase))
+            {
+                namedCurve = "P-521";
+                return true;
+            }
+
+            return false;
         }
 
         private static bool IsSupportedRsaPublicExponent(byte[] exponent)

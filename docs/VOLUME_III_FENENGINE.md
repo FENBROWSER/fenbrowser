@@ -7691,3 +7691,21 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `42/42` in this crypto compatibility class.
+
+## 2.267 SubtleCrypto Curve-Identity Import Hardening (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Hardened `ECDSA` and `ECDH` import paths to verify actual imported key curve identity against requested `namedCurve`.
+  - Added deterministic canonicalization for imported curve identity (`P-256`, `P-384`, `P-521`) using OID/friendly-name normalization.
+  - Added fail-closed mismatch behavior: imported key material with curve/request divergence now rejects with `DataError`.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused regression coverage for:
+    - ECDSA private-key import curve mismatch rejection
+    - ECDH private-key import curve mismatch rejection.
+  - Crypto compatibility slice now totals `44` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `44/44` in this crypto compatibility class.

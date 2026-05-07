@@ -906,6 +906,33 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleImportEcdsaKey_CurveMismatch_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+            var privateBytes = ecdsa.ExportPkcs8PrivateKey();
+
+            var algorithm = CreateAlgorithm("ECDSA");
+            algorithm.Set("namedCurve", FenValue.FromString("P-256"));
+
+            var importResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("pkcs8"),
+                    FenValue.FromObject(CreateArrayBuffer(privateBytes)),
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign"))
+                },
+                null);
+
+            var thenable = AssertThenableState(importResult, "rejected");
+            Assert.Contains("DataError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleEcdsa_SignWithoutHash_Rejects()
         {
             var subtle = GetSubtle(new JsCrypto());
@@ -1730,6 +1757,32 @@ namespace FenBrowser.Tests.Engine
 
             var thenable = AssertThenableState(importResult, "rejected");
             Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleImportEcdhKey_CurveMismatch_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+
+            using var ecdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
+            var privateBytes = ecdh.ExportPkcs8PrivateKey();
+
+            var importAlgorithm = CreateAlgorithm("ECDH");
+            importAlgorithm.Set("namedCurve", FenValue.FromString("P-256"));
+            var importResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("pkcs8"),
+                    FenValue.FromObject(CreateArrayBuffer(privateBytes)),
+                    FenValue.FromObject(importAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var thenable = AssertThenableState(importResult, "rejected");
+            Assert.Contains("DataError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
         }
 
         [Fact]
