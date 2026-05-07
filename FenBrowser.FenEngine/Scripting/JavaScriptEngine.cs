@@ -7839,6 +7839,11 @@ namespace FenBrowser.FenEngine.Scripting
                     return false;
                 }
 
+                if (Math.Floor(tagLengthNumber) != tagLengthNumber)
+                {
+                    return false;
+                }
+
                 var parsedTagLength = (int)Math.Floor(tagLengthNumber);
                 if (parsedTagLength < 32 || parsedTagLength > 128 || parsedTagLength % 8 != 0)
                 {
