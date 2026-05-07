@@ -1956,6 +1956,44 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleEncrypt_AesGcmUnsupportedTagLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var keyAlgorithm = CreateAlgorithm("AES-GCM");
+            keyAlgorithm.Set("length", FenValue.FromNumber(128));
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(keyAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-GCM");
+            operationAlgorithm.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40, 0x41 })));
+            operationAlgorithm.Set("tagLength", FenValue.FromNumber(40));
+
+            var result = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromString("aes-gcm-unsupported-tag-length")
+                },
+                null);
+
+            var thenable = AssertThenableState(result, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleWrapUnwrapKey_HmacRawRoundTrip_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());
