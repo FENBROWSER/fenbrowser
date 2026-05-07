@@ -7021,6 +7021,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (length > 1024)
+            {
+                return false;
+            }
+
             for (var i = 0; i < length; i++)
             {
                 var usageValue = usagesObject.Get(i.ToString());
