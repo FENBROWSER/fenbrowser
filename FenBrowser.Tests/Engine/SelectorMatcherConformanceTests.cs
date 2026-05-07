@@ -390,6 +390,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_RespectDateMinMaxConstraints()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='date-valid' type='date' min='2026-01-01' max='2026-12-31' value='2026-06-01' />
+    <input id='date-invalid' type='date' min='2026-01-01' max='2026-12-31' value='2027-01-01' />
+</body></html>");
+
+            var dateValid = ById(doc, "date-valid");
+            var dateInvalid = ById(doc, "date-invalid");
+
+            Assert.True(SelectorMatcher.Matches(dateValid, ":valid"));
+            Assert.False(SelectorMatcher.Matches(dateValid, ":invalid"));
+            Assert.False(SelectorMatcher.Matches(dateInvalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(dateInvalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"
