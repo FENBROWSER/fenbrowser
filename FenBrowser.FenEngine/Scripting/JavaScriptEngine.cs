@@ -8122,11 +8122,18 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
-            var len = (int)lengthValue.ToNumber();
-            if (len < 0)
+            var lengthNumber = lengthValue.ToNumber();
+            if (double.IsNaN(lengthNumber) || double.IsInfinity(lengthNumber))
             {
                 return false;
             }
+
+            if (lengthNumber < 0 || lengthNumber > int.MaxValue || Math.Floor(lengthNumber) != lengthNumber)
+            {
+                return false;
+            }
+
+            var len = (int)lengthNumber;
 
             data = new byte[len];
             for (var i = 0; i < len; i++)
