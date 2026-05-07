@@ -4699,6 +4699,12 @@ namespace FenBrowser.FenEngine.Scripting
             const int maxBytes = 65536;
             if (target is FenBrowser.FenEngine.Core.Types.JsTypedArray typedArray)
             {
+                if (typedArray is FenBrowser.FenEngine.Core.Types.JsFloat32Array
+                    || typedArray is FenBrowser.FenEngine.Core.Types.JsFloat64Array)
+                {
+                    throw new FenBrowser.FenEngine.Errors.FenTypeError("TypeError: getRandomValues requires an integer typed array argument");
+                }
+
                 var byteLen = typedArray.Length * typedArray.BytesPerElement;
                 if (byteLen > maxBytes)
                 {

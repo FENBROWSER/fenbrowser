@@ -69,6 +69,17 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_GetRandomValues_Float32Array_Rejects()
+        {
+            var crypto = new JsCrypto();
+            var getRandomValues = crypto.Get("getRandomValues").AsFunction();
+            var floatArray = new JsFloat32Array(FenValue.FromNumber(8));
+
+            Assert.Throws<FenTypeError>(() =>
+                getRandomValues.Invoke(new[] { FenValue.FromObject(floatArray) }, null));
+        }
+
+        [Fact]
         public void JsCrypto_GetRandomValues_EnforcesQuotaLimit()
         {
             var crypto = new JsCrypto();

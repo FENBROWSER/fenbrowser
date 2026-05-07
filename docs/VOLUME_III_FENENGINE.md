@@ -7803,3 +7803,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `49/49` in this crypto compatibility class.
+
+## 2.274 Crypto.getRandomValues Integer-TypedArray Enforcement (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added explicit rejection for `Float32Array` / `Float64Array` targets in `crypto.getRandomValues(...)`.
+  - This enforces integer-typed-array-only behavior and preserves fail-closed input handling.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused float-typed-array rejection coverage (`Float32Array` path).
+  - Crypto compatibility slice now totals `50` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `50/50` in this crypto compatibility class.
