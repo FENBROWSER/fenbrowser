@@ -1168,6 +1168,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void InRangePseudoClass_SupportsMonthInputType()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='month-in-range' type='month' min='2026-01' max='2026-12' value='2026-06' />
+    <input id='month-out-range' type='month' min='2026-01' max='2026-12' value='2027-01' />
+</body></html>");
+
+            var inRange = ById(doc, "month-in-range");
+            var outRange = ById(doc, "month-out-range");
+
+            Assert.True(SelectorMatcher.Matches(inRange, ":in-range"));
+            Assert.False(SelectorMatcher.Matches(outRange, ":in-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

@@ -1374,7 +1374,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
-            if (type != "number" && type != "range" && type != "date" && type != "datetime-local")
+            if (type != "number" && type != "range" && type != "date" && type != "datetime-local" && type != "month")
             {
                 return false;
             }
@@ -1422,6 +1422,14 @@ namespace FenBrowser.FenEngine.Rendering
                     if (DateTime.TryParse(raw, out var dateTime))
                     {
                         value = dateTime.ToOADate();
+                        return true;
+                    }
+
+                    return false;
+                case "month":
+                    if (DateOnly.TryParse(raw + "-01", out var monthDate))
+                    {
+                        value = monthDate.DayNumber;
                         return true;
                     }
 
