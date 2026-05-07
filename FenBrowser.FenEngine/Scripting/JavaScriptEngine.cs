@@ -7919,6 +7919,18 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             var lengthNumber = lengthValue.ToNumber();
+            if (double.IsNaN(lengthNumber) || double.IsInfinity(lengthNumber))
+            {
+                error = "TypeError: AES-CTR length must be an integer between 1 and 128";
+                return false;
+            }
+
+            if (lengthNumber > int.MaxValue)
+            {
+                error = "TypeError: AES-CTR length must be an integer between 1 and 128";
+                return false;
+            }
+
             var parsedLength = (int)Math.Floor(lengthNumber);
             if (parsedLength < 1 || parsedLength > 128 || parsedLength != lengthNumber)
             {

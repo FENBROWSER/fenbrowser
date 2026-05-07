@@ -1657,6 +1657,44 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleEncrypt_AesCtrNonFiniteLength_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var generateAlgorithm = CreateAlgorithm("AES-CTR");
+            generateAlgorithm.Set("length", FenValue.FromNumber(128));
+            var keyResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(generateAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyThenable = AssertThenableState(keyResult, "fulfilled");
+            var key = Assert.IsType<FenObject>(keyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-CTR");
+            operationAlgorithm.Set("counter", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F })));
+            operationAlgorithm.Set("length", FenValue.FromNumber(double.PositiveInfinity));
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(key),
+                    FenValue.FromString("ctr-nonfinite-length")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("TypeError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleEncrypt_AesCtrCounterOverflow_Rejects()
         {
             var subtle = GetSubtle(new JsCrypto());
