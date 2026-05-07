@@ -1642,7 +1642,7 @@ namespace FenBrowser.FenEngine.Rendering
                 case "range":
                     return double.TryParse(raw, out value);
                 case "date":
-                    if (DateOnly.TryParse(raw, out var date))
+                    if (DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
                     {
                         value = date.DayNumber;
                         return true;
