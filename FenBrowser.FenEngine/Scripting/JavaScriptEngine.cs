@@ -7010,6 +7010,11 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            if (Math.Floor(lengthNumber) != lengthNumber)
+            {
+                return false;
+            }
+
             var length = (int)lengthNumber;
             if (length < 0)
             {
