@@ -5274,6 +5274,12 @@ namespace FenBrowser.FenEngine.Scripting
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP non-empty label is not supported"));
                     }
 
+                    var rsaModulusBytes = (keyState.RsaKey.KeySize + 7) / 8;
+                    if (encryptedPayload.Length != rsaModulusBytes)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: RSA-OAEP ciphertext length does not match key modulus size"));
+                    }
+
                     var decryptedPayload = keyState.RsaKey.Decrypt(encryptedPayload, padding);
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(decryptedPayload))));
                 }

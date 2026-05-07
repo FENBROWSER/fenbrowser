@@ -947,6 +947,45 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleRsaOaep_DecryptCiphertextLengthMismatch_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+
+            var badCiphertext = CreateArrayBuffer(new byte[] { 0x10, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAB });
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(CreateAlgorithm("RSA-OAEP")),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromObject(badCiphertext)
+                },
+                null);
+
+            var thenable = AssertThenableState(decryptResult, "rejected");
+            Assert.Contains("OperationError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+            Assert.Contains("length", thenable.Get("__reason").ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleRsaOaep_WrapUnwrapKey_HmacRoundTrip_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

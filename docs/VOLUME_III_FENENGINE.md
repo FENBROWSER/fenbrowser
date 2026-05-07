@@ -8298,3 +8298,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `82/82` in this crypto compatibility class.
+
+## 2.307 SubtleCrypto RSA-OAEP Ciphertext-Length Preflight Guard (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added RSA-OAEP decrypt preflight validation that ciphertext length matches modulus size.
+  - Returns deterministic `OperationError` on length mismatch before backend decrypt invocation.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added rejection coverage for RSA-OAEP decrypt with malformed ciphertext length.
+  - Crypto compatibility slice now totals `83` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `83/83` in this crypto compatibility class.
