@@ -499,6 +499,20 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ValidityPseudoClasses_InvalidDateTimeLocalLexicalValue_IsInvalid()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='dt-invalid-lexical' type='datetime-local' min='2026-01-01T00:00' max='2026-12-31T23:59' value='2026/06/01 12:30' />
+</body></html>");
+
+            var invalid = ById(doc, "dt-invalid-lexical");
+            Assert.False(SelectorMatcher.Matches(invalid, ":valid"));
+            Assert.True(SelectorMatcher.Matches(invalid, ":invalid"));
+        }
+
+        [Fact]
         public void InRangePseudoClass_MatchesRangedInputsWithinBounds()
         {
             var doc = Parse(@"

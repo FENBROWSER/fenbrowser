@@ -1650,7 +1650,12 @@ namespace FenBrowser.FenEngine.Rendering
 
                     return false;
                 case "datetime-local":
-                    if (DateTime.TryParse(raw, out var dateTime))
+                    if (DateTime.TryParseExact(
+                            raw,
+                            new[] { "yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm:ss.FFFFFFF" },
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.None,
+                            out var dateTime))
                     {
                         value = dateTime.ToOADate();
                         return true;
