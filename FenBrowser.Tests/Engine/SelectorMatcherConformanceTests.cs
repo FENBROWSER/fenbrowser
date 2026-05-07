@@ -701,6 +701,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LocalLinkPseudoClass_MatchesSameDocumentFragmentLinks()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <a id='fragment' href='#section-2'>Jump</a>
+    <a id='remote' href='https://other.example.org/page#section-2'>Remote</a>
+</body></html>");
+
+            doc.URL = "https://example.org/docs/specs/page";
+            doc.BaseURI = "https://example.org/docs/specs/page";
+
+            var fragment = ById(doc, "fragment");
+            var remote = ById(doc, "remote");
+
+            Assert.True(SelectorMatcher.Matches(fragment, ":local-link"));
+            Assert.False(SelectorMatcher.Matches(remote, ":local-link"));
+        }
+
+        [Fact]
         public void BlankPseudoClass_MatchesWhitespaceOnlyInputs()
         {
             var doc = Parse(@"
