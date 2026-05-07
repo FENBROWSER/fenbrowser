@@ -894,6 +894,162 @@ namespace FenBrowser.Tests.Engine
             Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
         }
 
+        [Fact]
+        public void JsCrypto_SubtleDeriveBits_Hkdf_ResolvesArrayBuffer()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var deriveBits = subtle.Get("deriveBits").AsFunction();
+
+            var baseKeyResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-base-key-material"))),
+                    FenValue.FromObject(CreateAlgorithm("HKDF")),
+                    FenValue.FromBoolean(false),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var baseKeyThenable = AssertThenableState(baseKeyResult, "fulfilled");
+            var baseKey = Assert.IsType<FenObject>(baseKeyThenable.Get("__result").AsObject());
+
+            var deriveAlgorithm = CreateAlgorithm("HKDF", "SHA-256");
+            deriveAlgorithm.Set("salt", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-salt"))));
+            deriveAlgorithm.Set("info", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-info"))));
+
+            var deriveResult = deriveBits.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(deriveAlgorithm),
+                    FenValue.FromObject(baseKey),
+                    FenValue.FromNumber(256)
+                },
+                null);
+
+            var deriveThenable = AssertThenableState(deriveResult, "fulfilled");
+            var buffer = Assert.IsType<JsArrayBuffer>(deriveThenable.Get("__result").AsObject());
+            Assert.Equal(32, buffer.Data.Length);
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleDeriveKey_Hkdf_ToAesGcm_EncryptDecrypt_RoundTrips()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var deriveKey = subtle.Get("deriveKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var baseKeyResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-derive-key-source"))),
+                    FenValue.FromObject(CreateAlgorithm("HKDF")),
+                    FenValue.FromBoolean(false),
+                    FenValue.FromObject(CreateStringArray("deriveKey"))
+                },
+                null);
+
+            var baseKeyThenable = AssertThenableState(baseKeyResult, "fulfilled");
+            var baseKey = Assert.IsType<FenObject>(baseKeyThenable.Get("__result").AsObject());
+
+            var deriveAlgorithm = CreateAlgorithm("HKDF", "SHA-256");
+            deriveAlgorithm.Set("salt", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-derive-salt"))));
+            deriveAlgorithm.Set("info", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("fen-hkdf-derive-info"))));
+
+            var derivedAesAlgorithm = CreateAlgorithm("AES-GCM");
+            derivedAesAlgorithm.Set("length", FenValue.FromNumber(128));
+
+            var deriveKeyResult = deriveKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(deriveAlgorithm),
+                    FenValue.FromObject(baseKey),
+                    FenValue.FromObject(derivedAesAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var derivedKeyThenable = AssertThenableState(deriveKeyResult, "fulfilled");
+            var derivedKey = Assert.IsType<FenObject>(derivedKeyThenable.Get("__result").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("AES-GCM");
+            operationAlgorithm.Set("iv", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x71, 0x72, 0x73 })));
+            var plaintext = FenValue.FromString("hkdf-derived-aes-message");
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(derivedKey),
+                    plaintext
+                },
+                null);
+
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var encryptedPayload = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(derivedKey),
+                    FenValue.FromObject(encryptedPayload)
+                },
+                null);
+
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decryptedPayload = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("hkdf-derived-aes-message", Encoding.UTF8.GetString(decryptedPayload.Data));
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleDeriveKey_Hkdf_WithoutDeriveKeyUsage_Rejects()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var importKey = subtle.Get("importKey").AsFunction();
+            var deriveKey = subtle.Get("deriveKey").AsFunction();
+
+            var baseKeyResult = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("hkdf-derive-usage-check-key"))),
+                    FenValue.FromObject(CreateAlgorithm("HKDF")),
+                    FenValue.FromBoolean(false),
+                    FenValue.FromObject(CreateStringArray("deriveBits"))
+                },
+                null);
+
+            var baseKeyThenable = AssertThenableState(baseKeyResult, "fulfilled");
+            var baseKey = Assert.IsType<FenObject>(baseKeyThenable.Get("__result").AsObject());
+
+            var deriveAlgorithm = CreateAlgorithm("HKDF", "SHA-256");
+            deriveAlgorithm.Set("salt", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("hkdf-derive-usage-salt"))));
+            deriveAlgorithm.Set("info", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("hkdf-derive-usage-info"))));
+
+            var derivedAesAlgorithm = CreateAlgorithm("AES-GCM");
+            derivedAesAlgorithm.Set("length", FenValue.FromNumber(128));
+
+            var deriveKeyResult = deriveKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(deriveAlgorithm),
+                    FenValue.FromObject(baseKey),
+                    FenValue.FromObject(derivedAesAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var thenable = AssertThenableState(deriveKeyResult, "rejected");
+            Assert.Contains("InvalidAccessError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
         private static FenObject GetSubtle(JsCrypto crypto)
         {
             return Assert.IsType<FenObject>(crypto.Get("subtle").AsObject());

@@ -4655,6 +4655,9 @@ namespace FenBrowser.FenEngine.Scripting
         private static readonly HashSet<string> Pbkdf2AllowedUsages =
             new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
 
+        private static readonly HashSet<string> HkdfAllowedUsages =
+            new HashSet<string>(new[] { "derivekey", "derivebits" }, StringComparer.Ordinal);
+
         public JsCrypto()
         {
             Set("getRandomValues", FenValue.FromFunction(new FenFunction("getRandomValues", GetRandomValues)));
@@ -4819,6 +4822,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
                         return ImportPbkdf2Key(format, args[1], extractable, usages);
+                    case "HKDF":
+                        return ImportHkdfKey(format, args[1], extractable, usages);
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
                 }
@@ -5362,6 +5367,32 @@ namespace FenBrowser.FenEngine.Scripting
                         var derived = kdf.GetBytes(requestedBits / 8);
                         return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(derived))));
                     }
+                    case "HKDF":
+                    {
+                        if (!TryResolveHkdfParams(args[0], out var salt, out var info, out var hashName))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HKDF parameters are invalid"));
+                        }
+
+                        if (!TryGetHashOutputLengthBytes(hashName, out var hashOutputLengthBytes))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Hash algorithm not supported"));
+                        }
+
+                        var requestedBytes = requestedBits / 8;
+                        var maxOutputBytes = 255 * hashOutputLengthBytes;
+                        if (requestedBytes > maxOutputBytes)
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: HKDF output length exceeds RFC 5869 limit"));
+                        }
+
+                        if (!TryComputeHkdf(baseKeyState.SecretKey, salt, info, hashName, requestedBytes, out var derived))
+                        {
+                            return FenValue.FromObject(ResolvedThenable.Rejected("OperationError: Failed to derive HKDF output"));
+                        }
+
+                        return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(derived))));
+                    }
 
                     default:
                         return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
@@ -5736,6 +5767,45 @@ namespace FenBrowser.FenEngine.Scripting
             var state = new LegacyCryptoKeyState
             {
                 AlgorithmName = "PBKDF2",
+                KeyType = "secret",
+                Extractable = extractable,
+                SecretKey = (byte[])keyBytes.Clone(),
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
+        private static FenValue ImportHkdfKey(string format, FenValue keyData, bool extractable, HashSet<string> usages)
+        {
+            if (!string.Equals(format, "raw", StringComparison.Ordinal))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: HKDF import supports raw format only"));
+            }
+
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HKDF import requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, HkdfAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for HKDF"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            if (keyBytes.Length == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: HKDF key material must not be empty"));
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "HKDF",
                 KeyType = "secret",
                 Extractable = extractable,
                 SecretKey = (byte[])keyBytes.Clone(),
@@ -6323,6 +6393,132 @@ namespace FenBrowser.FenEngine.Scripting
                 return false;
             }
 
+            return true;
+        }
+
+        private static bool TryResolveHkdfParams(FenValue algorithmArg, out byte[] salt, out byte[] info, out string hashName)
+        {
+            salt = Array.Empty<byte>();
+            info = Array.Empty<byte>();
+            hashName = string.Empty;
+
+            if (!algorithmArg.IsObject)
+            {
+                return false;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return false;
+            }
+
+            var saltValue = algorithmObject.Get("salt");
+            if (saltValue.IsUndefined || saltValue.IsNull || !TryExtractDigestBytes(saltValue, out salt))
+            {
+                return false;
+            }
+
+            var infoValue = algorithmObject.Get("info");
+            if (infoValue.IsUndefined || infoValue.IsNull || !TryExtractDigestBytes(infoValue, out info))
+            {
+                return false;
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, null, out hashName))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryGetHashOutputLengthBytes(string normalizedHashName, out int hashOutputLengthBytes)
+        {
+            hashOutputLengthBytes = normalizedHashName switch
+            {
+                "SHA1" => 20,
+                "SHA256" => 32,
+                "SHA384" => 48,
+                "SHA512" => 64,
+                _ => 0
+            };
+
+            return hashOutputLengthBytes > 0;
+        }
+
+        private static bool TryComputeHkdf(byte[] ikm, byte[] salt, byte[] info, string normalizedHashName, int outputLengthBytes, out byte[] output)
+        {
+            output = Array.Empty<byte>();
+            if (ikm == null || ikm.Length == 0 || outputLengthBytes <= 0)
+            {
+                return false;
+            }
+
+            if (!TryGetHashOutputLengthBytes(normalizedHashName, out var hashOutputLengthBytes))
+            {
+                return false;
+            }
+
+            if (outputLengthBytes > 255 * hashOutputLengthBytes)
+            {
+                return false;
+            }
+
+            var effectiveSalt = salt.Length == 0 ? new byte[hashOutputLengthBytes] : salt;
+            byte[] prk;
+            using (var extractHmac = CreateHmac(normalizedHashName, effectiveSalt))
+            {
+                if (extractHmac == null)
+                {
+                    return false;
+                }
+
+                prk = extractHmac.ComputeHash(ikm);
+            }
+
+            var derived = new byte[outputLengthBytes];
+            var bytesWritten = 0;
+            var previousBlock = Array.Empty<byte>();
+            byte counter = 1;
+
+            while (bytesWritten < outputLengthBytes)
+            {
+                if (counter == 0)
+                {
+                    return false;
+                }
+
+                var blockInput = new byte[previousBlock.Length + info.Length + 1];
+                if (previousBlock.Length > 0)
+                {
+                    Buffer.BlockCopy(previousBlock, 0, blockInput, 0, previousBlock.Length);
+                }
+
+                if (info.Length > 0)
+                {
+                    Buffer.BlockCopy(info, 0, blockInput, previousBlock.Length, info.Length);
+                }
+
+                blockInput[blockInput.Length - 1] = counter;
+
+                using (var expandHmac = CreateHmac(normalizedHashName, prk))
+                {
+                    if (expandHmac == null)
+                    {
+                        return false;
+                    }
+
+                    previousBlock = expandHmac.ComputeHash(blockInput);
+                }
+
+                var copyLength = Math.Min(previousBlock.Length, outputLengthBytes - bytesWritten);
+                Buffer.BlockCopy(previousBlock, 0, derived, bytesWritten, copyLength);
+                bytesWritten += copyLength;
+                counter++;
+            }
+
+            output = derived;
             return true;
         }
 

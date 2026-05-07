@@ -7524,3 +7524,28 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `21/21` in this crypto compatibility class.
+
+## 2.260 SubtleCrypto HKDF Derivation Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `HKDF` `importKey("raw", ...)` support with strict usage gating (`deriveBits` / `deriveKey` only) and empty-key rejection.
+  - Extended `deriveBits(...)` with `HKDF` support, including:
+    - algorithm/key match validation (`HKDF`)
+    - strict `salt` / `info` / `hash` parameter validation
+    - RFC 5869 output cap enforcement (`length <= 255 * HashLen`)
+    - fail-closed extraction+expansion behavior via HMAC-backed derive flow.
+  - Kept deterministic rejected-thenable behavior for unsupported/invalid hash and invalid derive parameter surfaces.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused HKDF coverage for:
+    - successful `deriveBits` output sizing
+    - `deriveKey` to AES-GCM with encrypt/decrypt round-trip
+    - rejection when `deriveKey` is attempted without `deriveKey` usage.
+  - Crypto compatibility slice now totals `24` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `HKDF` and clarify that only non-HKDF/PBKDF2 derive families remain pending.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `24/24` in this crypto compatibility class.
