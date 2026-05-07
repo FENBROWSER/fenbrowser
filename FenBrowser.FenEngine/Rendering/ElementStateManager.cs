@@ -1374,27 +1374,53 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
-            if (type != "number" && type != "range")
+            if (type != "number" && type != "range" && type != "date")
             {
                 return false;
             }
 
-            if (!double.TryParse(element.GetAttribute("value"), out value))
+            if (!TryParseRangedValue(type, element.GetAttribute("value"), out value))
             {
                 return false;
             }
 
-            if (double.TryParse(element.GetAttribute("min"), out var parsedMin))
+            if (TryParseRangedValue(type, element.GetAttribute("min"), out var parsedMin))
             {
                 min = parsedMin;
             }
 
-            if (double.TryParse(element.GetAttribute("max"), out var parsedMax))
+            if (TryParseRangedValue(type, element.GetAttribute("max"), out var parsedMax))
             {
                 max = parsedMax;
             }
 
             return true;
+        }
+
+        private static bool TryParseRangedValue(string type, string raw, out double value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            switch (type)
+            {
+                case "number":
+                case "range":
+                    return double.TryParse(raw, out value);
+                case "date":
+                    if (DateOnly.TryParse(raw, out var date))
+                    {
+                        value = date.DayNumber;
+                        return true;
+                    }
+
+                    return false;
+                default:
+                    return false;
+            }
         }
 
         private static bool IsContentEditable(Element element)

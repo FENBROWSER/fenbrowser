@@ -1134,6 +1134,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void InRangePseudoClass_SupportsDateInputType()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='date-in-range' type='date' min='2026-01-01' max='2026-12-31' value='2026-06-15' />
+    <input id='date-out-range' type='date' min='2026-01-01' max='2026-12-31' value='2027-01-01' />
+</body></html>");
+
+            var inRange = ById(doc, "date-in-range");
+            var outRange = ById(doc, "date-out-range");
+
+            Assert.True(SelectorMatcher.Matches(inRange, ":in-range"));
+            Assert.False(SelectorMatcher.Matches(outRange, ":in-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
