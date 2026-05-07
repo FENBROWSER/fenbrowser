@@ -685,6 +685,22 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LocalLinkPseudoClass_DepthBeyondPathSegmentCount_IsRejected()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <a id='local' href='/docs/specs/intro'>Same prefix</a>
+</body></html>");
+
+            doc.URL = "https://example.org/docs/specs/page";
+            doc.BaseURI = "https://example.org/docs/specs/page";
+
+            var local = ById(doc, "local");
+            Assert.False(SelectorMatcher.Matches(local, ":local-link(4)"));
+        }
+
+        [Fact]
         public void BlankPseudoClass_MatchesWhitespaceOnlyInputs()
         {
             var doc = Parse(@"
