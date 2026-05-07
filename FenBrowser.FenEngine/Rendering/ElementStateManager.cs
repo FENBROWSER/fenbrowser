@@ -740,6 +740,23 @@ namespace FenBrowser.FenEngine.Rendering
 
             return true;
         }
+
+        public static bool IsPausedMedia(Element element)
+        {
+            if (!IsMediaElement(element))
+            {
+                return false;
+            }
+
+            var explicitState = element.GetAttribute("data-media-state");
+            if (string.Equals(explicitState, "paused", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(element.GetAttribute("data-media-paused"), "true", StringComparison.OrdinalIgnoreCase) ||
+                   element.HasAttribute("paused");
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute
