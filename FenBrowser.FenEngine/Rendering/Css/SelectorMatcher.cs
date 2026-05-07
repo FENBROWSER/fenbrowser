@@ -902,6 +902,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "enabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                         !ElementStateManager.IsEffectivelyDisabled(el);
                 case "focus": return ElementStateManager.Instance.IsFocused(el);
+                case "focus-within": return ElementStateManager.Instance.IsFocusWithin(el);
                 case "hover": return ElementStateManager.Instance.IsHovered(el);
                 case "active": return ElementStateManager.Instance.IsActive(el);
                 case "visited": return ElementStateManager.Instance.IsVisited(el);

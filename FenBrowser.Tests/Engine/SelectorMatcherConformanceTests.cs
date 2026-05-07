@@ -778,6 +778,27 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void FocusWithinPseudoClass_MatchesFocusedElementAndAncestors()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='host'><input id='child' /></div>
+    <div id='other'><input id='other-child' /></div>
+</body></html>");
+
+            var host = ById(doc, "host");
+            var child = ById(doc, "child");
+            var other = ById(doc, "other");
+
+            ElementStateManager.Instance.SetFocusedElement(child);
+
+            Assert.True(SelectorMatcher.Matches(host, ":focus-within"));
+            Assert.True(SelectorMatcher.Matches(child, ":focus-within"));
+            Assert.False(SelectorMatcher.Matches(other, ":focus-within"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
