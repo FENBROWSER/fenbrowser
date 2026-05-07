@@ -1375,7 +1375,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string type = element.GetAttribute("type")?.Trim().ToLowerInvariant();
-            if (type != "number" && type != "range" && type != "date" && type != "datetime-local" && type != "month" && type != "week")
+            if (type != "number" && type != "range" && type != "date" && type != "datetime-local" && type != "month" && type != "week" && type != "time")
             {
                 return false;
             }
@@ -1439,6 +1439,14 @@ namespace FenBrowser.FenEngine.Rendering
                     if (TryParseIsoWeek(raw, out var weekValue))
                     {
                         value = weekValue;
+                        return true;
+                    }
+
+                    return false;
+                case "time":
+                    if (TimeOnly.TryParse(raw, out var time))
+                    {
+                        value = time.ToTimeSpan().TotalSeconds;
                         return true;
                     }
 

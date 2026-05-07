@@ -1202,6 +1202,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void InRangePseudoClass_SupportsTimeInputType()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <input id='time-in-range' type='time' min='09:00' max='17:00' value='12:30' />
+    <input id='time-out-range' type='time' min='09:00' max='17:00' value='18:15' />
+</body></html>");
+
+            var inRange = ById(doc, "time-in-range");
+            var outRange = ById(doc, "time-out-range");
+
+            Assert.True(SelectorMatcher.Matches(inRange, ":in-range"));
+            Assert.False(SelectorMatcher.Matches(outRange, ":in-range"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"
