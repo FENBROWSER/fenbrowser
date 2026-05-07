@@ -425,6 +425,199 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void JsCrypto_SubtleGenerateRsaOaepKey_EncryptDecrypt_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+            var decrypt = subtle.Get("decrypt").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+
+            var generateResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(generateResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("RSA-OAEP");
+            var plaintext = FenValue.FromString("rsa-oaep-encrypt-decrypt-message");
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(publicKey),
+                    plaintext
+                },
+                null);
+
+            var encryptThenable = AssertThenableState(encryptResult, "fulfilled");
+            var encryptedPayload = Assert.IsType<JsArrayBuffer>(encryptThenable.Get("__result").AsObject());
+            Assert.True(encryptedPayload.Data.Length > 0);
+
+            var decryptResult = decrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromObject(encryptedPayload)
+                },
+                null);
+
+            var decryptThenable = AssertThenableState(decryptResult, "fulfilled");
+            var decryptedPayload = Assert.IsType<JsArrayBuffer>(decryptThenable.Get("__result").AsObject());
+            Assert.Equal("rsa-oaep-encrypt-decrypt-message", Encoding.UTF8.GetString(decryptedPayload.Data));
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleRsaOaep_WrapUnwrapKey_HmacRoundTrip_Resolves()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var importKey = subtle.Get("importKey").AsFunction();
+            var wrapKey = subtle.Get("wrapKey").AsFunction();
+            var unwrapKey = subtle.Get("unwrapKey").AsFunction();
+            var sign = subtle.Get("sign").AsFunction();
+            var verify = subtle.Get("verify").AsFunction();
+
+            var keyToWrapImport = importKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("rsa-oaep-wrap-target-hmac"))),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var keyToWrapThenable = AssertThenableState(keyToWrapImport, "fulfilled");
+            var keyToWrap = Assert.IsType<FenObject>(keyToWrapThenable.Get("__result").AsObject());
+
+            var rsaAlgorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            rsaAlgorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            rsaAlgorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+            var keyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(rsaAlgorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("wrapKey", "unwrapKey"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(keyPairResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var privateKey = Assert.IsType<FenObject>(keyPair.Get("privateKey").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var wrapResult = wrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(keyToWrap),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromObject(CreateAlgorithm("RSA-OAEP"))
+                },
+                null);
+
+            var wrapThenable = AssertThenableState(wrapResult, "fulfilled");
+            var wrappedPayload = Assert.IsType<JsArrayBuffer>(wrapThenable.Get("__result").AsObject());
+            Assert.True(wrappedPayload.Data.Length > 0);
+
+            var unwrapResult = unwrapKey.Invoke(
+                new[]
+                {
+                    FenValue.FromString("raw"),
+                    FenValue.FromObject(wrappedPayload),
+                    FenValue.FromObject(privateKey),
+                    FenValue.FromObject(CreateAlgorithm("RSA-OAEP")),
+                    FenValue.FromObject(CreateAlgorithm("HMAC", "SHA-256")),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("sign", "verify"))
+                },
+                null);
+
+            var unwrapThenable = AssertThenableState(unwrapResult, "fulfilled");
+            var unwrappedKey = Assert.IsType<FenObject>(unwrapThenable.Get("__result").AsObject());
+
+            var message = FenValue.FromString("rsa-oaep-wrapped-key-sign-verify");
+            var signatureResult = sign.Invoke(
+                new[]
+                {
+                    FenValue.FromString("HMAC"),
+                    FenValue.FromObject(unwrappedKey),
+                    message
+                },
+                null);
+
+            var signatureThenable = AssertThenableState(signatureResult, "fulfilled");
+            var signature = Assert.IsType<JsArrayBuffer>(signatureThenable.Get("__result").AsObject());
+
+            var verifyResult = verify.Invoke(
+                new[]
+                {
+                    FenValue.FromString("HMAC"),
+                    FenValue.FromObject(unwrappedKey),
+                    FenValue.FromObject(signature),
+                    message
+                },
+                null);
+
+            var verifyThenable = AssertThenableState(verifyResult, "fulfilled");
+            Assert.True(verifyThenable.Get("__result").ToBoolean());
+        }
+
+        [Fact]
+        public void JsCrypto_SubtleRsaOaep_EncryptWithLabel_RejectsUntilSupported()
+        {
+            var subtle = GetSubtle(new JsCrypto());
+            var generateKey = subtle.Get("generateKey").AsFunction();
+            var encrypt = subtle.Get("encrypt").AsFunction();
+
+            var algorithm = CreateAlgorithm("RSA-OAEP", "SHA-256");
+            algorithm.Set("modulusLength", FenValue.FromNumber(1024));
+            algorithm.Set("publicExponent", FenValue.FromObject(CreateArrayBuffer(new byte[] { 0x01, 0x00, 0x01 })));
+            var keyPairResult = generateKey.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(algorithm),
+                    FenValue.FromBoolean(true),
+                    FenValue.FromObject(CreateStringArray("encrypt", "decrypt"))
+                },
+                null);
+
+            var keyPairThenable = AssertThenableState(keyPairResult, "fulfilled");
+            var keyPair = Assert.IsType<FenObject>(keyPairThenable.Get("__result").AsObject());
+            var publicKey = Assert.IsType<FenObject>(keyPair.Get("publicKey").AsObject());
+
+            var operationAlgorithm = CreateAlgorithm("RSA-OAEP");
+            operationAlgorithm.Set("label", FenValue.FromObject(CreateArrayBuffer(Encoding.UTF8.GetBytes("oaep-label"))));
+
+            var encryptResult = encrypt.Invoke(
+                new[]
+                {
+                    FenValue.FromObject(operationAlgorithm),
+                    FenValue.FromObject(publicKey),
+                    FenValue.FromString("payload")
+                },
+                null);
+
+            var thenable = AssertThenableState(encryptResult, "rejected");
+            Assert.Contains("NotSupportedError", thenable.Get("__reason").ToString(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void JsCrypto_SubtleGenerateAesGcmKey_EncryptDecrypt_Resolves()
         {
             var subtle = GetSubtle(new JsCrypto());

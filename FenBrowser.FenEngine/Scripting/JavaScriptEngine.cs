@@ -4649,6 +4649,15 @@ namespace FenBrowser.FenEngine.Scripting
         private static readonly HashSet<string> RsaPublicAllowedUsages =
             new HashSet<string>(new[] { "verify" }, StringComparer.Ordinal);
 
+        private static readonly HashSet<string> RsaOaepPrivateAllowedUsages =
+            new HashSet<string>(new[] { "decrypt", "unwrapkey" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> RsaOaepPublicAllowedUsages =
+            new HashSet<string>(new[] { "encrypt", "wrapkey" }, StringComparer.Ordinal);
+
+        private static readonly HashSet<string> RsaOaepGenerateAllowedUsages =
+            new HashSet<string>(new[] { "encrypt", "decrypt", "wrapkey", "unwrapkey" }, StringComparer.Ordinal);
+
         private static readonly HashSet<string> AesAllowedUsages =
             new HashSet<string>(new[] { "encrypt", "decrypt", "wrapkey", "unwrapkey" }, StringComparer.Ordinal);
 
@@ -4773,6 +4782,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return GenerateHmacKey(args[0], extractable, usages);
                     case "RSASSAPKCS1V15":
                         return GenerateRsaSsaKey(args[0], extractable, usages);
+                    case "RSAOAEP":
+                        return GenerateRsaOaepKey(args[0], extractable, usages);
                     case "AESGCM":
                         return GenerateAesGcmKey(args[0], extractable, usages);
                     default:
@@ -4818,6 +4829,8 @@ namespace FenBrowser.FenEngine.Scripting
                         return ImportHmacKey(format, args[1], args[2], extractable, usages);
                     case "RSASSAPKCS1V15":
                         return ImportRsaSsaKey(format, args[1], args[2], extractable, usages);
+                    case "RSAOAEP":
+                        return ImportRsaOaepKey(format, args[1], args[2], extractable, usages);
                     case "AESGCM":
                         return ImportAesGcmKey(format, args[1], args[2], extractable, usages);
                     case "PBKDF2":
@@ -4882,6 +4895,7 @@ namespace FenBrowser.FenEngine.Scripting
                     }
 
                     case "RSASSAPKCS1V15":
+                    case "RSAOAEP":
                     {
                         if (string.Equals(format, "pkcs8", StringComparison.Ordinal))
                         {
@@ -4974,6 +4988,32 @@ namespace FenBrowser.FenEngine.Scripting
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(payload))));
                 }
 
+                if (string.Equals(operationAlgorithm, "RSAOAEP", StringComparison.Ordinal))
+                {
+                    if (keyState.IsPrivateKey)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: RSA-OAEP encrypt requires a public key"));
+                    }
+
+                    if (!TryResolveRsaOaepPadding(args[0], keyState.HashName, out var padding))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
+                    }
+
+                    if (!TryResolveRsaOaepLabel(args[0], out var label))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA-OAEP label is invalid"));
+                    }
+
+                    if (label.Length > 0)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP non-empty label is not supported"));
+                    }
+
+                    var ciphertext = keyState.RsaKey.Encrypt(plaintext, padding);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(ciphertext))));
+                }
+
                 return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
             }
             catch (Exception ex)
@@ -5042,6 +5082,32 @@ namespace FenBrowser.FenEngine.Scripting
                     }
 
                     return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(plaintext))));
+                }
+
+                if (string.Equals(operationAlgorithm, "RSAOAEP", StringComparison.Ordinal))
+                {
+                    if (!keyState.IsPrivateKey)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("InvalidAccessError: RSA-OAEP decrypt requires a private key"));
+                    }
+
+                    if (!TryResolveRsaOaepPadding(args[0], keyState.HashName, out var padding))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
+                    }
+
+                    if (!TryResolveRsaOaepLabel(args[0], out var label))
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA-OAEP label is invalid"));
+                    }
+
+                    if (label.Length > 0)
+                    {
+                        return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP non-empty label is not supported"));
+                    }
+
+                    var decryptedPayload = keyState.RsaKey.Decrypt(encryptedPayload, padding);
+                    return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateArrayBuffer(decryptedPayload))));
                 }
 
                 return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: Algorithm not supported"));
@@ -5697,6 +5763,56 @@ namespace FenBrowser.FenEngine.Scripting
             return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
         }
 
+        private static FenValue ImportRsaOaepKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            var isPrivate = string.Equals(format, "pkcs8", StringComparison.Ordinal);
+            var isPublic = string.Equals(format, "spki", StringComparison.Ordinal);
+
+            if (!isPrivate && !isPublic)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP import supports pkcs8 and spki formats"));
+            }
+
+            if (!TryExtractDigestBytes(keyData, out var keyBytes))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: Key data is invalid"));
+            }
+
+            var allowedUsages = isPrivate ? RsaOaepPrivateAllowedUsages : RsaOaepPublicAllowedUsages;
+            if (!ValidateKeyUsages(usages, allowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSA-OAEP"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
+            }
+
+            var rsa = System.Security.Cryptography.RSA.Create();
+            if (isPrivate)
+            {
+                rsa.ImportPkcs8PrivateKey(keyBytes, out _);
+            }
+            else
+            {
+                rsa.ImportSubjectPublicKeyInfo(keyBytes, out _);
+            }
+
+            var state = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAOAEP",
+                HashName = hashName,
+                KeyType = isPrivate ? "private" : "public",
+                Extractable = extractable,
+                RsaKey = rsa,
+                IsPrivateKey = isPrivate,
+                Usages = usages
+            };
+
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(CreateCryptoKeyObject(state))));
+        }
+
         private static FenValue ImportAesGcmKey(string format, FenValue keyData, FenValue algorithmArg, bool extractable, HashSet<string> usages)
         {
             if (!string.Equals(format, "raw", StringComparison.Ordinal))
@@ -5883,6 +5999,98 @@ namespace FenBrowser.FenEngine.Scripting
             var publicState = new LegacyCryptoKeyState
             {
                 AlgorithmName = "RSASSAPKCS1V15",
+                HashName = hashName,
+                KeyType = "public",
+                Extractable = true,
+                RsaKey = publicRsa,
+                IsPrivateKey = false,
+                Usages = publicUsages
+            };
+
+            var keyPair = new FenObject();
+            keyPair.Set("privateKey", FenValue.FromObject(CreateCryptoKeyObject(privateState)));
+            keyPair.Set("publicKey", FenValue.FromObject(CreateCryptoKeyObject(publicState)));
+            return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(keyPair)));
+        }
+
+        private static FenValue GenerateRsaOaepKey(FenValue algorithmArg, bool extractable, HashSet<string> usages)
+        {
+            if (usages.Count == 0)
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA-OAEP generateKey requires at least one key usage"));
+            }
+
+            if (!ValidateKeyUsages(usages, RsaOaepGenerateAllowedUsages, out var unsupportedUsage))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected($"InvalidAccessError: Unsupported key usage '{unsupportedUsage}' for RSA-OAEP"));
+            }
+
+            if (!TryResolveHashNameForOperation(algorithmArg, "SHA256", out var hashName))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA-OAEP hash algorithm is invalid"));
+            }
+
+            if (!TryResolveRsaModulusLength(algorithmArg, out var modulusLength))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA modulusLength must be a positive integer"));
+            }
+
+            if (!TryResolveRsaPublicExponent(algorithmArg, out var publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("TypeError: RSA publicExponent is invalid"));
+            }
+
+            if (!IsSupportedRsaPublicExponent(publicExponent))
+            {
+                return FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: RSA publicExponent currently supports 65537 only"));
+            }
+
+            using var generatedRsa = System.Security.Cryptography.RSA.Create(modulusLength);
+            var privatePkcs8 = generatedRsa.ExportPkcs8PrivateKey();
+            var publicSpki = generatedRsa.ExportSubjectPublicKeyInfo();
+
+            var privateRsa = System.Security.Cryptography.RSA.Create();
+            privateRsa.ImportPkcs8PrivateKey(privatePkcs8, out _);
+
+            var publicRsa = System.Security.Cryptography.RSA.Create();
+            publicRsa.ImportSubjectPublicKeyInfo(publicSpki, out _);
+
+            var privateUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("decrypt"))
+            {
+                privateUsages.Add("decrypt");
+            }
+
+            if (usages.Contains("unwrapkey"))
+            {
+                privateUsages.Add("unwrapkey");
+            }
+
+            var publicUsages = new HashSet<string>(StringComparer.Ordinal);
+            if (usages.Contains("encrypt"))
+            {
+                publicUsages.Add("encrypt");
+            }
+
+            if (usages.Contains("wrapkey"))
+            {
+                publicUsages.Add("wrapkey");
+            }
+
+            var privateState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAOAEP",
+                HashName = hashName,
+                KeyType = "private",
+                Extractable = extractable,
+                RsaKey = privateRsa,
+                IsPrivateKey = true,
+                Usages = privateUsages
+            };
+
+            var publicState = new LegacyCryptoKeyState
+            {
+                AlgorithmName = "RSAOAEP",
                 HashName = hashName,
                 KeyType = "public",
                 Extractable = true,
@@ -6189,6 +6397,7 @@ namespace FenBrowser.FenEngine.Scripting
                 "HMAC" => "HMAC",
                 "AESGCM" => "AES-GCM",
                 "RSASSAPKCS1V15" => "RSASSA-PKCS1-v1_5",
+                "RSAOAEP" => "RSA-OAEP",
                 _ => normalizedAlgorithmName
             };
         }
@@ -6520,6 +6729,49 @@ namespace FenBrowser.FenEngine.Scripting
 
             output = derived;
             return true;
+        }
+
+        private static bool TryResolveRsaOaepPadding(FenValue algorithmArg, string fallbackHash, out System.Security.Cryptography.RSAEncryptionPadding padding)
+        {
+            padding = null;
+            if (!TryResolveHashNameForOperation(algorithmArg, fallbackHash, out var hashName))
+            {
+                return false;
+            }
+
+            padding = hashName switch
+            {
+                "SHA1" => System.Security.Cryptography.RSAEncryptionPadding.OaepSHA1,
+                "SHA256" => System.Security.Cryptography.RSAEncryptionPadding.OaepSHA256,
+                "SHA384" => System.Security.Cryptography.RSAEncryptionPadding.OaepSHA384,
+                "SHA512" => System.Security.Cryptography.RSAEncryptionPadding.OaepSHA512,
+                _ => null
+            };
+
+            return padding != null;
+        }
+
+        private static bool TryResolveRsaOaepLabel(FenValue algorithmArg, out byte[] label)
+        {
+            label = Array.Empty<byte>();
+            if (!algorithmArg.IsObject)
+            {
+                return true;
+            }
+
+            var algorithmObject = algorithmArg.AsObject();
+            if (algorithmObject == null)
+            {
+                return true;
+            }
+
+            var labelValue = algorithmObject.Get("label");
+            if (labelValue.IsUndefined || labelValue.IsNull)
+            {
+                return true;
+            }
+
+            return TryExtractDigestBytes(labelValue, out label);
         }
 
         private static bool TryResolveAesGcmParams(FenValue algorithmArg, out byte[] iv, out byte[] additionalData, out int tagLengthBits)

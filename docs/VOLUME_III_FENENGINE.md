@@ -7549,3 +7549,30 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `24/24` in this crypto compatibility class.
+
+## 2.261 SubtleCrypto RSA-OAEP Completion (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Added `RSA-OAEP` support to `generateKey(...)` and `importKey(...)` with strict usage partitioning:
+    - public key usages: `encrypt` / `wrapKey`
+    - private key usages: `decrypt` / `unwrapKey`
+  - Added `RSA-OAEP` handling to `exportKey(...)` for `pkcs8`/`spki` parity with existing RSA key formats.
+  - Extended `encrypt(...)` / `decrypt(...)` with RSA-OAEP operation support and hash resolution (`SHA-1/256/384/512`) using the key-default hash when operation hash is omitted.
+  - Added fail-closed label handling for RSA-OAEP:
+    - malformed labels reject with `TypeError`
+    - non-empty labels currently reject with `NotSupportedError` until runtime exposes full OAEP-label backend parity.
+  - Kept `wrapKey(...)` / `unwrapKey(...)` composition path deterministic by routing RSA-OAEP through the same crypto operation gates.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added focused RSA-OAEP coverage for:
+    - generated-key encrypt/decrypt round-trip
+    - RSA-OAEP wrap/unwrap of raw HMAC keys plus sign/verify proof
+    - explicit rejection for non-empty OAEP labels (fail-closed behavior).
+  - Crypto compatibility slice now totals `27` tests.
+- `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
+  - Updated `crypto.subtle` capability summary to include `RSA-OAEP`.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `27/27` in this crypto compatibility class.
