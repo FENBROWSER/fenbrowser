@@ -648,6 +648,26 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void LocalLinkPseudoClass_FunctionalDepth_MatchesOnlySharedPathPrefix()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <a id='same-prefix' href='/docs/specs/intro'>Same prefix</a>
+    <a id='different-prefix' href='/docs/other/intro'>Different prefix</a>
+</body></html>");
+
+            doc.URL = "https://example.org/docs/specs/page";
+            doc.BaseURI = "https://example.org/docs/specs/page";
+
+            var samePrefix = ById(doc, "same-prefix");
+            var differentPrefix = ById(doc, "different-prefix");
+
+            Assert.True(SelectorMatcher.Matches(samePrefix, ":local-link(2)"));
+            Assert.False(SelectorMatcher.Matches(differentPrefix, ":local-link(2)"));
+        }
+
+        [Fact]
         public void BlankPseudoClass_MatchesWhitespaceOnlyInputs()
         {
             var doc = Parse(@"

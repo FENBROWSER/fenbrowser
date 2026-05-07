@@ -900,7 +900,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "closed": return ElementStateManager.IsClosedElement(el);
                 case "modal": return ElementStateManager.IsModalElement(el);
                 case "defined": return ElementStateManager.IsDefinedElement(el);
-                case "local-link": return ElementStateManager.IsLocalLinkElement(el);
+                case "local-link": return ElementStateManager.IsLocalLinkElement(el, args);
                 case "blank": return ElementStateManager.IsBlankInput(el);
                 case "playing": return ElementStateManager.IsPlayingMedia(el);
                 case "paused": return ElementStateManager.IsPausedMedia(el);

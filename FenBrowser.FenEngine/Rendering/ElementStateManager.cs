@@ -1192,7 +1192,7 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Equals(element.GetAttribute("data-ce-upgraded"), "true", StringComparison.OrdinalIgnoreCase);
         }
 
-        public static bool IsLocalLinkElement(Element element)
+        public static bool IsLocalLinkElement(Element element, string args = null)
         {
             if (element == null)
             {
@@ -1226,9 +1226,44 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            return resolved.Scheme.Equals(docUri.Scheme, StringComparison.OrdinalIgnoreCase) &&
-                   resolved.Host.Equals(docUri.Host, StringComparison.OrdinalIgnoreCase) &&
-                   resolved.Port == docUri.Port;
+            if (!resolved.Scheme.Equals(docUri.Scheme, StringComparison.OrdinalIgnoreCase) ||
+                !resolved.Host.Equals(docUri.Host, StringComparison.OrdinalIgnoreCase) ||
+                resolved.Port != docUri.Port)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(args))
+            {
+                return true;
+            }
+
+            if (!int.TryParse(args.Trim(), out var pathDepth) || pathDepth < 0)
+            {
+                return false;
+            }
+
+            if (pathDepth == 0)
+            {
+                return true;
+            }
+
+            var documentSegments = GetPathSegments(docUri.AbsolutePath);
+            var targetSegments = GetPathSegments(resolved.AbsolutePath);
+            if (documentSegments.Length < pathDepth || targetSegments.Length < pathDepth)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < pathDepth; i++)
+            {
+                if (!string.Equals(documentSegments[i], targetSegments[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         public static bool IsBlankInput(Element element)
@@ -1343,6 +1378,16 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return string.Equals(element.GetAttribute("data-media-" + name), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string[] GetPathSegments(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return Array.Empty<string>();
+            }
+
+            return path.Split('/', StringSplitOptions.RemoveEmptyEntries);
         }
 
         public static bool SupportsEnabledDisabledPseudoClass(Element element)
