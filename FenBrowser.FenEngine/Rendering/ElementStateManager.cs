@@ -864,6 +864,24 @@ namespace FenBrowser.FenEngine.Rendering
                 "future",
                 StringComparison.OrdinalIgnoreCase);
         }
+
+        public static bool IsFullscreenElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            if (element.HasAttribute("fullscreen"))
+            {
+                return true;
+            }
+
+            return string.Equals(
+                element.GetAttribute("data-fullscreen"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        }
         
         /// <summary>
         /// Check if a form element has the required attribute

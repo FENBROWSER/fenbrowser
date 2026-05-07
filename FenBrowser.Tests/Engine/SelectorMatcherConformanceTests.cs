@@ -1083,6 +1083,23 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void FullscreenPseudoClass_MatchesFullscreenMarkedElement()
+        {
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <div id='full' data-fullscreen='true'></div>
+    <div id='normal'></div>
+</body></html>");
+
+            var full = ById(doc, "full");
+            var normal = ById(doc, "normal");
+
+            Assert.True(SelectorMatcher.Matches(full, ":fullscreen"));
+            Assert.False(SelectorMatcher.Matches(normal, ":fullscreen"));
+        }
+
+        [Fact]
         public void MalformedCompoundSelector_IsRejected()
         {
             var doc = Parse(@"

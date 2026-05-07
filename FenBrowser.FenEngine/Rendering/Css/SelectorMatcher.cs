@@ -911,6 +911,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "current": return ElementStateManager.IsTimelineCurrent(el);
                 case "past": return ElementStateManager.IsTimelinePast(el);
                 case "future": return ElementStateManager.IsTimelineFuture(el);
+                case "fullscreen": return ElementStateManager.IsFullscreenElement(el);
                 case "checked": return IsCheckedFormControl(el);
                 case "disabled": return ElementStateManager.SupportsEnabledDisabledPseudoClass(el) &&
                                          ElementStateManager.IsEffectivelyDisabled(el);
