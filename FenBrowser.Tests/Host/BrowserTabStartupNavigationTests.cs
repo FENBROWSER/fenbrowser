@@ -43,11 +43,13 @@ namespace FenBrowser.Tests.Host
             var wakeEventField = typeof(BrowserIntegration).GetField("_wakeEvent", BindingFlags.Instance | BindingFlags.NonPublic);
             var engineThreadField = typeof(BrowserIntegration).GetField("_engineThread", BindingFlags.Instance | BindingFlags.NonPublic);
             var currentFrameField = typeof(BrowserIntegration).GetField("_currentFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+            var currentSeedField = typeof(BrowserIntegration).GetField("_currentFrameSeedImage", BindingFlags.Instance | BindingFlags.NonPublic);
 
             runningField?.SetValue(integration, false);
             (wakeEventField?.GetValue(integration) as AutoResetEvent)?.Set();
             (engineThreadField?.GetValue(integration) as Thread)?.Join(TimeSpan.FromSeconds(2));
             (currentFrameField?.GetValue(integration) as SKPicture)?.Dispose();
+            (currentSeedField?.GetValue(integration) as SKImage)?.Dispose();
         }
 
         private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)

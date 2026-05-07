@@ -43,7 +43,7 @@ public class BrowserIntegration
     private readonly Thread _engineThread;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
     private bool _running = true;
-    // Rendering Buffers (Double-Buffered Display List)
+    // Rendering Buffers (Double-Buffered Display List + seed image for reuse).
     private SKPicture _currentFrame;
     private SKImage _currentFrameSeedImage;
     private readonly object _frameLock = new object();
@@ -185,6 +185,8 @@ public class BrowserIntegration
             {
                 _lastNavigationTime = DateTime.Now;
                 _hasFirstStyledRender = false;
+                _root = null;
+                _styles = null;
                 _deferredScrollTarget = null;
                 _scrollY = 0f;
                 _contentHeight = 0f;
@@ -237,7 +239,7 @@ public class BrowserIntegration
             EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}", LogCategory.Rendering);
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
-            // after a valid frame is committed — never before _currentFrame is ready.
+            // after a valid frame is committed.
             RequestFrame(
                 _hasFirstStyledRender
                     ? RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style
@@ -776,12 +778,12 @@ public class BrowserIntegration
             // Sync latest state from browser host
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
-            _styles = snapshot.HasStableStyles ? snapshot.Styles : null;
+            _styles = snapshot.Styles;
 
         // PROGRESSIVE RENDERING: Render with whatever data we have.
         // Don't block waiting for "complete" styles - show content as soon as DOM is ready.
         // The frame will naturally improve as styles arrive and trigger repaints.
-        if (!_hasFirstStyledRender && _root != null && snapshot.HasStableStyles)
+        if (!_hasFirstStyledRender && _root != null && _styles != null && _styles.Count > 0)
         {
             _hasFirstStyledRender = true;
         }
@@ -1048,7 +1050,7 @@ public class BrowserIntegration
                  if (!_hasLoggedFrameNull)
                  {
                      _hasLoggedFrameNull = true;
-                     EngineLogBridge.Debug("[BrowserIntegration] Render: _currentFrame is null, drawing placeholder.", LogCategory.Rendering);
+                     EngineLogBridge.Debug("[BrowserIntegration] Render: no committed frame yet, drawing placeholder.", LogCategory.Rendering);
                  }
             }
         }
@@ -1183,7 +1185,7 @@ public class BrowserIntegration
                 }
             }
 
-            // Start recording
+            // Start recording the next presentable frame on the display-list buffer.
             var canvas = _recorder.BeginRecording(viewport);
             if (canReuseBaseFrame && reusableSeedImage != null)
             {
@@ -1204,49 +1206,56 @@ public class BrowserIntegration
                 viewport.Bottom + _scrollY
             );
 
-            // Keep the engine's root viewport scroll state synchronized with the Host's
-            // outer document scroll so fixed-position/fixed-background paint logic uses
-            // the same viewport origin as the recorded frame.
-            _renderer.ScrollManager.SetScrollBounds(
-                null,
-                viewportSize.Width,
-                Math.Max(_contentHeight, viewportSize.Height),
-                viewportSize.Width,
-                viewportSize.Height);
-            _renderer.ScrollManager.SetScrollPosition(null, 0, _scrollY);
-
             List<InputOverlayData> frameOverlays = new();
-            canvas.Save();
-            canvas.Translate(0, -_scrollY);
-
             RenderFrameResult frameResult;
-            using (_browser.EnterImageLoaderContext())
+            lock (_rendererLock)
             {
-                frameResult = _renderer.RenderFrame(new RenderFrameRequest
+                // Keep the engine's root viewport scroll state synchronized with the Host's
+                // outer document scroll so fixed-position/fixed-background paint logic uses
+                // the same viewport origin as the recorded frame.
+                _renderer.ScrollManager.SetScrollBounds(
+                    null,
+                    viewportSize.Width,
+                    Math.Max(_contentHeight, viewportSize.Height),
+                    viewportSize.Width,
+                    viewportSize.Height);
+                _renderer.ScrollManager.SetScrollPosition(null, 0, _scrollY);
+
+                canvas.Save();
+                canvas.Translate(0, -_scrollY);
+                try
                 {
-                    Root = _root,
-                    Canvas = canvas,
-                    Styles = _styles,
-                    Viewport = scrolledViewport,
-                    BaseUrl = _browser.CurrentUri?.AbsoluteUri,
-                    OnLayoutUpdated = (contentSize, overlays) =>
+                    using (_browser.EnterImageLoaderContext())
                     {
-                        _contentHeight = contentSize.Height;
-                        frameOverlays = overlays != null
-                            ? new List<InputOverlayData>(overlays)
-                            : new List<InputOverlayData>();
-                    },
-                    SeparateLayoutViewport = viewportSize,
-                    HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
-                    InvalidationReason = invalidationReasons,
-                    RequestedBy = requestedBy,
-                    EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
-                });
+                        frameResult = _renderer.RenderFrame(new RenderFrameRequest
+                        {
+                            Root = _root,
+                            Canvas = canvas,
+                            Styles = _styles,
+                            Viewport = scrolledViewport,
+                            BaseUrl = _browser.CurrentUri?.AbsoluteUri,
+                            OnLayoutUpdated = (contentSize, overlays) =>
+                            {
+                                _contentHeight = contentSize.Height;
+                                frameOverlays = overlays != null
+                                    ? new List<InputOverlayData>(overlays)
+                                    : new List<InputOverlayData>();
+                            },
+                            SeparateLayoutViewport = viewportSize,
+                            HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
+                            InvalidationReason = invalidationReasons,
+                            RequestedBy = requestedBy,
+                            EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
+                        });
+                    }
+                }
+                finally
+                {
+                    canvas.Restore();
+                }
             }
 
-            canvas.Restore();
-
-            // Finish recording and swap buffers
+            // Finish recording and derive the next seed image from the committed picture.
             var newFrame = _recorder.EndRecording();
             var newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
 

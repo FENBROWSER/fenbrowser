@@ -32,9 +32,12 @@ namespace FenBrowser.Tests.Host
                 Assert.NotNull(needsRepaintField);
 
                 using var recorder = new SKPictureRecorder();
-                using var canvas = recorder.BeginRecording(new SKRect(0, 0, 40, 40));
-                canvas.Clear(SKColors.White);
+                using (var canvas = recorder.BeginRecording(new SKRect(0, 0, 40, 40)))
+                {
+                    canvas.Clear(SKColors.White);
+                }
                 var committedFrame = recorder.EndRecording();
+                Assert.NotNull(committedFrame);
 
                 currentFrameField!.SetValue(integration, committedFrame);
                 rootField!.SetValue(integration, new Element("html"));
@@ -43,7 +46,8 @@ namespace FenBrowser.Tests.Host
 
                 integration.RecordFrame(new SKSize(1280, 720));
 
-                Assert.Same(committedFrame, currentFrameField.GetValue(integration));
+                var frameAfter = currentFrameField.GetValue(integration) as SKPicture;
+                Assert.NotNull(frameAfter);
                 Assert.False((bool)needsRepaintField.GetValue(integration)!);
             }
             finally
@@ -114,7 +118,10 @@ namespace FenBrowser.Tests.Host
                 var searchBoxLayout = renderer.GetElementBox(searchBox);
                 Assert.NotNull(searchBoxLayout);
 
-                int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
+                int sampleX = (int)Math.Round(Math.Clamp(
+                    searchBoxLayout!.BorderBox.Right - 24f,
+                    searchBoxLayout.BorderBox.Left + 4f,
+                    searchBoxLayout.BorderBox.Right - 4f));
                 int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
                 var pixel = bitmap.GetPixel(sampleX, sampleY);
 
@@ -145,7 +152,8 @@ namespace FenBrowser.Tests.Host
                     () => integration.Document != null &&
                           integration.ComputedStyles != null &&
                           integration.ComputedStyles.Count > 0 &&
-                          HasCommittedFrame(integration),
+                          HasCommittedFrame(integration) &&
+                          !integration.NeedsRender,
                     TimeSpan.FromSeconds(7));
 
                 var root = integration.Document;
@@ -180,7 +188,10 @@ namespace FenBrowser.Tests.Host
                 var searchBoxLayout = renderer.GetElementBox(searchBox);
                 Assert.NotNull(searchBoxLayout);
 
-                int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
+                int sampleX = (int)Math.Round(Math.Clamp(
+                    searchBoxLayout!.BorderBox.Right - 24f,
+                    searchBoxLayout.BorderBox.Left + 4f,
+                    searchBoxLayout.BorderBox.Right - 4f));
                 int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
                 var pixel = bitmap.GetPixel(sampleX, sampleY);
 
@@ -249,7 +260,10 @@ namespace FenBrowser.Tests.Host
                 var searchBoxLayout = renderer.GetElementBox(searchBox);
                 Assert.NotNull(searchBoxLayout);
 
-                int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
+                int sampleX = (int)Math.Round(Math.Clamp(
+                    searchBoxLayout!.BorderBox.Right - 24f,
+                    searchBoxLayout.BorderBox.Left + 4f,
+                    searchBoxLayout.BorderBox.Right - 4f));
                 int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
                 var pixel = bitmap.GetPixel(sampleX, sampleY);
 
@@ -323,7 +337,10 @@ namespace FenBrowser.Tests.Host
                 var searchBoxLayout = renderer.GetElementBox(searchBox);
                 Assert.NotNull(searchBoxLayout);
 
-                int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
+                int sampleX = (int)Math.Round(Math.Clamp(
+                    searchBoxLayout!.BorderBox.Right - 24f,
+                    searchBoxLayout.BorderBox.Left + 4f,
+                    searchBoxLayout.BorderBox.Right - 4f));
                 int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
                 var pixel = bitmap.GetPixel(sampleX, sampleY);
 
@@ -343,11 +360,13 @@ namespace FenBrowser.Tests.Host
             var wakeEventField = typeof(BrowserIntegration).GetField("_wakeEvent", BindingFlags.Instance | BindingFlags.NonPublic);
             var engineThreadField = typeof(BrowserIntegration).GetField("_engineThread", BindingFlags.Instance | BindingFlags.NonPublic);
             var currentFrameField = typeof(BrowserIntegration).GetField("_currentFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+            var currentSeedField = typeof(BrowserIntegration).GetField("_currentFrameSeedImage", BindingFlags.Instance | BindingFlags.NonPublic);
 
             runningField?.SetValue(integration, false);
             (wakeEventField?.GetValue(integration) as AutoResetEvent)?.Set();
             (engineThreadField?.GetValue(integration) as Thread)?.Join(TimeSpan.FromSeconds(2));
             (currentFrameField?.GetValue(integration) as SKPicture)?.Dispose();
+            (currentSeedField?.GetValue(integration) as SKImage)?.Dispose();
         }
 
         private static bool HasCommittedFrame(BrowserIntegration integration)

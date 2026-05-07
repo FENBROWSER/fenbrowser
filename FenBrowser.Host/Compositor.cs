@@ -227,7 +227,13 @@ public class Compositor
     /// </summary>
     public void InvalidateRect(SKRect rect)
     {
-        _root.Invalidate(); // For now, invalidate entire root
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            _root.Invalidate();
+            return;
+        }
+
+        _root.Invalidate(rect);
     }
 }
 

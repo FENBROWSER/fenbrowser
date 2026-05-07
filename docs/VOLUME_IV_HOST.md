@@ -46,7 +46,11 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Coordinate Systems**: Translates between **Window Space** (Physical Pixels), **UI Space** (Logical Pixels), and **Document Space** (Scroll-offset Pixels).
 - **Render Loop**:
   - `RecordFrame()`: Engine produces a paint tree (Background thread).
-  - `Render()`: Host draws the paint tree to the canvas (UI thread).
+  - `Render()`: Host draws the committed frame to the canvas (UI thread).
+- **Frame Commit Guard (2026-05-08)**:
+  - `BrowserIntegration.RecordFrame(...)` serializes renderer access under `_rendererLock` to prevent concurrent frame-building races.
+  - The host continues presenting the committed `SKPicture` while maintaining a parallel `SKImage` seed snapshot for base-frame reuse/damage workflows.
+  - Navigation resets now clear `_root` and `_styles` up front; sync/render adopts live snapshot styles directly to avoid stale pre-style presentation.
 - **Frame Transition Logging Guard (2026-04-13)**:
   - `BrowserIntegration.RecordFrame()` no longer emits `[TRANSITION]` layout logs on every repaint by default.
   - The transition log is now gated behind `DebugConfig.EnableDeepDebug && DebugConfig.LogFrameTiming`, removing high-frequency synchronous log pressure from normal navigation while preserving targeted tracing in deep debug runs.
@@ -145,7 +149,7 @@ Container for the Back/Forward buttons and Address Bar.
 
 #### `WebContentWidget.cs` (Lines 1-300)
 
-The viewport container that hosting the rendered `SKPicture` from the engine.
+The viewport container hosting the committed browser frame from the engine.
 
 - Bridges mouse/keyboard IO from the Host to the Engine's `InputManager`.
 
