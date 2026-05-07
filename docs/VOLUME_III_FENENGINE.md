@@ -7771,3 +7771,18 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
   - Passed: `47/47` in this crypto compatibility class.
+
+## 2.272 SubtleCrypto RSA-PSS Hash-Binding Hardening (2026-05-07)
+
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - Extended operation-hash binding enforcement to `RSA-PSS` `sign(...)` and `verify(...)`.
+  - Runtime now rejects caller-provided hash overrides that differ from key hash metadata with `InvalidAccessError`.
+- `FenBrowser.Tests/Engine/JsCryptoCompatibilityTests.cs`
+  - Added explicit RSA-PSS hash-mismatch rejection coverage (`key=SHA-256`, `op=SHA-384`).
+  - Crypto compatibility slice now totals `48` tests.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~JsCryptoCompatibilityTests" --logger "console;verbosity=minimal"`
+  - Passed: `48/48` in this crypto compatibility class.
