@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  
+  <!-- Simplified WebIDL Generation Infrastructure for Build Pipeline
+       
+       This simplified props file ensures proper build order and prevents 
+       the "WebIDL generator is missing" error by running generation AFTER
+       WebIdlGen is guaranteed built.
+       
+       Usage: <Import Project="$(MSBuildThisFileDirectory)Build\WebIdl.Build.props" />
+  -->
+  
+  <!-- Ensure WebIdlGen builds before FenEngine -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'FenBrowser.WebIdlGen'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <BuildReference>true</BuildReference>
+    </ProjectReference>
+  </ItemGroup>
+  
+  <!-- Find WebIDL Gen DLL -->
+  <PropertyGroup>
+    <WebIdlGenerateBindings Condition="'$(WebIdlGenerateBindings)' == ''">true</WebIdlGenerateBindings>
+    <WebIdlGenDll Condition="'$(Configuration)' != ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\$(Configuration)\net8.0\webidlgen.dll</WebIdlGenDll>
+    <WebIdlGenDll Condition="'$(Configuration)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\Debug\net8.0\webidlgen.dll</WebIdlGenDll>
+    <WebIdlOutDir Condition="'$(WebIdlOutDir)' == ''">$(MSBuildThisFileDirectory)Bindings\Generated\</WebIdlOutDir>
+    <WebIdlInDir Condition="'$(WebIdlInDir)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.Core\WebIDL\Idl\</WebIdlInDir>
+  </PropertyGroup>
+  
+  <!-- Target: Generate WebIDL Bindings -->
+  <Target Name="GenerateWebIdlBindings" 
+          Condition="'$(WebIdlGenerateBindings)' == 'true'"
+          BeforeTargets="BeforeBuild"
+          DependsOnTargets="ResolveProjectReferences"
+          Outputs="$(WebIdlOutDir)**\*.g.cs">
+    
+    <!-- Check if Dll exists, provide helpful error -->
+    <Error Condition="!Exists('$(WebIdlGenDll)')"
+           Text="WebIDL generator is missing at $(WebIdlGenDll). Build FenBrowser.WebIdlGen first. Run: dotnet build FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj" />
+    
+    <Message Text="[webidlgen] Generating WebIDL bindings..." Importance="high" />
+    <MakeDir Directories="$(WebIdlOutDir)" />
+    
+    <Exec 
+      Command="dotnet &quot;$(WebIdlGenDll)&quot; --idl &quot;$(WebIdlInDir)&quot; --out &quot;$(WebIdlOutDir)&quot;"
+      WorkingDirectory="$(MSBuildProjectDirectory)"
+      ConsoleToMSBuild="true" />
+    
+    <Message Text="[webidlgen] WebIDL generation complete." Importance="high" />
+  </Target>
+  
+  <!-- Target: Clear WebIDL Cache (manual trigger) -->
+  <Target Name="ClearWebIdlCache">
+    <RemoveDir Directories="$(WebIdlOutDir)" Condition="Exists('$(WebIdlOutDir)')" />
+    <Message Text="[webidlgen] WebIDL cache cleared." Importance="high" />
+  </Target>
+  
+  <!-- Ensure generated files are compiled -->
+  <ItemGroup>
+    <Compile Include="$(WebIdlOutDir)**\*.g.cs" />
+  </ItemGroup>
+  
+  <!-- Clean generated files on clean -->
+  <Target Name="CleanWebIdlGenerated" AfterTargets="Clean">
+    <RemoveDir Directories="$(WebIdlOutDir)" Condition="Exists('$(WebIdlOutDir)')" />
+  </Target>
+  
+</Project>
