@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
@@ -11,6 +14,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Engine
 {
+    [Collection("Engine Tests")]
     public class CssLoaderIsolationRegressionTests
     {
         [Fact]
@@ -236,6 +240,145 @@ namespace FenBrowser.Tests.Engine
                 heroStyle.Transform);
             Assert.Equal("cover", heroStyle.ObjectFit);
             Assert.Equal("50% 30%", heroStyle.ObjectPosition);
+        }
+
+        [Fact]
+        public void GetMatchedRules_ParseCacheKey_PreservesSourceOrderContext_ForDuplicateCssText()
+        {
+            CssLoader.ClearCaches();
+
+            const string html = @"<!doctype html><html><body><div class='box'>x</div></body></html>";
+            var baseUri = new Uri("https://cache-order.test/");
+            var doc = new HtmlParser(html, baseUri).Parse();
+            var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+            var box = root.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
+
+            const string duplicateCss = ".box { color: red; }";
+            var sources = new List<CssLoader.CssSource>
+            {
+                new CssLoader.CssSource
+                {
+                    CssText = duplicateCss,
+                    Origin = CssLoader.CssOrigin.Inline,
+                    SourceOrder = 0,
+                    BaseUri = baseUri
+                },
+                new CssLoader.CssSource
+                {
+                    CssText = ".box { color: green; }",
+                    Origin = CssLoader.CssOrigin.Inline,
+                    SourceOrder = 1,
+                    BaseUri = baseUri
+                },
+                new CssLoader.CssSource
+                {
+                    CssText = duplicateCss,
+                    Origin = CssLoader.CssOrigin.Inline,
+                    SourceOrder = 2,
+                    BaseUri = baseUri
+                }
+            };
+
+            var matched = CssLoader.GetMatchedRules(box, sources)
+                .Where(m => m.Rule is NewCss.CssStyleRule)
+                .ToList();
+
+            Assert.Equal(3, matched.Count);
+            var ruleOrders = matched.Select(m => ((NewCss.CssStyleRule)m.Rule).Order).ToArray();
+            Assert.Equal(new[] { 0, 10000, 20000 }, ruleOrders);
+            Assert.Equal(2, matched[matched.Count - 1].Source.SourceOrder);
+        }
+
+        [Fact]
+        public void GetMatchedRules_ParseCacheKey_PreservesOriginContext_ForDuplicateCssText()
+        {
+            CssLoader.ClearCaches();
+
+            const string html = @"<!doctype html><html><body><div class='box'>x</div></body></html>";
+            var baseUri = new Uri("https://cache-origin.test/");
+            var doc = new HtmlParser(html, baseUri).Parse();
+            var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+            var box = root.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
+
+            const string duplicateCss = ".box { color: red; }";
+            var sources = new List<CssLoader.CssSource>
+            {
+                new CssLoader.CssSource
+                {
+                    CssText = duplicateCss,
+                    Origin = CssLoader.CssOrigin.UserAgent,
+                    SourceOrder = 0,
+                    BaseUri = baseUri
+                },
+                new CssLoader.CssSource
+                {
+                    CssText = duplicateCss,
+                    Origin = CssLoader.CssOrigin.Inline,
+                    SourceOrder = 1,
+                    BaseUri = baseUri
+                }
+            };
+
+            var matched = CssLoader.GetMatchedRules(box, sources)
+                .Where(m => m.Rule is NewCss.CssStyleRule)
+                .ToList();
+
+            Assert.Equal(2, matched.Count);
+            var origins = matched.Select(m => ((NewCss.CssStyleRule)m.Rule).Origin).ToArray();
+            Assert.Equal(NewCss.CssOrigin.UserAgent, origins[0]);
+            Assert.Equal(NewCss.CssOrigin.Author, origins[1]);
+            Assert.Equal(1, matched[matched.Count - 1].Source.SourceOrder);
+        }
+
+        [Fact]
+        public async Task ComputeWithResultAsync_ParseTimeout_CancelsBlockedParsers_WithoutSemaphoreOverRelease()
+        {
+            CssLoader.ClearCaches();
+
+            var parseGateField = typeof(CssLoader).GetField("_globalParseGate", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(parseGateField);
+            var parseGate = Assert.IsType<System.Threading.SemaphoreSlim>(parseGateField!.GetValue(null));
+            int initialCount = parseGate.CurrentCount;
+            Assert.True(initialCount > 0, "Expected parse gate to have at least one available slot.");
+
+            int acquired = 0;
+            try
+            {
+                while (parseGate.Wait(0))
+                {
+                    acquired++;
+                }
+
+                Assert.Equal(0, parseGate.CurrentCount);
+
+                const string html = @"<!doctype html><html><head><style>.box{color:red}</style></head><body><div class='box'>x</div></body></html>";
+                var baseUri = new Uri("https://timeout.test/");
+                var doc = new HtmlParser(html, baseUri).Parse();
+                var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+
+                var stopwatch = Stopwatch.StartNew();
+                var result = await CssLoader.ComputeWithResultAsync(
+                    root,
+                    baseUri,
+                    fetchExternalCssAsync: null,
+                    deadline: new FenBrowser.Core.Deadlines.FrameDeadline(1, "css-parse-timeout-test"));
+                stopwatch.Stop();
+
+                Assert.NotNull(result);
+                Assert.NotNull(result.Computed);
+                Assert.True(stopwatch.ElapsedMilliseconds >= 900, $"Expected timeout path near 1s budget, got {stopwatch.ElapsedMilliseconds}ms.");
+                Assert.True(stopwatch.ElapsedMilliseconds < 5000, $"Timeout path exceeded hard upper bound: {stopwatch.ElapsedMilliseconds}ms.");
+                Assert.Equal(0, parseGate.CurrentCount);
+            }
+            finally
+            {
+                if (acquired > 0)
+                {
+                    parseGate.Release(acquired);
+                }
+            }
+
+            Assert.Equal(initialCount, parseGate.CurrentCount);
         }
 
     }
