@@ -1132,3 +1132,33 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests|FullyQualifiedName~RendererIsolationPoliciesTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests" --logger "console;verbosity=minimal"`: pass (`50/50`) on `2026-05-08`.
+
+### 6.52 Phase 2 Security Wiring: Brokered Site-Per-Process Lifecycle (2026-05-08)
+
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Brokered coordinator now requests renderer sessions from `RendererProcessPool` when pool mode is enabled (`FEN_RENDERER_PROCESS_POOL`, default enabled).
+  - Added deterministic pooled-session teardown (`TearDownSession`) so cross-site assignment changes retire the old renderer lease before the new assignment starts.
+  - Frame delivery from pooled sessions now remaps the pooled internal tab id back to the owning host tab id before raising `FrameReceived`, preserving `BrowserIntegration` tab scoping.
+  - Added pool config environment hooks for controlled rollout:
+    - `FEN_RENDERER_POOL_MAX_SIZE`
+    - `FEN_RENDERER_POOL_WARM_TARGET`
+    - `FEN_RENDERER_POOL_MAX_CONCURRENT_STARTUP`
+    - `FEN_RENDERER_POOL_STARTUP_TIMEOUT_MS`
+    - `FEN_RENDERER_POOL_LIFETIME_MS`
+    - `FEN_RENDERER_POOL_HEALTHCHECK_MS`
+    - `FEN_RENDERER_POOL_PREWARM`.
+- `FenBrowser.Host/ProcessIsolation/RendererProcessPool.cs`
+  - Added `RetireSlot(...)` for deterministic lease destruction (used by security-sensitive reassignment and shutdown paths).
+  - `Start()` now respects `EnablePreWarm`/`TargetWarmCount` instead of always launching warmup workers.
+- `FenBrowser.Host/ProcessIsolation/RendererProcessSlot.cs`
+  - Replaced the process-spawn stub with concrete renderer child launch wiring (sandboxed launch contract, IPC env wiring, startup-ready wait path).
+  - Slot sandbox acquisition now uses centralized `SandboxLaunchPolicy` with fail-closed behavior unless explicit unsandboxed override is set.
+
+- Net effect:
+  - Brokered isolation policies are now operationally connected to process acquisition and teardown paths, rather than policy-only bookkeeping.
+  - Cross-site navigation reassignment executes explicit old-process retirement before new-process activation, matching site-per-process lifecycle expectations.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /clp:ErrorsOnly`: fails in current tree due unrelated upstream `FenBrowser.FenEngine` compile errors (`LayoutBoxStore`/`Thickness`), not from host process-isolation changes.

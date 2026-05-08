@@ -29,6 +29,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly string _assignmentPolicy;
         private readonly RendererAssignmentPolicyMode _assignmentPolicyMode;
         private readonly TimeSpan _rendererReadyTimeout;
+        private readonly RendererProcessPool _rendererProcessPool;
         private volatile bool _isShuttingDown;
 
         public string Mode => "brokered";
@@ -51,12 +52,30 @@ namespace FenBrowser.Host.ProcessIsolation
                 quarantineMs: ParseIntEnv("FEN_RENDERER_CRASH_QUARANTINE_MS", 30000));
             _isolationRegistry = new RendererTabIsolationRegistry(_restartPolicy, _assignmentPolicyMode);
             _rendererReadyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv("FEN_RENDERER_READY_TIMEOUT_MS", 5000));
+            if (ParseBoolEnv("FEN_RENDERER_PROCESS_POOL", fallback: true))
+            {
+                try
+                {
+                    var sandboxFactory = PlatformLayerFactory.GetInstance().CreateSandboxFactory();
+                    _rendererProcessPool = new RendererProcessPool(BuildRendererPoolConfig(), sandboxFactory);
+                }
+                catch (Exception ex)
+                {
+                    _rendererProcessPool = null;
+                    EngineLog.Write(
+                        LogSubsystem.ProcessIsolation,
+                        LogSeverity.Warn,
+                        $"[ProcessIsolation] Renderer process pool unavailable; falling back to direct launch path. {ex.Message}");
+                }
+            }
         }
 
         public void Initialize()
         {
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
-                $"[ProcessIsolation] Mode=brokered (per-tab renderer child process enabled, assignment={_assignmentPolicy}, maxRestarts={_restartPolicy.MaxRestartAttempts}, stableResetMs={_restartPolicy.StableSessionResetMs}, crashWindowMs={_restartPolicy.CrashWindowMs}, crashWindowLimit={_restartPolicy.MaxCrashCountInWindow}, quarantineMs={_restartPolicy.QuarantineMs})");
+                $"[ProcessIsolation] Mode=brokered (per-tab renderer child process enabled, assignment={_assignmentPolicy}, maxRestarts={_restartPolicy.MaxRestartAttempts}, stableResetMs={_restartPolicy.StableSessionResetMs}, crashWindowMs={_restartPolicy.CrashWindowMs}, crashWindowLimit={_restartPolicy.MaxCrashCountInWindow}, quarantineMs={_restartPolicy.QuarantineMs}, poolEnabled={_rendererProcessPool != null})");
+
+            _rendererProcessPool?.Start();
         }
 
         public void OnTabCreated(BrowserTab tab)
@@ -142,11 +161,12 @@ namespace FenBrowser.Host.ProcessIsolation
             {
                 MarkExpectedExit(state, oldSession);
                 oldSession.SendShutdown();
-                StopSession(oldSession, $"tab {state.TabId} assignment change");
+                TearDownSession(state, oldSession, $"tab {state.TabId} assignment change");
             }
 
             state.Session = null;
             state.ActivePid = 0;
+            state.PooledSlot = null;
 
             _ = TryStartSession(state, restartAttempt: 0, restartReason: "assignment-change");
         }
@@ -188,12 +208,13 @@ namespace FenBrowser.Host.ProcessIsolation
                     MarkExpectedExit(state, session);
                     session.SendTabClosed();
                     session.SendShutdown();
-                    StopSession(session, $"tab {tab.Id} closed");
+                    TearDownSession(state, session, $"tab {tab.Id} closed");
                 }
 
                 // Dispose the OS sandbox — this also kills remaining processes via KILL_ON_JOB_CLOSE.
                 state.Sandbox?.Dispose();
                 state.Sandbox = null;
+                state.PooledSlot = null;
             }
         }
 
@@ -210,14 +231,16 @@ namespace FenBrowser.Host.ProcessIsolation
                 {
                     MarkExpectedExit(state, state.Session);
                     state.Session.SendShutdown();
-                    StopSession(state.Session, "host shutdown");
+                    TearDownSession(state, state.Session, "host shutdown");
                 }
 
                 state.Sandbox?.Dispose();
                 state.Sandbox = null;
+                state.PooledSlot = null;
             }
 
             _tabStates.Clear();
+            _rendererProcessPool?.Dispose();
         }
 
         private bool TryStartSession(TabProcessState state, int restartAttempt, string restartReason)
@@ -235,12 +258,53 @@ namespace FenBrowser.Host.ProcessIsolation
                 return false;
             }
 
+            var assignmentForLaunch = !string.IsNullOrWhiteSpace(state.AssignmentKey)
+                ? state.AssignmentKey
+                : $"bootstrap://tab/{state.TabId}";
+
+            if (_rendererProcessPool != null)
+            {
+                try
+                {
+                    var pooledSlot = _rendererProcessPool.AcquireSlotAsync(assignmentForLaunch).GetAwaiter().GetResult();
+                    if (pooledSlot?.Process != null && pooledSlot.Session != null)
+                    {
+                        var pooledSession = pooledSlot.Session;
+                        var pooledProcess = pooledSlot.Process;
+
+                        // Remap pooled session tab ids back to the owning host tab id.
+                        pooledSession.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
+
+                        state.Sandbox?.Dispose();
+                        state.Sandbox = null;
+                        state.PooledSlot = pooledSlot;
+
+                        pooledProcess.EnableRaisingEvents = true;
+                        var pooledPid = pooledProcess.Id;
+                        pooledProcess.Exited += (_, __) => HandleChildProcessExit(state.TabId, pooledPid);
+
+                        state.Session = pooledSession;
+                        state.ActivePid = pooledPid;
+                        _isolationRegistry.MarkSessionStarted(state.TabId, pooledPid);
+
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
+                            $"[ProcessIsolation] Renderer child acquired from pool for tab {state.TabId} (pid={pooledPid}, assignment={assignmentForLaunch}, reason={restartReason})");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                        $"[ProcessIsolation] Renderer pool acquire failed for tab {state.TabId} assignment={assignmentForLaunch}. Falling back to direct launch. {ex.Message}");
+                }
+            }
+
             var pipeName = $"fen_renderer_{_parentPid}_{state.TabId}_{Guid.NewGuid():N}";
             var token = CreateAuthToken();
             var session = new RendererChildSession(state.TabId, pipeName, token);
-            session.FrameReceived += (tabId, payload) => FrameReceived?.Invoke(tabId, payload);
+            session.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
 
-            var process = StartRendererChildWithSandbox(state.TabId, pipeName, token, state.AssignmentKey, out var sandbox);
+            var process = StartRendererChildWithSandbox(state.TabId, pipeName, token, assignmentForLaunch, out var sandbox);
             if (process == null)
             {
                 sandbox?.Dispose();
@@ -251,6 +315,7 @@ namespace FenBrowser.Host.ProcessIsolation
             // Dispose the previous sandbox if one exists (e.g. after a crash restart).
             state.Sandbox?.Dispose();
             state.Sandbox = sandbox;
+            state.PooledSlot = null;
 
             process.EnableRaisingEvents = true;
             var startedPid = process.Id;
@@ -272,7 +337,7 @@ namespace FenBrowser.Host.ProcessIsolation
             _isolationRegistry.MarkSessionStarted(state.TabId, startedPid);
 
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
-                $"[ProcessIsolation] Renderer child started for tab {state.TabId} (pid={startedPid}, pipe={pipeName}, assignment={state.AssignmentKey ?? "<none>"}, reason={restartReason})");
+                $"[ProcessIsolation] Renderer child started for tab {state.TabId} (pid={startedPid}, pipe={pipeName}, assignment={assignmentForLaunch}, reason={restartReason})");
             return true;
         }
 
@@ -334,11 +399,12 @@ namespace FenBrowser.Host.ProcessIsolation
                         return;
                     }
 
-                    StopSession(state.Session, $"tab {tabId} crash cleanup");
+                    TearDownSession(state, state.Session, $"tab {tabId} crash cleanup");
                 }
 
                 state.Session = null;
                 state.ActivePid = 0;
+                state.PooledSlot = null;
 
                 if (!TryStartSession(state, exitDecision.RestartAttempt, "crash-restart"))
                 {
@@ -350,6 +416,40 @@ namespace FenBrowser.Host.ProcessIsolation
                     state.Session?.SendNavigate(exitDecision.ReplayUrl, exitDecision.ReplayIsUserInput);
                 }
             });
+        }
+
+        private void TearDownSession(TabProcessState state, RendererChildSession session, string reason)
+        {
+            if (state?.PooledSlot != null)
+            {
+                try
+                {
+                    if (_rendererProcessPool != null)
+                    {
+                        _rendererProcessPool.RetireSlot(state.PooledSlot, reason);
+                    }
+                    else
+                    {
+                        state.PooledSlot.Dispose();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                        $"[ProcessIsolation] Failed to retire pooled renderer for tab {state.TabId} ({reason}): {ex.Message}");
+                    state.PooledSlot.Dispose();
+                }
+                finally
+                {
+                    state.PooledSlot = null;
+                    state.Session = null;
+                    state.ActivePid = 0;
+                }
+
+                return;
+            }
+
+            StopSession(session, reason);
         }
 
         private Process StartRendererChild(int tabId, string pipeName, string authToken, string assignmentKey)
@@ -575,12 +675,64 @@ namespace FenBrowser.Host.ProcessIsolation
             }
         }
 
+        private static ProcessIsolationConfig BuildRendererPoolConfig()
+        {
+            var maxPoolSize = Math.Max(1, ParseIntEnv("FEN_RENDERER_POOL_MAX_SIZE", 1));
+            var targetWarmCount = Math.Max(0, ParseIntEnv("FEN_RENDERER_POOL_WARM_TARGET", 0));
+            if (targetWarmCount > maxPoolSize)
+            {
+                targetWarmCount = maxPoolSize;
+            }
+
+            var maxConcurrentStartup = Math.Max(1, ParseIntEnv("FEN_RENDERER_POOL_MAX_CONCURRENT_STARTUP", 2));
+            var startupTimeoutMs = Math.Max(1000, ParseIntEnv("FEN_RENDERER_POOL_STARTUP_TIMEOUT_MS", 5000));
+            var lifetimeMs = Math.Max(60000, ParseIntEnv("FEN_RENDERER_POOL_LIFETIME_MS", 30 * 60 * 1000));
+            var healthCheckMs = Math.Max(5000, ParseIntEnv("FEN_RENDERER_POOL_HEALTHCHECK_MS", 30000));
+            var enablePreWarm = ParseBoolEnv("FEN_RENDERER_POOL_PREWARM", fallback: false);
+
+            return new ProcessIsolationConfig(
+                maxPoolSize: maxPoolSize,
+                targetWarmCount: targetWarmCount,
+                maxConcurrentStartup: maxConcurrentStartup,
+                processStartupTimeout: TimeSpan.FromMilliseconds(startupTimeoutMs),
+                processLifetimeMax: TimeSpan.FromMilliseconds(lifetimeMs),
+                enablePreWarm: enablePreWarm,
+                healthCheckInterval: TimeSpan.FromMilliseconds(healthCheckMs));
+        }
+
         private static int ParseIntEnv(string key, int fallback)
         {
             var raw = Environment.GetEnvironmentVariable(key);
             if (int.TryParse(raw, out var parsed))
             {
                 return parsed;
+            }
+
+            return fallback;
+        }
+
+        private static bool ParseBoolEnv(string key, bool fallback)
+        {
+            var raw = Environment.GetEnvironmentVariable(key);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return fallback;
+            }
+
+            if (string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "on", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(raw, "0", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "no", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw, "off", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
             }
 
             return fallback;
@@ -628,6 +780,7 @@ namespace FenBrowser.Host.ProcessIsolation
             public int ActivePid { get; set; }
             public bool IsClosed { get; set; }
             public string AssignmentKey { get; set; }
+            public RendererProcessSlot PooledSlot { get; set; }
 
             /// <summary>
             /// The OS-level sandbox applied to the renderer child process.

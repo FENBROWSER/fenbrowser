@@ -85,11 +85,26 @@ namespace FenBrowser.Host.ProcessIsolation
                 dueTime: _healthCheckInterval,
                 period: _healthCheckInterval);
             
-            // Pre-warm the pool
-            Task.Run(() => PreWarmPool(), _shutdownToken.Token);
+            // Pre-warm the pool when explicitly enabled by config.
+            if (_config.EnablePreWarm && _config.TargetWarmCount > 0)
+            {
+                Task.Run(() => PreWarmPool(), _shutdownToken.Token);
+            }
             
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
                 "[RendererProcessPool] Pool started and warming up");
+        }
+
+        public void RetireSlot(RendererProcessSlot slot, string reason)
+        {
+            if (slot == null) throw new ArgumentNullException(nameof(slot));
+
+            _activeSlots.TryRemove(slot.ProcessId, out _);
+            _processStartTimes.TryRemove(slot.ProcessId, out _);
+
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
+                $"[RendererProcessPool] Retiring process {slot.ProcessId} reason={reason}");
+            DestructSlot(slot, $"retired:{reason}");
         }
 
         public async Task<RendererProcessSlot> AcquireSlotAsync(string assignmentKey, CancellationToken cancellationToken = default)

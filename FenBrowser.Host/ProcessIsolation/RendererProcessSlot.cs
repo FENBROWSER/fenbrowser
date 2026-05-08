@@ -86,11 +86,12 @@ namespace FenBrowser.Host.ProcessIsolation
             
             // Create session
             var session = new RendererChildSession(tabId, pipeName, authToken);
+            ISandbox sandbox = null;
             
             try
             {
                 // Create sandbox and spawn process
-                var sandbox = CreateSandbox(sandboxFactory, assignmentKey);
+                sandbox = CreateSandbox(sandboxFactory, assignmentKey);
                 var process = StartRendererChildWithSandbox(
                     tabId, pipeName, authToken, assignmentKey, sandbox);
                 
@@ -120,6 +121,7 @@ namespace FenBrowser.Host.ProcessIsolation
             catch (Exception ex)
             {
                 // Cleanup on failure
+                sandbox?.Dispose();
                 session?.Dispose();
                 
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
@@ -292,21 +294,23 @@ namespace FenBrowser.Host.ProcessIsolation
         
         private static ISandbox CreateSandbox(IOsSandboxFactory sandboxFactory, string assignmentKey)
         {
-            // For production use, create sandbox with proper policies
-            // Use a custom renderer profile with appropriate limits
-            var profile = new OsSandboxProfile(
-                kind: OsSandboxProfileKind.RendererMinimal,
-                maxMemoryBytes: 512L * 1024 * 1024, // 512 MiB
-                maxCpuPercent: 80,
-                denyDesktopAccess: true,
-                denyWindowEnumeration: true,
-                capabilities: OsSandboxCapabilities.RendererMinimal
-            );
-            
-            // For now, use a stub implementation. In production, the sandboxFactory
-            // would need to know about the assignmentKey for proper isolation.
-            // The assignmentKey is tracked at the pool level, not passed to sandbox
-            return sandboxFactory.Create(profile);
+            var allowUnsandboxedFallback = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!SandboxLaunchPolicy.TryAcquire(
+                $"renderer pool slot assignment={assignmentKey}",
+                sandboxFactory,
+                OsSandboxProfile.RendererMinimal,
+                allowUnsandboxedFallback,
+                "FEN_RENDERER_ALLOW_UNSANDBOXED",
+                out var sandbox))
+            {
+                return null;
+            }
+
+            return sandbox;
         }
         
         private static Process StartRendererChildWithSandbox(
@@ -316,17 +320,111 @@ namespace FenBrowser.Host.ProcessIsolation
             string assignmentKey,
             ISandbox sandbox)
         {
-            // This should be replaced with actual process spawning logic
-            // For now, we'll return null to indicate this is a stub
-            
-            // In production, this would:
-            // 1. Create process start info with sandboxed environment
-            // 2. Set command line arguments for renderer
-            // 3. Apply sandbox policies
-            // 4. Start the process
-            
-            throw new NotImplementedException(
-                "Process spawning not yet implemented. Integrate with existing BrokeredProcessIsolationCoordinator logic.");
+            var allowUnsandboxedFallback = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            var parentPid = Environment.ProcessId;
+
+            var exePath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(exePath))
+            {
+                exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            }
+
+            if (string.IsNullOrWhiteSpace(exePath))
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                    "[RendererProcessSlot] Could not resolve host executable path for pooled child launch.");
+                return null;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = $"--renderer-child --tab-id={tabId}",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            startInfo.Environment["FEN_RENDERER_CHILD"] = "1";
+            startInfo.Environment["FEN_RENDERER_TAB_ID"] = tabId.ToString();
+            startInfo.Environment["FEN_RENDERER_PARENT_PID"] = parentPid.ToString();
+            startInfo.Environment["FEN_RENDERER_PIPE_NAME"] = pipeName;
+            startInfo.Environment["FEN_RENDERER_AUTH_TOKEN"] = authToken;
+            startInfo.Environment["FEN_RENDERER_SANDBOX_PROFILE"] = "renderer_minimal";
+            startInfo.Environment["FEN_RENDERER_CAPABILITIES"] = "navigate,input,frame";
+            startInfo.Environment["FEN_RENDERER_ASSIGNMENT_KEY"] = assignmentKey ?? string.Empty;
+
+            sandbox?.ApplyToProcessStartInfo(startInfo);
+            Process process = null;
+
+            if (sandbox != null && sandbox.RequiresCustomSpawn)
+            {
+                try
+                {
+                    process = sandbox.SpawnProcess(startInfo);
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
+                        $"[RendererProcessSlot] Sandbox.SpawnProcess failed for assignment {assignmentKey}: {ex.Message}");
+                    if (!allowUnsandboxedFallback)
+                    {
+                        return null;
+                    }
+
+                    process = Process.Start(startInfo);
+                }
+            }
+            else
+            {
+                if (sandbox == null && !allowUnsandboxedFallback)
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
+                        "[RendererProcessSlot] Refusing pooled renderer launch because no sandbox is active. Set FEN_RENDERER_ALLOW_UNSANDBOXED=1 to override.");
+                    return null;
+                }
+
+                process = Process.Start(startInfo);
+                if (process != null && sandbox != null)
+                {
+                    try
+                    {
+                        sandbox.AttachToProcess(process);
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                            $"[RendererProcessSlot] Sandbox.AttachToProcess failed for pid={process.Id}: {ex.Message}");
+                        if (!allowUnsandboxedFallback)
+                        {
+                            TryKillProcess(process, $"pool-sandbox-attach-failed assignment={assignmentKey}");
+                            return null;
+                        }
+                    }
+                }
+            }
+
+            return process;
+        }
+
+        private static void TryKillProcess(Process process, string reason)
+        {
+            if (process == null || process.HasExited)
+            {
+                return;
+            }
+
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
+                    $"[RendererProcessSlot] Failed to kill process ({reason}): {ex.Message}");
+            }
         }
     }
 
