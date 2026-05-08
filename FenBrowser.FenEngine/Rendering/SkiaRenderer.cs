@@ -88,11 +88,7 @@ namespace FenBrowser.FenEngine.Rendering
             var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
              
             backend.Clear(SKColors.White);
-             
-            foreach (var root in tree.Roots)
-            {
-                DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
-            }
+            DrawTree(backend, tree, viewport, stats, hoverPaintedSources, logRootNodes: false);
 
             LogRenderSummary(viewport, tree.NodeCount, stats, "RenderBackend");
         }
@@ -101,6 +97,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// Renders a paint tree with a custom background color.
         /// </summary>
         public void Render(SKCanvas canvas, ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor)
+        {
+            Render(canvas, tree, viewport, backgroundColor, captureDebugScreenshot: true);
+        }
+
+        /// <summary>
+        /// Renders a paint tree with optional debug screenshot capture.
+        /// </summary>
+        internal void Render(SKCanvas canvas, ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor, bool captureDebugScreenshot)
         {
             if (canvas == null || tree == null) return;
             var stats = new RenderPassStats();
@@ -111,18 +115,40 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Perform screenshot if needed (legacy debug logic)
             // Ideally this should be moved out, but keeping for continuity
-            CaptureDebugScreenshot(tree, viewport, backgroundColor);
+            if (captureDebugScreenshot)
+            {
+                CaptureDebugScreenshot(tree, viewport, backgroundColor);
+            }
             
             // Set background color manually since we bypassed the default Clear via delegation
             backend.Clear(backgroundColor);
-            
-            foreach (var root in tree.Roots)
-            {
-                EngineLogCompat.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
-                DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
-            }
+            DrawTree(backend, tree, viewport, stats, hoverPaintedSources, logRootNodes: true);
 
             LogRenderSummary(viewport, tree.NodeCount, stats, "RenderCanvas");
+        }
+
+        /// <summary>
+        /// Records the current immutable paint tree into an SKPicture display list.
+        /// </summary>
+        internal SKPicture RecordDisplayList(ImmutablePaintTree tree, SKRect viewport)
+        {
+            if (tree == null || viewport.Width <= 0 || viewport.Height <= 0)
+            {
+                return null;
+            }
+
+            using var recorder = new SKPictureRecorder();
+            var recordingCanvas = recorder.BeginRecording(viewport);
+            if (recordingCanvas == null)
+            {
+                return null;
+            }
+
+            var backend = new SkiaRenderBackend(recordingCanvas);
+            var stats = new RenderPassStats();
+            var hoverPaintedSources = new HashSet<Node>(ReferenceEqualityComparer.Instance);
+            DrawTree(backend, tree, viewport, stats, hoverPaintedSources, logRootNodes: false);
+            return recorder.EndRecording();
         }
 
         /// <summary>
@@ -171,18 +197,39 @@ namespace FenBrowser.FenEngine.Rendering
                 canvas.ClipRect(clipped, SKClipOperation.Intersect, true);
                 canvas.DrawRect(clipped, bgPaint);
 
-                foreach (var root in tree.Roots)
-                {
-                    DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
-                }
+                DrawTree(backend, tree, viewport, stats, hoverPaintedSources, logRootNodes: false);
 
                 canvas.Restore();
             }
 
             LogRenderSummary(viewport, tree.NodeCount, stats, "RenderDamaged");
         }
+
+        private void DrawTree(
+            IRenderBackend backend,
+            ImmutablePaintTree tree,
+            SKRect viewport,
+            RenderPassStats stats,
+            HashSet<Node> hoverPaintedSources,
+            bool logRootNodes)
+        {
+            if (backend == null || tree?.Roots == null)
+            {
+                return;
+            }
+
+            foreach (var root in tree.Roots)
+            {
+                if (logRootNodes)
+                {
+                    EngineLogCompat.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
+                }
+
+                DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
+            }
+        }
         
-        private void CaptureDebugScreenshot(ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor)
+        internal void CaptureDebugScreenshot(ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor)
         {
              try 
             {

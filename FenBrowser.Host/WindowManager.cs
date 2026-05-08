@@ -53,6 +53,7 @@ namespace FenBrowser.Host
 
         public IWindow Window => _window;
         public SKCanvas Canvas => _surface?.Canvas;
+        public GRContext GraphicsContext => _grContext;
         public float DpiScale => _dpiScale;
         public int LogicalWidth => _logicalWidth;
         public int LogicalHeight => _logicalHeight;

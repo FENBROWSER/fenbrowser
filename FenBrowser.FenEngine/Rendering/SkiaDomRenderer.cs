@@ -38,6 +38,8 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly FrameBudgetAdaptivePolicy _frameBudgetAdaptivePolicy = new FrameBudgetAdaptivePolicy();
         private readonly IncrementalLayoutManager _incrementalLayoutManager = new IncrementalLayoutManager();
         private readonly PaintTreeLayerizer _paintTreeLayerizer = new PaintTreeLayerizer();
+        private readonly RetainedTileRasterizer _retainedTileRasterizer = new RetainedTileRasterizer();
+        private GRContext _gpuRasterContext;
 
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
@@ -80,6 +82,7 @@ namespace FenBrowser.FenEngine.Rendering
         public bool LastFrameUsedDamageRasterization { get; private set; }
         public float LastDamageAreaRatio { get; private set; }
         public IReadOnlyList<CompositedLayer> LastCompositedLayers => _lastCompositedLayers;
+        public RetainedTileRasterizationStats LastRetainedTileRasterization { get; private set; }
         
 
         
@@ -122,6 +125,15 @@ namespace FenBrowser.FenEngine.Rendering
     public void PerformLayout(LayoutContext context, FenBrowser.Core.Deadlines.FrameDeadline deadline)
     {
         // Layout happens in RenderFrame; this is a no-op for ILayoutEngine compliance.
+    }
+
+    /// <summary>
+    /// Host integration hook for GPU tile rasterization.
+    /// The context is optional: null falls back to CPU tile surfaces.
+    /// </summary>
+    public void SetGpuRasterContext(GRContext context)
+    {
+        _gpuRasterContext = context;
     }
 
     /// <summary>
@@ -605,6 +617,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     LastDamageAreaRatio = damageAreaRatio;
                     LastFrameUsedDamageRasterization = useDamageRasterization;
+                    LastRetainedTileRasterization = default;
                     bool mustPresentFreshFrame = rebuiltPaintTree && paintInvalidationSignal;
 
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
@@ -635,15 +648,37 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         rasterMode = RenderFrameRasterMode.PreservedBaseFrame;
                     }
-                    else if (useDamageRasterization)
-                    {
-                        rasterMode = RenderFrameRasterMode.Damage;
-                        _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
-                    }
                     else
                     {
-                        rasterMode = RenderFrameRasterMode.Full;
-                        _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                        _renderer.CaptureDebugScreenshot(_lastPaintTree, viewport, bgColor);
+
+                        var tileStats = _retainedTileRasterizer.Rasterize(
+                            canvas,
+                            _renderer,
+                            _lastPaintTree,
+                            viewport,
+                            bgColor,
+                            useDamageRasterization ? _lastDamageRegions : null,
+                            preferGpuSurfaces: _gpuRasterContext != null,
+                            gpuContext: _gpuRasterContext);
+                        LastRetainedTileRasterization = tileStats;
+
+                        if (tileStats.Enabled)
+                        {
+                            rasterMode = useDamageRasterization
+                                ? RenderFrameRasterMode.Damage
+                                : RenderFrameRasterMode.Full;
+                        }
+                        else if (useDamageRasterization)
+                        {
+                            rasterMode = RenderFrameRasterMode.Damage;
+                            _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
+                        }
+                        else
+                        {
+                            rasterMode = RenderFrameRasterMode.Full;
+                            _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                        }
                     }
                     RenderPipeline.EndPaint(); // State -> Composite
                     rasterStageWatchdog.Stop();
@@ -717,6 +752,8 @@ namespace FenBrowser.FenEngine.Rendering
                 _lastDamageRegions = Array.Empty<SKRect>();
                 LastFrameUsedDamageRasterization = false;
                 LastDamageAreaRatio = 0f;
+                LastRetainedTileRasterization = default;
+                _retainedTileRasterizer.Invalidate();
                 _paintStabilityController.Reset();
                 _boxes.Clear();
                 CurrentOverlays.Clear();

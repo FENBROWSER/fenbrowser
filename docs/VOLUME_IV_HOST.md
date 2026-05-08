@@ -1189,3 +1189,20 @@ Verification:
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests" --logger "console;verbosity=minimal"`: pass (`10/10`) on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CompositorThreadTests"`: fails in current tree due unrelated upstream compile debt (`FenBrowser.FenEngine/Layout/Tree/LayoutBoxStore.cs` `Thickness` errors and existing `FenBrowser.Tests/Layout/*` API-signature drift), not from host input coalescing changes.
+
+### 6.54 Host-to-FenEngine GPU Tile Context Handoff (2026-05-08)
+
+- `FenBrowser.Host/WindowManager.cs`
+  - Exposed host GPU context handle (`GraphicsContext`) for renderer-side retained tile surfaces.
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Wired `SkiaDomRenderer.SetGpuRasterContext(...)` before frame recording.
+  - Added main-thread guard for GPU context handoff so non-UI engine-thread recording fails closed to CPU surfaces.
+
+- Net effect:
+  - Host now provides a production wiring seam for GPU-backed retained tiles without weakening thread-safety boundaries.
+  - FenEngine can opportunistically allocate GPU tile surfaces when a valid host context is available; otherwise it remains deterministic on CPU fallback.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~BrowserIntegrationFrameStabilityTests" --logger "console;verbosity=minimal"`: pass as part of `18/18` shared retained-raster verification slice on `2026-05-08`.

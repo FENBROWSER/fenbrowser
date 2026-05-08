@@ -8373,3 +8373,24 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~FlexLayoutTests|FullyQualifiedName~GridAlignmentTests" --logger "console;verbosity=minimal"`: pass (`36/36`) on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~LayoutEnginePositioningTests" --logger "console;verbosity=minimal"`: pass (`11/11`) on `2026-05-08`.
+
+## 2.310 Retained Tile Rasterization with Retained Display Lists (2026-05-08)
+
+- `FenBrowser.FenEngine/Rendering/Compositing/RetainedTileRasterizer.cs` (new)
+  - Added tile-based retained rasterization cache with deterministic tile keys and bounded stale-tile pruning.
+  - Added retained display-list replay path using `SKPicture` to avoid full paint-tree traversal on every frame.
+  - Added opportunistic GPU tile-surface allocation (`SKSurface.Create(GRContext, ...)`) with fail-closed CPU fallback.
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Added retained display-list recording entrypoint (`RecordDisplayList(...)`) for immutable paint trees.
+  - Refactored root traversal into shared `DrawTree(...)` helper to keep full/damage/display-list paths behavior-aligned.
+  - Exposed screenshot capture hook to support raster diagnostics when retained tiles are active.
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Wired raster stage to retained-tile compositor path for non-preserved frames.
+  - Retained telemetry now tracks tile usage (`LastRetainedTileRasterization`) per frame.
+  - Added GPU-context injection surface (`SetGpuRasterContext(...)`) and retained-cache invalidation on render fault.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DamageRasterizationPolicyTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests" --logger "console;verbosity=minimal"`: pass (`18/18`) on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-restore --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DamageRasterizationPolicyTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests"` currently fails to build in this tree due unrelated pre-existing `FenBrowser.Tests/Layout/*` compile debt (`BoxTreeBuilder`/`LayoutBoxOps` signature drift), not from retained-tile changes.

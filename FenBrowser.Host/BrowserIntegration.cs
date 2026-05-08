@@ -1230,6 +1230,11 @@ public class BrowserIntegration
             RenderFrameResult frameResult;
             lock (_rendererLock)
             {
+                _renderer.SetGpuRasterContext(
+                    WindowManager.Instance.IsOnMainThread
+                        ? WindowManager.Instance.GraphicsContext
+                        : null);
+
                 // Keep the engine's root viewport scroll state synchronized with the Host's
                 // outer document scroll so fixed-position/fixed-background paint logic uses
                 // the same viewport origin as the recorded frame.
