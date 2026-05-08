@@ -57,6 +57,9 @@ flowchart TD
 - Flex baseline keyword normalization hardening (2026-05-08):
   - `FlexFormattingContext` and `CssFlexLayout` now treat `baseline`, `first baseline`, and `last baseline` as baseline-alignment values for cross-axis flex item placement.
   - This keeps baseline alignment behavior consistent across both layout paths when authors use explicit baseline-position keywords.
+- Block fragmentation directive coverage hardening (2026-05-08):
+  - `BlockFormattingContext` forced-break handling now recognizes `column` and `region` directives in addition to existing page-oriented values.
+  - `break-inside` avoid handling now accepts `avoid-column` / `avoid-region` aliases alongside `avoid` / `avoid-page`.
 - `GridLayoutComputer.Arrange(...)` no longer double-applies content alignment offsets when placing grid items; track starts now remain the single source of aligned origin (`FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`).
 - `LayoutHelpers.GetChildrenWithPseudos(...)` fallback behavior for non-element roots now enumerates child nodes instead of returning the fallback node itself, preventing recursive non-element traversal artifacts (`FenBrowser.FenEngine/Layout/Algorithms/LayoutHelpers.cs`).
 - `MinimalLayoutComputer.ShouldHide(...)` now keeps `Document` nodes visible to layout traversal so document-root measure/arrange passes can produce descendant box geometry (`FenBrowser.FenEngine/Layout/MinimalLayoutComputer.cs`).

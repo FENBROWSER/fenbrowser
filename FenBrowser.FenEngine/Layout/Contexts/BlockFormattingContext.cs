@@ -1176,7 +1176,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                    directive == "right" ||
                    directive == "recto" ||
                    directive == "verso" ||
-                   directive == "page";
+                   directive == "page" ||
+                   directive == "column" ||
+                   directive == "region";
         }
 
         private static bool IsAvoidBreakDirective(string directive)
@@ -1186,7 +1188,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return false;
             }
 
-            return directive == "avoid" || directive == "avoid-page";
+            return directive == "avoid" ||
+                   directive == "avoid-page" ||
+                   directive == "avoid-column" ||
+                   directive == "avoid-region";
         }
 
         private static bool MoveFlowCursorToNextFragment(
