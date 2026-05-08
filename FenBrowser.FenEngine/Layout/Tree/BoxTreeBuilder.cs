@@ -15,10 +15,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
     public class BoxTreeBuilder
     {
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
+        private readonly LayoutBoxStore _store;
         
-        public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles)
+        public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles, LayoutBoxStore store)
         {
             _styles = styles;
+            _store = store;
         }
 
         public LayoutBox Build(Node root)
@@ -117,7 +119,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 
                 // [Optimization] We could drop leading/trailing whitespace in blocks, 
                 // but for now let's be safe for IFC.
-                result.Add(new TextLayoutBox(textNode, style));
+                int id = _store.CreateBox(textNode, style, LayoutBoxStore.BoxType.Text);
+                result.Add(_store.GetWrapper(id));
                 LogLayoutDecision(textNode, "Box created", "inline");
                 return result;
             }
@@ -141,15 +144,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                 if (isInlineLevel && !isInline) // Atomic inline
                 {
-                    box = new InlineBox(node, style);
+                    int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.Inline);
+                    box = _store.GetWrapper(id);
                 }
                 else if (isInline)
                 {
-                    box = new InlineBox(node, style);
+                    int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.Inline);
+                    box = _store.GetWrapper(id);
                 }
                 else
                 {
-                    box = new BlockBox(node, style);
+                    int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.Block);
+                    box = _store.GetWrapper(id);
                 }
 
                 var childBoxes = new List<LayoutBox>();
@@ -378,7 +384,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             {
                 if (currentInlineRun.Count > 0)
                 {
-                    var part = new InlineBox(element, style);
+                    int id = _store.CreateBox(element, style, LayoutBoxStore.BoxType.Inline);
+                    var part = _store.GetWrapper(id);
                     foreach (var b in currentInlineRun) part.AddChild(b);
                     result.Add(part);
                     currentInlineRun.Clear();
@@ -444,7 +451,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                     if (IsInlineLevel(child))
                     {
-                        inlineFlow ??= new AnonymousBlockBox(box.ComputedStyle);
+                        if (inlineFlow == null)
+                        {
+                            int id = _store.CreateBox(null, box.ComputedStyle, LayoutBoxStore.BoxType.AnonymousBlock, true);
+                            inlineFlow = (AnonymousBlockBox)_store.GetWrapper(id);
+                        }
                         inlineFlow.AddChild(child);
                         child.Parent = inlineFlow;
                     }
@@ -477,7 +488,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 {
                     if (currentAnon == null)
                     {
-                        currentAnon = new AnonymousBlockBox(box.ComputedStyle);
+                        int id = _store.CreateBox(null, box.ComputedStyle, LayoutBoxStore.BoxType.AnonymousBlock, true);
+                        currentAnon = (AnonymousBlockBox)_store.GetWrapper(id);
                         newChildren.Add(currentAnon);
                     }
                     currentAnon.AddChild(child);
@@ -494,7 +506,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
             
             // Replace children
             box.Children.Clear();
-            box.Children.AddRange(newChildren);
+            foreach (var childBox in newChildren)
+            {
+                box.Children.Add(childBox);
+            }
             // Parent links for newChildren are already set (for anon) or preserved (for blocks)?
             // We need to ensure newChildren's parent is 'box'.
             foreach(var c in box.Children) c.Parent = box;

@@ -17,6 +17,7 @@ namespace FenBrowser.FenEngine.Layout
     {
         private readonly LayoutContext _context;
         private readonly ILayoutComputer _computer;
+        private readonly FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore _boxStore = new FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore();
         private int _layoutDepth = 0;
         
         /// <summary>
@@ -86,8 +87,9 @@ namespace FenBrowser.FenEngine.Layout
                 return null;
             }
 
+            _boxStore.Reset();
             // 1. Build Box Tree
-            var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles);
+            var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles, _boxStore);
             var rootBox = builder.Build(layoutRoot);
             
             if (rootBox == null)

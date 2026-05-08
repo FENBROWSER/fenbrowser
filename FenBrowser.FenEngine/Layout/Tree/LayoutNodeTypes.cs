@@ -10,7 +10,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public class BlockBox : LayoutBox
     {
-        public BlockBox(Node sourceNode, CssComputed style) : base(sourceNode, style) { }
+        public BlockBox(LayoutBoxStore store, int storeId) : base(store, storeId) { }
     }
 
     /// <summary>
@@ -19,7 +19,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public class InlineBox : LayoutBox
     {
-        public InlineBox(Node sourceNode, CssComputed style) : base(sourceNode, style) { }
+        public InlineBox(LayoutBoxStore store, int storeId) : base(store, storeId) { }
     }
 
     /// <summary>
@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public class AnonymousBlockBox : BlockBox
     {
-        public AnonymousBlockBox(CssComputed style = null) : base(null, style) 
+        public AnonymousBlockBox(LayoutBoxStore store, int storeId) : base(store, storeId) 
         {
         }
     }
@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
         }
 
-        public TextLayoutBox(Text sourceNode, CssComputed style) : base(sourceNode, style) { }
+        public TextLayoutBox(LayoutBoxStore store, int storeId) : base(store, storeId) { }
         
         public override string ToString() => $"TextLayoutBox \"{TextContent.Replace("\n", "\\n").Replace("\r", "")}\"";
     }

@@ -99,7 +99,7 @@ namespace FenBrowser.FenEngine.Layout
         /// The writing mode of this element (horizontal-tb, vertical-rl, etc.).
         /// Determines how logical coordinates map to physical.
         /// </summary>
-        public string WritingMode = "horizontal-tb";
+        public string WritingMode;
 
         /// <summary>
         /// Computed text lines (if this is a text node).
@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.Layout
             Baseline = 0;
             Lines = null;
         }
-        
+
         /// <summary>
         /// Creates a box model from content box dimensions.
         /// </summary>
@@ -132,6 +132,7 @@ namespace FenBrowser.FenEngine.Layout
             box.PaddingBox = box.ContentBox;
             box.BorderBox = box.ContentBox;
             box.MarginBox = box.ContentBox;
+            box.WritingMode = "horizontal-tb";
             return box;
         }
     }
