@@ -847,7 +847,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     foreach (var item in line)
                     {
                         string itemAlign = ResolveItemAlignment(item.ComputedStyle, alignItems);
-                        if (itemAlign != "baseline")
+                        if (!IsBaselineAlignment(itemAlign))
                         {
                             continue;
                         }
@@ -940,12 +940,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             y = crossStart + crossFree / 2;
                         else if (itemAlign == "flex-end" || itemAlign == "end")
                             y = crossStart + crossFree;
-                        else if (itemAlign == "baseline" && lineHasBaselineAlignment)
+                        else if (IsBaselineAlignment(itemAlign) && lineHasBaselineAlignment)
                         {
                             float itemBaselineOffset = ResolveBaselineOffsetFromMarginTop(item);
                             y = crossStart + lineBaselineOffset - itemBaselineOffset;
                         }
-                        else if (itemAlign == "baseline")
+                        else if (IsBaselineAlignment(itemAlign))
                         {
                             y = crossStart;
                         }
@@ -1766,7 +1766,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         private static string ResolveItemAlignment(CssComputed itemStyle, string containerAlignItems)
         {
-            if (itemStyle == null) return containerAlignItems;
+            var containerAlign = string.IsNullOrWhiteSpace(containerAlignItems)
+                ? "stretch"
+                : containerAlignItems.Trim().ToLowerInvariant();
+
+            if (itemStyle == null)
+            {
+                return IsBaselineAlignment(containerAlign) ? "baseline" : containerAlign;
+            }
 
             string alignSelf = itemStyle.AlignSelf?.ToLowerInvariant();
             if (string.IsNullOrEmpty(alignSelf) && itemStyle.Map != null)
@@ -1776,9 +1783,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             if (string.IsNullOrEmpty(alignSelf) || alignSelf == "auto")
-                return containerAlignItems;
+                return IsBaselineAlignment(containerAlign) ? "baseline" : containerAlign;
 
-            return alignSelf;
+            return IsBaselineAlignment(alignSelf) ? "baseline" : alignSelf;
+        }
+
+        private static bool IsBaselineAlignment(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var normalized = value.Trim().ToLowerInvariant();
+            return normalized == "baseline" ||
+                   normalized == "first baseline" ||
+                   normalized == "first-baseline" ||
+                   normalized == "last baseline" ||
+                   normalized == "last-baseline";
         }
 
         private static float ResolveBaselineOffsetFromMarginTop(LayoutBox item)

@@ -631,7 +631,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 float lineCrossSize = line.CrossSize;
                 
                 // Calculate Baseline for this line if needed
-                if (alignItems == "baseline" || line.Items.Any(i => (i.Style?.AlignSelf?.ToLowerInvariant()) == "baseline"))
+                if (IsBaselineAlignmentKeyword(alignItems) ||
+                    line.Items.Any(i => IsBaselineAlignmentKeyword(i.Style?.AlignSelf)))
                 {
                     float maxAscent = 0;
                     foreach(var item in line.Items)
@@ -723,6 +724,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                      if (!string.IsNullOrEmpty(alignSelf) && alignSelf != "auto")
                      {
                          align = alignSelf;
+                     }
+
+                     if (IsBaselineAlignmentKeyword(align))
+                     {
+                         align = "baseline";
                      }
                      
                      
@@ -907,6 +913,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return isRow
                 ? style.WidthPercent.HasValue || !string.IsNullOrEmpty(style.WidthExpression)
                 : style.HeightPercent.HasValue || !string.IsNullOrEmpty(style.HeightExpression);
+        }
+
+        private static bool IsBaselineAlignmentKeyword(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var normalized = value.Trim().ToLowerInvariant();
+            return normalized == "baseline" ||
+                   normalized == "first baseline" ||
+                   normalized == "first-baseline" ||
+                   normalized == "last baseline" ||
+                   normalized == "last-baseline";
         }
 
     }
