@@ -96,6 +96,72 @@ namespace FenBrowser.Tests.Host
         }
 
         [Fact]
+        public void CompositorThread_PointerMovesAreCoalescedToLatestEvent()
+        {
+            var root = new TestWidget(new SKColor(59, 130, 246, 255));
+            root.Arrange(new SKRect(0, 0, 96, 40));
+            root.Invalidate();
+
+            var compositor = new Compositor(root) { DpiScale = 1f };
+            using var compositorThread = new CompositorThread(compositor);
+
+            var dispatched = default(CoalescedPointerMoveEvent);
+            using var dispatchedSignal = new ManualResetEventSlim(false);
+            compositorThread.SetPointerMoveDispatcher(pointerMove =>
+            {
+                dispatched = pointerMove;
+                dispatchedSignal.Set();
+            });
+
+            compositorThread.UpdateViewport(96, 40, 1f);
+            for (var i = 0; i < 32; i++)
+            {
+                compositorThread.QueuePointerMove(new CoalescedPointerMoveEvent(7, i, i * 2, 11f, 13f));
+            }
+
+            compositorThread.Start();
+
+            Assert.True(
+                dispatchedSignal.Wait(TimeSpan.FromSeconds(2)),
+                "Timed out waiting for coalesced pointer-move dispatch.");
+
+            var snapshot = compositorThread.GetTelemetrySnapshot();
+            Assert.Equal(32, snapshot.PointerMoveEventsReceived);
+            Assert.Equal(31, snapshot.CoalescedPointerMoveEvents);
+            Assert.Equal(1, snapshot.PointerMoveDispatchCount);
+            Assert.Equal(7, dispatched.TabId);
+            Assert.Equal(31f, dispatched.X);
+            Assert.Equal(62f, dispatched.Y);
+            Assert.Equal(11f, dispatched.ViewportLeft);
+            Assert.Equal(13f, dispatched.ViewportTop);
+        }
+
+        [Fact]
+        public void CompositorThread_PointerDispatcherExceptionsDoNotStopCompositor()
+        {
+            var root = new TestWidget(new SKColor(234, 179, 8, 255));
+            root.Arrange(new SKRect(0, 0, 96, 40));
+            root.Invalidate();
+
+            var compositor = new Compositor(root) { DpiScale = 1f };
+            using var compositorThread = new CompositorThread(compositor);
+            compositorThread.SetPointerMoveDispatcher(_ => throw new InvalidOperationException("pointer dispatch test fault"));
+
+            compositorThread.UpdateViewport(96, 40, 1f);
+            compositorThread.QueuePointerMove(new CoalescedPointerMoveEvent(3, 10f, 20f, 4f, 5f));
+            compositorThread.Start();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => compositorThread.GetTelemetrySnapshot().PointerMoveDispatchCount > 0, TimeSpan.FromSeconds(2)),
+                "Timed out waiting for pointer dispatch attempt.");
+
+            Assert.True(
+                SpinWait.SpinUntil(() => compositorThread.LastCommittedFrameSequence > 0, TimeSpan.FromSeconds(2)),
+                "Compositor thread stopped after pointer dispatcher exception.");
+            Assert.True(compositorThread.IsRunning);
+        }
+
+        [Fact]
         public void CompositorThread_HonorsFramePacingUnderRequestPressure()
         {
             var root = new TestWidget(new SKColor(168, 85, 247, 255));

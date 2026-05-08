@@ -56,6 +56,10 @@ namespace FenBrowser.Host
         // Track Active Tab
         private BrowserTab _currentActiveTab;
         private IMouse _mouse; // For cursor
+        private readonly object _pointerMoveDispatchLock = new();
+        private bool _isPointerMoveDispatchScheduled;
+        private CoalescedPointerMoveEvent _pendingPointerMove;
+        private bool _hasPendingPointerMove;
 
         private ChromeManager() { }
 
@@ -82,6 +86,7 @@ namespace FenBrowser.Host
             _root.Invalidated += OnRootInvalidated;
 
             _compositorThread = new CompositorThread(_compositor);
+            _compositorThread.SetPointerMoveDispatcher(DispatchCoalescedPointerMove);
             _compositorThread.UpdateViewport(
                 WindowManager.Instance.LogicalWidth,
                 WindowManager.Instance.LogicalHeight,
@@ -630,25 +635,78 @@ namespace FenBrowser.Host
                      _statusBar?.ClearHoverUrl();
                  }
                  
-                 hit.OnMouseMove(x,y);
+                hit.OnMouseMove(x,y);
                  
                  if (hit is WebContentWidget web && TabManager.Instance.ActiveTab != null) {
                       var activeTab = TabManager.Instance.ActiveTab;
-                      ProcessIsolationRuntime.Current?.OnInputEvent(activeTab, new RendererInputEvent
-                      {
-                          Type = RendererInputEventType.MouseMove,
-                          X = x,
-                          Y = y
-                      });
-                      var result = activeTab.Browser.HandleMouseMove(x,y, web.Bounds.Left, web.Bounds.Top);
-                      CursorManager.UpdateFromHitTest(m, result);
-                      _statusBar?.UpdateFromHitTest(result);
+                      _compositorThread?.QueuePointerMove(new CoalescedPointerMoveEvent(
+                          activeTab.Id,
+                          x,
+                          y,
+                          web.Bounds.Left,
+                          web.Bounds.Top));
                  }
              }
              
              CursorManager.ApplyPendingCursor(m);
              
              if (_contextMenu?.IsOpen == true) _contextMenu.OnMouseMove(x,y);
+        }
+
+        private void DispatchCoalescedPointerMove(CoalescedPointerMoveEvent pointerMove)
+        {
+            var shouldScheduleDispatch = false;
+
+            lock (_pointerMoveDispatchLock)
+            {
+                _pendingPointerMove = pointerMove;
+                _hasPendingPointerMove = true;
+                if (!_isPointerMoveDispatchScheduled)
+                {
+                    _isPointerMoveDispatchScheduled = true;
+                    shouldScheduleDispatch = true;
+                }
+            }
+
+            if (!shouldScheduleDispatch)
+            {
+                return;
+            }
+
+            RunOnUiThread(ProcessPendingPointerMovesOnUiThread);
+        }
+
+        private void ProcessPendingPointerMovesOnUiThread()
+        {
+            while (true)
+            {
+                CoalescedPointerMoveEvent pointerMove;
+                lock (_pointerMoveDispatchLock)
+                {
+                    if (!_hasPendingPointerMove)
+                    {
+                        _isPointerMoveDispatchScheduled = false;
+                        return;
+                    }
+
+                    pointerMove = _pendingPointerMove;
+                    _hasPendingPointerMove = false;
+                }
+
+                var activeTab = TabManager.Instance.ActiveTab;
+                if (activeTab == null || activeTab.Id != pointerMove.TabId)
+                {
+                    continue;
+                }
+
+                var result = activeTab.Browser.HandleMouseMove(
+                    pointerMove.X,
+                    pointerMove.Y,
+                    pointerMove.ViewportLeft,
+                    pointerMove.ViewportTop);
+                CursorManager.UpdateFromHitTest(_mouse, result);
+                _statusBar?.UpdateFromHitTest(result);
+            }
         }
         
         private void OnScroll(IMouse m, ScrollWheel w)

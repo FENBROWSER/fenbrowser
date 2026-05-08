@@ -19,12 +19,18 @@ public sealed class CompositorThread : IDisposable
     private readonly AutoResetEvent _wakeEvent = new(false);
     private readonly Thread _thread;
     private readonly ICompositorWorkSubmitter _compositorWorkSubmitter;
+    private Action<CoalescedPointerMoveEvent> _pointerMoveDispatcher;
 
     private bool _running;
     private bool _started;
     private int _pendingFrameRequests = 1;
+    private bool _hasPendingPointerMove;
+    private CoalescedPointerMoveEvent _pendingPointerMove;
     private long _frameRequestsReceived;
     private long _coalescedFrameRequests;
+    private long _pointerMoveEventsReceived;
+    private long _coalescedPointerMoveEvents;
+    private long _pointerMoveDispatchCount;
     private int _logicalWidth;
     private int _logicalHeight;
     private float _dpiScale = 1f;
@@ -138,6 +144,31 @@ public sealed class CompositorThread : IDisposable
         _wakeEvent.Set();
     }
 
+    public void SetPointerMoveDispatcher(Action<CoalescedPointerMoveEvent> dispatcher)
+    {
+        lock (_stateLock)
+        {
+            _pointerMoveDispatcher = dispatcher;
+        }
+    }
+
+    public void QueuePointerMove(in CoalescedPointerMoveEvent pointerMove)
+    {
+        lock (_stateLock)
+        {
+            _pointerMoveEventsReceived++;
+            if (_hasPendingPointerMove)
+            {
+                _coalescedPointerMoveEvents++;
+            }
+
+            _pendingPointerMove = pointerMove;
+            _hasPendingPointerMove = true;
+        }
+
+        _wakeEvent.Set();
+    }
+
     public bool TryDrawLatest(SKCanvas canvas, SKSize logicalSize)
     {
         if (canvas == null)
@@ -175,12 +206,22 @@ public sealed class CompositorThread : IDisposable
         long frameSequence;
         long renderedFrameCount;
         double lastFrameDurationMs;
+        long pointerMoveEventsReceived;
+        long coalescedPointerMoveEvents;
+        long pointerMoveDispatchCount;
 
         lock (_frameLock)
         {
             frameSequence = _frameSequence;
             renderedFrameCount = _renderedFrameCount;
             lastFrameDurationMs = _lastFrameDurationMs;
+        }
+
+        lock (_stateLock)
+        {
+            pointerMoveEventsReceived = _pointerMoveEventsReceived;
+            coalescedPointerMoveEvents = _coalescedPointerMoveEvents;
+            pointerMoveDispatchCount = _pointerMoveDispatchCount;
         }
 
         var lastSubmittedGpuSequence = _compositorWorkSubmitter?.LastSubmittedFrameSequence ?? 0;
@@ -197,7 +238,10 @@ public sealed class CompositorThread : IDisposable
             Interlocked.Read(ref _gpuSubmissionAttemptCount),
             Interlocked.Read(ref _gpuSubmissionSuccessCount),
             lastSubmittedGpuSequence,
-            lastAcknowledgedGpuSequence);
+            lastAcknowledgedGpuSequence,
+            pointerMoveEventsReceived,
+            coalescedPointerMoveEvents,
+            pointerMoveDispatchCount);
     }
 
     private void ThreadMain()
@@ -213,6 +257,7 @@ public sealed class CompositorThread : IDisposable
             }
 
             _wakeEvent.WaitOne(ComputeWaitTimeoutMilliseconds());
+            DispatchPendingPointerMove();
 
             if (!TryBeginFrame(out var logicalWidth, out var logicalHeight, out var dpiScale))
             {
@@ -335,6 +380,33 @@ public sealed class CompositorThread : IDisposable
         return TimeSpan.FromSeconds(1d / clamped);
     }
 
+    private void DispatchPendingPointerMove()
+    {
+        Action<CoalescedPointerMoveEvent> dispatcher;
+        CoalescedPointerMoveEvent pointerMove;
+        lock (_stateLock)
+        {
+            if (!_hasPendingPointerMove || _pointerMoveDispatcher == null)
+            {
+                return;
+            }
+
+            dispatcher = _pointerMoveDispatcher;
+            pointerMove = _pendingPointerMove;
+            _hasPendingPointerMove = false;
+            _pointerMoveDispatchCount++;
+        }
+
+        try
+        {
+            dispatcher(pointerMove);
+        }
+        catch
+        {
+            // Pointer-move callback failures should not terminate the compositor thread.
+        }
+    }
+
     private void TrySubmitGpuCompositorWork(
         long frameSequence,
         int logicalWidth,
@@ -413,4 +485,14 @@ public readonly record struct CompositorThreadTelemetry(
     long GpuSubmissionAttemptCount,
     long GpuSubmissionSuccessCount,
     long LastSubmittedGpuFrameSequence,
-    long LastAcknowledgedGpuFrameSequence);
+    long LastAcknowledgedGpuFrameSequence,
+    long PointerMoveEventsReceived,
+    long CoalescedPointerMoveEvents,
+    long PointerMoveDispatchCount);
+
+public readonly record struct CoalescedPointerMoveEvent(
+    int TabId,
+    float X,
+    float Y,
+    float ViewportLeft,
+    float ViewportTop);

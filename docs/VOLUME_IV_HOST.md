@@ -1162,3 +1162,30 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /clp:ErrorsOnly`: fails in current tree due unrelated upstream `FenBrowser.FenEngine` compile errors (`LayoutBoxStore`/`Thickness`), not from host process-isolation changes.
+
+### 6.53 Phase 2 Input Wiring: Pointer-Move Coalescing Through Compositor Thread (2026-05-08)
+
+- `FenBrowser.Host/CompositorThread.cs`
+  - Added a dedicated pointer-move coalescing path (`QueuePointerMove(...)`) and compositor-thread callback dispatch (`SetPointerMoveDispatcher(...)`).
+  - Coalescing telemetry now records:
+    - pointer moves received
+    - coalesced pointer moves
+    - pointer dispatch count.
+  - Pointer callback faults are contained so compositor worker lifetime is not terminated by input-dispatch exceptions.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Web-content `OnMouseMove` routing now enqueues pointer moves to `CompositorThread` instead of synchronously dispatching every move into `BrowserIntegration`.
+  - Added UI-thread pointer dispatch consolidation so compositor-side coalescing does not re-flood the main-thread queue.
+  - Active-tab id validation is now enforced at dispatch time to prevent stale-tab hover/cursor updates after tab switches.
+- `FenBrowser.Tests/Host/CompositorThreadTests.cs`
+  - Added pointer-coalescing regression coverage (latest event wins, telemetry reflects coalescing).
+  - Added pointer-dispatch exception containment regression coverage.
+
+- Net effect:
+  - High-frequency pointer move streams are now coalesced before browser-engine dispatch, reducing event-loop pressure while preserving cursor/status behavior.
+  - Input coalescing is explicitly observable via compositor telemetry and protected by resilience tests.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests" --logger "console;verbosity=minimal"`: pass (`10/10`) on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~CompositorThreadTests"`: fails in current tree due unrelated upstream compile debt (`FenBrowser.FenEngine/Layout/Tree/LayoutBoxStore.cs` `Thickness` errors and existing `FenBrowser.Tests/Layout/*` API-signature drift), not from host input coalescing changes.
