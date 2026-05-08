@@ -125,10 +125,17 @@ namespace FenBrowser.Host.ProcessIsolation
             var navDecision = _isolationRegistry.ApplyNavigation(tab.Id, url, isUserInput);
             if (navDecision.HasValidAssignment)
             {
-                if (navDecision.RequiresReassignment)
+                var bootstrapSessionNeedsAssignment = !navDecision.RequiresReassignment &&
+                    string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey) &&
+                    state.Session != null;
+
+                if (navDecision.RequiresReassignment || bootstrapSessionNeedsAssignment)
                 {
+                    var previousAssignmentLabel = string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey)
+                        ? "(bootstrap)"
+                        : navDecision.PreviousAssignmentKey;
                     EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
-                        $"[ProcessIsolation] Reassigning renderer process for tab {tab.Id}: {navDecision.PreviousAssignmentKey} -> {navDecision.RequestedAssignmentKey}");
+                        $"[ProcessIsolation] Reassigning renderer process for tab {tab.Id}: {previousAssignmentLabel} -> {navDecision.RequestedAssignmentKey}");
                     RecycleSessionForAssignmentChange(state, navDecision.RequestedAssignmentKey);
                 }
 

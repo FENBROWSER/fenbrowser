@@ -1138,6 +1138,7 @@ Verification:
 - `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
   - Brokered coordinator now requests renderer sessions from `RendererProcessPool` when pool mode is enabled (`FEN_RENDERER_PROCESS_POOL`, default enabled).
   - Added deterministic pooled-session teardown (`TearDownSession`) so cross-site assignment changes retire the old renderer lease before the new assignment starts.
+  - Navigation wiring now also forces a bootstrap-session handoff on the first valid assignment (`(bootstrap) -> <site/origin>`), so real site assignments always execute the same teardown + new-process acquisition flow before `SendNavigate(...)`.
   - Frame delivery from pooled sessions now remaps the pooled internal tab id back to the owning host tab id before raising `FrameReceived`, preserving `BrowserIntegration` tab scoping.
   - Added pool config environment hooks for controlled rollout:
     - `FEN_RENDERER_POOL_MAX_SIZE`
