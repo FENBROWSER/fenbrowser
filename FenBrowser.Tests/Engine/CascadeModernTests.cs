@@ -9,6 +9,7 @@ using System.Linq;
 
 namespace FenBrowser.Tests.Engine
 {
+    [Collection("Engine Tests")]
     public class CascadeModernTests
     {
         [Fact]
@@ -73,6 +74,57 @@ namespace FenBrowser.Tests.Engine
             var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
 
             Assert.Equal("green", computed[box].Map["color"]);
+        }
+
+        [Fact]
+        public async Task ExternalStylesheetOrder_RemainsDeterministic_AcrossFetchJitter()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <link rel='stylesheet' href='a.css'>
+    <link rel='stylesheet' href='b.css'>
+</head>
+<body>
+    <div class='box'>Test</div>
+</body>
+</html>";
+
+            var baseUri = new Uri("https://order-jitter.test/");
+            for (int i = 0; i < 12; i++)
+            {
+                CssLoader.ClearCaches();
+                int iteration = i;
+
+                var parser = new HtmlParser(html, baseUri);
+                var doc = parser.Parse();
+                var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+                var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
+
+                var computed = await CssLoader.ComputeAsync(
+                    root,
+                    baseUri,
+                    async uri =>
+                    {
+                        bool invertDelay = (iteration % 2) == 0;
+                        if (uri.AbsolutePath.EndsWith("/a.css", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await Task.Delay(invertDelay ? 60 : 5);
+                            return ".box { color: red; }";
+                        }
+
+                        if (uri.AbsolutePath.EndsWith("/b.css", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await Task.Delay(invertDelay ? 5 : 60);
+                            return ".box { color: blue; }";
+                        }
+
+                        return null;
+                    });
+
+                Assert.Equal("blue", computed[box].Map["color"]);
+            }
         }
 
         [Fact]
