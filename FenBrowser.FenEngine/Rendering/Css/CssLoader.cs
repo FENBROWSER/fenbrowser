@@ -1,4 +1,4 @@
-// SpecRef: CSS Conditional Rules Level 5, CSS Containment Level 3 container queries
+﻿// SpecRef: CSS Conditional Rules Level 5, CSS Containment Level 3 container queries
 // CapabilityId: CSS-CONTAINMENT-QUERY-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -56,12 +56,12 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
         private static int _stylesheetRegistrationCounter;
 
-        // UA stylesheet cache — read from disk only once per process lifetime
+        // UA stylesheet cache â€” read from disk only once per process lifetime
         private static string _cachedUaCss;
 
         // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
         private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.Ordinal);
-        private static double _rootFontSize = 16.0;
+        internal static double _rootFontSize = 16.0; internal static void SetRootFontSize(double size) { _rootFontSize = size; }
         private static ParserSecurityPolicy _defaultParserSecurityPolicy = ParserSecurityPolicy.Default;
         private static readonly System.Threading.AsyncLocal<ParserSecurityPolicy> _scopedParserSecurityPolicy = new System.Threading.AsyncLocal<ParserSecurityPolicy>();
         public static ParserSecurityPolicy ActiveParserSecurityPolicy
@@ -465,7 +465,7 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                // SRI — capture integrity attribute before the async closure
+                // SRI â€” capture integrity attribute before the async closure
                 string sriIntegrity = link.GetAttribute("integrity");
                 
                 DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
@@ -507,11 +507,11 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
                         /* [PERF-REMOVED] */
-                        // SRI check — if the link has an integrity attribute, verify before applying
+                        // SRI check â€” if the link has an integrity attribute, verify before applying
                         if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
                         {
                             Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
-                            return; // Drop this stylesheet — integrity check failed
+                            return; // Drop this stylesheet â€” integrity check failed
                         }
                         // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
                         const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
@@ -672,7 +672,7 @@ namespace FenBrowser.FenEngine.Rendering
             ResolveVariables(allRulesForVars);
             EngineLogCompat.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
-            var computed = CascadeIntoComputedStyles(root, styleSet, log, deadline);
+            var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(root, styleSet, log, deadline);
             ApplyMediaWikiToolbarLayoutFallbacks(computed, baseUri);
             EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
@@ -3137,7 +3137,7 @@ private static double? ExtractPx(string text, string prop)
             }
         }
 
-        private static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
+        internal static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
         {
             // DebugLog(@"debug_log.txt", "[D-BUG] ResolveStyle\r\n");
 
@@ -8920,7 +8920,7 @@ private static double? ExtractPx(string text, string prop)
     /// <summary>
     /// Verifies Subresource Integrity (SRI) for fetched content.
     /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
-    /// Returns false if one or more tokens are present and none match — caller must block the resource.
+    /// Returns false if one or more tokens are present and none match â€” caller must block the resource.
     /// Supported algorithms: sha256, sha384, sha512.
     /// </summary>
     private static bool VerifySriIntegrity(string content, string integrity)
@@ -8947,18 +8947,21 @@ private static double? ExtractPx(string text, string prop)
                     "sha512" => System.Security.Cryptography.SHA512.Create(),
                     _ => null
                 };
-                if (alg == null) continue; // Unknown algorithm — skip this token
+                if (alg == null) continue; // Unknown algorithm â€” skip this token
                 hash = alg.ComputeHash(bytes);
             }
             catch { continue; }
 
             if (Convert.ToBase64String(hash) == expectedB64) return true;
         }
-        // No token matched — block the resource
+        // No token matched â€” block the resource
         return false;
     }
 }
 }
+
+
+
 
 
 

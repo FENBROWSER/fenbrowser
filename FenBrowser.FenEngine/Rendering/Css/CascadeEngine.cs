@@ -1,4 +1,4 @@
-// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
+﻿// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
 // CapabilityId: CSS-CASCADE-ORDER-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -25,7 +25,7 @@ namespace FenBrowser.FenEngine.Rendering
         private Dictionary<string, List<CssStyleRule>> _tagIndex;    // tag rules
         private List<CssStyleRule> _universalRules;                  // * and attribute-only rules
         private bool _indexed = false;
-        private HashSet<CssStyleRule> _processedRules;               // Track duplicates
+        [ThreadStatic] private static HashSet<CssStyleRule> _processedRules;               // Track duplicates
         
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
@@ -91,7 +91,7 @@ namespace FenBrowser.FenEngine.Rendering
             _classIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
-            _processedRules = new HashSet<CssStyleRule>();
+            
             _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
             for (int i = 0; i < _styleSet.Count; i++)
@@ -266,6 +266,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             EnsureIndex();
             var results = new List<MatchedDeclaration>();
+            if (_processedRules == null) _processedRules = new HashSet<CssStyleRule>();
             _processedRules.Clear();
 
             // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
@@ -1154,7 +1155,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static void ExpandShorthands(Dictionary<string, CssDeclaration> computed)
         {
-            // Process each shorthand → longhand expansion
+            // Process each shorthand â†’ longhand expansion
             ExpandBoxShorthand(computed, "margin", "margin-top", "margin-right", "margin-bottom", "margin-left");
             ExpandBoxShorthand(computed, "padding", "padding-top", "padding-right", "padding-bottom", "padding-left");
             ExpandBorderShorthand(computed);
@@ -1171,10 +1172,10 @@ namespace FenBrowser.FenEngine.Rendering
 
         /// <summary>
         /// Expand box model shorthands (margin, padding) using 1-4 value syntax.
-        /// margin: 10px → all four sides 10px
-        /// margin: 10px 20px → top/bottom 10px, left/right 20px
-        /// margin: 10px 20px 30px → top 10px, left/right 20px, bottom 30px
-        /// margin: 10px 20px 30px 40px → top right bottom left
+        /// margin: 10px â†’ all four sides 10px
+        /// margin: 10px 20px â†’ top/bottom 10px, left/right 20px
+        /// margin: 10px 20px 30px â†’ top 10px, left/right 20px, bottom 30px
+        /// margin: 10px 20px 30px 40px â†’ top right bottom left
         /// </summary>
         private static void ExpandBoxShorthand(Dictionary<string, CssDeclaration> computed,
             string shorthand, string top, string right, string bottom, string left)
@@ -1215,7 +1216,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
-        /// Expand border shorthand: border: 1px solid black → border-width, border-style, border-color
+        /// Expand border shorthand: border: 1px solid black â†’ border-width, border-style, border-color
         /// </summary>
         private static void ExpandBorderShorthand(Dictionary<string, CssDeclaration> computed)
         {
@@ -1895,4 +1896,5 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
+
 
