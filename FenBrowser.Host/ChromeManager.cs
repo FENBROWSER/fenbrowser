@@ -496,13 +496,13 @@ namespace FenBrowser.Host
 
             if (_compositorThread == null || !_compositorThread.TryDrawLatest(canvas, logicalSize))
             {
-                lock (Widget.TreeSyncRoot)
+                Widget.WithTreeWriteLock(() =>
                 {
                     lock (_compositor)
                     {
                         _compositor.Composite(canvas, logicalSize);
                     }
-                }
+                });
             }
 
             DrawTooltip(canvas);

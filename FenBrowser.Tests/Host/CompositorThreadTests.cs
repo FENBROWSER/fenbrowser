@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using FenBrowser.Host;
 using FenBrowser.Host.Widgets;
@@ -59,6 +60,72 @@ namespace FenBrowser.Tests.Host
             Assert.True(
                 SpinWait.SpinUntil(() => compositorThread.LastCommittedFrameSequence > firstSequence, TimeSpan.FromSeconds(2)),
                 "Timed out waiting for second committed compositor frame.");
+        }
+
+        [Fact]
+        public void CompositorThread_BurstRequestsAreCoalesced()
+        {
+            var root = new TestWidget(new SKColor(14, 165, 233, 255));
+            root.Arrange(new SKRect(0, 0, 96, 40));
+            root.Invalidate();
+
+            var compositor = new Compositor(root) { DpiScale = 1f };
+            using var compositorThread = new CompositorThread(compositor, maxFramesPerSecond: 5);
+
+            compositorThread.UpdateViewport(96, 40, 1f);
+            compositorThread.Start();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => compositorThread.LastCommittedFrameSequence > 0, TimeSpan.FromSeconds(2)),
+                "Timed out waiting for first committed compositor frame.");
+
+            var baseline = compositorThread.LastCommittedFrameSequence;
+            for (var i = 0; i < 32; i++)
+            {
+                compositorThread.RequestFrame();
+            }
+
+            Assert.True(
+                SpinWait.SpinUntil(() => compositorThread.LastCommittedFrameSequence > baseline, TimeSpan.FromSeconds(2)),
+                "Timed out waiting for coalesced compositor frame commit.");
+
+            var snapshot = compositorThread.GetTelemetrySnapshot();
+            Assert.True(snapshot.CoalescedFrameRequests > 0);
+            Assert.InRange(snapshot.PendingFrameRequests, 0, 1);
+        }
+
+        [Fact]
+        public void CompositorThread_HonorsFramePacingUnderRequestPressure()
+        {
+            var root = new TestWidget(new SKColor(168, 85, 247, 255));
+            root.Arrange(new SKRect(0, 0, 128, 48));
+            root.Invalidate();
+
+            var compositor = new Compositor(root) { DpiScale = 1f };
+            using var compositorThread = new CompositorThread(compositor, maxFramesPerSecond: 5);
+
+            compositorThread.UpdateViewport(128, 48, 1f);
+            compositorThread.Start();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => compositorThread.LastCommittedFrameSequence > 0, TimeSpan.FromSeconds(2)),
+                "Timed out waiting for first committed compositor frame.");
+
+            var baseline = compositorThread.LastCommittedFrameSequence;
+            var pressureWindow = Stopwatch.StartNew();
+            while (pressureWindow.Elapsed < TimeSpan.FromMilliseconds(450))
+            {
+                compositorThread.RequestFrame();
+                Thread.Sleep(1);
+            }
+
+            Thread.Sleep(350);
+
+            var produced = compositorThread.LastCommittedFrameSequence - baseline;
+            Assert.InRange(produced, 1, 4);
+
+            var snapshot = compositorThread.GetTelemetrySnapshot();
+            Assert.InRange(snapshot.TargetFrameIntervalMs, 190, 210);
         }
 
         private sealed class TestWidget : Widget

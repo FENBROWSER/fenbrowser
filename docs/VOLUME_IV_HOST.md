@@ -1069,3 +1069,33 @@ Verification:
 - Net effect:
   - Host rendering now has a concrete compositor-thread abstraction instead of only UI-thread composition.
   - Dirty-region and incremental-layout gains in the engine can now flow through a dedicated host compositor commit path with deterministic frame publication semantics.
+
+### 6.50 Host Compositor Thread Production Hardening (Phase 1 closure) (2026-05-08)
+
+- `FenBrowser.Host/CompositorThread.cs`
+  - Added compositor-thread frame pacing (configurable FPS cap, default 60) and request coalescing to prevent bursty invalidation storms from forcing redundant commits.
+  - Added compositor telemetry snapshot surface (`GetTelemetrySnapshot`) exposing:
+    - committed frame sequence
+    - rendered frame count
+    - received/coalesced frame requests
+    - pending request count
+    - last frame duration
+    - target frame interval.
+  - Migrated compositor-tree synchronization to the widget reader/writer lock model, with compositor commits running under tree write lock to preserve layout/dirty-flag consistency.
+- `FenBrowser.Host/Widgets/Widget.cs`
+  - Upgraded the shared widget tree synchronization primitive from a coarse object lock to a recursive reader/writer lock.
+  - Mutation/layout/invalidation paths now use write locks; paint/hit-test traversal paths use read locks.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Updated synchronous fallback composition path to use the same widget tree write-lock composition semantics as compositor worker commits.
+- `FenBrowser.Tests/Host/CompositorThreadTests.cs`
+  - Added burst-pressure regression proving frame-request coalescing occurs under queued invalidation pressure.
+  - Added pacing regression proving sustained request pressure still respects target frame cadence.
+
+- Net effect:
+  - Phase 1 host compositor threading is now hardened for production request patterns (burst invalidation, steady pressure) rather than just first-frame correctness.
+  - Dirty-region and incremental-layout engine wins remain compositable without reintroducing UI-thread lock contention hotspots.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~WidgetInvalidationDispatchTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests" --logger "console;verbosity=minimal"`: pass (`7/7`) on `2026-05-08`.

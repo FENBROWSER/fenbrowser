@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using FenBrowser.Host.Widgets;
 using SkiaSharp;
@@ -19,19 +20,26 @@ public sealed class CompositorThread : IDisposable
 
     private bool _running;
     private bool _started;
-    private bool _frameRequested = true;
+    private int _pendingFrameRequests = 1;
+    private long _frameRequestsReceived;
+    private long _coalescedFrameRequests;
     private int _logicalWidth;
     private int _logicalHeight;
     private float _dpiScale = 1f;
+    private readonly TimeSpan _targetFrameInterval;
+    private DateTime _nextEligibleFrameUtc = DateTime.MinValue;
 
     private SKSurface _outputSurface;
     private SKSizeI _outputPixelSize;
     private SKImage _latestFrame;
     private long _frameSequence;
+    private long _renderedFrameCount;
+    private double _lastFrameDurationMs;
 
-    public CompositorThread(Compositor compositor)
+    public CompositorThread(Compositor compositor, int maxFramesPerSecond = 60)
     {
         _compositor = compositor ?? throw new ArgumentNullException(nameof(compositor));
+        _targetFrameInterval = ComputeFrameInterval(maxFramesPerSecond);
         _thread = new Thread(ThreadMain)
         {
             IsBackground = true,
@@ -106,7 +114,7 @@ public sealed class CompositorThread : IDisposable
             _logicalWidth = Math.Max(0, logicalWidth);
             _logicalHeight = Math.Max(0, logicalHeight);
             _dpiScale = float.IsFinite(dpiScale) && dpiScale > 0f ? dpiScale : 1f;
-            _frameRequested = true;
+            QueueFrameRequestNoSignal();
         }
 
         _wakeEvent.Set();
@@ -116,7 +124,7 @@ public sealed class CompositorThread : IDisposable
     {
         lock (_stateLock)
         {
-            _frameRequested = true;
+            QueueFrameRequestNoSignal();
         }
 
         _wakeEvent.Set();
@@ -141,32 +149,57 @@ public sealed class CompositorThread : IDisposable
         }
     }
 
+    public CompositorThreadTelemetry GetTelemetrySnapshot()
+    {
+        long frameRequestsReceived;
+        long coalescedFrameRequests;
+        int pendingFrameRequests;
+        double targetFrameIntervalMs;
+
+        lock (_stateLock)
+        {
+            frameRequestsReceived = _frameRequestsReceived;
+            coalescedFrameRequests = _coalescedFrameRequests;
+            pendingFrameRequests = _pendingFrameRequests;
+            targetFrameIntervalMs = _targetFrameInterval.TotalMilliseconds;
+        }
+
+        long frameSequence;
+        long renderedFrameCount;
+        double lastFrameDurationMs;
+
+        lock (_frameLock)
+        {
+            frameSequence = _frameSequence;
+            renderedFrameCount = _renderedFrameCount;
+            lastFrameDurationMs = _lastFrameDurationMs;
+        }
+
+        return new CompositorThreadTelemetry(
+            frameSequence,
+            renderedFrameCount,
+            frameRequestsReceived,
+            coalescedFrameRequests,
+            pendingFrameRequests,
+            lastFrameDurationMs,
+            targetFrameIntervalMs);
+    }
+
     private void ThreadMain()
     {
         while (true)
         {
-            _wakeEvent.WaitOne(16);
-
-            int logicalWidth;
-            int logicalHeight;
-            float dpiScale;
-            bool shouldRender;
-
             lock (_stateLock)
             {
                 if (!_running)
                 {
                     break;
                 }
-
-                logicalWidth = _logicalWidth;
-                logicalHeight = _logicalHeight;
-                dpiScale = _dpiScale;
-                shouldRender = _frameRequested;
-                _frameRequested = false;
             }
 
-            if (!shouldRender || logicalWidth <= 0 || logicalHeight <= 0)
+            _wakeEvent.WaitOne(ComputeWaitTimeoutMilliseconds());
+
+            if (!TryBeginFrame(out var logicalWidth, out var logicalHeight, out var dpiScale))
             {
                 continue;
             }
@@ -177,17 +210,18 @@ public sealed class CompositorThread : IDisposable
                 continue;
             }
 
+            var frameStartTicks = Stopwatch.GetTimestamp();
             var canvas = _outputSurface.Canvas;
             canvas.Clear(SKColors.Transparent);
 
-            lock (Widget.TreeSyncRoot)
+            Widget.WithTreeWriteLock(() =>
             {
                 lock (_compositor)
                 {
                     _compositor.DpiScale = dpiScale;
                     _compositor.Composite(canvas, new SKSize(logicalWidth, logicalHeight));
                 }
-            }
+            });
 
             using var snapshot = _outputSurface.Snapshot();
             var rasterImage = snapshot?.ToRasterImage();
@@ -196,13 +230,85 @@ public sealed class CompositorThread : IDisposable
                 continue;
             }
 
+            var frameDurationMs = Stopwatch.GetElapsedTime(frameStartTicks).TotalMilliseconds;
             lock (_frameLock)
             {
                 _latestFrame?.Dispose();
                 _latestFrame = rasterImage;
                 _frameSequence++;
+                _renderedFrameCount++;
+                _lastFrameDurationMs = frameDurationMs;
+            }
+
+            lock (_stateLock)
+            {
+                _nextEligibleFrameUtc = DateTime.UtcNow + _targetFrameInterval;
             }
         }
+    }
+
+    private int ComputeWaitTimeoutMilliseconds()
+    {
+        lock (_stateLock)
+        {
+            if (_pendingFrameRequests <= 0)
+            {
+                return 250;
+            }
+
+            var remaining = _nextEligibleFrameUtc - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return 0;
+            }
+
+            return Math.Max(1, (int)Math.Ceiling(remaining.TotalMilliseconds));
+        }
+    }
+
+    private bool TryBeginFrame(out int logicalWidth, out int logicalHeight, out float dpiScale)
+    {
+        lock (_stateLock)
+        {
+            logicalWidth = _logicalWidth;
+            logicalHeight = _logicalHeight;
+            dpiScale = _dpiScale;
+
+            if (!_running)
+            {
+                return false;
+            }
+
+            if (_pendingFrameRequests <= 0 || logicalWidth <= 0 || logicalHeight <= 0)
+            {
+                return false;
+            }
+
+            if (_nextEligibleFrameUtc > DateTime.UtcNow)
+            {
+                return false;
+            }
+
+            _pendingFrameRequests = 0;
+            return true;
+        }
+    }
+
+    private void QueueFrameRequestNoSignal()
+    {
+        _frameRequestsReceived++;
+        if (_pendingFrameRequests > 0)
+        {
+            _coalescedFrameRequests++;
+        }
+
+        _pendingFrameRequests = 1;
+    }
+
+    private static TimeSpan ComputeFrameInterval(int maxFramesPerSecond)
+    {
+        var clamped = Math.Clamp(maxFramesPerSecond, 1, 240);
+        return TimeSpan.FromSeconds(1d / clamped);
     }
 
     private void EnsureOutputSurface(int logicalWidth, int logicalHeight, float dpiScale)
@@ -240,3 +346,12 @@ public sealed class CompositorThread : IDisposable
         _wakeEvent.Dispose();
     }
 }
+
+public readonly record struct CompositorThreadTelemetry(
+    long CommittedFrameSequence,
+    long RenderedFrameCount,
+    long FrameRequestsReceived,
+    long CoalescedFrameRequests,
+    int PendingFrameRequests,
+    double LastFrameDurationMs,
+    double TargetFrameIntervalMs);

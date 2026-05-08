@@ -31,7 +31,46 @@ public enum WidgetRole
 public abstract class Widget
 {
     private int _pendingMainThreadInvalidate;
-    internal static object TreeSyncRoot { get; } = new object();
+    private static readonly ReaderWriterLockSlim TreeSyncLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
+
+    internal static void WithTreeReadLock(Action action)
+    {
+        TreeSyncLock.EnterReadLock();
+        try
+        {
+            action();
+        }
+        finally
+        {
+            TreeSyncLock.ExitReadLock();
+        }
+    }
+
+    internal static T WithTreeReadLock<T>(Func<T> func)
+    {
+        TreeSyncLock.EnterReadLock();
+        try
+        {
+            return func();
+        }
+        finally
+        {
+            TreeSyncLock.ExitReadLock();
+        }
+    }
+
+    internal static void WithTreeWriteLock(Action action)
+    {
+        TreeSyncLock.EnterWriteLock();
+        try
+        {
+            action();
+        }
+        finally
+        {
+            TreeSyncLock.ExitWriteLock();
+        }
+    }
 
     /// <summary>
     /// Bounding rectangle of this widget.
@@ -100,13 +139,13 @@ public abstract class Widget
     /// </summary>
     public void AddChild(Widget child)
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             child.Parent = this;
             Children.Add(child);
             InvalidateLayout();
             Invalidate();
-        }
+        });
     }
     
     /// <summary>
@@ -114,7 +153,7 @@ public abstract class Widget
     /// </summary>
     public void RemoveChild(Widget child)
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             if (Children.Remove(child))
             {
@@ -122,7 +161,7 @@ public abstract class Widget
                 InvalidateLayout();
                 Invalidate();
             }
-        }
+        });
     }
     
     /// <summary>
@@ -140,7 +179,7 @@ public abstract class Widget
     /// </summary>
     public void Measure(SKSize availableSpace)
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             if (!IsVisible)
             {
@@ -149,7 +188,7 @@ public abstract class Widget
             }
 
             DesiredSize = OnMeasure(availableSpace);
-        }
+        });
     }
     
     /// <summary>
@@ -157,14 +196,14 @@ public abstract class Widget
     /// </summary>
     public void Arrange(SKRect finalRect)
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             if (!IsVisible) return;
 
             Bounds = finalRect;
             OnArrange(finalRect);
             IsLayoutDirty = false;
-        }
+        });
     }
     
     /// <summary>
@@ -208,11 +247,11 @@ public abstract class Widget
     /// </summary>
     public void InvalidateLayout()
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             IsLayoutDirty = true;
             Parent?.InvalidateLayout();
-        }
+        });
     }
     
     /// <summary>
@@ -235,7 +274,7 @@ public abstract class Widget
     /// </summary>
     public void PaintAll(SKCanvas canvas)
     {
-        lock (TreeSyncRoot)
+        WithTreeReadLock(() =>
         {
             if (!IsVisible) return;
 
@@ -245,7 +284,7 @@ public abstract class Widget
             {
                 child.PaintAll(canvas);
             }
-        }
+        });
     }
     
     /// <summary>
@@ -289,7 +328,7 @@ public abstract class Widget
 
     private void InvalidateCore(SKRect? bounds)
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             var dirtyBounds = bounds ?? Bounds;
 
@@ -310,7 +349,7 @@ public abstract class Widget
             }
 
             Invalidated?.Invoke();
-        }
+        });
     }
     
     /// <summary>
@@ -318,14 +357,14 @@ public abstract class Widget
     /// </summary>
     public void ClearDirtyRect()
     {
-        lock (TreeSyncRoot)
+        WithTreeWriteLock(() =>
         {
             DirtyRect = null;
             foreach (var child in Children)
             {
                 child.ClearDirtyRect();
             }
-        }
+        });
     }
     
     /// <summary>
@@ -358,7 +397,7 @@ public abstract class Widget
     /// </summary>
     public virtual Widget HitTestDeep(float x, float y)
     {
-        lock (TreeSyncRoot)
+        return WithTreeReadLock(() =>
         {
             if (!HitTest(x, y)) return null;
 
@@ -370,7 +409,7 @@ public abstract class Widget
             }
 
             return this;
-        }
+        });
     }
     
     // Input handlers - override as needed
