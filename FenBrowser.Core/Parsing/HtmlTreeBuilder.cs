@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using System;
@@ -49,6 +49,7 @@ namespace FenBrowser.Core.Parsing
     /// </summary>
     public class HtmlTreeBuilder
     {
+        private readonly HtmlTokenPool _pool;
         private readonly HtmlTokenizer _tokenizer;
         private readonly Document _document;
         
@@ -83,7 +84,8 @@ namespace FenBrowser.Core.Parsing
 
         public HtmlTreeBuilder(string html)
         {
-            _tokenizer = new HtmlTokenizer(html);
+            _pool = new HtmlTokenPool();
+            _tokenizer = new HtmlTokenizer(html, _pool);
             _document = new Document();
             // stack is initially empty? No, usually Document is root? 
             // Spec says stack of open elements is initially empty.
@@ -310,6 +312,7 @@ namespace FenBrowser.Core.Parsing
             }
             finally
             {
+                _pool?.ResetAll();
                 parsingStageScope?.Dispose();
                 tokenizingStageScope?.Dispose();
                 frameScope?.Dispose();
@@ -960,7 +963,7 @@ namespace FenBrowser.Core.Parsing
              if (token is CharacterToken ct)
              {
                  if (ct.Data == "\0") return true; // Ignore null
-                 // Reconstruct active formatting elements per WHATWG �13.2.6.4.7
+                 // Reconstruct active formatting elements per WHATWG Â§13.2.6.4.7
                  ReconstructActiveFormattingElements();
                  InsertCharacter(ct);
                  return true;
@@ -1012,7 +1015,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "li")
                 {
-                    // HTML5 spec §12.2.6.4.7: walk backwards through open elements
+                    // HTML5 spec Ã‚Â§12.2.6.4.7: walk backwards through open elements
                     // looking for an open <li>. Pass through <div>, <address>, <p>
                     // (which are "special" but excluded from the stop condition).
                     // Stop at any other "special" element.
@@ -1038,7 +1041,7 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "dd" || st.TagName == "dt")
                 {
-                     // HTML5 spec §12.2.6.4.7: walk backwards like <li>
+                     // HTML5 spec Ã‚Â§12.2.6.4.7: walk backwards like <li>
                      for (int idx = 0; idx < _openElements.Count; idx++)
                      {
                          var node = _openElements.ElementAt(idx);
@@ -1189,7 +1192,7 @@ namespace FenBrowser.Core.Parsing
                 }
                 
                 // Formatting elements (Adoption Agency Algorithm)
-                // WHATWG HTML spec �13.2.6.4.7
+                // WHATWG HTML spec Â§13.2.6.4.7
                 if (IsFormattingElement(et.TagName))
                 {
                     RunAdoptionAgencyAlgorithm(et.TagName);
@@ -1850,7 +1853,7 @@ namespace FenBrowser.Core.Parsing
                 return true;
             }
             
-            // Per HTML spec: any other token in "text" mode → pop the current node,
+            // Per HTML spec: any other token in "text" mode Ã¢â€ â€™ pop the current node,
             // switch back to the original insertion mode, and reprocess.
             SafePopOpenElement();
             SwitchTo(_originalInsertionMode);
@@ -2206,7 +2209,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Reconstruct active formatting elements per WHATWG �13.2.4.3.
+        /// Reconstruct active formatting elements per WHATWG Â§13.2.4.3.
         /// Called before inserting character data and certain start tags.
         /// </summary>
         private void ReconstructActiveFormattingElements()
@@ -2250,7 +2253,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Full Adoption Agency Algorithm per WHATWG HTML spec �13.2.6.4.7.
+        /// Full Adoption Agency Algorithm per WHATWG HTML spec Â§13.2.6.4.7.
         /// Handles misnested formatting tags like &lt;b&gt;&lt;i&gt;&lt;/b&gt;&lt;/i&gt;.
         /// </summary>
         private void RunAdoptionAgencyAlgorithm(string subject)
@@ -2269,7 +2272,7 @@ namespace FenBrowser.Core.Parsing
             // Step 2: Outer loop (max 8 iterations)
             for (int outerLoop = 0; outerLoop < 8; outerLoop++)
             {
-                // Step 3: Find formatting element � last in active formatting with subject tag
+                // Step 3: Find formatting element â€” last in active formatting with subject tag
                 Element formattingElement = null;
                 int formattingIndex = -1;
                 for (int i = _activeFormattingElements.Count - 1; i >= 0; i--)
@@ -2397,7 +2400,7 @@ namespace FenBrowser.Core.Parsing
                     // If node is not in active formatting list, remove from stack and continue
                     if (nodeActiveIndex < 0)
                     {
-                        // Remove from stack � rebuild stack without this node
+                        // Remove from stack â€” rebuild stack without this node
                         var newStack = new Stack<Element>();
                         foreach (var el in _openElements.Reverse())
                         {
@@ -2522,7 +2525,7 @@ namespace FenBrowser.Core.Parsing
         }
 
         /// <summary>
-        /// Check if an element is "in scope" per WHATWG �13.2.4.2.
+        /// Check if an element is "in scope" per WHATWG Â§13.2.4.2.
         /// </summary>
         private bool ElementIsInScope(Element target)
         {
@@ -2731,6 +2734,8 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+
+
 
 
 

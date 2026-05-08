@@ -174,6 +174,10 @@ namespace FenBrowser.Core.Parsing
         // Temporary buffer for script data escape end-tag matching
         private StringBuilder _scriptEscapeBuffer = new StringBuilder();
 
+        // Optional token pool for reducing GC pressure on large documents.
+        // When non-null, EmitCharacter and tag/comment/doctype creation reuse pooled objects.
+        private readonly HtmlTokenPool _pool;
+
         /// <summary>
         /// Hard safety cap for non-EOF token emissions to prevent pathological inputs
         /// from producing unbounded token streams.
@@ -188,6 +192,17 @@ namespace FenBrowser.Core.Parsing
             _input = input ?? "";
             _length = _input.Length;
             _position = 0;
+        }
+
+        /// <summary>
+        /// Creates a tokenizer with an optional token pool for reduced GC pressure.
+        /// </summary>
+        public HtmlTokenizer(string input, HtmlTokenPool pool)
+        {
+            _input = input ?? "";
+            _length = _input.Length;
+            _position = 0;
+            _pool = pool;
         }
 
         public void SetState(TokenizerState state)
@@ -473,7 +488,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else if (char.IsLetter(c))
                         {
-                            _currentTag = new StartTagToken();
+                            _currentTag = _pool != null ? _pool.RentStartTag() : new StartTagToken();
                             SwitchTo(TokenizerState.TagName);
                              // Don't consume here, TagName state will handle it (reconsume)
                              continue;
@@ -482,7 +497,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             // Bogus comment (<?... >)
                              Consume();
-                            _currentComment = new CommentToken();
+                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
                             SwitchTo(TokenizerState.BogusComment);
                         }
                         else
@@ -538,7 +553,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.RcDataEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = new EndTagToken();
+                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
                             _currentTag.TagName = ""; // New tag
                              // Reconsume in RcDataEndTagName?
                              // No, spec says: create end tag token, append current char to tag name, switch to RcDataEndTagName
@@ -645,7 +660,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.RawTextEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = new EndTagToken();
+                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
                             _currentTag.TagName = "";
                             _currentTag.TagName += char.ToLowerInvariant(c);
                             Consume();
@@ -739,7 +754,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.ScriptDataEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = new EndTagToken();
+                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
                             _currentTag.TagName = "";
                             _currentTag.TagName += char.ToLowerInvariant(c);
                             Consume();
@@ -940,7 +955,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.ScriptDataEscapedEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = new EndTagToken();
+                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
                             _currentTag.TagName = "";
                             // Reconsume in end tag name
                             SwitchTo(TokenizerState.ScriptDataEscapedEndTagName);
@@ -1156,7 +1171,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.EndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = new EndTagToken();
+                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
                             SwitchTo(TokenizerState.TagName);
                         }
                         else if (c == '>')
@@ -1175,7 +1190,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             // Bogus comment
                             Consume();
-                            _currentComment = new CommentToken();
+                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
                             _currentComment.Data += c;
                             SwitchTo(TokenizerState.BogusComment);
                         }
@@ -1483,7 +1498,7 @@ namespace FenBrowser.Core.Parsing
                         if (Matches("--"))
                         {
                             Consume(2);
-                            _currentComment = new CommentToken();
+                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
                             SwitchTo(TokenizerState.CommentStart);
                         }
                         else if (Matches("DOCTYPE", ignoreCase: true))
@@ -1717,7 +1732,8 @@ namespace FenBrowser.Core.Parsing
                         else if (IsEof())
                         {
                              EmitError("Eof In Doctype");
-                             _currentDoctype = new DoctypeToken() { ForceQuirks = true };
+                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
                         else
@@ -1736,19 +1752,21 @@ namespace FenBrowser.Core.Parsing
                         {
                              Consume();
                              EmitError("Missing Doctype Name");
-                             _currentDoctype = new DoctypeToken() { ForceQuirks = true };
+                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             _currentDoctype.ForceQuirks = true;
                              SwitchTo(TokenizerState.Data);
                              return EmitCurrentDoctype();
                         }
                         else if (IsEof())
                         {
                              EmitError("Eof In Doctype");
-                             _currentDoctype = new DoctypeToken() { ForceQuirks = true };
+                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
                         else
                         {
-                            _currentDoctype = new DoctypeToken();
+                            _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
                             _currentDoctype.Name = "";
                             _currentDoctype.Name += char.ToLowerInvariant(c);
                             Consume();
@@ -1838,7 +1856,7 @@ namespace FenBrowser.Core.Parsing
 
         private HtmlToken EmitCharacter(char c)
         {
-            return new CharacterToken(c);
+            return _pool != null ? _pool.RentCharacter(c) : new CharacterToken(c);
         }
 
         private TagToken EmitCurrentTag()
