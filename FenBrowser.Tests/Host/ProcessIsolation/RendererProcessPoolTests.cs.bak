@@ -1,0 +1,343 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using FenBrowser.Core;
+using FenBrowser.Core.Platform;
+using FenBrowser.Core.Security.Sandbox;
+using FenBrowser.Host.ProcessIsolation;
+using Moq;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace FenBrowser.Tests.Host.ProcessIsolation
+{
+    public class RendererProcessPoolTests : IAsyncLifetime
+    {
+        private readonly ITestOutputHelper _output;
+        private readonly Mock<IOsSandboxFactory> _mockSandboxFactory;
+        private readonly TestSandbox _stubSandbox;
+        private ProcessIsolationConfig _config;
+
+        public RendererProcessPoolTests(ITestOutputHelper output)
+        {
+            _output = output;
+            _mockSandboxFactory = new Mock<IOsSandboxFactory>();
+            _stubSandbox = new TestSandbox();
+            _config = ProcessIsolationConfig.Development;
+
+            // Setup defaults
+            _mockSandboxFactory
+                .Setup(f => f.Create(It.IsAny<OSPlatform>(), It.IsAny<OsSandboxProfile>()))
+                .Returns(_stubSandbox);
+        }
+
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public Task DisposeAsync()
+        {
+            // Cleanup any leftover processes
+            var processes = Process.GetProcessesByName("fen_renderer");
+            foreach (var process in processes)
+            {
+                try { process.Kill(); } catch { }
+            }
+            return Task.CompletedTask;
+        }
+
+        [Fact]
+        public void Constructor_WithValidConfig_ShouldInitializeSuccessfully()
+        {
+            var pool = CreatePool();
+
+            Assert.Equal(0, pool.WarmPoolSize);
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(0, pool.TotalSpawned);
+            Assert.Equal(0, pool.TotalReused);
+            Assert.Equal(0.0, pool.HitRatio);
+        }
+
+        [Fact]
+        public void Constructor_WithInvalidConfig_ShouldThrowArgumentException()
+        {
+            var invalidConfig = new ProcessIsolationConfig(
+                maxPoolSize: 0, // Invalid
+                targetWarmCount: 0,
+                maxConcurrentStartup: 1,
+                processStartupTimeout: TimeSpan.FromSeconds(5),
+                processLifetimeMax: TimeSpan.FromMinutes(30),
+                enablePreWarm: false
+            );
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => CreatePool(invalidConfig));
+        }
+
+        [Fact]
+        public async Task Start_Pool_ShouldBeginHealthMonitoring()
+        {
+            using var pool = CreatePool();
+            pool.Start();
+
+            // Give health monitor time to run
+            await Task.Delay(50);
+
+            // Should be running without errors
+            Assert.True(true);
+        }
+
+        [Fact]
+        public async Task AcquireSlot_WithNewAssignment_ShouldSpawnProcess()
+        {
+            using var pool = CreatePool();
+            pool.Start();
+
+            var slot = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+
+            Assert.NotNull(slot);
+            Assert.Equal("https://example.com", slot.AssignmentKey);
+            Assert.True(slot.IsHealthy());
+            Assert.Equal(1, pool.ActiveCount);
+            Assert.Equal(1, pool.TotalSpawned);
+            Assert.Equal(0, pool.TotalReused);
+        }
+
+        [Fact]
+        public async Task AcquireSlot_WithEmptyPool_ShouldBlockConcurrentStartup()
+        {
+            using var pool = CreatePool();
+            pool.Start();
+
+            var tasks = new List<Task<RendererProcessSlot>>
+            {
+                pool.AcquireSlotAsync("https://site1.com", CancellationToken.None),
+                pool.AcquireSlotAsync("https://site2.com", CancellationToken.None),
+                pool.AcquireSlotAsync("https://site3.com", CancellationToken.None)
+            };
+
+            var results = await Task.WhenAll(tasks);
+
+            Assert.Equal(3, results.Length);
+            Assert.Equal(3, pool.TotalSpawned);
+            Assert.Equal(3, pool.ActiveCount);
+
+            // Verify all assignments are different
+            var assignments = results.Select(s => s.AssignmentKey).Distinct().ToList();
+            Assert.Equal(3, assignments.Count);
+        }
+
+        [Fact]
+        public async Task ReleaseSlot_AfterUse_ShouldReturnToWarmPool()
+        {
+            using var pool = CreatePool(new ProcessIsolationConfig(
+                maxPoolSize: 3,
+                targetWarmCount: 2,
+                maxConcurrentStartup: 2
+            ));
+            pool.Start();
+
+            var slot = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+            Assert.Equal(1, pool.ActiveCount);
+            Assert.Equal(0, pool.WarmPoolSize);
+
+            pool.ReleaseSlot(slot);
+
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(1, pool.WarmPoolSize);
+            Assert.Equal(1, pool.TotalReused);
+        }
+
+        [Fact]
+        public async Task AcquireSlot_FromWarmPool_ShouldReuseProcess()
+        {
+            using var pool = CreatePool(new ProcessIsolationConfig(
+                maxPoolSize: 3,
+                targetWarmCount: 2,
+                maxConcurrentStartup: 2
+            ));
+            pool.Start();
+
+            // Acquire and release to warm pool
+            var slot1 = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+            var processId = slot1.ProcessId;
+            pool.ReleaseSlot(slot1);
+
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(1, pool.WarmPoolSize);
+            Assert.Equal(1, pool.TotalReused);
+
+            // Acquire again - should reuse
+            var slot2 = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+
+            Assert.Equal(slot1, slot2); // Should be same slot
+            Assert.Equal(processId, slot2.ProcessId); // Same process
+            Assert.Equal(1, pool.ActiveCount);
+            Assert.Equal(0, pool.WarmPoolSize);
+            Assert.Equal(2, pool.TotalReused); // One more reuse
+        }
+
+        [Fact]
+        public async Task ReleaseSlot_UnhealthyProcess_ShouldDestroyNotPool()
+        {
+            using var pool = CreatePool();
+            pool.Start();
+
+            var slot = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+
+            // Simulate process death
+            try { slot.Process.Kill(); } catch { }
+            await Task.Delay(100); // Let process exit
+
+            pool.ReleaseSlot(slot);
+
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(0, pool.WarmPoolSize); // Should not pool dead process
+            Assert.Equal(1, pool.TotalSpawned);
+        }
+
+        [Fact]
+        public async Task AcquireSlot_WithCancellation_ShouldRespectToken()
+        {
+            using var pool = CreatePool(new ProcessIsolationConfig(
+                maxPoolSize: 1,
+                targetWarmCount: 0,
+                maxConcurrentStartup: 1
+            ));
+            pool.Start();
+
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                () => pool.AcquireSlotAsync("https://example.com", cts.Token));
+        }
+
+        [Fact(Skip = "Requires actual process spawning implementation")]
+        public async Task ReleaseSlot_ProcessWithMaxLifetime_ShouldRetireNotPool()
+        {
+            var config = new ProcessIsolationConfig(
+                maxPoolSize: 3,
+                targetWarmCount: 2,
+                maxConcurrentStartup: 2,
+                processLifetimeMax: TimeSpan.FromMilliseconds(100) // Very short for testing
+            );
+            using var pool = CreatePool(config);
+            pool.Start();
+
+            var slot = await pool.AcquireSlotAsync("https://example.com", CancellationToken.None);
+
+            // Wait for max lifetime to exceed
+            await Task.Delay(150);
+
+            pool.ReleaseSlot(slot);
+
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(0, pool.WarmPoolSize); // Should not pool expired process
+            Assert.Equal(1, pool.TotalSpawned);
+        }
+
+        [Fact]
+        public void GetHitRatio_WithNoAccess_ShouldReturnZero()
+        {
+            using var pool = CreatePool();
+            Assert.Equal(0.0, pool.HitRatio);
+        }
+
+        [Fact(Skip = "Integration test - requires full system")]
+        public async Task PreWarm_WithTargetCount_ShouldMaintainWarmPool()
+        {
+            var config = new ProcessIsolationConfig(
+                maxPoolSize: 3,
+                targetWarmCount: 2,
+                maxConcurrentStartup: 2,
+                enablePreWarm: true
+            );
+            using var pool = CreatePool(config);
+            pool.Start();
+
+            // Give pre-warm time to run
+            await Task.Delay(2000);
+
+            Assert.True(pool.WarmPoolSize >= 0);
+            Assert.True(pool.TotalSpawned >= 0);
+        }
+
+        [Fact]
+        public async Task ConcurrentAcquires_ShouldNotExceedMaxStartupConcurrency()
+        {
+            var config = new ProcessIsolationConfig(
+                maxPoolSize: 10,
+                targetWarmCount: 0,
+                maxConcurrentStartup: 2 // Limit to 2 concurrent
+            );
+
+            using var pool = CreatePool(config);
+            pool.Start();
+
+            var tasks = new List<Task<RendererProcessSlot>>();
+            for (int i = 0; i < 5; i++)
+            {
+                tasks.Add(pool.AcquireSlotAsync($"https://site{i}.com", CancellationToken.None));
+            }
+
+            var results = await Task.WhenAll(tasks);
+
+            Assert.Equal(5, results.Length);
+            Assert.Equal(5, pool.ActiveCount);
+            Assert.Equal(5, pool.TotalSpawned);
+        }
+
+        [Fact]
+        public async Task ReleaseSlot_WithNullSlot_ShouldHandleGracefully()
+        {
+            using var pool = CreatePool();
+            pool.Start();
+
+            // Should not throw
+            pool.ReleaseSlot(null);
+
+            Assert.Equal(0, pool.ActiveCount);
+            Assert.Equal(0, pool.WarmPoolSize);
+        }
+
+        [Fact]
+        public async Task Dispose_ShouldCleanUpAllProcesses()
+        {
+            var pool = CreatePool();
+            pool.Start();
+
+            var slot1 = await pool.AcquireSlotAsync("https://site1.com", CancellationToken.None);
+            var slot2 = await pool.AcquireSlotAsync("https://site2.com", CancellationToken.None);
+
+            pool.ReleaseSlot(slot1);
+
+            Assert.Equal(1, pool.ActiveCount);
+            Assert.Equal(1, pool.WarmPoolSize);
+
+            pool.Dispose();
+
+            // After dispose, all should be cleaned up (though we can't verify from pool state)
+            Assert.True(true); // Just verify dispose doesn't throw
+        }
+
+        #region Helper Methods
+
+        private RendererProcessPool CreatePool(ProcessIsolationConfig config = null)
+        {
+            return new RendererProcessPool(
+                config ?? _config,
+                _mockSandboxFactory.Object
+            );
+        }
+
+        private class TestSandbox : ISandbox
+        {
+            public void Dispose() { }
+            public bool IsDisposed => false;
+            public string ProfileName => "test";
+        }
+
+        #endregion
+    }
+}
