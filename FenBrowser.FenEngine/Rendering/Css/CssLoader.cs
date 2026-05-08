@@ -83,7 +83,13 @@ namespace FenBrowser.FenEngine.Rendering
             FontRegistry.Clear();
         }
 
-        private static string BuildParsedRuleCacheKey(string css, Uri baseUri, double? viewportWidth, double? viewportHeight)
+        private static string BuildParsedRuleCacheKey(
+            string css,
+            Uri baseUri,
+            double? viewportWidth,
+            double? viewportHeight,
+            int sourceOrder = 0,
+            NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
         {
             string widthKey = viewportWidth.HasValue
                 ? viewportWidth.Value.ToString("R", CultureInfo.InvariantCulture)
@@ -92,7 +98,7 @@ namespace FenBrowser.FenEngine.Rendering
                 ? viewportHeight.Value.ToString("R", CultureInfo.InvariantCulture)
                 : "null";
             string baseKey = baseUri?.AbsoluteUri ?? "null";
-            return $"base={baseKey};vw={widthKey};vh={heightKey};css={css}";
+            return $"base={baseKey};vw={widthKey};vh={heightKey};order={sourceOrder};origin={origin};css={css}";
         }
         // -------------------------------------------------------------------------
 
@@ -193,7 +199,13 @@ namespace FenBrowser.FenEngine.Rendering
                  try
                  {
                      List<NewCss.CssRule> rules;
-                     string parseCacheKey = BuildParsedRuleCacheKey(source.CssText, source.BaseUri, viewportWidth, viewportHeight);
+                     string parseCacheKey = BuildParsedRuleCacheKey(
+                         source.CssText,
+                         source.BaseUri,
+                         viewportWidth,
+                         viewportHeight,
+                         source.SourceOrder,
+                         MapToNewCssOrigin(source.Origin));
                      lock (_parsedRulesCache)
                      {
                          if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
@@ -336,7 +348,15 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                cssBlobs.Add(new CssSource { CssText = _cachedUaCss, Origin = CssOrigin.UserAgent, SourceOrder = sourceIndex++, BaseUri = baseUri });
+                cssBlobs.Add(new CssSource
+                {
+                    CssText = _cachedUaCss,
+                    Origin = CssOrigin.UserAgent,
+                    SourceOrder = sourceIndex,
+                    SequenceOrder = sourceIndex,
+                    BaseUri = baseUri
+                });
+                sourceIndex++;
             }
             catch (Exception ex)
             {
@@ -410,9 +430,11 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             CssText = inlineCssText,
                             Origin = CssOrigin.Inline,
-                            SourceOrder = sourceIndex++,
+                            SourceOrder = sourceIndex,
+                            SequenceOrder = sourceIndex,
                             BaseUri = baseUri
                         });
+                        sourceIndex++;
                     }
 
                     continue;
@@ -441,9 +463,11 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             CssText = dedupedCss,
                             Origin = CssOrigin.Inline,
-                            SourceOrder = sourceIndex++,
+                            SourceOrder = sourceIndex,
+                            SequenceOrder = sourceIndex,
                             BaseUri = baseUri
                         });
+                        sourceIndex++;
                     }
                     else
                     {
@@ -524,6 +548,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     CssText = css,
                                     Origin = CssOrigin.External,
                                     SourceOrder = order,
+                                    SequenceOrder = order,
                                     BaseUri = abs
                                 });
                             }
@@ -548,6 +573,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
             EngineLogCompat.Debug($"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
+            // Deterministic authored order regardless async fetch completion ordering.
+            cssBlobs = cssBlobs
+                .Where(s => s != null)
+                .OrderBy(s => s.SequenceOrder)
+                .ToList();
+
             // 3) Expand @import (depth-bounded)
             EngineLogCompat.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
@@ -557,12 +588,20 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Debug($"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (Global Gate Limit: {_globalParseGate.CurrentCount})...", LogCategory.Rendering);
             var styleSet = new StyleSet();
             var parseTasks = new List<Task>();
+            using var parseStageCts = new System.Threading.CancellationTokenSource();
+            var parseStageToken = parseStageCts.Token;
+            bool parseStageSealed = false;
             
             EngineLogCompat.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
             foreach (var blob in expanded)
             {
                 parseTasks.Add(RunDetachedAsync(async () =>
                 {
+                    if (parseStageToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
                     int myOrder = blob.SourceOrder;
                     int myLen = blob.CssText?.Length ?? 0;
                     try
@@ -572,7 +611,13 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed = null;
                         Task<List<NewCss.CssRule>> inFlightTask = null;
                         
-                        string parseCacheKey = BuildParsedRuleCacheKey(processedCss, blob.BaseUri, viewportWidth, viewportHeight);
+                        string parseCacheKey = BuildParsedRuleCacheKey(
+                            processedCss,
+                            blob.BaseUri,
+                            viewportWidth,
+                            viewportHeight,
+                            blob.SourceOrder,
+                            MapToNewCssOrigin(blob.Origin));
                         lock (_parsedRulesCache)
                         {
                             if (_parsedRulesCache.TryGetValue(parseCacheKey, out parsed))
@@ -588,9 +633,12 @@ namespace FenBrowser.FenEngine.Rendering
                                 // We are the first! Set up the in-flight task wrapper.
                                 inFlightTask = Task.Run(async () =>
                                 {
-                                    await _globalParseGate.WaitAsync().ConfigureAwait(false);
+                                    bool parseGateAcquired = false;
                                     try
                                     {
+                                        await _globalParseGate.WaitAsync(parseStageToken).ConfigureAwait(false);
+                                        parseGateAcquired = true;
+                                        parseStageToken.ThrowIfCancellationRequested();
                                         EngineLogCompat.Debug($"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}", LogCategory.Rendering);
                                         var result = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                                         
@@ -607,7 +655,10 @@ namespace FenBrowser.FenEngine.Rendering
                                         {
                                             _inFlightParses.Remove(parseCacheKey);
                                         }
-                                        _globalParseGate.Release();
+                                        if (parseGateAcquired)
+                                        {
+                                            _globalParseGate.Release();
+                                        }
                                         EngineLogCompat.Debug($"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}", LogCategory.Rendering);
                                     }
                                 });
@@ -621,15 +672,22 @@ namespace FenBrowser.FenEngine.Rendering
                             parsed = await inFlightTask.ConfigureAwait(false);
                         }
                         
-                        if (parsed != null)
+                        if (parsed != null && !parseStageToken.IsCancellationRequested)
                         {
                             var sheet = new NewCss.CssStylesheet();
                             sheet.Rules.AddRange(parsed);
                             lock (styleSet) 
                             { 
-                                styleSet.AddSheet(sheet, MapToNewCssOrigin(blob.Origin), blob.SourceOrder); 
+                                if (!parseStageSealed && !parseStageToken.IsCancellationRequested)
+                                {
+                                    styleSet.AddSheet(sheet, MapToNewCssOrigin(blob.Origin), blob.SourceOrder);
+                                }
                             }
                         }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Parse stage canceled due timeout budget. Silent by design.
                     }
                     catch (Exception ex)
                     {
@@ -653,7 +711,12 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (finished == parseTimeoutTask)
                 {
-                    EngineLogCompat.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Continuing with partial StyleSet ({styleSet.Count} sheets).", LogCategory.Rendering);
+                    lock (styleSet)
+                    {
+                        parseStageSealed = true;
+                    }
+                    parseStageCts.Cancel();
+                    EngineLogCompat.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Sealing immutable partial StyleSet snapshot ({styleSet.Count} sheets).", LogCategory.Rendering);
                 }
                 else
                 {
@@ -983,6 +1046,8 @@ namespace FenBrowser.FenEngine.Rendering
             public string CssText;
             public CssOrigin Origin;
             public int SourceOrder;
+            // Deterministic expansion order across authored sheets and @import recursion.
+            public long SequenceOrder;
             public Uri BaseUri;
         }
 
@@ -1013,7 +1078,8 @@ namespace FenBrowser.FenEngine.Rendering
             Func<Uri, Task<string>> fetchExternal,
             double? viewportWidth,
             Action<string> log,
-            System.Threading.SemaphoreSlim gate)
+            System.Threading.SemaphoreSlim gate,
+            System.Threading.CancellationToken cancellationToken = default)
         {
             var output = new List<CssSource>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1021,9 +1087,16 @@ namespace FenBrowser.FenEngine.Rendering
 
             foreach (var s in sources)
             {
-                await ExpandOneAsync(s, fetchExternal, seen, output, viewportWidth, log, guard, gate);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                await ExpandOneAsync(s, fetchExternal, seen, output, viewportWidth, log, guard, gate, cancellationToken);
 
             }
+
+            AssignDeterministicSourceOrder(output);
             return output;
         }
 
@@ -1041,8 +1114,12 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth,
             Action<string> log,
             RecursionGuard guard,
-            System.Threading.SemaphoreSlim gate)
+            System.Threading.SemaphoreSlim gate,
+            System.Threading.CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+                return;
+
             if (source == null || string.IsNullOrWhiteSpace(source.CssText))
                 return;
 
@@ -1080,11 +1157,13 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            // Resolve + fetch imports (parallel, bounded)
-            // var gate = new System.Threading.SemaphoreSlim(4); // REMOVED: use shared gate
-            var tasks = new List<System.Threading.Tasks.Task>();
             foreach (var imp in imports)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
                 var abs = ResolveUri(source.BaseUri, imp);
                 if (abs == null) continue;
                 var key = abs.AbsoluteUri;
@@ -1092,39 +1171,52 @@ namespace FenBrowser.FenEngine.Rendering
                 seenUrls.Add(key);
                 if (fetchExternal == null) continue;
 
-                tasks.Add(RunDetachedAsync(async () =>
+                string css = null;
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
-                    string css = null;
-                    await gate.WaitAsync().ConfigureAwait(false);
+                    css = await fetchExternal(abs).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message);
+                }
+                finally
+                {
                     try
                     {
-                        css = await fetchExternal(abs).ConfigureAwait(false);
+                        gate.Release();
                     }
-                    catch (Exception ex) { Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message); }
-                    finally { try { gate.Release(); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS); } }
-
-                    if (!string.IsNullOrWhiteSpace(css))
+                    catch (Exception ex)
                     {
-                        if (guard != null) guard.Count++;
-                        await ExpandOneAsync(
-                            new CssSource
-                            {
-                                CssText = css,
-                                Origin = CssOrigin.Imported,
-                                SourceOrder = source.SourceOrder,
-                                BaseUri = abs
-                            },
-                            fetchExternal,
-                            seenUrls,
-                            output,
-                            viewportWidth,
-                            log,
-                            guard,
-                            gate).ConfigureAwait(false);
+                        EngineLogCompat.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS);
                     }
-                }));
+                }
+
+                if (string.IsNullOrWhiteSpace(css))
+                {
+                    continue;
+                }
+
+                if (guard != null) guard.Count++;
+                await ExpandOneAsync(
+                    new CssSource
+                    {
+                        CssText = css,
+                        Origin = CssOrigin.Imported,
+                        SourceOrder = source.SourceOrder,
+                        SequenceOrder = source.SequenceOrder,
+                        BaseUri = abs
+                    },
+                    fetchExternal,
+                    seenUrls,
+                    output,
+                    viewportWidth,
+                    log,
+                    guard,
+                    gate,
+                    cancellationToken).ConfigureAwait(false);
             }
-            if (tasks.Count > 0) { try { await System.Threading.Tasks.Task.WhenAll(tasks).ConfigureAwait(false); } catch (Exception ex) { Log(log, "[CssLoader] @import task batch failed: " + ex.Message); } }
 
             // Keep the remainder (with @imports stripped)
             output.Add(new CssSource
@@ -1132,8 +1224,30 @@ namespace FenBrowser.FenEngine.Rendering
                 CssText = sb.ToString(),
                 Origin = source.Origin,
                 SourceOrder = source.SourceOrder,
+                SequenceOrder = source.SequenceOrder,
                 BaseUri = source.BaseUri
             });
+        }
+
+        private static void AssignDeterministicSourceOrder(List<CssSource> sources)
+        {
+            if (sources == null || sources.Count == 0)
+            {
+                return;
+            }
+
+            long nextSequence = 0;
+            for (int i = 0; i < sources.Count; i++)
+            {
+                var source = sources[i];
+                if (source == null)
+                {
+                    continue;
+                }
+
+                source.SourceOrder = i;
+                source.SequenceOrder = nextSequence++;
+            }
         }
 
         private static bool StartsWithAt(string s, int idx, string token)

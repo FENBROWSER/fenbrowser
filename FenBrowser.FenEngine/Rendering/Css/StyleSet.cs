@@ -24,7 +24,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             // Maintain sorted order by SourceOrder so cascade matching behaves correctly regardless of async fetch completion times.
             int index = _sourceOrders.BinarySearch(sourceOrder);
-            if (index < 0) index = ~index;
+            if (index < 0)
+            {
+                index = ~index;
+            }
+            else
+            {
+                // Preserve deterministic insertion order for duplicate source slots.
+                while (index < _sourceOrders.Count && _sourceOrders[index] <= sourceOrder)
+                {
+                    index++;
+                }
+            }
 
             _sheets.Insert(index, sheet);
             _sourceOrders.Insert(index, sourceOrder);
