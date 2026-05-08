@@ -133,6 +133,50 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             ShiftSubtree(box, dx, dy);
         }
 
+        /// <summary>
+        /// Resolves the first available text baseline for a layout box relative to its margin-box top.
+        /// Returns false when no text-backed baseline can be resolved.
+        /// </summary>
+        public static bool TryResolveBaselineOffsetFromMarginTop(LayoutBox box, out float baselineOffset)
+        {
+            baselineOffset = 0f;
+            if (box?.Geometry == null)
+            {
+                return false;
+            }
+
+            if (TryResolveLocalBaselineOffset(box.Geometry, out float localOffset))
+            {
+                baselineOffset = ClampBaselineOffset(localOffset, box.Geometry.MarginBox.Height);
+                return baselineOffset > 0f;
+            }
+
+            float bestDescendantOffset = float.MaxValue;
+            foreach (var child in box.Children)
+            {
+                if (!TryResolveBaselineOffsetFromMarginTop(child, out float childOffset))
+                {
+                    continue;
+                }
+
+                float relativeOffset = (child.Geometry.MarginBox.Top - box.Geometry.MarginBox.Top) + childOffset;
+                if (!float.IsFinite(relativeOffset) || relativeOffset < 0f)
+                {
+                    continue;
+                }
+
+                bestDescendantOffset = Math.Min(bestDescendantOffset, relativeOffset);
+            }
+
+            if (bestDescendantOffset < float.MaxValue)
+            {
+                baselineOffset = ClampBaselineOffset(bestDescendantOffset, box.Geometry.MarginBox.Height);
+                return baselineOffset > 0f;
+            }
+
+            return false;
+        }
+
         public static void ShiftBoxModel(BoxModel model, float dx, float dy)
         {
             model.ContentBox = OffsetRect(model.ContentBox, dx, dy);
@@ -181,6 +225,61 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                     Math.Abs(rect.Top) > 0.01f ||
                     Math.Abs(rect.Right) > 0.01f ||
                     Math.Abs(rect.Bottom) > 0.01f);
+        }
+
+        private static bool TryResolveLocalBaselineOffset(BoxModel geometry, out float baselineOffset)
+        {
+            baselineOffset = 0f;
+            if (geometry == null)
+            {
+                return false;
+            }
+
+            float marginToContent = geometry.ContentBox.Top - geometry.MarginBox.Top;
+            if (!float.IsFinite(marginToContent) || marginToContent < 0f)
+            {
+                marginToContent = 0f;
+            }
+
+            if (geometry.Lines != null && geometry.Lines.Count > 0)
+            {
+                var firstLine = geometry.Lines[0];
+                float lineBaseline = marginToContent + firstLine.Origin.Y + firstLine.Baseline;
+                if (float.IsFinite(lineBaseline) && lineBaseline > 0f)
+                {
+                    baselineOffset = lineBaseline;
+                    return true;
+                }
+            }
+
+            float baseline = geometry.Baseline;
+            if (!float.IsFinite(baseline) || baseline <= 0f)
+            {
+                baseline = geometry.Ascent;
+            }
+
+            if (float.IsFinite(baseline) && baseline > 0f)
+            {
+                baselineOffset = marginToContent + baseline;
+                return baselineOffset > 0f;
+            }
+
+            return false;
+        }
+
+        private static float ClampBaselineOffset(float baselineOffset, float marginHeight)
+        {
+            if (!float.IsFinite(baselineOffset) || baselineOffset <= 0f)
+            {
+                return 0f;
+            }
+
+            if (float.IsFinite(marginHeight) && marginHeight > 0f)
+            {
+                return Math.Min(marginHeight, baselineOffset);
+            }
+
+            return baselineOffset;
         }
 
         private static SKPoint ResolveRelativeOffset(CssComputed style, LayoutState state)

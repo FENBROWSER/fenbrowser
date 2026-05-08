@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Memory;

@@ -1788,33 +1788,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return 0f;
             }
 
+            if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(item, out float propagatedBaseline))
+            {
+                return propagatedBaseline;
+            }
+
             float marginToContent = item.Geometry.ContentBox.Top - item.Geometry.MarginBox.Top;
             if (!float.IsFinite(marginToContent) || marginToContent < 0f)
             {
                 marginToContent = 0f;
-            }
-
-            float baseline = 0f;
-            bool hasTextBaseline = HasTextBackedBaseline(item);
-            if (hasTextBaseline)
-            {
-                baseline = item.Geometry.Baseline;
-                if (!float.IsFinite(baseline) || baseline <= 0f)
-                {
-                    baseline = item.Geometry.Ascent;
-                }
-
-                if (float.IsFinite(baseline) && baseline > 0f)
-                {
-                    float offset = marginToContent + baseline;
-                    float marginHeight = item.Geometry.MarginBox.Height;
-                    if (float.IsFinite(marginHeight) && marginHeight > 0f)
-                    {
-                        return Math.Min(marginHeight, Math.Max(0f, offset));
-                    }
-
-                    return Math.Max(0f, offset);
-                }
             }
 
             // For non-text flex items, synthesize baseline from the lower border edge.
@@ -1832,27 +1814,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             fallback = marginToContent + Math.Max(0f, item.Geometry.ContentBox.Height);
             return float.IsFinite(fallback) && fallback > 0f ? fallback : 0f;
-        }
-
-        private static bool HasTextBackedBaseline(LayoutBox item)
-        {
-            if (item == null)
-            {
-                return false;
-            }
-
-            if (item is TextLayoutBox textLayoutBox)
-            {
-                return !string.IsNullOrWhiteSpace(textLayoutBox.TextContent);
-            }
-
-            if (item.SourceNode is Text textNode)
-            {
-                return !string.IsNullOrWhiteSpace(textNode.Data);
-            }
-
-            // Element-backed flex items synthesize baseline from border edge.
-            return false;
         }
 
         private static bool IsIgnorableFlexItem(LayoutBox box)

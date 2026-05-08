@@ -78,6 +78,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Does parent prevent top margin collapse? (Padding/border/overflow etc)
             bool parentPreventsTopCollapse = (blockBox.Geometry.Padding.Top > 0 || blockBox.Geometry.Border.Top > 0);
+            bool fragmentationEnabled = TryResolveFragmentainerHeight(state, out float fragmentHeight);
             
             foreach (var child in blockBox.Children)
             {
@@ -255,6 +256,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // Normal Flow Block
                     var childState = CreateChildState(childFlowWidth, state);
                     FormattingContext.Resolve(child).Layout(child, childState);
+
+                    string breakBefore = NormalizeBreakDirective(child.ComputedStyle?.PageBreakBefore);
+                    string breakAfter = NormalizeBreakDirective(child.ComputedStyle?.PageBreakAfter);
+                    string breakInside = NormalizeBreakDirective(child.ComputedStyle?.PageBreakInside);
+                    if (fragmentationEnabled && IsForcedBreakDirective(breakBefore))
+                    {
+                        if (MoveFlowCursorToNextFragment(ref currentY, fragmentHeight, ref lastMarginBottom, ref isFirstChild, ref floatManager))
+                        {
+                            maxBottom = Math.Max(maxBottom, currentY);
+                        }
+                    }
                     
                     float childMarginTop = (float)child.Geometry.Margin.Top;
                     float childMarginBottom = (float)child.Geometry.Margin.Bottom;
@@ -287,6 +299,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     float childY = currentY;
                     float childX = xOffset;
+
+                    if (fragmentationEnabled &&
+                        IsAvoidBreakDirective(breakInside) &&
+                        ShouldMoveBlockToNextFragment(childY, child.Geometry.MarginBox.Height, fragmentHeight))
+                    {
+                        if (MoveFlowCursorToNextFragment(ref currentY, fragmentHeight, ref lastMarginBottom, ref isFirstChild, ref floatManager))
+                        {
+                            childY = currentY;
+                            childX = xOffset;
+                            maxBottom = Math.Max(maxBottom, currentY);
+                        }
+                    }
+
                     bool ignoreFloatIntrusionForOutOfFlowAutoWidth = blockBox.IsOutOfFlow && blockAutoWidth;
 
                     if (!ignoreFloatIntrusionForOutOfFlowAutoWidth &&
@@ -348,6 +373,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     isFirstChild = false;
                     
                     maxBottom = Math.Max(maxBottom, currentY);
+
+                    if (fragmentationEnabled && IsForcedBreakDirective(breakAfter))
+                    {
+                        if (MoveFlowCursorToNextFragment(ref currentY, fragmentHeight, ref lastMarginBottom, ref isFirstChild, ref floatManager))
+                        {
+                            maxBottom = Math.Max(maxBottom, currentY);
+                        }
+                    }
                 }
             }
             
@@ -1108,6 +1141,120 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float resolvedHeight = box.Geometry.ContentBox.Height;
             return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
+        }
+
+        private static bool TryResolveFragmentainerHeight(LayoutState state, out float fragmentHeight)
+        {
+            fragmentHeight = state.AvailableSize.Height;
+            if (!float.IsFinite(fragmentHeight) || fragmentHeight <= 0f)
+            {
+                fragmentHeight = state.ContainingBlockHeight;
+            }
+
+            if (!float.IsFinite(fragmentHeight) || fragmentHeight <= 0f)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static string NormalizeBreakDirective(string raw)
+        {
+            return string.IsNullOrWhiteSpace(raw) ? string.Empty : raw.Trim().ToLowerInvariant();
+        }
+
+        private static bool IsForcedBreakDirective(string directive)
+        {
+            if (string.IsNullOrWhiteSpace(directive))
+            {
+                return false;
+            }
+
+            return directive == "always" ||
+                   directive == "left" ||
+                   directive == "right" ||
+                   directive == "recto" ||
+                   directive == "verso" ||
+                   directive == "page";
+        }
+
+        private static bool IsAvoidBreakDirective(string directive)
+        {
+            if (string.IsNullOrWhiteSpace(directive))
+            {
+                return false;
+            }
+
+            return directive == "avoid" || directive == "avoid-page";
+        }
+
+        private static bool MoveFlowCursorToNextFragment(
+            ref float currentY,
+            float fragmentHeight,
+            ref float lastMarginBottom,
+            ref bool isFirstChild,
+            ref FloatManager floatManager)
+        {
+            if (!float.IsFinite(fragmentHeight) || fragmentHeight <= 0f)
+            {
+                return false;
+            }
+
+            float next = MoveToNextFragmentStart(currentY, fragmentHeight);
+            if (next <= currentY + 0.5f)
+            {
+                return false;
+            }
+
+            currentY = next;
+            lastMarginBottom = 0f;
+            isFirstChild = true;
+            floatManager = new FloatManager();
+            return true;
+        }
+
+        private static float MoveToNextFragmentStart(float positionY, float fragmentHeight)
+        {
+            if (!float.IsFinite(fragmentHeight) || fragmentHeight <= 0f)
+            {
+                return positionY;
+            }
+
+            if (!float.IsFinite(positionY))
+            {
+                positionY = 0f;
+            }
+
+            const float epsilon = 0.5f;
+            float normalized = Math.Max(0f, positionY);
+            float fragmentIndex = (float)Math.Floor((normalized + epsilon) / fragmentHeight);
+            return (fragmentIndex + 1f) * fragmentHeight;
+        }
+
+        private static bool ShouldMoveBlockToNextFragment(float blockTop, float blockOuterHeight, float fragmentHeight)
+        {
+            if (!float.IsFinite(fragmentHeight) || fragmentHeight <= 0f)
+            {
+                return false;
+            }
+
+            if (!float.IsFinite(blockTop) || !float.IsFinite(blockOuterHeight) || blockOuterHeight <= 0f)
+            {
+                return false;
+            }
+
+            // If the box itself exceeds a fragment, keep it in place and allow overflow.
+            if (blockOuterHeight >= fragmentHeight - 0.5f)
+            {
+                return false;
+            }
+
+            const float epsilon = 0.5f;
+            float normalizedTop = Math.Max(0f, blockTop);
+            float fragmentIndex = (float)Math.Floor((normalizedTop + epsilon) / fragmentHeight);
+            float fragmentBottom = (fragmentIndex + 1f) * fragmentHeight;
+            return normalizedTop + blockOuterHeight > fragmentBottom + epsilon;
         }
 
         private static bool TryResolveCollapsedThroughMargin(LayoutBox box, out float collapsedMargin)

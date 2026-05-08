@@ -8346,3 +8346,30 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore`: pass on `2026-05-08`.
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~TypographyCachingTests" --logger "console;verbosity=minimal"`: pass (`17/17`) on `2026-05-08`.
+
+## 2.309 Layout Fragmentation + Cross-Axis Baseline Propagation (2026-05-08)
+
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Added block-fragmentation flow controls driven by break directives (`page-break-before`, `page-break-after`, `page-break-inside`).
+  - Implemented forced break handling (`always/page/left/right/recto/verso`) and `avoid` handling that moves eligible blocks to the next fragment start when they would otherwise cross a fragment boundary.
+  - Fragment transitions now reset margin-collapsing carry state and float exclusions for the next fragment.
+- `FenBrowser.FenEngine/Layout/Contexts/LayoutBoxOps.cs`
+  - Added `TryResolveBaselineOffsetFromMarginTop(...)` baseline propagation helper.
+  - Baseline resolution now prefers local text line/metric baselines and then walks descendants to recover first-available text-backed baselines.
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+  - Flex cross-axis `baseline` alignment now consumes propagated descendant baselines before falling back to border-edge synthesis.
+  - This removes prior misalignment where element-backed flex items with nested inline content aligned to the border bottom instead of text baselines.
+- `FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`
+  - Added baseline-aware row alignment pass for grid items using `align-items/align-self: baseline` (`first/last-baseline` aliases included).
+  - Grid baseline pass now computes per-row target baselines and repositions baseline-participating items after baseline collection.
+- `FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`
+  - Measure path now exports baseline metrics into `LayoutMetrics.Baseline`.
+  - Arrange path now writes child geometries into the arrange-box map so baseline-aware grid alignment can resolve real box baselines.
+- `FenBrowser.FenEngine/Layout/Tree/LayoutBoxStore.cs`
+  - Restored `Thickness` type visibility by adding the missing `FenBrowser.Core` import (build unblocker for current tree).
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~FlexLayoutTests|FullyQualifiedName~GridAlignmentTests" --logger "console;verbosity=minimal"`: pass (`36/36`) on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~BlockFormattingContextFloatTests|FullyQualifiedName~BlockFormattingContextRelayoutTests|FullyQualifiedName~LayoutEnginePositioningTests" --logger "console;verbosity=minimal"`: pass (`11/11`) on `2026-05-08`.

@@ -39,6 +39,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 .Select(child => child.SourceNode)
                 .Where(node => node != null)
                 .ToList();
+            var arrangedBoxes = new Dictionary<Node, BoxModel>();
 
             LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth)
             {
@@ -73,11 +74,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 FormattingContext.Resolve(childBox).Layout(childBox, childState);
 
+                float baseline = 0f;
+                if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(childBox, out float resolvedBaseline))
+                {
+                    baseline = resolvedBaseline;
+                }
+
                 return new LayoutMetrics
                 {
                     MaxChildWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width),
                     ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
-                    ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height)
+                    ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
+                    Baseline = baseline
                 };
             }
 
@@ -109,6 +117,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 // Child layout may have recomputed local geometry; keep final grid placement.
                 LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
+                arrangedBoxes[node] = childBox.Geometry;
             }
 
             float measureHeightConstraint = state.AvailableSize.Height;
@@ -125,7 +134,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 MeasureNode,
                 childrenSource);
 
-            var arrangedBoxes = new Dictionary<Node, BoxModel>();
             GridLayoutComputer.Arrange(
                 containerElement,
                 new SKRect(0f, 0f, container.Geometry.ContentBox.Width, Math.Max(0f, metrics.ContentHeight)),

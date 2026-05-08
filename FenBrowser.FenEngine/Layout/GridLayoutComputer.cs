@@ -777,6 +777,8 @@ namespace FenBrowser.FenEngine.Layout
             rowStarts[rowTracks.Count] = cy;
 
             // Arrange Item
+            var baselinePlans = new List<GridBaselineAlignmentPlan>();
+            var rowBaselineTargets = new Dictionary<int, float>();
             foreach (var kv in positions)
             {
                 var item = kv.Key;
@@ -852,15 +854,155 @@ namespace FenBrowser.FenEngine.Layout
                 if (justify == "center") cellX += (trackW - itemW) / 2;
                 else if (justify == "end" || justify == "right" || justify == "flex-end") cellX += (trackW - itemW);
                 
+                bool alignBaseline = IsBaselineAlignment(align);
                 if (align == "center") cellY += (trackH - itemH) / 2;
                 else if (align == "end" || align == "bottom" || align == "flex-end") cellY += (trackH - itemH);
 
                 var itemRect = new SKRect(cellX, cellY, cellX + itemW, cellY + itemH);
                 arrangeChild(item, itemRect, depth + 1);
+
+                if (alignBaseline)
+                {
+                    float baselineOffset = ResolveGridItemBaselineOffset(item, boxes, itemRect);
+                    if (baselineOffset > 0f)
+                    {
+                        float baselineAbsoluteY = itemRect.Top + baselineOffset;
+                        if (!rowBaselineTargets.TryGetValue(r1, out float currentBaseline) || baselineAbsoluteY > currentBaseline)
+                        {
+                            rowBaselineTargets[r1] = baselineAbsoluteY;
+                        }
+
+                        baselinePlans.Add(new GridBaselineAlignmentPlan(item, r1, trackY, trackH, itemRect, baselineOffset));
+                    }
+                }
+            }
+
+            // Align baseline-participating items after all per-row baselines are known.
+            foreach (var plan in baselinePlans)
+            {
+                if (!rowBaselineTargets.TryGetValue(plan.RowIndex, out float targetBaseline))
+                {
+                    continue;
+                }
+
+                float targetTop = targetBaseline - plan.BaselineOffset;
+                float maxTopWithinTrack = plan.TrackTop + Math.Max(0f, plan.TrackHeight - plan.ItemRect.Height);
+                if (targetTop > maxTopWithinTrack)
+                {
+                    targetTop = maxTopWithinTrack;
+                }
+
+                if (targetTop < plan.TrackTop)
+                {
+                    targetTop = plan.TrackTop;
+                }
+
+                if (Math.Abs(targetTop - plan.ItemRect.Top) <= 0.1f)
+                {
+                    continue;
+                }
+
+                var adjustedRect = new SKRect(
+                    plan.ItemRect.Left,
+                    targetTop,
+                    plan.ItemRect.Right,
+                    targetTop + plan.ItemRect.Height);
+                arrangeChild(plan.Item, adjustedRect, depth + 1);
             }
         }
 
         // --- Helpers identical to Phase 1 but included for completeness ---
+
+        private readonly record struct GridBaselineAlignmentPlan(
+            Element Item,
+            int RowIndex,
+            float TrackTop,
+            float TrackHeight,
+            SKRect ItemRect,
+            float BaselineOffset);
+
+        private static bool IsBaselineAlignment(string align)
+        {
+            if (string.IsNullOrWhiteSpace(align))
+            {
+                return false;
+            }
+
+            var normalized = align.Trim().ToLowerInvariant();
+            return normalized == "baseline" ||
+                   normalized == "first baseline" ||
+                   normalized == "first-baseline" ||
+                   normalized == "last baseline" ||
+                   normalized == "last-baseline";
+        }
+
+        private static float ResolveGridItemBaselineOffset(
+            Element item,
+            IDictionary<Node, BoxModel> boxes,
+            SKRect itemRect)
+        {
+            if (boxes != null && boxes.TryGetValue(item, out var geometry))
+            {
+                if (TryResolveBaselineOffsetFromMarginTop(geometry, out float baseline))
+                {
+                    return baseline;
+                }
+            }
+
+            float fallback = itemRect.Height;
+            return float.IsFinite(fallback) && fallback > 0f ? fallback : 0f;
+        }
+
+        private static bool TryResolveBaselineOffsetFromMarginTop(BoxModel geometry, out float baselineOffset)
+        {
+            baselineOffset = 0f;
+            if (geometry == null)
+            {
+                return false;
+            }
+
+            float marginToContent = geometry.ContentBox.Top - geometry.MarginBox.Top;
+            if (!float.IsFinite(marginToContent) || marginToContent < 0f)
+            {
+                marginToContent = 0f;
+            }
+
+            if (geometry.Lines != null && geometry.Lines.Count > 0)
+            {
+                var line = geometry.Lines[0];
+                float lineBaseline = marginToContent + line.Origin.Y + line.Baseline;
+                if (float.IsFinite(lineBaseline) && lineBaseline > 0f)
+                {
+                    baselineOffset = lineBaseline;
+                    return true;
+                }
+            }
+
+            float baseline = geometry.Baseline;
+            if (!float.IsFinite(baseline) || baseline <= 0f)
+            {
+                baseline = geometry.Ascent;
+            }
+
+            if (!float.IsFinite(baseline) || baseline <= 0f)
+            {
+                return false;
+            }
+
+            baselineOffset = marginToContent + baseline;
+            if (!float.IsFinite(baselineOffset) || baselineOffset <= 0f)
+            {
+                return false;
+            }
+
+            float marginHeight = geometry.MarginBox.Height;
+            if (float.IsFinite(marginHeight) && marginHeight > 0f)
+            {
+                baselineOffset = Math.Min(marginHeight, baselineOffset);
+            }
+
+            return baselineOffset > 0f;
+        }
 
 
 
