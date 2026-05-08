@@ -40,6 +40,10 @@ Extends `ContainerNode`. Represents HTML tags.
 - **Shadow connectivity propagation (2026-04-07)**:
   - `Element.AttachShadow(...)`, `OnConnected()`, and `OnDisconnected()` now resynchronize `ShadowRoot` subtree connection state through the attached shadow tree.
   - This keeps `isConnected` correct for shadow-hosted descendants during attach/detach and removes a direct source of shadow-root DOM/WPT click and form-event failures.
+- **Slot distribution hardening (2026-05-08)**:
+  - `ShadowRoot` now maintains deterministic slot-assignment caches (slottable -> slot and slot -> assigned nodes) rebuilt from host light-DOM children.
+  - Host child mutations and relevant attribute changes (`slot` on slottables, `name` on `<slot>`) now invalidate assignment caches.
+  - `Element.AssignedSlot` / `Text.AssignedSlot` now resolve through the assignment cache and keep closed-root encapsulation (returns `null` when assignment is in a closed shadow tree).
 
 ### 2.3 Events & Mutation
 

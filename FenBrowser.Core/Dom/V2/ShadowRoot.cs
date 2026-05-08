@@ -1,6 +1,7 @@
 // WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -59,6 +60,9 @@ namespace FenBrowser.Core.Dom.V2
         // --- Slot Assignment ---
 
         private Dictionary<string, Element> _slotsByName;
+        private Dictionary<ISlottable, Element> _assignedSlotBySlottable;
+        private Dictionary<Element, List<Node>> _assignedNodesBySlot;
+        private bool _slotAssignmentsDirty = true;
 
         /// <summary>
         /// Returns the slot elements within this shadow root.
@@ -79,17 +83,7 @@ namespace FenBrowser.Core.Dom.V2
         {
             name ??= "";
 
-            // Rebuild cache if needed
-            if (_slotsByName == null)
-            {
-                _slotsByName = new Dictionary<string, Element>(System.StringComparer.Ordinal);
-                foreach (var slot in GetSlots())
-                {
-                    var slotName = slot.GetAttribute("name") ?? "";
-                    if (!_slotsByName.ContainsKey(slotName))
-                        _slotsByName[slotName] = slot;
-                }
-            }
+            EnsureSlotMap();
 
             _slotsByName.TryGetValue(name, out var result);
             return result;
@@ -101,6 +95,113 @@ namespace FenBrowser.Core.Dom.V2
         internal void InvalidateSlotCache()
         {
             _slotsByName = null;
+            InvalidateSlotAssignments();
+        }
+
+        internal void InvalidateSlotAssignments()
+        {
+            _slotAssignmentsDirty = true;
+            _assignedSlotBySlottable = null;
+            _assignedNodesBySlot = null;
+        }
+
+        internal Element GetAssignedSlotForSlottable(ISlottable slottable, bool exposeClosedTree = false)
+        {
+            if (slottable == null)
+            {
+                return null;
+            }
+
+            if (!exposeClosedTree && Mode == ShadowRootMode.Closed)
+            {
+                return null;
+            }
+
+            EnsureSlotAssignments();
+            return _assignedSlotBySlottable != null && _assignedSlotBySlottable.TryGetValue(slottable, out var assignedSlot)
+                ? assignedSlot
+                : null;
+        }
+
+        internal IReadOnlyList<Node> GetAssignedNodesForSlot(Element slot)
+        {
+            if (slot == null)
+            {
+                return Array.Empty<Node>();
+            }
+
+            EnsureSlotAssignments();
+            return _assignedNodesBySlot != null && _assignedNodesBySlot.TryGetValue(slot, out var nodes)
+                ? nodes
+                : Array.Empty<Node>();
+        }
+
+        private void EnsureSlotMap()
+        {
+            if (_slotsByName != null)
+            {
+                return;
+            }
+
+            _slotsByName = new Dictionary<string, Element>(System.StringComparer.Ordinal);
+            foreach (var slot in GetSlots())
+            {
+                var slotName = slot.GetAttribute("name") ?? "";
+                if (!_slotsByName.ContainsKey(slotName))
+                {
+                    _slotsByName[slotName] = slot;
+                }
+            }
+        }
+
+        private void EnsureSlotAssignments()
+        {
+            if (!_slotAssignmentsDirty)
+            {
+                return;
+            }
+
+            _slotAssignmentsDirty = false;
+            _assignedSlotBySlottable = new Dictionary<ISlottable, Element>();
+            _assignedNodesBySlot = new Dictionary<Element, List<Node>>();
+
+            if (SlotAssignment != SlotAssignmentMode.Named || Host == null)
+            {
+                return;
+            }
+
+            EnsureSlotMap();
+            if (_slotsByName.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var child in Host.ChildNodes)
+            {
+                if (child is not ISlottable slottable)
+                {
+                    continue;
+                }
+
+                string slotName = child is Element elementChild
+                    ? (elementChild.GetAttribute("slot") ?? "")
+                    : "";
+
+                if (!_slotsByName.TryGetValue(slotName, out var slot) || slot == null)
+                {
+                    continue;
+                }
+
+                _assignedSlotBySlottable[slottable] = slot;
+
+                if (!_assignedNodesBySlot.TryGetValue(slot, out var nodes))
+                {
+                    nodes = new List<Node>();
+                    _assignedNodesBySlot[slot] = nodes;
+                }
+
+                nodes.Add(child);
+            }
         }
 
         // --- Stylesheets ---

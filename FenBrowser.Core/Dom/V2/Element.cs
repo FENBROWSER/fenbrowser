@@ -485,6 +485,8 @@ namespace FenBrowser.Core.Dom.V2
                 UpdateAncestorFilter();
             }
 
+            NotifySlotAssignmentMayHaveChanged(name);
+
             // Notify mutation observers
             NotifyAttributeMutation(attr, oldValue);
         }
@@ -522,6 +524,7 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             UpdateAncestorFilter();
+            NotifySlotAssignmentMayHaveChanged(name);
             NotifyAttributeMutation(attr, oldValue);
         }
 
@@ -530,6 +533,27 @@ namespace FenBrowser.Core.Dom.V2
             return name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("class", StringComparison.OrdinalIgnoreCase) ||
                    name.Equals("style", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void NotifySlotAssignmentMayHaveChanged(string attributeName)
+        {
+            if (string.IsNullOrEmpty(attributeName))
+            {
+                return;
+            }
+
+            if (attributeName.Equals("slot", StringComparison.OrdinalIgnoreCase) &&
+                _parentNode is Element parentElement)
+            {
+                parentElement.InvalidateAttachedShadowSlotAssignments();
+            }
+
+            if (attributeName.Equals("name", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(LocalName, "slot", StringComparison.Ordinal) &&
+                GetRootNode() is ShadowRoot shadowRoot)
+            {
+                shadowRoot.InvalidateSlotCache();
+            }
         }
 
         private void NotifyAttributeMutation(Attr attr, string oldValue)
@@ -606,6 +630,9 @@ namespace FenBrowser.Core.Dom.V2
         /// https://dom.spec.whatwg.org/#dom-element-shadowroot
         /// </summary>
         public ShadowRoot ShadowRoot => _shadowRoot?.Mode == ShadowRootMode.Open ? _shadowRoot : null;
+
+        internal ShadowRoot GetAttachedShadowRoot() => _shadowRoot;
+        internal void InvalidateAttachedShadowSlotAssignments() => _shadowRoot?.InvalidateSlotAssignments();
 
         /// <summary>
         /// Attaches a shadow root to this element.
@@ -693,13 +720,10 @@ namespace FenBrowser.Core.Dom.V2
         {
             get
             {
-                // Find the <slot> element in the shadow root of this element's parent.
-                // Uses this element's slot attribute value to match the slot name.
                 if (_parentNode is not Element parentEl) return null;
-                var shadowRoot = parentEl.ShadowRoot; // null for closed shadow roots (per spec)
+                var shadowRoot = parentEl.GetAttachedShadowRoot();
                 if (shadowRoot == null) return null;
-                var slotName = GetAttribute("slot") ?? "";
-                return shadowRoot.GetSlotByName(slotName);
+                return shadowRoot.GetAssignedSlotForSlottable(this, exposeClosedTree: false);
             }
         }
 

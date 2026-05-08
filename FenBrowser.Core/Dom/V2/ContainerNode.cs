@@ -539,6 +539,11 @@ namespace FenBrowser.Core.Dom.V2
                     fragment.InvalidateIdIndex();
                     break;
             }
+
+            if (this is Element hostElement)
+            {
+                hostElement.InvalidateAttachedShadowSlotAssignments();
+            }
         }
 
         private void AdoptNode(Node node)

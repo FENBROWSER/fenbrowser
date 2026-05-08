@@ -106,6 +106,7 @@ namespace FenBrowser.FenEngine.DOM
                 // 1. Initialize Event
                 evt.ResetState(); // Reset path/phase if re-dispatching
                 evt.Target = target;
+                var dispatchTarget = target;
                 // Preserve trust set by the event source; script dispatchEvent() must remain untrusted.
                 evt.UpdateJsProperties(context); // Sync JS object
 
@@ -120,11 +121,17 @@ namespace FenBrowser.FenEngine.DOM
                 var useExternalInvoker = ExternalListenerInvoker != null && env != null;
                 var documentTarget = useExternalInvoker && ResolveDocumentTarget != null ? ResolveDocumentTarget(target) : null;
                 var windowTarget = useExternalInvoker && ResolveWindowTarget != null ? ResolveWindowTarget(target) : null;
+                var shouldInvokeTopLevel = !IsInShadowTree(dispatchTarget) || evt.Composed;
+                var topLevelRetargetedTarget = RetargetForTopLevel(dispatchTarget);
 
                 // 3. CAPTURING PHASE (Root -> Parent)
                 evt.EventPhase = DomEvent.CAPTURING_PHASE;
-                if (!evt.PropagationStopped)
+                if (!evt.PropagationStopped && shouldInvokeTopLevel)
                 {
+                    evt.Target = topLevelRetargetedTarget;
+                    evt.CurrentTarget = null;
+                    evt.UpdateJsProperties(context);
+
                     if (useExternalInvoker)
                     {
                         if (windowTarget != null)
@@ -149,6 +156,7 @@ namespace FenBrowser.FenEngine.DOM
                 {
                     if (evt.PropagationStopped) break;
                     var ancestor = path[i];
+                    evt.Target = RetargetForInvocationTarget(dispatchTarget, ancestor);
                     evt.CurrentTarget = ancestor;
                     evt.UpdateJsProperties(context);
                     SetLegacyEventForElement(ancestor);
@@ -164,6 +172,7 @@ namespace FenBrowser.FenEngine.DOM
                 if (!evt.PropagationStopped)
                 {
                     evt.EventPhase = DomEvent.AT_TARGET;
+                    evt.Target = RetargetForInvocationTarget(dispatchTarget, target);
                     evt.CurrentTarget = target;
                     evt.UpdateJsProperties(context);
                     SetLegacyEventForElement(target);
@@ -191,6 +200,7 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         if (evt.PropagationStopped) break;
                         var ancestor = path[i];
+                        evt.Target = RetargetForInvocationTarget(dispatchTarget, ancestor);
                         evt.CurrentTarget = ancestor;
                         evt.UpdateJsProperties(context);
                         SetLegacyEventForElement(ancestor);
@@ -202,8 +212,12 @@ namespace FenBrowser.FenEngine.DOM
                         }
                     }
 
-                    if (!evt.PropagationStopped)
+                    if (!evt.PropagationStopped && shouldInvokeTopLevel)
                     {
+                        evt.Target = topLevelRetargetedTarget;
+                        evt.CurrentTarget = null;
+                        evt.UpdateJsProperties(context);
+
                         if (useExternalInvoker)
                         {
                             if (documentTarget != null)
@@ -235,6 +249,7 @@ namespace FenBrowser.FenEngine.DOM
                 }
 
                 // 6. Reset/Finalize
+                evt.Target = dispatchTarget;
                 evt.EventPhase = DomEvent.NONE;
                 evt.CurrentTarget = null;
                 evt.Path.Clear();
@@ -302,6 +317,75 @@ namespace FenBrowser.FenEngine.DOM
             }
 
             return null;
+        }
+
+        private static Element RetargetForTopLevel(Element originalTarget)
+        {
+            if (originalTarget == null)
+            {
+                return null;
+            }
+
+            Node adjusted = originalTarget;
+            while (adjusted.GetRootNode() is ShadowRoot shadowRoot && shadowRoot.Host != null)
+            {
+                adjusted = shadowRoot.Host;
+            }
+
+            return adjusted as Element ?? originalTarget;
+        }
+
+        private static Element RetargetForInvocationTarget(Element originalTarget, Element invocationTarget)
+        {
+            if (originalTarget == null)
+            {
+                return null;
+            }
+
+            if (invocationTarget == null)
+            {
+                return RetargetForTopLevel(originalTarget);
+            }
+
+            Node adjusted = originalTarget;
+            while (adjusted.GetRootNode() is ShadowRoot shadowRoot && shadowRoot.Host != null)
+            {
+                if (IsShadowIncludingInclusiveAncestor(shadowRoot, invocationTarget))
+                {
+                    break;
+                }
+
+                adjusted = shadowRoot.Host;
+            }
+
+            return adjusted as Element ?? originalTarget;
+        }
+
+        private static bool IsShadowIncludingInclusiveAncestor(Node ancestor, Node node)
+        {
+            for (Node current = node; current != null;)
+            {
+                if (ReferenceEquals(current, ancestor))
+                {
+                    return true;
+                }
+
+                if (current.ParentNode != null)
+                {
+                    current = current.ParentNode;
+                    continue;
+                }
+
+                if (current is ShadowRoot shadowRoot)
+                {
+                    current = shadowRoot.Host;
+                    continue;
+                }
+
+                break;
+            }
+
+            return false;
         }
 
         private static void InvokeListeners(Element element, DomEvent evt, IExecutionContext context, bool isCapturePhase)

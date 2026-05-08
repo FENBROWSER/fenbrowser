@@ -7,6 +7,12 @@
 
 `FenBrowser.FenEngine` is the core logic assembly of the browser. It is responsible for the entire pipeline from HTML source code to pixels on the screen. It integrates Parsing, Layout, Scripting, and Rendering into a coherent loop.
 
+### 1.1 Shadow DOM Event Retargeting Hardening (2026-05-08)
+
+- `DOM/EventTarget.DispatchEvent(...)` now applies shadow-adjusted retargeting for `event.target` per invocation target during capture/target/bubble phases.
+- Composed events crossing `ShadowRoot -> Host` boundaries now expose host-retargeted `event.target` to outer-tree listeners, while listeners inside the same shadow tree continue seeing the original inner target.
+- Top-level bridge dispatch (document/window) now uses the same outer-tree retargeted target, and dispatch finalization restores stable post-dispatch target state.
+
 ## 2. The Layout Engine (`FenBrowser.FenEngine.Layout`)
 
 The layout engine acts as a pure function: `(DOM Tree + Styles + Viewport) -> Geometry`.
