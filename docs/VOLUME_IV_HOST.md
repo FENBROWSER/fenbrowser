@@ -1049,3 +1049,23 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~TypographyCachingTests" --logger "console;verbosity=minimal"`: pass (`17/17`) on `2026-05-08`.
+
+### 6.49 Host Compositor Worker Thread (Phase 1 render-thread closure) (2026-05-08)
+
+- `FenBrowser.Host/CompositorThread.cs` (new)
+  - Added a dedicated host compositor worker thread that owns an off-screen surface and publishes a presentable frame snapshot.
+  - Supports explicit viewport updates, frame request signaling, and snapshot presentation through `TryDrawLatest(...)`.
+- `FenBrowser.Host/ChromeManager.cs`
+  - Integrated `CompositorThread` into host render wiring.
+  - Host now requests compositor work on root invalidation and viewport resize, then presents the latest committed compositor snapshot in `Render(...)`.
+  - Synchronous compositor fallback remains for startup/first-frame safety.
+- `FenBrowser.Host/Widgets/Widget.cs`
+  - Added host widget-tree synchronization root and guarded core tree mutation/render traversal paths so compositor-thread reads and UI-thread invalidation/hit-testing stay deterministic.
+- `FenBrowser.Tests/Host/CompositorThreadTests.cs` (new)
+  - Added regression coverage for:
+    - first compositor-frame publication
+    - subsequent frame commit on explicit frame request after dirty invalidation.
+
+- Net effect:
+  - Host rendering now has a concrete compositor-thread abstraction instead of only UI-thread composition.
+  - Dirty-region and incremental-layout gains in the engine can now flow through a dedicated host compositor commit path with deterministic frame publication semantics.

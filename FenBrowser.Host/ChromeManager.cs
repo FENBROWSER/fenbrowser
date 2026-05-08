@@ -30,6 +30,7 @@ namespace FenBrowser.Host
         public static ChromeManager Instance => _instance ??= new ChromeManager();
 
         private Compositor _compositor;
+        private CompositorThread _compositorThread;
         private RootWidget _root;
         
         private TabBarWidget _tabBar;
@@ -78,6 +79,14 @@ namespace FenBrowser.Host
             
             _compositor = new Compositor(_root);
             _compositor.DpiScale = WindowManager.Instance.DpiScale;
+            _root.Invalidated += OnRootInvalidated;
+
+            _compositorThread = new CompositorThread(_compositor);
+            _compositorThread.UpdateViewport(
+                WindowManager.Instance.LogicalWidth,
+                WindowManager.Instance.LogicalHeight,
+                WindowManager.Instance.DpiScale);
+            _compositorThread.Start();
 
             // Wire TabManager
             TabManager.Instance.ActiveTabChanged += OnActiveTabChanged;
@@ -99,6 +108,8 @@ namespace FenBrowser.Host
             wm.OnResize += size => {
                 _compositor.DpiScale = wm.DpiScale;
                 LayoutWidgets();
+                _compositorThread?.UpdateViewport(wm.LogicalWidth, wm.LogicalHeight, wm.DpiScale);
+                _compositorThread?.RequestFrame();
             };
             
             wm.OnRender += dt => Render(wm.Canvas);
@@ -318,7 +329,16 @@ namespace FenBrowser.Host
             });
         }
 
-        private void LayoutWidgets() => _root?.InvalidateLayout();
+        private void LayoutWidgets()
+        {
+            _root?.InvalidateLayout();
+            _compositorThread?.RequestFrame();
+        }
+
+        private void OnRootInvalidated()
+        {
+            _compositorThread?.RequestFrame();
+        }
 
         private void OnNavigate(string url)
         {
@@ -472,7 +492,19 @@ namespace FenBrowser.Host
         private void Render(SKCanvas canvas)
         {
             if (_compositor == null) return;
-            _compositor.Composite(canvas, new SKSize(WindowManager.Instance.LogicalWidth, WindowManager.Instance.LogicalHeight));
+            var logicalSize = new SKSize(WindowManager.Instance.LogicalWidth, WindowManager.Instance.LogicalHeight);
+
+            if (_compositorThread == null || !_compositorThread.TryDrawLatest(canvas, logicalSize))
+            {
+                lock (Widget.TreeSyncRoot)
+                {
+                    lock (_compositor)
+                    {
+                        _compositor.Composite(canvas, logicalSize);
+                    }
+                }
+            }
+
             DrawTooltip(canvas);
         }
         
@@ -662,6 +694,13 @@ namespace FenBrowser.Host
 
         private void Shutdown()
         {
+             if (_root != null)
+             {
+                 _root.Invalidated -= OnRootInvalidated;
+             }
+
+             _compositorThread?.Dispose();
+             _compositorThread = null;
              // DevToolsServer is not IDisposable
              _processIsolation?.Shutdown();
              ProcessIsolationRuntime.SetCoordinator(null);

@@ -31,6 +31,7 @@ public enum WidgetRole
 public abstract class Widget
 {
     private int _pendingMainThreadInvalidate;
+    internal static object TreeSyncRoot { get; } = new object();
 
     /// <summary>
     /// Bounding rectangle of this widget.
@@ -99,10 +100,13 @@ public abstract class Widget
     /// </summary>
     public void AddChild(Widget child)
     {
-        child.Parent = this;
-        Children.Add(child);
-        InvalidateLayout();
-        Invalidate();
+        lock (TreeSyncRoot)
+        {
+            child.Parent = this;
+            Children.Add(child);
+            InvalidateLayout();
+            Invalidate();
+        }
     }
     
     /// <summary>
@@ -110,11 +114,14 @@ public abstract class Widget
     /// </summary>
     public void RemoveChild(Widget child)
     {
-        if (Children.Remove(child))
+        lock (TreeSyncRoot)
         {
-            child.Parent = null;
-            InvalidateLayout();
-            Invalidate();
+            if (Children.Remove(child))
+            {
+                child.Parent = null;
+                InvalidateLayout();
+                Invalidate();
+            }
         }
     }
     
@@ -133,13 +140,16 @@ public abstract class Widget
     /// </summary>
     public void Measure(SKSize availableSpace)
     {
-        if (!IsVisible)
+        lock (TreeSyncRoot)
         {
-            DesiredSize = SKSize.Empty;
-            return;
+            if (!IsVisible)
+            {
+                DesiredSize = SKSize.Empty;
+                return;
+            }
+
+            DesiredSize = OnMeasure(availableSpace);
         }
-        
-        DesiredSize = OnMeasure(availableSpace);
     }
     
     /// <summary>
@@ -147,11 +157,14 @@ public abstract class Widget
     /// </summary>
     public void Arrange(SKRect finalRect)
     {
-        if (!IsVisible) return;
-        
-        Bounds = finalRect;
-        OnArrange(finalRect);
-        IsLayoutDirty = false;
+        lock (TreeSyncRoot)
+        {
+            if (!IsVisible) return;
+
+            Bounds = finalRect;
+            OnArrange(finalRect);
+            IsLayoutDirty = false;
+        }
     }
     
     /// <summary>
@@ -195,8 +208,11 @@ public abstract class Widget
     /// </summary>
     public void InvalidateLayout()
     {
-        IsLayoutDirty = true;
-        Parent?.InvalidateLayout();
+        lock (TreeSyncRoot)
+        {
+            IsLayoutDirty = true;
+            Parent?.InvalidateLayout();
+        }
     }
     
     /// <summary>
@@ -219,13 +235,16 @@ public abstract class Widget
     /// </summary>
     public void PaintAll(SKCanvas canvas)
     {
-        if (!IsVisible) return;
-        
-        Paint(canvas);
-        
-        foreach (var child in Children)
+        lock (TreeSyncRoot)
         {
-            child.PaintAll(canvas);
+            if (!IsVisible) return;
+
+            Paint(canvas);
+
+            foreach (var child in Children)
+            {
+                child.PaintAll(canvas);
+            }
         }
     }
     
@@ -270,25 +289,28 @@ public abstract class Widget
 
     private void InvalidateCore(SKRect? bounds)
     {
-        var dirtyBounds = bounds ?? Bounds;
-        
-        if (DirtyRect == null)
+        lock (TreeSyncRoot)
         {
-            DirtyRect = dirtyBounds;
+            var dirtyBounds = bounds ?? Bounds;
+
+            if (DirtyRect == null)
+            {
+                DirtyRect = dirtyBounds;
+            }
+            else
+            {
+                DirtyRect = SKRect.Union(DirtyRect.Value, dirtyBounds);
+            }
+
+            // Widget bounds in the host tree are arranged in root/global coordinates,
+            // so propagate the same dirty rect upward without applying another offset.
+            if (Parent != null)
+            {
+                Parent.Invalidate(dirtyBounds);
+            }
+
+            Invalidated?.Invoke();
         }
-        else
-        {
-            DirtyRect = SKRect.Union(DirtyRect.Value, dirtyBounds);
-        }
-        
-        // Widget bounds in the host tree are arranged in root/global coordinates,
-        // so propagate the same dirty rect upward without applying another offset.
-        if (Parent != null)
-        {
-            Parent.Invalidate(dirtyBounds);
-        }
-        
-        Invalidated?.Invoke();
     }
     
     /// <summary>
@@ -296,10 +318,13 @@ public abstract class Widget
     /// </summary>
     public void ClearDirtyRect()
     {
-        DirtyRect = null;
-        foreach (var child in Children)
+        lock (TreeSyncRoot)
         {
-            child.ClearDirtyRect();
+            DirtyRect = null;
+            foreach (var child in Children)
+            {
+                child.ClearDirtyRect();
+            }
         }
     }
     
@@ -333,16 +358,19 @@ public abstract class Widget
     /// </summary>
     public virtual Widget HitTestDeep(float x, float y)
     {
-        if (!HitTest(x, y)) return null;
-        
-        // Check children in reverse order (topmost first)
-        for (int i = Children.Count - 1; i >= 0; i--)
+        lock (TreeSyncRoot)
         {
-            var hit = Children[i].HitTestDeep(x, y);
-            if (hit != null) return hit;
+            if (!HitTest(x, y)) return null;
+
+            // Check children in reverse order (topmost first)
+            for (int i = Children.Count - 1; i >= 0; i--)
+            {
+                var hit = Children[i].HitTestDeep(x, y);
+                if (hit != null) return hit;
+            }
+
+            return this;
         }
-        
-        return this;
     }
     
     // Input handlers - override as needed
