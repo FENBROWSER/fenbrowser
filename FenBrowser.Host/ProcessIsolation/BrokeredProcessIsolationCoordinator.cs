@@ -26,7 +26,8 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly int _parentPid = Environment.ProcessId;
         private readonly RendererRestartPolicy _restartPolicy;
         private readonly RendererTabIsolationRegistry _isolationRegistry;
-        private readonly string _assignmentPolicy = "origin-strict";
+        private readonly string _assignmentPolicy;
+        private readonly RendererAssignmentPolicyMode _assignmentPolicyMode;
         private readonly TimeSpan _rendererReadyTimeout;
         private volatile bool _isShuttingDown;
 
@@ -38,6 +39,8 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public BrokeredProcessIsolationCoordinator()
         {
+            (_assignmentPolicyMode, _assignmentPolicy) = ParseAssignmentPolicy(
+                Environment.GetEnvironmentVariable("FEN_RENDERER_ASSIGNMENT_POLICY"));
             _restartPolicy = new RendererRestartPolicy(
                 maxRestartAttempts: ParseIntEnv("FEN_RENDERER_MAX_RESTARTS", 3),
                 baseBackoffMs: ParseIntEnv("FEN_RENDERER_RESTART_BACKOFF_MS", 250),
@@ -46,7 +49,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 crashWindowMs: ParseIntEnv("FEN_RENDERER_CRASH_WINDOW_MS", 60000),
                 maxCrashCountInWindow: ParseIntEnv("FEN_RENDERER_MAX_CRASHES_IN_WINDOW", 4),
                 quarantineMs: ParseIntEnv("FEN_RENDERER_CRASH_QUARANTINE_MS", 30000));
-            _isolationRegistry = new RendererTabIsolationRegistry(_restartPolicy);
+            _isolationRegistry = new RendererTabIsolationRegistry(_restartPolicy, _assignmentPolicyMode);
             _rendererReadyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv("FEN_RENDERER_READY_TIMEOUT_MS", 5000));
         }
 
@@ -581,6 +584,34 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             return fallback;
+        }
+
+        private static (RendererAssignmentPolicyMode mode, string label) ParseAssignmentPolicy(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return (RendererAssignmentPolicyMode.OriginStrict, "origin-strict");
+            }
+
+            var normalized = raw.Trim();
+            if (string.Equals(normalized, "site-per-process-lite", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "site-per-process", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "site", StringComparison.OrdinalIgnoreCase))
+            {
+                return (RendererAssignmentPolicyMode.SitePerProcessLite, "site-per-process-lite");
+            }
+
+            if (string.Equals(normalized, "origin-strict", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "origin", StringComparison.OrdinalIgnoreCase))
+            {
+                return (RendererAssignmentPolicyMode.OriginStrict, "origin-strict");
+            }
+
+            EngineLog.Write(
+                LogSubsystem.ProcessIsolation,
+                LogSeverity.Warn,
+                $"[ProcessIsolation] Unknown FEN_RENDERER_ASSIGNMENT_POLICY='{normalized}'. Falling back to origin-strict.");
+            return (RendererAssignmentPolicyMode.OriginStrict, "origin-strict");
         }
 
         private static string CreateAuthToken()

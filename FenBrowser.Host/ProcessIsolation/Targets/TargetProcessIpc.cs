@@ -24,6 +24,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         Hello,
         Ready,
         LogBatch,
+        CompositorFrameSubmit,
+        CompositorFrameAck,
         Ping,
         Pong,
         Shutdown,
@@ -45,6 +47,25 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public string SandboxProfile { get; set; }
         public string Capabilities { get; set; }
         public int ProcessId { get; set; }
+    }
+
+    public sealed class TargetCompositorFramePayload
+    {
+        public long FrameSequence { get; set; }
+        public int LogicalWidth { get; set; }
+        public int LogicalHeight { get; set; }
+        public int PixelWidth { get; set; }
+        public int PixelHeight { get; set; }
+        public float DpiScale { get; set; }
+        public double ComposeDurationMs { get; set; }
+        public double TargetFrameIntervalMs { get; set; }
+        public long SubmittedAtUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    public sealed class TargetCompositorFrameAckPayload
+    {
+        public long FrameSequence { get; set; }
+        public long AcknowledgedAtUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 
     internal static class TargetIpc
@@ -172,6 +193,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         {
             return messageType == TargetIpcMessageType.Ready ||
                    messageType == TargetIpcMessageType.LogBatch ||
+                   messageType == TargetIpcMessageType.CompositorFrameAck ||
                    messageType == TargetIpcMessageType.Pong ||
                    messageType == TargetIpcMessageType.Error;
         }
@@ -188,6 +210,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         private StreamWriter _writer;
         private Process _childProcess;
         private bool _connected;
+        private long _lastSubmittedCompositorFrameSequence;
+        private long _lastAckedCompositorFrameSequence;
 
         public TargetProcessSession(TargetProcessKind targetKind, string pipeName, string authToken)
         {
@@ -205,6 +229,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public string PipeName { get; }
         public string AuthToken { get; }
         public bool IsConnected => _connected && _pipe.IsConnected;
+        public long LastSubmittedCompositorFrameSequence => Interlocked.Read(ref _lastSubmittedCompositorFrameSequence);
+        public long LastAckedCompositorFrameSequence => Interlocked.Read(ref _lastAckedCompositorFrameSequence);
         public event Action TargetProcessCrashed;
 
         public void Start(Process childProcess)
@@ -247,6 +273,31 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public void SendShutdown()
         {
             Send(new TargetIpcEnvelope { Type = TargetIpcMessageType.Shutdown.ToString() });
+        }
+
+        public bool TrySubmitCompositorFrame(TargetCompositorFramePayload payload)
+        {
+            if (payload == null || _targetKind != TargetProcessKind.Gpu)
+            {
+                return false;
+            }
+
+            if (!IsConnected)
+            {
+                return false;
+            }
+
+            var requestId = Guid.NewGuid().ToString("N");
+            var envelope = new TargetIpcEnvelope
+            {
+                Type = TargetIpcMessageType.CompositorFrameSubmit.ToString(),
+                RequestId = requestId,
+                Payload = TargetIpc.SerializePayload(payload)
+            };
+
+            Send(envelope);
+            Interlocked.Exchange(ref _lastSubmittedCompositorFrameSequence, payload.FrameSequence);
+            return true;
         }
 
         public void Dispose()
@@ -371,6 +422,13 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 case TargetIpcMessageType.LogBatch:
                     var batch = TargetIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                     ProcessIsolationLogCollector.PublishBatch(batch);
+                    break;
+                case TargetIpcMessageType.CompositorFrameAck:
+                    var ack = TargetIpc.DeserializePayload<TargetCompositorFrameAckPayload>(envelope);
+                    if (ack != null)
+                    {
+                        Interlocked.Exchange(ref _lastAckedCompositorFrameSequence, ack.FrameSequence);
+                    }
                     break;
                 case TargetIpcMessageType.Pong:
                     break;

@@ -1083,6 +1083,43 @@ namespace FenBrowser.Host
                         continue;
                     }
 
+                    if (targetMessageType == TargetIpcMessageType.CompositorFrameSubmit)
+                    {
+                        if (expectedKind != TargetProcessKind.Gpu)
+                        {
+                            SendTargetEnvelope(writer, new TargetIpcEnvelope
+                            {
+                                Type = TargetIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "unsupported_target_for_compositor_submit"
+                            });
+                            continue;
+                        }
+
+                        var payload = TargetIpc.DeserializePayload<TargetCompositorFramePayload>(envelope);
+                        if (payload == null || payload.FrameSequence <= 0)
+                        {
+                            SendTargetEnvelope(writer, new TargetIpcEnvelope
+                            {
+                                Type = TargetIpcMessageType.Error.ToString(),
+                                RequestId = envelope.RequestId,
+                                Payload = "invalid_compositor_payload"
+                            });
+                            continue;
+                        }
+
+                        SendTargetEnvelope(writer, new TargetIpcEnvelope
+                        {
+                            Type = TargetIpcMessageType.CompositorFrameAck.ToString(),
+                            RequestId = envelope.RequestId,
+                            Payload = TargetIpc.SerializePayload(new TargetCompositorFrameAckPayload
+                            {
+                                FrameSequence = payload.FrameSequence
+                            })
+                        });
+                        continue;
+                    }
+
                     if (targetMessageType == TargetIpcMessageType.Shutdown)
                     {
                         running = false;

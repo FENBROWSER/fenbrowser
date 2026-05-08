@@ -1099,3 +1099,36 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~WidgetInvalidationDispatchTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests" --logger "console;verbosity=minimal"`: pass (`7/7`) on `2026-05-08`.
+
+### 6.51 Phase 2 Production Wiring: Site Isolation, GPU Submission, and Compositor Scroll (2026-05-08)
+
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Added brokered assignment-policy selection via `FEN_RENDERER_ASSIGNMENT_POLICY`:
+    - `origin-strict` (default)
+    - `site-per-process-lite` (and aliases: `site-per-process`, `site`).
+  - Brokered coordinator now constructs the renderer isolation registry with explicit policy mode instead of always assuming origin-only assignment.
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetProcessIpc.cs`
+  - Extended target-process IPC with compositor work submission and acknowledgement messages:
+    - `CompositorFrameSubmit`
+    - `CompositorFrameAck`.
+  - Added typed payload contracts for compositor frame submission and ack telemetry.
+  - `TargetProcessSession` now supports broker-side GPU compositor work submission (`TrySubmitCompositorFrame(...)`) and tracks submitted/acked frame sequences.
+- `FenBrowser.Host/Program.cs`
+  - GPU/utility target child loop now handles compositor-submit envelopes and returns compositor-ack payloads for GPU child mode.
+- `FenBrowser.Host/ProcessIsolation/Gpu/GpuCompositorWorkSubmitter.cs` (new)
+  - Added broker-side submission bridge from host compositor thread to the dedicated GPU target-process session.
+- `FenBrowser.Host/CompositorThread.cs`
+  - Compositor worker now submits committed-frame telemetry work items to the GPU target channel and reports GPU submission state in compositor telemetry snapshots.
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Added compositor-scroll preview path so visible scroll translation can occur immediately from committed-frame deltas while the engine thread catches up with full re-record.
+  - Scroll updates now use shared clamping and preview-reset semantics to keep navigation/fragment/momentum paths deterministic.
+
+- Net effect:
+  - Host no longer treats GPU child as startup-only plumbing; compositor thread now emits concrete GPU work submissions with ack-visible telemetry.
+  - Brokered renderer reassignment can run in site-per-process-lite mode for cross-site process boundaries without forcing per-subdomain churn.
+  - Scroll responsiveness now has a compositor-path fast translation stage instead of waiting exclusively for engine-thread full-frame commits.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore`: pass on `2026-05-08`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests|FullyQualifiedName~RendererIsolationPoliciesTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests" --logger "console;verbosity=minimal"`: pass (`50/50`) on `2026-05-08`.

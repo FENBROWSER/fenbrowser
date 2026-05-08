@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Threading;
+using FenBrowser.Host.ProcessIsolation.Gpu;
 using FenBrowser.Host.Widgets;
 using SkiaSharp;
 
@@ -17,6 +18,7 @@ public sealed class CompositorThread : IDisposable
     private readonly object _stateLock = new();
     private readonly AutoResetEvent _wakeEvent = new(false);
     private readonly Thread _thread;
+    private readonly ICompositorWorkSubmitter _compositorWorkSubmitter;
 
     private bool _running;
     private bool _started;
@@ -35,11 +37,17 @@ public sealed class CompositorThread : IDisposable
     private long _frameSequence;
     private long _renderedFrameCount;
     private double _lastFrameDurationMs;
+    private long _gpuSubmissionAttemptCount;
+    private long _gpuSubmissionSuccessCount;
 
-    public CompositorThread(Compositor compositor, int maxFramesPerSecond = 60)
+    public CompositorThread(
+        Compositor compositor,
+        int maxFramesPerSecond = 60,
+        ICompositorWorkSubmitter compositorWorkSubmitter = null)
     {
         _compositor = compositor ?? throw new ArgumentNullException(nameof(compositor));
         _targetFrameInterval = ComputeFrameInterval(maxFramesPerSecond);
+        _compositorWorkSubmitter = compositorWorkSubmitter ?? new GpuCompositorWorkSubmitter();
         _thread = new Thread(ThreadMain)
         {
             IsBackground = true,
@@ -175,6 +183,9 @@ public sealed class CompositorThread : IDisposable
             lastFrameDurationMs = _lastFrameDurationMs;
         }
 
+        var lastSubmittedGpuSequence = _compositorWorkSubmitter?.LastSubmittedFrameSequence ?? 0;
+        var lastAcknowledgedGpuSequence = _compositorWorkSubmitter?.LastAcknowledgedFrameSequence ?? 0;
+
         return new CompositorThreadTelemetry(
             frameSequence,
             renderedFrameCount,
@@ -182,7 +193,11 @@ public sealed class CompositorThread : IDisposable
             coalescedFrameRequests,
             pendingFrameRequests,
             lastFrameDurationMs,
-            targetFrameIntervalMs);
+            targetFrameIntervalMs,
+            Interlocked.Read(ref _gpuSubmissionAttemptCount),
+            Interlocked.Read(ref _gpuSubmissionSuccessCount),
+            lastSubmittedGpuSequence,
+            lastAcknowledgedGpuSequence);
     }
 
     private void ThreadMain()
@@ -239,6 +254,15 @@ public sealed class CompositorThread : IDisposable
                 _renderedFrameCount++;
                 _lastFrameDurationMs = frameDurationMs;
             }
+
+            TrySubmitGpuCompositorWork(
+                _frameSequence,
+                logicalWidth,
+                logicalHeight,
+                _outputPixelSize.Width,
+                _outputPixelSize.Height,
+                dpiScale,
+                frameDurationMs);
 
             lock (_stateLock)
             {
@@ -311,6 +335,37 @@ public sealed class CompositorThread : IDisposable
         return TimeSpan.FromSeconds(1d / clamped);
     }
 
+    private void TrySubmitGpuCompositorWork(
+        long frameSequence,
+        int logicalWidth,
+        int logicalHeight,
+        int pixelWidth,
+        int pixelHeight,
+        float dpiScale,
+        double composeDurationMs)
+    {
+        if (_compositorWorkSubmitter == null || frameSequence <= 0)
+        {
+            return;
+        }
+
+        var workItem = new GpuCompositorWorkItem(
+            frameSequence,
+            logicalWidth,
+            logicalHeight,
+            pixelWidth,
+            pixelHeight,
+            dpiScale,
+            composeDurationMs,
+            _targetFrameInterval.TotalMilliseconds);
+
+        Interlocked.Increment(ref _gpuSubmissionAttemptCount);
+        if (_compositorWorkSubmitter.TrySubmit(workItem))
+        {
+            Interlocked.Increment(ref _gpuSubmissionSuccessCount);
+        }
+    }
+
     private void EnsureOutputSurface(int logicalWidth, int logicalHeight, float dpiScale)
     {
         var pixelWidth = Math.Max(1, (int)Math.Ceiling(logicalWidth * dpiScale));
@@ -354,4 +409,8 @@ public readonly record struct CompositorThreadTelemetry(
     long CoalescedFrameRequests,
     int PendingFrameRequests,
     double LastFrameDurationMs,
-    double TargetFrameIntervalMs);
+    double TargetFrameIntervalMs,
+    long GpuSubmissionAttemptCount,
+    long GpuSubmissionSuccessCount,
+    long LastSubmittedGpuFrameSequence,
+    long LastAcknowledgedGpuFrameSequence);

@@ -1231,3 +1231,14 @@ _End of Volume II_
 ### 1.59 Strict-Mode `srcdoc` Sanitization Control (2026-05-01)
 - `FenBrowser.Core/Dom/V2/Security/AttributeSanitizer.cs`
   - `srcdoc` sanitization is opt-in under strict mode via `AttributeSanitizer.BlockSrcdocInStrictMode`; default behavior preserves `srcdoc` values for standards coverage and compatibility.
+
+### 1.60 Site-Per-Process-Lite Assignment Policy (2026-05-08)
+- `FenBrowser.Core/ProcessIsolation/RendererIsolationPolicies.cs`
+  - Added assignment policy mode surface for renderer process mapping:
+    - `OriginStrict` (existing behavior)
+    - `SitePerProcessLite` (new).
+  - Added `SiteIsolationPolicy` for top-level site assignment-key derivation (scheme + registrable-host approximation).
+  - `RendererTabIsolationRegistry` now accepts an explicit assignment-policy mode and derives reassignment decisions through the selected policy instead of hard-coding origin-only mapping.
+
+- Net effect:
+  - Core process-isolation policy now supports production migration from strict per-origin reassignment to site-per-process-lite behavior while preserving deterministic fail-closed assignment for opaque and local schemes.

@@ -60,6 +60,34 @@ namespace FenBrowser.Tests.Core
                 "about:blank"));
         }
 
+        [Theory]
+        [InlineData("https://a.example.com/page", "https://example.com")]
+        [InlineData("https://b.example.com/other", "https://example.com")]
+        [InlineData("http://sub.domain.test/path", "http://domain.test")]
+        [InlineData("https://localhost:9000/app", "https://localhost")]
+        public void SiteIsolationPolicy_Derives_SiteScopedAssignmentKey(string url, string expected)
+        {
+            var ok = SiteIsolationPolicy.TryGetAssignmentKey(url, out var key);
+            Assert.True(ok);
+            Assert.Equal(expected, key);
+        }
+
+        [Fact]
+        public void SiteIsolationPolicy_DoesNotRequireReassignment_ForSiblingSubdomains()
+        {
+            Assert.False(SiteIsolationPolicy.RequiresReassignment(
+                "https://example.com",
+                "https://shop.example.com/product"));
+        }
+
+        [Fact]
+        public void SiteIsolationPolicy_RequiresReassignment_ForCrossSiteNavigation()
+        {
+            Assert.True(SiteIsolationPolicy.RequiresReassignment(
+                "https://example.com",
+                "https://contoso.net/home"));
+        }
+
         [Fact]
         public void RendererRestartPolicy_AppliesExponentialBackoffWithCap()
         {
@@ -157,6 +185,35 @@ namespace FenBrowser.Tests.Core
             Assert.True(decision.HasValidAssignment);
             Assert.False(decision.RequiresReassignment);
             Assert.Equal("https://same.example:443", decision.RequestedAssignmentKey);
+        }
+
+        [Fact]
+        public void RendererTabIsolationRegistry_SitePerProcessLite_DoesNotReassignForSiblingSubdomains()
+        {
+            var registry = new RendererTabIsolationRegistry(
+                assignmentPolicyMode: RendererAssignmentPolicyMode.SitePerProcessLite);
+            registry.ApplyNavigation(13, "https://docs.example.com/start", true);
+
+            var decision = registry.ApplyNavigation(13, "https://cdn.example.com/asset", false);
+
+            Assert.True(decision.HasValidAssignment);
+            Assert.False(decision.RequiresReassignment);
+            Assert.Equal("https://example.com", decision.RequestedAssignmentKey);
+        }
+
+        [Fact]
+        public void RendererTabIsolationRegistry_SitePerProcessLite_ReassignsOnCrossSite()
+        {
+            var registry = new RendererTabIsolationRegistry(
+                assignmentPolicyMode: RendererAssignmentPolicyMode.SitePerProcessLite);
+            registry.ApplyNavigation(14, "https://a.example.com/home", true);
+
+            var decision = registry.ApplyNavigation(14, "https://other.net/page", false);
+
+            Assert.True(decision.HasValidAssignment);
+            Assert.True(decision.RequiresReassignment);
+            Assert.Equal("https://example.com", decision.PreviousAssignmentKey);
+            Assert.Equal("https://other.net", decision.RequestedAssignmentKey);
         }
 
         [Fact]

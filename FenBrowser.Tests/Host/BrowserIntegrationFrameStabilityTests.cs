@@ -57,6 +57,58 @@ namespace FenBrowser.Tests.Host
         }
 
         [Fact]
+        public void Render_UsesCompositorScrollPreview_WhenFrameIsFromOlderScrollPosition()
+        {
+            var integration = new BrowserIntegration();
+
+            try
+            {
+                var currentFrameField = typeof(BrowserIntegration).GetField("_currentFrame", BindingFlags.Instance | BindingFlags.NonPublic);
+                var committedScrollField = typeof(BrowserIntegration).GetField("_lastCommittedFrameScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+                var liveScrollField = typeof(BrowserIntegration).GetField("_scrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+                var previewScrollField = typeof(BrowserIntegration).GetField("_compositorPreviewScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+                var hasPreviewField = typeof(BrowserIntegration).GetField("_hasCompositorScrollPreview", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                Assert.NotNull(currentFrameField);
+                Assert.NotNull(committedScrollField);
+                Assert.NotNull(liveScrollField);
+                Assert.NotNull(previewScrollField);
+                Assert.NotNull(hasPreviewField);
+
+                using var recorder = new SKPictureRecorder();
+                using (var frameCanvas = recorder.BeginRecording(new SKRect(0, 0, 64, 64)))
+                using (var fill = new SKPaint { Color = SKColors.Red, Style = SKPaintStyle.Fill })
+                {
+                    frameCanvas.DrawRect(new SKRect(0, 20, 64, 40), fill);
+                }
+
+                var frame = recorder.EndRecording();
+                Assert.NotNull(frame);
+
+                currentFrameField!.SetValue(integration, frame);
+                committedScrollField!.SetValue(integration, 0f);
+                liveScrollField!.SetValue(integration, 0f);
+                previewScrollField!.SetValue(integration, 20f);
+                hasPreviewField!.SetValue(integration, true);
+
+                using var bitmap = new SKBitmap(64, 64);
+                using var canvas = new SKCanvas(bitmap);
+                integration.Render(canvas, new SKRect(0, 0, 64, 64));
+                canvas.Flush();
+
+                var previewPixel = bitmap.GetPixel(32, 10);
+                var stalePixel = bitmap.GetPixel(32, 30);
+
+                Assert.Equal((byte)255, previewPixel.Red);
+                Assert.Equal((byte)0, stalePixel.Alpha);
+            }
+            finally
+            {
+                ShutdownEngineLoop(integration);
+            }
+        }
+
+        [Fact]
         public async Task RecordFrame_And_Render_Preserve_NewTab_Input_Dark_Background()
         {
             const int viewportWidth = 1600;

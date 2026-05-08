@@ -143,4 +143,11 @@ public class IpcEnvelopeValidationTests
         var allowed = TargetIpc.IsAllowedBrokerInboundMessageType(TargetIpcMessageType.Hello);
         Assert.False(allowed);
     }
+
+    [Fact]
+    public void TargetIpc_BrokerAllowlist_AllowsCompositorAck()
+    {
+        var allowed = TargetIpc.IsAllowedBrokerInboundMessageType(TargetIpcMessageType.CompositorFrameAck);
+        Assert.True(allowed);
+    }
 }

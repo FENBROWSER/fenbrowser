@@ -3,6 +3,12 @@ using System.Collections.Generic;
 
 namespace FenBrowser.Core.ProcessIsolation
 {
+    public enum RendererAssignmentPolicyMode
+    {
+        OriginStrict,
+        SitePerProcessLite
+    }
+
     /// <summary>
     /// Defines how renderer assignment keys are derived for process isolation decisions.
     /// </summary>
@@ -90,6 +96,126 @@ namespace FenBrowser.Core.ProcessIsolation
             }
 
             return 80;
+        }
+
+        private static string GetAboutToken(string rawUrl)
+        {
+            if (string.IsNullOrWhiteSpace(rawUrl))
+            {
+                return "blank";
+            }
+
+            const string prefix = "about:";
+            if (!rawUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return "blank";
+            }
+
+            var token = rawUrl.Substring(prefix.Length);
+            var marker = token.IndexOfAny(new[] { '?', '#' });
+            if (marker >= 0)
+            {
+                token = token.Substring(0, marker);
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            return string.IsNullOrWhiteSpace(token) ? "blank" : token;
+        }
+    }
+
+    /// <summary>
+    /// Site-per-process-lite policy.
+    /// Uses scheme + registrable-host approximation so sibling subdomains can share
+    /// a renderer while still forcing cross-site process reassignment.
+    /// </summary>
+    public static class SiteIsolationPolicy
+    {
+        public static bool TryGetAssignmentKey(string url, out string key)
+        {
+            key = null;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return false;
+            }
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                var host = uri.Host?.ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(host))
+                {
+                    return false;
+                }
+
+                var siteHost = ToRegistrableHostApproximation(host);
+                key = $"{uri.Scheme.ToLowerInvariant()}://{siteHost}";
+                return true;
+            }
+
+            if (uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+            {
+                key = "file://local";
+                return true;
+            }
+
+            if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase))
+            {
+                var token = GetAboutToken(url);
+                key = $"about://{token}";
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(uri.Scheme))
+            {
+                key = $"opaque://{uri.Scheme.ToLowerInvariant()}";
+                return true;
+            }
+
+            return false;
+        }
+
+        public static bool RequiresReassignment(string currentAssignmentKey, string requestedUrl)
+        {
+            if (!TryGetAssignmentKey(requestedUrl, out var requestedKey))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(currentAssignmentKey))
+            {
+                return false;
+            }
+
+            return !string.Equals(currentAssignmentKey, requestedKey, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ToRegistrableHostApproximation(string host)
+        {
+            // Lightweight production heuristic: preserve IPv4/IPv6/localhost and
+            // collapse DNS names to the last two labels.
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return "localhost";
+            }
+
+            if (Uri.CheckHostName(host) == UriHostNameType.IPv4 ||
+                Uri.CheckHostName(host) == UriHostNameType.IPv6)
+            {
+                return host;
+            }
+
+            var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (labels.Length < 3)
+            {
+                return host;
+            }
+
+            return $"{labels[^2]}.{labels[^1]}";
         }
 
         private static string GetAboutToken(string rawUrl)
@@ -219,11 +345,15 @@ namespace FenBrowser.Core.ProcessIsolation
     public sealed class RendererTabIsolationRegistry
     {
         private readonly RendererRestartPolicy _restartPolicy;
+        private readonly RendererAssignmentPolicyMode _assignmentPolicyMode;
         private readonly Dictionary<int, TabIsolationState> _tabs = new();
 
-        public RendererTabIsolationRegistry(RendererRestartPolicy restartPolicy = null)
+        public RendererTabIsolationRegistry(
+            RendererRestartPolicy restartPolicy = null,
+            RendererAssignmentPolicyMode assignmentPolicyMode = RendererAssignmentPolicyMode.OriginStrict)
         {
             _restartPolicy = restartPolicy ?? new RendererRestartPolicy();
+            _assignmentPolicyMode = assignmentPolicyMode;
         }
 
         public void EnsureTab(int tabId)
@@ -268,7 +398,7 @@ namespace FenBrowser.Core.ProcessIsolation
                 RequiresReassignment = false
             };
 
-            if (!OriginIsolationPolicy.TryGetAssignmentKey(url, out var requestedKey))
+            if (!TryGetAssignmentKey(url, out var requestedKey))
             {
                 return decision;
             }
@@ -551,6 +681,18 @@ namespace FenBrowser.Core.ProcessIsolation
             public long SessionStartedAtUnixMs { get; set; }
             public long QuarantinedUntilUnixMs { get; set; }
             public int CrashCountInWindow { get; set; }
+        }
+
+        private bool TryGetAssignmentKey(string url, out string key)
+        {
+            switch (_assignmentPolicyMode)
+            {
+                case RendererAssignmentPolicyMode.SitePerProcessLite:
+                    return SiteIsolationPolicy.TryGetAssignmentKey(url, out key);
+                case RendererAssignmentPolicyMode.OriginStrict:
+                default:
+                    return OriginIsolationPolicy.TryGetAssignmentKey(url, out key);
+            }
         }
     }
 }

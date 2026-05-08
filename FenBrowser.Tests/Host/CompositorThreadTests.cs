@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using FenBrowser.Host;
+using FenBrowser.Host.ProcessIsolation.Gpu;
 using FenBrowser.Host.Widgets;
 using SkiaSharp;
 using Xunit;
@@ -128,6 +129,35 @@ namespace FenBrowser.Tests.Host
             Assert.InRange(snapshot.TargetFrameIntervalMs, 190, 210);
         }
 
+        [Fact]
+        public void CompositorThread_SubmitsCompositorWorkItems()
+        {
+            var root = new TestWidget(new SKColor(251, 146, 60, 255));
+            root.Arrange(new SKRect(0, 0, 144, 64));
+            root.Invalidate();
+
+            var submitter = new FakeCompositorWorkSubmitter();
+            var compositor = new Compositor(root) { DpiScale = 1f };
+            using var compositorThread = new CompositorThread(
+                compositor,
+                maxFramesPerSecond: 30,
+                compositorWorkSubmitter: submitter);
+
+            compositorThread.UpdateViewport(144, 64, 1f);
+            compositorThread.Start();
+            compositorThread.RequestFrame();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => submitter.LastSubmittedFrameSequence > 0, TimeSpan.FromSeconds(2)),
+                "Timed out waiting for compositor work submission.");
+
+            var snapshot = compositorThread.GetTelemetrySnapshot();
+            Assert.True(snapshot.GpuSubmissionAttemptCount > 0);
+            Assert.True(snapshot.GpuSubmissionSuccessCount > 0);
+            Assert.Equal(submitter.LastSubmittedFrameSequence, snapshot.LastSubmittedGpuFrameSequence);
+            Assert.Equal(submitter.LastAcknowledgedFrameSequence, snapshot.LastAcknowledgedGpuFrameSequence);
+        }
+
         private sealed class TestWidget : Widget
         {
             private readonly SKColor _fill;
@@ -156,6 +186,21 @@ namespace FenBrowser.Tests.Host
 
                 canvas.DrawRect(Bounds, paint);
             }
+        }
+
+        private sealed class FakeCompositorWorkSubmitter : ICompositorWorkSubmitter
+        {
+            private long _lastSubmitted;
+
+            public bool TrySubmit(in GpuCompositorWorkItem workItem)
+            {
+                Interlocked.Exchange(ref _lastSubmitted, workItem.FrameSequence);
+                return true;
+            }
+
+            public long LastSubmittedFrameSequence => Interlocked.Read(ref _lastSubmitted);
+
+            public long LastAcknowledgedFrameSequence => LastSubmittedFrameSequence;
         }
     }
 }

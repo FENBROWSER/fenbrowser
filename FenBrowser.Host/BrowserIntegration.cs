@@ -34,6 +34,8 @@ public class BrowserIntegration
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
     private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
     private float _scrollY = 0;
+    private float _compositorPreviewScrollY = 0;
+    private bool _hasCompositorScrollPreview = false;
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
     private SKSize _lastViewportSize;
@@ -190,6 +192,7 @@ public class BrowserIntegration
                 _styles = null;
                 _deferredScrollTarget = null;
                 _scrollY = 0f;
+                ResetCompositorScrollPreview();
                 _contentHeight = 0f;
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
@@ -830,6 +833,7 @@ public class BrowserIntegration
         // Navigation must start from top; carrying prior page scroll causes blank/shifted first paints
         // on short documents (e.g., Acid2 reference page).
         _scrollY = 0f;
+        ResetCompositorScrollPreview();
         _contentHeight = 0f;
         lock (_frameLock)
         {
@@ -1033,13 +1037,27 @@ public class BrowserIntegration
         List<InputOverlayData> overlays = null;
         Element? highlight = _highlightedElement;
         bool hasFrame = false;
+        float effectiveScrollY = 0f;
 
         lock (_frameLock)
         {
+            effectiveScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+
             if (_currentFrame != null)
             {
                 hasFrame = true;
-                canvas.DrawPicture(_currentFrame);
+                var scrollDelta = effectiveScrollY - _lastCommittedFrameScrollY;
+                if (Math.Abs(scrollDelta) > 0.5f)
+                {
+                    canvas.Save();
+                    canvas.Translate(0, -scrollDelta);
+                    canvas.DrawPicture(_currentFrame);
+                    canvas.Restore();
+                }
+                else
+                {
+                    canvas.DrawPicture(_currentFrame);
+                }
                 if (_currentOverlays.Count > 0)
                 {
                     overlays = new List<InputOverlayData>(_currentOverlays);
@@ -1068,7 +1086,7 @@ public class BrowserIntegration
         }
 
         canvas.Save();
-        canvas.Translate(0, -_scrollY);
+        canvas.Translate(0, -effectiveScrollY);
         if (overlays != null)
         {
             foreach (var overlay in overlays)
@@ -1274,6 +1292,8 @@ public class BrowserIntegration
                 _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && newSeedImage != null)
                     ? _consecutiveBaseFrameReuseCount + 1
                     : 0;
+                _hasCompositorScrollPreview = false;
+                _compositorPreviewScrollY = _scrollY;
             }
 
             Element? deferredScroll = null;
@@ -1485,6 +1505,7 @@ public class BrowserIntegration
         }
 
         _scrollY = targetScroll;
+        ResetCompositorScrollPreview();
         _scrollPhysics.SetPosition(_scrollY);
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
         EngineLogBridge.Info($"[FragmentNav] Applied '#{target.Id}' -> scrollY={_scrollY:F1}", LogCategory.Navigation);
@@ -1650,6 +1671,7 @@ public class BrowserIntegration
             LogCategory.Navigation);
 
         _scrollY = nextScroll;
+        ResetCompositorScrollPreview();
         _scrollPhysics.SetPosition(_scrollY);
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
@@ -1754,26 +1776,45 @@ public class BrowserIntegration
     /// </summary>
     public void Scroll(float deltaY)
     {
+        ApplyCompositorScrollPreview(deltaY);
+
         PostToEngine(() => 
         {
             EngineLogBridge.Debug($"[Scroll] DeltaY={deltaY}, OldY={_scrollY}, ContentHeight={_contentHeight}, Viewport={_lastViewportSize.Height}", LogCategory.Rendering);
-            
-            float scrollSpeed = 40f;
-            _scrollY -= deltaY * scrollSpeed;
-            
-            // Clamp scroll - use actual viewport height instead of hardcoded 600
-            _scrollY = Math.Max(0, _scrollY);
-            float maxScroll = Math.Max(0, _contentHeight - _lastViewportSize.Height);
-            
-            if (_scrollY > maxScroll) _scrollY = maxScroll;
+            _scrollY = ClampScrollPosition(_scrollY - (deltaY * 40f));
 
-            EngineLogBridge.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={maxScroll}", LogCategory.Rendering);
+            EngineLogBridge.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={Math.Max(0, _contentHeight - _lastViewportSize.Height)}", LogCategory.Rendering);
             
             RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
         });
         
         // Immediate UI feedback (optional, we wait for engine to re-record)
         NeedsRepaint?.Invoke();
+    }
+
+    private void ApplyCompositorScrollPreview(float deltaY)
+    {
+        lock (_frameLock)
+        {
+            var currentScroll = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+            _compositorPreviewScrollY = ClampScrollPosition(currentScroll - (deltaY * 40f));
+            _hasCompositorScrollPreview = true;
+        }
+    }
+
+    private float ClampScrollPosition(float value)
+    {
+        var maxScroll = Math.Max(0f, _contentHeight - _lastViewportSize.Height);
+        return Math.Max(0f, Math.Min(maxScroll, value));
+    }
+
+    private void ResetCompositorScrollPreview()
+    {
+        lock (_frameLock)
+        {
+            _compositorPreviewScrollY = _scrollY;
+            _hasCompositorScrollPreview = false;
+        }
     }
 
     
@@ -2239,6 +2280,7 @@ public class BrowserIntegration
             if (Math.Abs(newScrollY - _scrollY) > 0.5f)
             {
                 _scrollY = newScrollY;
+                ResetCompositorScrollPreview();
                 RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Animation, "BrowserIntegration.UpdateScrollPhysics");
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
             }
