@@ -159,6 +159,12 @@ namespace FenBrowser.FenEngine.Rendering
                          matched.Add(new MatchedRule { Rule = styleRule, Source = source, Specificity = spec.Value });
                      }
 
+                     // CSS Nesting: traverse nested rules with resolved selectors
+                     foreach (var nested in styleRule.NestedRules)
+                     {
+                         CollectMatchedRules(nested, source);
+                     }
+
                      return;
                  }
 

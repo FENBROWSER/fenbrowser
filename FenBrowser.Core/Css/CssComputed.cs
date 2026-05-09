@@ -242,6 +242,16 @@ namespace FenBrowser.Core.Css
         public string TransitionTimingFunction { get; set; } // easing function
         public string TransitionDelay { get; set; }         // delay before start
 
+        // CSS Scroll-driven Animations
+        public string AnimationTimeline { get; set; }
+        public string ScrollTimelineName { get; set; }
+        public string ScrollTimelineAxis { get; set; }
+        public string ViewTimelineName { get; set; }
+        public string ViewTimelineAxis { get; set; }
+        public string ViewTimelineInset { get; set; }
+        public string AnimationRangeStart { get; set; }
+        public string AnimationRangeEnd { get; set; }
+
         // CSS Filters
         public string Filter { get; set; }                  // filter effects (blur, grayscale, etc.)
         public string BackdropFilter { get; set; }          // backdrop filter effects
@@ -344,6 +354,21 @@ namespace FenBrowser.Core.Css
         public string Inset { get; set; }                    // Shorthand for positioning
         public string InsetBlock { get; set; }               // top + bottom in logical terms
         public string InsetInline { get; set; }              // left + right in logical terms
+
+        // CSS Anchor Positioning Level 1
+        public string AnchorName { get; set; }               // anchor-name: --my-anchor
+        public string PositionAnchor { get; set; }            // position-anchor: --my-anchor
+        public string AnchorScope { get; set; }               // anchor-scope: tree | none | all
+        public string PositionArea { get; set; }              // position-area: top / left / center / etc.
+        public string PositionTry { get; set; }               // position-try options
+
+        // anchor() / anchor-size() raw expressions (e.g. "anchor(--my-anchor left)" or "anchor(left)")
+        public string LeftAnchorExpression { get; set; }
+        public string TopAnchorExpression { get; set; }
+        public string RightAnchorExpression { get; set; }
+        public string BottomAnchorExpression { get; set; }
+        public string WidthAnchorExpression { get; set; }
+        public string HeightAnchorExpression { get; set; }
         
         // --- CSS Custom Properties (Variables) Resolution - 10/10 Spec ---
         

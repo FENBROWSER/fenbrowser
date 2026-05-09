@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
@@ -38,9 +40,6 @@ namespace FenBrowser.FenEngine.Layout
             }
             else if (isFixed)
             {
-                // Fixed-position elements are viewport-anchored. If the viewport metrics are
-                // temporarily unavailable, keep the origin at (0,0) and fall back to the
-                // current layout bounds only for available size, never for document offsets.
                 float fallbackWidth = state.HasValue && state.Value.ViewportWidth > 0
                     ? state.Value.ViewportWidth
                     : Math.Max(containerGeometry.PaddingBox.Width, containerGeometry.ContentBox.Width);
@@ -74,12 +73,7 @@ namespace FenBrowser.FenEngine.Layout
                 PaddingBox = cbRect
             };
 
-            var solved = AbsolutePositionSolver.Solve(
-                style,
-                cb,
-                Math.Max(0f, intrinsicWidth),
-                Math.Max(0f, intrinsicHeight),
-                preserveIntrinsicAutoSize);
+            var solved = SolvePositioned(box, style, cb, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize, state);
 
             if (isFixed && box.SourceNode is Element element)
             {
@@ -102,10 +96,6 @@ namespace FenBrowser.FenEngine.Layout
                 (string.Equals(effectivePosition, "absolute", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(effectivePosition, "fixed", StringComparison.OrdinalIgnoreCase)))
             {
-                // The positioned offsets already include the resolved margins. Keeping those
-                // margins in the stored box model inflates the final MarginBox width/height
-                // and breaks follow-up paint/layout consumers that treat MarginBox as the
-                // element's visual extents after positioning.
                 box.Geometry.Margin = new Thickness();
             }
             else
@@ -125,6 +115,202 @@ namespace FenBrowser.FenEngine.Layout
             {
                 LayoutBoxOps.ShiftDescendants(box, dx, dy);
             }
+        }
+
+        private static AbsoluteLayoutResult SolvePositioned(
+            LayoutBox box,
+            CssComputed style,
+            ContainingBlock cb,
+            float intrinsicWidth,
+            float intrinsicHeight,
+            bool preserveIntrinsicAutoSize,
+            LayoutState? state = null)
+        {
+            bool hasAnchorRefs = LayoutStyleResolver.HasAnyAnchorReferences(style);
+
+            if (!hasAnchorRefs)
+            {
+                return AbsolutePositionSolver.Solve(style, cb, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
+            }
+
+            SKRect anchorBox = ResolveAnchorBox(box, style, cb, state);
+            if (anchorBox.Width <= 0 && anchorBox.Height <= 0)
+            {
+                return AbsolutePositionSolver.Solve(style, cb, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
+            }
+
+            return AbsolutePositionSolver.SolveWithAnchorOverrides(
+                style, cb, anchorBox, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
+        }
+
+        /// <summary>
+        /// Find the anchor element for the given positioned box.
+        /// Resolves via position-anchor or implicit default anchor.
+        /// </summary>
+        private static SKRect ResolveAnchorBox(
+            LayoutBox positionedBox,
+            CssComputed style,
+            ContainingBlock cb,
+            LayoutState? state = null)
+        {
+            if (positionedBox?.SourceNode is not Element positionedElement)
+                return SKRect.Empty;
+
+            string targetAnchorName = style.PositionAnchor;
+            if (string.IsNullOrWhiteSpace(targetAnchorName) && !string.IsNullOrWhiteSpace(style.AnchorName))
+                return SKRect.Empty;
+
+            Element anchorElement = null;
+
+            if (!string.IsNullOrWhiteSpace(targetAnchorName))
+            {
+                anchorElement = FindAnchorByName(positionedElement, targetAnchorName);
+            }
+            else
+            {
+                anchorElement = FindImplicitDefaultAnchor(positionedElement);
+            }
+
+            if (anchorElement == null)
+                return SKRect.Empty;
+
+            string anchorScope = style.AnchorScope;
+            if (!string.IsNullOrWhiteSpace(anchorScope) &&
+                anchorScope.Equals("tree", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!IsDescendantOrSelfOf(positionedElement, anchorElement))
+                    return SKRect.Empty;
+            }
+
+            var anchorLayoutBox = FindLayoutBoxForElement(anchorElement, positionedBox);
+            if (anchorLayoutBox?.Geometry == null)
+                return SKRect.Empty;
+
+            return anchorLayoutBox.Geometry.ContentBox;
+        }
+
+        private static Element FindAnchorByName(Element positionedElement, string anchorName)
+        {
+            if (string.IsNullOrWhiteSpace(anchorName)) return null;
+
+            var root = positionedElement.OwnerDocument?.DocumentElement
+                       ?? GetRootAncestor(positionedElement);
+            if (root == null) return null;
+
+            foreach (var descendant in WalkTree(root))
+            {
+                if (descendant == positionedElement) continue;
+                var css = descendant.ComputedStyle;
+                if (css == null) continue;
+                string nameFromMap = null;
+                css.Map?.TryGetValue("anchor-name", out nameFromMap);
+                string descAnchorName = css.AnchorName ?? nameFromMap;
+                if (!string.IsNullOrWhiteSpace(descAnchorName) &&
+                    string.Equals(descAnchorName.Trim(), anchorName.Trim(), StringComparison.Ordinal))
+                {
+                    return descendant;
+                }
+            }
+
+            return null;
+        }
+
+        private static Element FindImplicitDefaultAnchor(Element positionedElement)
+        {
+            var root = positionedElement.OwnerDocument?.DocumentElement
+                       ?? GetRootAncestor(positionedElement);
+            if (root == null) return null;
+
+            Element singleAnchor = null;
+            int anchorCount = 0;
+
+            foreach (var descendant in WalkTree(root))
+            {
+                if (descendant == positionedElement) continue;
+                var css = descendant.ComputedStyle;
+                if (css == null) continue;
+                string nameFromMap = null;
+                css.Map?.TryGetValue("anchor-name", out nameFromMap);
+                string anchorName = css.AnchorName ?? nameFromMap;
+                if (!string.IsNullOrWhiteSpace(anchorName))
+                {
+                    singleAnchor = descendant;
+                    anchorCount++;
+                }
+            }
+
+            return anchorCount == 1 ? singleAnchor : null;
+        }
+
+        private static LayoutBox FindLayoutBoxForElement(Element element, LayoutBox contextBox)
+        {
+            if (contextBox != null && contextBox.SourceNode == element)
+                return contextBox;
+
+            while (contextBox?.Parent != null)
+            {
+                contextBox = contextBox.Parent;
+            }
+
+            var root = contextBox;
+            return SearchBoxTree(root, element);
+        }
+
+        private static LayoutBox SearchBoxTree(LayoutBox box, Element target)
+        {
+            if (box == null || target == null) return null;
+            if (box.SourceNode == target) return box;
+
+            if (box.Children != null)
+            {
+                foreach (var child in box.Children)
+                {
+                    var found = SearchBoxTree(child, target);
+                    if (found != null) return found;
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<Element> WalkTree(Element root)
+        {
+            if (root == null) yield break;
+            Stack<Element> stack = new Stack<Element>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var current = stack.Pop();
+                yield return current;
+                var children = current.ChildNodes;
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    if (children[i] is Element child)
+                        stack.Push(child);
+                }
+            }
+        }
+
+        private static Element GetRootAncestor(Element element)
+        {
+            var current = element;
+            while (current?.ParentElement != null)
+            {
+                current = current.ParentElement;
+            }
+            return current;
+        }
+
+        private static bool IsDescendantOrSelfOf(Element element, Element potentialAncestor)
+        {
+            var current = element;
+            while (current != null)
+            {
+                if (current == potentialAncestor)
+                    return true;
+                current = current.ParentElement;
+            }
+            return false;
         }
 
         private static void EnsureIntrinsicSize(LayoutBox box, CssComputed style, SKRect containingBlockRect, ref float width, ref float height)

@@ -201,6 +201,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             _isRendering = true;
+            CssAnimationEngine.ScrollStateResolver = el =>
+            {
+                var state = _scrollManager.GetScrollState(el);
+                return (state.ScrollY, (double)state.MaxScrollY);
+            };
             var pipelineContext = PipelineContext.Current;
             var frameWatchdog = Stopwatch.StartNew();
             var layoutStageWatchdog = new Stopwatch();
@@ -477,6 +482,16 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // Update Scroll Animations
                 bool scrollAnimationActive = _scrollManager.OnFrame();
+
+                // Scroll-driven CSS animations
+                if (isLayoutDirty)
+                {
+                    float docScrollY = GetDocumentScrollY(root);
+                    var docScrollState = _scrollManager.GetScrollState((root as Element)?.GetRootNode() as Element ?? root as Element);
+                    float docScrollMax = docScrollState?.MaxScrollY ?? 0;
+                    CssAnimationEngine.Instance.UpdateScrollDrivenAnimations(docScrollY, docScrollMax);
+                }
+
                 if (scrollAnimationActive)
                 {
                     // Scroll changed -> Paint Dirty

@@ -21,10 +21,27 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         public CssTokenizer(string input)
         {
-            // Preprocessing: CSS spec requires replacing CRLF with LF, CR with LF, NULL with Replacement Char
             _input = Preprocess(input);
             _length = _input.Length;
             _position = 0;
+        }
+
+        public CssToken Peek()
+        {
+            var saved = _position;
+            var token = Consume();
+            _position = saved;
+            return token;
+        }
+
+        public int SavePosition()
+        {
+            return _position;
+        }
+
+        public void RestorePosition(int position)
+        {
+            _position = position;
         }
 
         private static string Preprocess(string input)

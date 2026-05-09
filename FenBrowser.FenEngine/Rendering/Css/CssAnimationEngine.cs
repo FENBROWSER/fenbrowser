@@ -102,6 +102,27 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _isRunning = false;
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
+
+        // Scroll-driven animation state
+        private readonly Dictionary<string, ScrollTimelineRegistration> _scrollTimelines = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, ViewTimelineRegistration> _viewTimelines = new(StringComparer.Ordinal);
+        private double _lastDocumentScrollOffset;
+        private double _lastDocumentScrollMax;
+
+        private class ScrollTimelineRegistration
+        {
+            public string Name;
+            public Element ScrollerElement;
+            public string Axis; // "block", "inline", "x", "y"
+        }
+
+        private class ViewTimelineRegistration
+        {
+            public string Name;
+            public Element SubjectElement;
+            public string Axis;
+            public string Inset;
+        }
         private static readonly HashSet<string> _layoutAffectingProperties = new(StringComparer.OrdinalIgnoreCase)
         {
             "width", "height", "min-width", "min-height", "max-width", "max-height",
@@ -130,8 +151,294 @@ namespace FenBrowser.FenEngine.Rendering
         
         #endregion
         
+#region Scroll-Driven Animations
+
+        /// <summary>
+        /// Register a scroll timeline defined by scroll-timeline shorthand (or scroll-timeline-name + scroll-timeline-axis).
+        /// Called after style computation for each element that defines a scroll timeline.
+        /// </summary>
+        public void RegisterScrollTimeline(Element element, CssComputed style)
+        {
+            if (element == null || style?.Map == null) return;
+
+            string name = null;
+            style.Map.TryGetValue("scroll-timeline-name", out name);
+            if (string.IsNullOrWhiteSpace(name) || name == "none") return;
+
+            string axis = null;
+            style.Map.TryGetValue("scroll-timeline-axis", out axis);
+            if (string.IsNullOrWhiteSpace(axis)) axis = "block";
+
+            _scrollTimelines[name] = new ScrollTimelineRegistration
+            {
+                Name = name,
+                ScrollerElement = element,
+                Axis = axis.ToLowerInvariant()
+            };
+        }
+
+        public void UnregisterScrollTimeline(Element element)
+        {
+            var keysToRemove = _scrollTimelines
+                .Where(kvp => kvp.Value.ScrollerElement == element)
+                .Select(kvp => kvp.Key)
+                .ToList();
+            foreach (var key in keysToRemove)
+                _scrollTimelines.Remove(key);
+        }
+
+        /// <summary>
+        /// Register a view timeline.
+        /// </summary>
+        public void RegisterViewTimeline(Element element, CssComputed style)
+        {
+            if (element == null || style?.Map == null) return;
+
+            string name = null;
+            style.Map.TryGetValue("view-timeline-name", out name);
+            if (string.IsNullOrWhiteSpace(name) || name == "none") return;
+
+            string axis = null;
+            style.Map.TryGetValue("view-timeline-axis", out axis);
+            if (string.IsNullOrWhiteSpace(axis)) axis = "block";
+
+            string inset = null;
+            style.Map.TryGetValue("view-timeline-inset", out inset);
+
+            _viewTimelines[name] = new ViewTimelineRegistration
+            {
+                Name = name,
+                SubjectElement = element,
+                Axis = axis.ToLowerInvariant(),
+                Inset = inset
+            };
+        }
+
+        public void UnregisterViewTimeline(Element element)
+        {
+            var keysToRemove = _viewTimelines
+                .Where(kvp => kvp.Value.SubjectElement == element)
+                .Select(kvp => kvp.Key)
+                .ToList();
+            foreach (var key in keysToRemove)
+                _viewTimelines.Remove(key);
+        }
+
+        /// <summary>
+        /// Called when document scroll position changes (after layout).
+        /// Processes all scroll-driven animations by mapping scroll progress to animation progress.
+        /// </summary>
+        public void UpdateScrollDrivenAnimations(double scrollOffset, double scrollMax)
+        {
+            _lastDocumentScrollOffset = scrollOffset;
+            _lastDocumentScrollMax = scrollMax;
+
+            var toNotify = new HashSet<Element>();
+
+            lock (_activeAnimations)
+            {
+                foreach (var kvp in _activeAnimations)
+                {
+                    var element = kvp.Key;
+                    var style = element.GetComputedStyle();
+                    if (!CanParticipateInAnimation(element, style))
+                        continue;
+
+                    string animTimeline = null;
+                    style?.Map?.TryGetValue("animation-timeline", out animTimeline);
+                    if (string.IsNullOrWhiteSpace(animTimeline) || animTimeline == "auto")
+                        continue;
+
+                    foreach (var anim in kvp.Value)
+                    {
+                        double progress = ComputeScrollDrivenProgress(element, style, animTimeline, scrollOffset, scrollMax);
+                        ApplyKeyframeAt(anim, progress * 100);
+                        ApplyToOverlay(element, anim.ComputedProperties);
+                        element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
+                        toNotify.Add(element);
+                    }
+                }
+            }
+
+            foreach (var element in toNotify)
+                OnAnimationFrame?.Invoke(element);
+        }
+
+        private double ComputeScrollDrivenProgress(Element element, CssComputed style, string animTimeline,
+            double scrollOffset, double scrollMax)
+        {
+            string axis = "block";
+            double timelineStart = 0;
+            double timelineEnd = scrollMax;
+
+            // Parse animation-timeline value
+            string timelineValue = animTimeline.Trim().ToLowerInvariant();
+
+            // scroll() function
+            if (timelineValue.StartsWith("scroll(") && timelineValue.EndsWith(")"))
+            {
+                var args = timelineValue.Substring(7, timelineValue.Length - 8)
+                    .Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(a => a.Trim())
+                    .ToList();
+
+                axis = "block";
+                string scrollerType = "nearest";
+
+                if (args.Count > 0 && (args[0] == "block" || args[0] == "inline" || args[0] == "x" || args[0] == "y"))
+                {
+                    axis = args[0];
+                    if (args.Count > 1) scrollerType = args[1];
+                }
+                else if (args.Count > 0)
+                {
+                    scrollerType = args[0];
+                }
+
+                var scroller = FindScroller(element, scrollerType);
+                if (scroller != null)
+                {
+                    var state = GetScrollStateForElement(scroller);
+                    scrollOffset = state.offset;
+                    scrollMax = state.max;
+                }
+                else
+                {
+                    // Use document scroll
+                }
+            }
+            else if (timelineValue.StartsWith("--"))
+            {
+                // Named timeline (scroll-timeline or view-timeline)
+                if (_scrollTimelines.TryGetValue(timelineValue, out var reg))
+                {
+                    axis = reg.Axis;
+                    var state = GetScrollStateForElement(reg.ScrollerElement);
+                    scrollOffset = state.offset;
+                    scrollMax = state.max;
+                }
+                else if (_viewTimelines.TryGetValue(timelineValue, out var viewReg))
+                {
+                    return ComputeViewTimelineProgress(element, style, viewReg, scrollOffset);
+                }
+            }
+
+            // Parse animation-range to determine mapping
+            double rangeNormalizeStart = 0;
+            double rangeNormalizeEnd = 1;
+
+            style.Map.TryGetValue("animation-range-start", out var rangeStartRaw);
+            style.Map.TryGetValue("animation-range-end", out var rangeEndRaw);
+
+            if (!string.IsNullOrWhiteSpace(rangeStartRaw))
+                rangeNormalizeStart = ParseRangeOffset(rangeStartRaw, true);
+
+            if (!string.IsNullOrWhiteSpace(rangeEndRaw))
+                rangeNormalizeEnd = ParseRangeOffset(rangeEndRaw, false);
+
+            // Map scroll position to progress
+            if (scrollMax <= 0) return 0;
+
+            double rawProgress = scrollOffset / scrollMax;
+
+            if (rangeNormalizeEnd <= rangeNormalizeStart) return 0;
+
+            double mappedProgress = (rawProgress - rangeNormalizeStart) / (rangeNormalizeEnd - rangeNormalizeStart);
+            return Math.Max(0, Math.Min(1, mappedProgress));
+        }
+
+        private double ComputeViewTimelineProgress(Element element, CssComputed style,
+            ViewTimelineRegistration viewReg, double viewportScrollY)
+        {
+            return 0; // Stub - requires layout box access for element position
+        }
+
+        private static (double offset, double max) GetScrollStateForElement(Element scroller)
+        {
+            if (scroller == null) return (CssAnimationEngine.Instance._lastDocumentScrollOffset, CssAnimationEngine.Instance._lastDocumentScrollMax);
+
+            if (ScrollStateResolver != null)
+                return ScrollStateResolver(scroller);
+
+            return (0, 0);
+        }
+
+        /// <summary>
+        /// Delegate to resolve scroll state for a given element (for scroll-driven animations).
+        /// Returns (scrollOffset, scrollMax). Implementation set by host/renderer.
+        /// </summary>
+        public static Func<Element, (double scrollOffset, double scrollMax)> ScrollStateResolver { get; set; }
+
+        private static Element FindScroller(Element element, string scrollerType)
+        {
+            switch (scrollerType)
+            {
+                case "root":
+                    return element?.GetRootNode() as Element;
+                case "self":
+                    return element;
+                case "nearest":
+                default:
+                    return FindNearestScrollAncestor(element);
+            }
+        }
+
+        private static Element FindNearestScrollAncestor(Element element)
+        {
+            var current = element?.ParentElement;
+            while (current != null)
+            {
+                var style = current.GetComputedStyle();
+                if (style != null)
+                {
+                    var overflowY = style.OverflowY ?? style.Overflow ?? "visible";
+                    var overflowX = style.OverflowX ?? style.Overflow ?? "visible";
+                    if (overflowY == "scroll" || overflowY == "auto" ||
+                        overflowX == "scroll" || overflowX == "auto")
+                        return current;
+                }
+                current = current.ParentElement;
+            }
+            return null;
+        }
+
+        private static double ParseRangeOffset(string raw, bool isStart)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return isStart ? 0 : 1;
+            raw = raw.Trim().ToLowerInvariant();
+
+            if (raw == "normal") return isStart ? 0 : 1;
+
+            // Percentage: "10%", "90%"
+            double percent;
+            if (raw.EndsWith("%"))
+            {
+                if (double.TryParse(raw.TrimEnd('%'), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out percent))
+                    return percent / 100.0;
+            }
+
+            // Named offsets: "entry", "exit", "cover", "contain"
+            // These are view-timeline specific; for scroll timelines treat as percentages
+            switch (raw)
+            {
+                case "entry": return 0;
+                case "exit": return 1;
+                case "cover": return 1;
+                case "contain": return 0;
+            }
+
+            if (double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out double numeric))
+                return numeric;
+
+            return isStart ? 0 : 1;
+        }
+
+        #endregion
+
         #region Transition API
-        
+
         /// <summary>
         /// Check for property changes and start transitions
         /// </summary>
@@ -670,6 +977,14 @@ namespace FenBrowser.FenEngine.Rendering
                     foreach (var anim in kvp.Value)
                     {
                         if (anim.PlayState == "paused") continue;
+
+                        // Skip time-based progression for scroll-driven animations
+                        var elementStyle = element.GetComputedStyle();
+                        string animTimeline = null;
+                        elementStyle?.Map?.TryGetValue("animation-timeline", out animTimeline);
+                        if (!string.IsNullOrWhiteSpace(animTimeline) && !string.Equals(animTimeline, "auto", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
                         double elapsed = (now - anim.StartTime).TotalMilliseconds;
                         
                         if (elapsed < anim.DelayMs)

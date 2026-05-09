@@ -238,7 +238,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
         }
 
-        private CssStyleRule ConsumeQualifiedRule()
+        private CssStyleRule ConsumeQualifiedRule(CssSelector parentSelector = null)
         {
             var rule = new CssStyleRule();
             rule.Order = _ruleCount++;
@@ -256,21 +256,278 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (_currentToken.Type == CssTokenType.EOF) return null; // Parse error
 
             // Parse selector string and specificity
-            rule.Selector = ParseSelector(selectorTokens);
+            rule.Selector = ParseSelector(selectorTokens, parentSelector);
             if (rule.Selector == null)
             {
                  // Invalid selector (e.g. empty or malformed), but we MUST consume the block to advance parser state
-                 ConsumeDeclarationBlock();
+                 ConsumeDeclarationBlock(null);
                  return null; 
             }
 
             // Parse block
-            rule.Declarations.AddRange(ConsumeDeclarationBlock());
+            ConsumeStyleRuleBlock(rule);
             
             return rule;
         }
 
-        private List<CssDeclaration> ConsumeDeclarationBlock()
+        private void ConsumeStyleRuleBlock(CssStyleRule rule)
+        {
+            ConsumeToken(); // {
+            int declarationCount = 0;
+            int nestCount = 0;
+            const int MaxNestingDepth = 256;
+
+            while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+            {
+                if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                    continue;
+                }
+
+                // Check for unambiguous nested rule starts (delim selectors, hash, at-keyword, brackets, colon)
+                if (IsUnambiguousNestedRuleStart(_currentToken))
+                {
+                    if (nestCount >= MaxNestingDepth)
+                    {
+                        ConsumeComponentValue();
+                        continue;
+                    }
+
+                    if (_currentToken.Type == CssTokenType.AtKeyword)
+                    {
+                        var nestedAtRule = ConsumeNestedAtRule(rule.Selector);
+                        if (nestedAtRule != null)
+                        {
+                            rule.NestedRules.Add(nestedAtRule);
+                            nestCount++;
+                        }
+                    }
+                    else
+                    {
+                        var nestedRule = ConsumeQualifiedRule(rule.Selector);
+                        if (nestedRule != null)
+                        {
+                            rule.NestedRules.Add(nestedRule);
+                            nestCount++;
+                        }
+                    }
+                    continue;
+                }
+
+                // For Ident tokens, try declaration first; if invalid (no colon), treat as nested rule
+                if (_currentToken.Type == CssTokenType.Ident)
+                {
+                    // Peek past whitespace to check if next meaningful token is a colon
+                    var peek = ConsumeDeclarationOrNestedRule(rule, ref nestCount, MaxNestingDepth);
+                    if (peek) continue;
+                }
+
+                if (declarationCount >= MaxDeclarationsPerBlock)
+                {
+                    if (!_declarationLimitLogged)
+                    {
+                        _declarationLimitLogged = true;
+                        FenBrowser.Core.EngineLogCompat.Warn($"[CssSyntaxParser] Declaration block limit reached ({MaxDeclarationsPerBlock}). Remaining declarations were skipped.", FenBrowser.Core.Logging.LogCategory.CSS);
+                    }
+                    while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+                    {
+                        ConsumeComponentValue();
+                    }
+                    break;
+                }
+
+                var decl = ConsumeDeclaration();
+                if (decl != null)
+                {
+                    rule.Declarations.Add(decl);
+                    declarationCount++;
+                }
+            }
+
+            if (_currentToken.Type == CssTokenType.RightBrace)
+            {
+                ConsumeToken(); // }
+            }
+        }
+
+        private bool ConsumeDeclarationOrNestedRule(CssStyleRule rule, ref int nestCount, int maxNestingDepth)
+        {
+            // Peek the next token to disambiguate Ident token
+            var savedPosition = _tokenizer.SavePosition();
+            var savedToken = _currentToken;
+
+            // Skip current Ident
+            ConsumeToken();
+
+            // Skip whitespace to find the next meaningful token
+            while (_currentToken.Type == CssTokenType.Whitespace)
+                ConsumeToken();
+
+            bool isDeclaration = _currentToken.Type == CssTokenType.Colon;
+
+            // Restore position
+            _tokenizer.RestorePosition(savedPosition);
+            _currentToken = savedToken;
+
+            if (isDeclaration)
+            {
+                // ConsumeDeclaration will handle it above
+                return false;
+            }
+
+            // This is a nested rule starting with an Ident selector
+            if (nestCount >= maxNestingDepth)
+            {
+                // Consume to avoid infinite loop
+                var discardSelectorTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
+                {
+                    _currentToken = _tokenizer.Consume();
+                }
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                    ConsumeSimpleBlock();
+                return true;
+            }
+
+            var nestedRule = ConsumeQualifiedRule(rule.Selector);
+            if (nestedRule != null)
+            {
+                rule.NestedRules.Add(nestedRule);
+                nestCount++;
+            }
+            return true;
+        }
+
+        private static bool IsUnambiguousNestedRuleStart(CssToken token)
+        {
+            switch (token.Type)
+            {
+                case CssTokenType.Delim when token.Delimiter == '.' || token.Delimiter == '#' || 
+                                             token.Delimiter == ':' || token.Delimiter == '[' ||
+                                             token.Delimiter == '*' || token.Delimiter == '&' ||
+                                             token.Delimiter == '>' || token.Delimiter == '+' || 
+                                             token.Delimiter == '~':
+                case CssTokenType.Hash:
+                case CssTokenType.LeftBracket:
+                case CssTokenType.Colon:
+                case CssTokenType.AtKeyword:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsNestedRuleStart(CssToken token)
+        {
+            switch (token.Type)
+            {
+                case CssTokenType.Ident:
+                case CssTokenType.Delim when token.Delimiter == '.' || token.Delimiter == '#' || 
+                                             token.Delimiter == ':' || token.Delimiter == '[' ||
+                                             token.Delimiter == '*' || token.Delimiter == '&' ||
+                                             token.Delimiter == '>' || token.Delimiter == '+' || 
+                                             token.Delimiter == '~':
+                case CssTokenType.Hash:
+                case CssTokenType.LeftBracket:
+                case CssTokenType.Colon:
+                case CssTokenType.AtKeyword:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private CssRule ConsumeNestedAtRule(CssSelector parentSelector)
+        {
+            string name = _currentToken.Value;
+            ConsumeToken(); // skip @name
+
+            if (name.Equals("media", StringComparison.OrdinalIgnoreCase))
+            {
+                var conditionTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.EOF)
+                {
+                    conditionTokens.Add(_currentToken);
+                    ConsumeToken();
+                }
+
+                string condition = string.Join("", conditionTokens.Select(t => t.ToStringValue())).Trim();
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    ConsumeToken(); // {
+                    var mediaRule = new CssMediaRule { Condition = condition };
+                    ParseInsideBlockWithParent(mediaRule.Rules, parentSelector);
+                    if (_currentToken.Type == CssTokenType.RightBrace)
+                        ConsumeToken(); // }
+                    return mediaRule;
+                }
+                return null;
+            }
+
+            if (name.Equals("supports", StringComparison.OrdinalIgnoreCase) || 
+                name.Equals("container", StringComparison.OrdinalIgnoreCase))
+            {
+                var preludeTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.EOF)
+                {
+                    preludeTokens.Add(_currentToken);
+                    ConsumeToken();
+                }
+
+                string condition = string.Join("", preludeTokens.Select(t => t.ToStringValue())).Trim();
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    ConsumeToken(); // {
+                    var atRule = new CssMediaRule { Condition = condition };
+                    ParseInsideBlockWithParent(atRule.Rules, parentSelector);
+                    if (_currentToken.Type == CssTokenType.RightBrace)
+                        ConsumeToken(); // }
+                    return atRule;
+                }
+                return null;
+            }
+
+            // Unknown nested at-rule: consume and discard
+            while (_currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
+                ConsumeToken();
+
+            if (_currentToken.Type == CssTokenType.LeftBrace)
+                ConsumeSimpleBlock();
+            else if (_currentToken.Type == CssTokenType.Semicolon)
+                ConsumeToken();
+
+            return null;
+        }
+
+        private void ParseInsideBlockWithParent(List<CssRule> rules, CssSelector parentSelector)
+        {
+            int loopCount = 0;
+            while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+            {
+                if (loopCount++ > 100000) break;
+                if (_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment)
+                {
+                    ConsumeToken();
+                    continue;
+                }
+
+                if (_currentToken.Type == CssTokenType.AtKeyword)
+                {
+                    var subRule = ConsumeAtRule();
+                    if (!TryAddRule(rules, subRule)) return;
+                }
+                else
+                {
+                    var subRule = ConsumeQualifiedRule(parentSelector);
+                    if (!TryAddRule(rules, subRule)) return;
+                }
+            }
+        }
+
+        private List<CssDeclaration> ConsumeDeclarationBlock(CssSelector parentSelector = null)
         {
             var declarations = new List<CssDeclaration>();
             ConsumeToken(); // {
@@ -550,49 +807,24 @@ namespace FenBrowser.FenEngine.Rendering.Css
              }
         }
         
-        private CssSelector ParseSelector(List<CssToken> tokens)
+        private CssSelector ParseSelector(List<CssToken> tokens, CssSelector parentSelector = null)
         {
             if (tokens == null || tokens.Count == 0) return null;
 
             string raw = ReconstructSelectorText(tokens);
             if (string.IsNullOrWhiteSpace(raw)) return null;
 
-            var chains = SelectorMatcher.ParseSelectorList(raw);
-            if (chains.Count == 0) return null; // Invalid selector
+            // CSS Nesting: resolve & references and implicit parent prepending
+            if (parentSelector != null)
+            {
+                raw = ResolveNestingSelector(raw, parentSelector.Raw);
+            }
 
-            // Calculate overall specificity - maybe max of chains?
-            // The Rule holds ONE specificity?
-            // Actually, a rule like "h1, h2" is syntactic sugar for TWO rules.
-            // But CSSOM spec says it's one rule with a selector list.
-            // When matching, we match ANY of the selectors.
-            // The Specificity depends on WHICH selector matched.
-            
-            // FOR PHASE 3.2: We will simplify. 
-            // If we have "h1, h2", we keep it as one Rule.
-            // But specificity logic in CascadeEngine needs to know WHICH one matched to apply correct specificity.
-            // My CascadeEngine currently uses `styleRule.Selector.Specificity`.
-            // This suggests I need to change `CssStyleRule` to either:
-            // A) Split into multiple rules during parsing (one per chain).
-            // B) CascadeEngine iterates chains and finds best match.
-            
-            // The most robust way for now: Split comma-separated selectors into multiple CssStyleRules.
-            // This simplifies CascadeEngine (it just sorts rules).
-            
-            // However, `ConsumeQualifiedRule` returns ONE `CssStyleRule`.
-            // I should modify `ParseStylesheet` to handle this or modifications to `CssStyleRule`.
-            
-            // Let's stick to B for now: Update `CssSelector` to hold the list, and update `CascadeEngine` to calculate specificity dynamically based on match.
-            
-            // But wait, `CssRule` needs an Order. If I split, they have same order? Yes.
-            
-            // Let's assume for now `CssSelector` holds the chains.
-            // I will set `Specificity` to the MAX of the chains for metadata purposes, 
-            // but `CascadeEngine` needs to be smarter.
-            
-            // CRITICAL FIX: Use FirstOrDefault to prevent "Sequence contains no elements" exception
+            var chains = SelectorMatcher.ParseSelectorList(raw);
+            if (chains.Count == 0) return null;
+
             var specificity = chains.Select(c => c.Specificity).OrderByDescending(s => s).FirstOrDefault();
 
-            // PRE-PARSE functional pseudo-classes to avoid O(N^2) re-parsing during cascade
             foreach (var chain in chains)
             {
                 foreach (var seg in chain.Segments)
@@ -613,6 +845,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 Chains = chains,
                 Specificity = specificity 
             };
+        }
+
+        private static string ResolveNestingSelector(string nestedSelector, string parentSelector)
+        {
+            if (string.IsNullOrEmpty(nestedSelector)) return parentSelector ?? "";
+            if (string.IsNullOrEmpty(parentSelector)) return nestedSelector;
+
+            bool hasNestingSelector = nestedSelector.Contains('&');
+            if (hasNestingSelector)
+            {
+                return nestedSelector.Replace("&", parentSelector);
+            }
+
+            // Implicit nesting: prepend parent with descendant combinator
+            return parentSelector + " " + nestedSelector;
         }
 
         private static string ReconstructSelectorText(List<CssToken> tokens)

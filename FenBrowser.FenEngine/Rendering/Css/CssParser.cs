@@ -729,54 +729,59 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // color-mix() functional notation (CSS Color Level 5)
-            // Syntax: color-mix(in srgb, color1 [percentage], color2 [percentage])
+            // Syntax: color-mix(in <colorspace>, color1 [percentage], color2 [percentage])
             if (s.StartsWith("color-mix", StringComparison.OrdinalIgnoreCase))
             {
                 int open = s.IndexOf('('); int close = s.LastIndexOf(')');
                 if (open > 0 && close > open)
                 {
                     var inner = s.Substring(open + 1, close - open - 1);
-                    // Split by comma, being careful of nested functions
                     var parts = SplitColorMixArgs(inner);
-                    
+
                     if (parts.Count >= 3)
                     {
-                        // parts[0] = "in srgb" or similar (color space)
-                        // parts[1] = color1 [percentage]
-                        // parts[2] = color2 [percentage]
-                        
-                        // Parse first color and percentage
+                        // Parse color space and optional hue method from parts[0], e.g. "in srgb" or "in lch shorter hue"
+                        var spaceSpec = parts[0].Trim();
+                        var (colorSpace, hueMethod) = ParseColorMixSpace(spaceSpec);
+
                         var (color1, pct1) = ParseColorWithPercentage(parts[1].Trim());
                         var (color2, pct2) = ParseColorWithPercentage(parts[2].Trim());
-                        
+
                         if (color1.HasValue && color2.HasValue)
                         {
-                            // Default percentages: 50% each if not specified
                             double p1 = pct1 ?? 50;
                             double p2 = pct2 ?? 50;
-                            
-                            // Normalize percentages if both are specified
+
+                            // Normalize percentages
                             double total = p1 + p2;
-                            if (total > 0)
-                            {
-                                p1 = p1 / total;
-                                p2 = p2 / total;
-                            }
-                            else
-                            {
-                                p1 = p2 = 0.5;
-                            }
-                            
-                            // Blend colors
+                            double w1 = total > 0 ? p1 / total : 0.5;
+                            double w2 = total > 0 ? p2 / total : 0.5;
+
                             var c1 = color1.Value;
                             var c2 = color2.Value;
-                            // SKColor stores as byte Red, Green, Blue, Alpha
-                            byte r = (byte)(c1.Red * p1 + c2.Red * p2);
-                            byte g = (byte)(c1.Green * p1 + c2.Green * p2);
-                            byte b = (byte)(c1.Blue * p1 + c2.Blue * p2);
-                            byte a = (byte)(c1.Alpha * p1 + c2.Alpha * p2);
-                            
-                            return new SKColor(r, g, b, a);
+
+                            // Fast path: sRGB blending (backward compatible)
+                            if (colorSpace == "srgb" && hueMethod == null)
+                            {
+                                byte r = (byte)(c1.Red * w1 + c2.Red * w2);
+                                byte g = (byte)(c1.Green * w1 + c2.Green * w2);
+                                byte b = (byte)(c1.Blue * w1 + c2.Blue * w2);
+                                byte a = (byte)(c1.Alpha * w1 + c2.Alpha * w2);
+                                return new SKColor(r, g, b, a);
+                            }
+
+                            // Convert both colors to the interpolation space
+                            var comps1 = ConvertColorForInterpolation(c1, colorSpace);
+                            var comps2 = ConvertColorForInterpolation(c2, colorSpace);
+
+                            // Mix in that space and convert back
+                            var mixed = MixInColorSpace(comps1, comps2, w1, colorSpace, hueMethod);
+                            var result = InterpolationResultToSrgb(mixed, colorSpace);
+
+                            // Alpha: blend separately
+                            byte alpha = (byte)(c1.Alpha * w1 + c2.Alpha * w2);
+
+                            return new SKColor(result.r, result.g, result.b, alpha);
                         }
                     }
                 }
@@ -1114,6 +1119,507 @@ namespace FenBrowser.FenEngine.Rendering
                 (byte)Math.Max(0, Math.Min(255, (int)Math.Round(bv * 255)))
             );
         }
+
+        // ── Color interpolation space helpers ──
+
+        private static double SrgbToLinear(double c)
+        {
+            c = Math.Max(0, Math.Min(1, c));
+            return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+        }
+
+        private static double LinearToSrgbComponent(double c)
+        {
+            if (c <= 0) return 0;
+            if (c >= 1) return 1;
+            return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.Pow(c, 1.0 / 2.4) - 0.055;
+        }
+
+        // sRGB-linear → XYZ-D65 conversion matrices
+        private static readonly double[] sRgbToXyzM = {
+            0.4124564, 0.3575761, 0.1804375,
+            0.2126729, 0.7151522, 0.0721750,
+            0.0193339, 0.1191920, 0.9503041
+        };
+
+        private static readonly double[] xyzToSRgbM = {
+             3.2404542, -1.5371385, -0.4985314,
+            -0.9692660,  1.8760108,  0.0415560,
+             0.0556434, -0.2040259,  1.0572252
+        };
+
+        private static (double X, double Y, double Z) LinearRgbToXyzD65(double r, double g, double b)
+        {
+            double X = sRgbToXyzM[0]*r + sRgbToXyzM[1]*g + sRgbToXyzM[2]*b;
+            double Y = sRgbToXyzM[3]*r + sRgbToXyzM[4]*g + sRgbToXyzM[5]*b;
+            double Z = sRgbToXyzM[6]*r + sRgbToXyzM[7]*g + sRgbToXyzM[8]*b;
+            return (X, Y, Z);
+        }
+
+        private static (double r, double g, double b) XyzD65ToLinearRgb(double X, double Y, double Z)
+        {
+            double r = xyzToSRgbM[0]*X + xyzToSRgbM[1]*Y + xyzToSRgbM[2]*Z;
+            double g = xyzToSRgbM[3]*X + xyzToSRgbM[4]*Y + xyzToSRgbM[5]*Z;
+            double b = xyzToSRgbM[6]*X + xyzToSRgbM[7]*Y + xyzToSRgbM[8]*Z;
+            return (r, g, b);
+        }
+
+        // D65 reference white for Lab
+        private const double LabXn = 0.95047;
+        private const double LabYn = 1.00000;
+        private const double LabZn = 1.08883;
+
+        private static double LabF(double t)
+        {
+            const double delta = 6.0 / 29.0;
+            const double delta2 = delta * delta;
+            const double delta3 = delta2 * delta;
+            return t > delta3 ? Math.Pow(t, 1.0 / 3.0) : t / (3 * delta2) + 4.0 / 29.0;
+        }
+
+        private static double LabFInv(double t)
+        {
+            const double delta = 6.0 / 29.0;
+            const double delta2 = delta * delta;
+            double t3 = t * t * t;
+            return t3 > delta2 * delta ? t3 : 3 * delta2 * (t - 4.0 / 29.0);
+        }
+
+        private static double[] XyzToLab(double X, double Y, double Z)
+        {
+            double fy = LabF(Y / LabYn);
+            double fx = LabF(X / LabXn);
+            double fz = LabF(Z / LabZn);
+            double L = 116.0 * fy - 16.0;
+            double a = 500.0 * (fx - fy);
+            double b = 200.0 * (fy - fz);
+            return new[] { L, a, b };
+        }
+
+        private static (double X, double Y, double Z) LabToXyz(double L, double a, double b)
+        {
+            double fy = (L + 16.0) / 116.0;
+            double fx = a / 500.0 + fy;
+            double fz = fy - b / 200.0;
+            double X = LabFInv(fx) * LabXn;
+            double Y = LabFInv(fy) * LabYn;
+            double Z = LabFInv(fz) * LabZn;
+            return (X, Y, Z);
+        }
+
+        private static double[] LabToLch(double L, double a, double b)
+        {
+            double C = Math.Sqrt(a * a + b * b);
+            double H = Math.Atan2(b, a) * 180.0 / Math.PI;
+            if (H < 0) H += 360.0;
+            return new[] { L, C, H };
+        }
+
+        private static (double L, double a, double b) LchToLab(double L, double C, double H)
+        {
+            double hRad = H * Math.PI / 180.0;
+            double a = C * Math.Cos(hRad);
+            double b = C * Math.Sin(hRad);
+            return (L, a, b);
+        }
+
+        // Oklab matrices (from sRGB-linear)
+        private static readonly double[] M1 = {
+            0.8189330101, 0.3618667424, -0.1288597137,
+            0.0329845436, 0.9293118715,  0.0361456387,
+            0.0482003018, 0.2643662691,  0.6338517070
+        };
+
+        private static readonly double[] M2 = {
+             0.2104542553,  0.7936177850, -0.0040720468,
+             1.9779984951, -2.4285922050,  0.4505937099,
+             0.0259040371,  0.7827717662, -0.8086757660
+        };
+
+        private static readonly double[] M1Inv = {
+             1.2270138511, -0.5577999807,  0.2812561490,
+            -0.0405801784,  1.1122568696, -0.0716766787,
+            -0.0763812845, -0.4214819784,  1.5861632204
+        };
+
+        private static readonly double[] M2Inv = {
+             1.0000000000,  0.3963377774,  0.2158037573,
+             1.0000000000, -0.1055613458, -0.0638541728,
+             1.0000000000, -0.0894841775, -1.2914855480
+        };
+
+        private static (double L, double a, double b) LinearRgbToOklab(double r, double g, double bl)
+        {
+            double lms0 = M1[0]*r + M1[1]*g + M1[2]*bl;
+            double lms1 = M1[3]*r + M1[4]*g + M1[5]*bl;
+            double lms2 = M1[6]*r + M1[7]*g + M1[8]*bl;
+            double l0 = Math.Pow(lms0, 1.0 / 3.0);
+            double l1 = Math.Pow(lms1, 1.0 / 3.0);
+            double l2 = Math.Pow(lms2, 1.0 / 3.0);
+            double L = M2[0]*l0 + M2[1]*l1 + M2[2]*l2;
+            double a = M2[3]*l0 + M2[4]*l1 + M2[5]*l2;
+            double b = M2[6]*l0 + M2[7]*l1 + M2[8]*l2;
+            return (L, a, b);
+        }
+
+        private static (double r, double g, double b) OklabToLinearRgb(double L, double a, double b)
+        {
+            double l0 = M2Inv[0]*L + M2Inv[1]*a + M2Inv[2]*b;
+            double l1 = M2Inv[3]*L + M2Inv[4]*a + M2Inv[5]*b;
+            double l2 = M2Inv[6]*L + M2Inv[7]*a + M2Inv[8]*b;
+            double lms0 = l0 * l0 * l0;
+            double lms1 = l1 * l1 * l1;
+            double lms2 = l2 * l2 * l2;
+            double r = M1Inv[0]*lms0 + M1Inv[1]*lms1 + M1Inv[2]*lms2;
+            double g = M1Inv[3]*lms0 + M1Inv[4]*lms1 + M1Inv[5]*lms2;
+            double bl = M1Inv[6]*lms0 + M1Inv[7]*lms1 + M1Inv[8]*lms2;
+            return (r, g, bl);
+        }
+
+        // Display-P3 linear matrices (via XYZ-D65)
+        private static readonly double[] xyzToP3M = {
+             2.4934969119, -0.9313836179, -0.4027107845,
+            -0.8294889696,  1.7626640603,  0.0236246858,
+             0.0358458302, -0.0761723893,  0.9568845240
+        };
+
+        private static readonly double[] p3ToXyzM = {
+             0.4865709486, 0.2656676932, 0.1982172852,
+             0.2289745641, 0.6917385218, 0.0792869141,
+             0.0000000000, 0.0451133819, 1.0439443689
+        };
+
+        private static (double r, double g, double b) LinearRgbToP3Linear(double r, double g, double b)
+        {
+            var (X, Y, Z) = LinearRgbToXyzD65(r, g, b);
+            double rp = xyzToP3M[0]*X + xyzToP3M[1]*Y + xyzToP3M[2]*Z;
+            double gp = xyzToP3M[3]*X + xyzToP3M[4]*Y + xyzToP3M[5]*Z;
+            double bp = xyzToP3M[6]*X + xyzToP3M[7]*Y + xyzToP3M[8]*Z;
+            return (rp, gp, bp);
+        }
+
+        private static (double r, double g, double b) P3LinearToLinearRgb(double r, double g, double b)
+        {
+            double X = p3ToXyzM[0]*r + p3ToXyzM[1]*g + p3ToXyzM[2]*b;
+            double Y = p3ToXyzM[3]*r + p3ToXyzM[4]*g + p3ToXyzM[5]*b;
+            double Z = p3ToXyzM[6]*r + p3ToXyzM[7]*g + p3ToXyzM[8]*b;
+            return XyzD65ToLinearRgb(X, Y, Z);
+        }
+
+        // sRGB → HSL (returns H 0-360, S 0-1, L 0-1)
+        private static (double H, double S, double L) SrgbToHsl(double r, double g, double b)
+        {
+            double max = Math.Max(r, Math.Max(g, b));
+            double min = Math.Min(r, Math.Min(g, b));
+            double L = (max + min) / 2.0;
+            if (Math.Abs(max - min) < 1e-10) return (0, 0, L);
+            double d = max - min;
+            double S = L > 0.5 ? d / (2.0 - max - min) : d / (max + min);
+            double H;
+            if (Math.Abs(max - r) < 1e-10)
+                H = (g - b) / d + (g < b ? 6.0 : 0.0);
+            else if (Math.Abs(max - g) < 1e-10)
+                H = (b - r) / d + 2.0;
+            else
+                H = (r - g) / d + 4.0;
+            H *= 60.0;
+            return (H, S, L);
+        }
+
+        // sRGB → HWB (returns H 0-360, W 0-1, B 0-1)
+        private static (double H, double W, double B) SrgbToHwb(double r, double g, double b)
+        {
+            var (H, _, L) = SrgbToHsl(r, g, b);
+            double W = Math.Min(r, Math.Min(g, b));
+            double Bk = 1.0 - Math.Max(r, Math.Max(g, b));
+            return (H, W, Bk);
+        }
+
+        private static double HueInterpolation(double h1, double h2, double t, string hueMethod)
+        {
+            double diff = h2 - h1;
+            switch (hueMethod ?? "shorter")
+            {
+                case "shorter":
+                    if (diff > 180) h1 += 360;
+                    else if (diff < -180) h2 += 360;
+                    break;
+                case "longer":
+                    if (diff > 0 && diff < 180) h1 += 360;
+                    else if (diff < 0 && diff > -180) h2 += 360;
+                    break;
+                case "increasing":
+                    while (h2 < h1) h2 += 360;
+                    break;
+                case "decreasing":
+                    while (h2 > h1) h2 -= 360;
+                    break;
+            }
+            return (h1 + (h2 - h1) * t) % 360.0;
+        }
+
+        private static double Lerp(double a, double b, double t)
+        {
+            return a + (b - a) * t;
+        }
+
+        /// <summary>
+        /// Parse "in srgb", "in oklch", "in lch shorter hue", etc.
+        /// </summary>
+        private static (string colorSpace, string hueMethod) ParseColorMixSpace(string spec)
+        {
+            string colorSpace = "srgb";
+            string hueMethod = null;
+            spec = spec.Trim();
+            if (spec.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+                spec = spec.Substring(3).Trim();
+
+            var tokens = new List<string>(spec.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+            if (tokens.Count == 0) return ("srgb", null);
+
+            colorSpace = tokens[0].ToLowerInvariant();
+
+            // Check for hue method keywords
+            for (int i = 1; i < tokens.Count; i++)
+            {
+                var t = tokens[i].ToLowerInvariant();
+                if (t == "shorter" || t == "longer" || t == "increasing" || t == "decreasing")
+                {
+                    hueMethod = t;
+                    break;
+                }
+            }
+
+            return (colorSpace, hueMethod);
+        }
+
+        /// <summary>
+        /// Convert an SKColor (sRGB bytes) to a double[] representation in the target color space.
+        /// </summary>
+        private static double[] ConvertColorForInterpolation(SKColor color, string colorSpace)
+        {
+            double r = color.Red / 255.0;
+            double g = color.Green / 255.0;
+            double b = color.Blue / 255.0;
+
+            switch (colorSpace)
+            {
+                case "srgb":
+                    return new[] { r, g, b };
+
+                case "srgb-linear":
+                    return new[] { SrgbToLinear(r), SrgbToLinear(g), SrgbToLinear(b) };
+
+                case "xyz-d65":
+                case "xyz":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (X, Y, Z) = LinearRgbToXyzD65(rl, gl, bl);
+                        return new[] { X, Y, Z };
+                    }
+
+                case "xyz-d50":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (X65, Y65, Z65) = LinearRgbToXyzD65(rl, gl, bl);
+                        // Bradford adaptation D65 -> D50 (simplified)
+                        double X50 =  1.0479297 * X65 + 0.0229466 * Y65 - 0.0501922 * Z65;
+                        double Y50 =  0.0296278 * X65 + 0.9904344 * Y65 - 0.0170738 * Z65;
+                        double Z50 = -0.0092430 * X65 + 0.0150550 * Y65 + 0.7518740 * Z65;
+                        return new[] { X50, Y50, Z50 };
+                    }
+
+                case "lab":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (X, Y, Z) = LinearRgbToXyzD65(rl, gl, bl);
+                        return XyzToLab(X, Y, Z);
+                    }
+
+                case "lch":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (X, Y, Z) = LinearRgbToXyzD65(rl, gl, bl);
+                        var lab = XyzToLab(X, Y, Z);
+                        return LabToLch(lab[0], lab[1], lab[2]);
+                    }
+
+                case "oklab":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (L, a, bb) = LinearRgbToOklab(rl, gl, bl);
+                        return new[] { L, a, bb };
+                    }
+
+                case "oklch":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (L, a, bb) = LinearRgbToOklab(rl, gl, bl);
+                        var lch = LabToLch(L, a, bb);
+                        return lch;
+                    }
+
+                case "hsl":
+                    {
+                        var (H, S, L) = SrgbToHsl(r, g, b);
+                        return new[] { H, S, L };
+                    }
+
+                case "hwb":
+                    {
+                        var (H, W, Bk) = SrgbToHwb(r, g, b);
+                        return new[] { H, W, Bk };
+                    }
+
+                case "display-p3":
+                    {
+                        double rl = SrgbToLinear(r), gl = SrgbToLinear(g), bl = SrgbToLinear(b);
+                        var (rp, gp, bp) = LinearRgbToP3Linear(rl, gl, bl);
+                        return new[] { rp, gp, bp };
+                    }
+
+                default:
+                    return new[] { r, g, b };
+            }
+        }
+
+        /// <summary>
+        /// Linearly mix two color arrays in the given color space.
+        /// For hue-bearing spaces, the hue component (always index 0 in our convention)
+        /// is interpolated with the specified hue method.
+        /// </summary>
+        private static double[] MixInColorSpace(double[] c1, double[] c2, double w1, string colorSpace, string hueMethod)
+        {
+            double w2 = 1.0 - w1;
+            bool hasHue = colorSpace == "hsl" || colorSpace == "hwb" || colorSpace == "lch" || colorSpace == "oklch";
+            var result = new double[c1.Length];
+
+            for (int i = 0; i < c1.Length; i++)
+            {
+                if (hasHue && i == 0)
+                    result[i] = HueInterpolation(c1[i], c2[i], w2, hueMethod);
+                else
+                    result[i] = Lerp(c1[i], c2[i], w2);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Convert a mixed double[] from any interpolation space back to sRGB (byte r, g, b).
+        /// </summary>
+        private static (byte r, byte g, byte b) InterpolationResultToSrgb(double[] comps, string colorSpace)
+        {
+            double r, g, b;
+
+            switch (colorSpace)
+            {
+                case "srgb":
+                    r = comps[0]; g = comps[1]; b = comps[2];
+                    break;
+
+                case "srgb-linear":
+                    r = LinearToSrgbComponent(comps[0]);
+                    g = LinearToSrgbComponent(comps[1]);
+                    b = LinearToSrgbComponent(comps[2]);
+                    break;
+
+                case "xyz-d65":
+                case "xyz":
+                    {
+                        var (rr, gg, bb) = XyzD65ToLinearRgb(comps[0], comps[1], comps[2]);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "xyz-d50":
+                    {
+                        // Bradford adaptation D50 -> D65 (simplified)
+                        double X50 = comps[0], Y50 = comps[1], Z50 = comps[2];
+                        double X65 =  0.9554734 * X50 - 0.0230985 * Y50 + 0.0632596 * Z50;
+                        double Y65 = -0.0283697 * X50 + 1.0099938 * Y50 + 0.0210408 * Z50;
+                        double Z65 =  0.0123120 * X50 - 0.0204753 * Y50 + 1.3300598 * Z50;
+                        var (rr, gg, bb) = XyzD65ToLinearRgb(X65, Y65, Z65);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "lab":
+                    {
+                        var (X, Y, Z) = LabToXyz(comps[0], comps[1], comps[2]);
+                        var (rr, gg, bb) = XyzD65ToLinearRgb(X, Y, Z);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "lch":
+                    {
+                        var (La, aa, bba) = LchToLab(comps[0], comps[1], comps[2]);
+                        var (X, Y, Z) = LabToXyz(La, aa, bba);
+                        var (rr, gg, bb) = XyzD65ToLinearRgb(X, Y, Z);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "oklab":
+                    {
+                        var (rr, gg, bb) = OklabToLinearRgb(comps[0], comps[1], comps[2]);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "oklch":
+                    {
+                        var (La, aa, bba) = LchToLab(comps[0], comps[1], comps[2]);
+                        var (rr, gg, bb) = OklabToLinearRgb(La, aa, bba);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                case "hsl":
+                    {
+                        var rgbBytes = HslToRgb(comps[0], comps[1], comps[2]);
+                        return rgbBytes;
+                    }
+
+                case "hwb":
+                    {
+                        var rgbBytes = HwbToRgb(comps[0], comps[1], comps[2]);
+                        return rgbBytes;
+                    }
+
+                case "display-p3":
+                    {
+                        var (rr, gg, bb) = P3LinearToLinearRgb(comps[0], comps[1], comps[2]);
+                        r = LinearToSrgbComponent(rr);
+                        g = LinearToSrgbComponent(gg);
+                        b = LinearToSrgbComponent(bb);
+                    }
+                    break;
+
+                default:
+                    r = comps[0]; g = comps[1]; b = comps[2];
+                    break;
+            }
+
+            return (
+                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(r * 255))),
+                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(g * 255))),
+                (byte)Math.Max(0, Math.Min(255, (int)Math.Round(b * 255)))
+            );
+        }
+
     }
 }
 

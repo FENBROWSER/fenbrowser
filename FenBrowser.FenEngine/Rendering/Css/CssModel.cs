@@ -37,6 +37,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         public CssSelector Selector { get; set; }
         public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
+        public List<CssRule> NestedRules { get; } = new List<CssRule>();
         public int Order { get; set; } // For cascade sort
     }
 

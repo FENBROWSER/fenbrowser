@@ -1,6 +1,7 @@
 // =============================================================================
 // AbsolutePositionSolver.cs
 // CSS 2.1 Absolute Positioning - The Equation of 7 Variables
+// CSS Anchor Positioning Level 1 - anchor() / anchor-size() resolution
 // 
 // SPEC REFERENCE: CSS 2.1 §10.3, §10.6 - Width and Height of absolutely positioned elements
 //                 https://www.w3.org/TR/CSS21/visudet.html#abs-non-replaced-width
@@ -18,10 +19,12 @@
 // =============================================================================
 
 using System;
+using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -68,9 +71,79 @@ namespace FenBrowser.FenEngine.Layout
 
     /// <summary>
     /// Solves the CSS 2.1 "equation of 7 variables" for absolutely positioned elements.
+    /// Plus CSS Anchor Positioning Level 1 anchor() and anchor-size() resolution.
     /// </summary>
     public static class AbsolutePositionSolver
     {
+        /// <summary>
+        /// Resolve anchor() expressions in inset/size styles given a resolved anchor box.
+        /// Returns updated (left, top, right, bottom, width, height) absolute values.
+        /// Anchor values are relative to the containing block's origin (the anchor box is in absolute coords).
+        /// </summary>
+        public static void ResolveAnchorOffsets(
+            CssComputed style,
+            SKRect anchorBox,
+            ContainingBlock containingBlock,
+            ref float? anchorLeft,
+            ref float? anchorTop,
+            ref float? anchorRight,
+            ref float? anchorBottom,
+            ref float? anchorWidth,
+            ref float? anchorHeight)
+        {
+            string defaultAnchor = style.PositionAnchor;
+
+            if (LayoutStyleResolver.IsAnchorFunction(style.LeftAnchorExpression))
+            {
+                var (name, side) = LayoutStyleResolver.ParseAnchorExpression(style.LeftAnchorExpression, defaultAnchor);
+                if (name != null)
+                {
+                    float anchorVal = LayoutStyleResolver.ResolveAnchorSide(anchorBox, side);
+                    anchorLeft = anchorVal - containingBlock.X;
+                }
+            }
+
+            if (LayoutStyleResolver.IsAnchorFunction(style.RightAnchorExpression))
+            {
+                var (name, side) = LayoutStyleResolver.ParseAnchorExpression(style.RightAnchorExpression, defaultAnchor);
+                if (name != null)
+                {
+                    float anchorVal = LayoutStyleResolver.ResolveAnchorSide(anchorBox, side);
+                    anchorRight = (containingBlock.X + containingBlock.Width) - anchorVal;
+                }
+            }
+
+            if (LayoutStyleResolver.IsAnchorFunction(style.TopAnchorExpression))
+            {
+                var (name, side) = LayoutStyleResolver.ParseAnchorExpression(style.TopAnchorExpression, defaultAnchor);
+                if (name != null)
+                {
+                    float anchorVal = LayoutStyleResolver.ResolveAnchorSideVertical(anchorBox, side);
+                    anchorTop = anchorVal - containingBlock.Y;
+                }
+            }
+
+            if (LayoutStyleResolver.IsAnchorFunction(style.BottomAnchorExpression))
+            {
+                var (name, side) = LayoutStyleResolver.ParseAnchorExpression(style.BottomAnchorExpression, defaultAnchor);
+                if (name != null)
+                {
+                    float anchorVal = LayoutStyleResolver.ResolveAnchorSideVertical(anchorBox, side);
+                    anchorBottom = (containingBlock.Y + containingBlock.Height) - anchorVal;
+                }
+            }
+
+            if (LayoutStyleResolver.IsAnchorSizeFunction(style.WidthAnchorExpression))
+            {
+                anchorWidth = anchorBox.Width;
+            }
+
+            if (LayoutStyleResolver.IsAnchorSizeFunction(style.HeightAnchorExpression))
+            {
+                anchorHeight = anchorBox.Height;
+            }
+        }
+
         /// <summary>
         /// Solve absolute positioning for an element.
         /// </summary>
@@ -93,6 +166,42 @@ namespace FenBrowser.FenEngine.Layout
             ApplyConstraints(style, containingBlock, ref result);
 
             return result;
+        }
+
+        /// <summary>
+        /// Solve absolute positioning with anchor-based offset overrides.
+        /// Called after anchor box has been resolved to override inset/size values.
+        /// </summary>
+        public static AbsoluteLayoutResult SolveWithAnchorOverrides(
+            CssComputed style,
+            ContainingBlock containingBlock,
+            SKRect anchorBox,
+            float intrinsicWidth = 0,
+            float intrinsicHeight = 0,
+            bool preserveIntrinsicAutoSize = false)
+        {
+            float? anchorLeft = null;
+            float? anchorTop = null;
+            float? anchorRight = null;
+            float? anchorBottom = null;
+            float? anchorWidth = null;
+            float? anchorHeight = null;
+
+            ResolveAnchorOffsets(style, anchorBox, containingBlock,
+                ref anchorLeft, ref anchorTop, ref anchorRight, ref anchorBottom,
+                ref anchorWidth, ref anchorHeight);
+
+            var originalStyle = style;
+            var overrideStyle = style.Clone();
+
+            if (anchorLeft.HasValue) { overrideStyle.Left = anchorLeft.Value; overrideStyle.LeftPercent = null; }
+            if (anchorTop.HasValue) { overrideStyle.Top = anchorTop.Value; overrideStyle.TopPercent = null; }
+            if (anchorRight.HasValue) { overrideStyle.Right = anchorRight.Value; overrideStyle.RightPercent = null; }
+            if (anchorBottom.HasValue) { overrideStyle.Bottom = anchorBottom.Value; overrideStyle.BottomPercent = null; }
+            if (anchorWidth.HasValue) { overrideStyle.Width = anchorWidth.Value; overrideStyle.WidthPercent = null; }
+            if (anchorHeight.HasValue) { overrideStyle.Height = anchorHeight.Value; overrideStyle.HeightPercent = null; }
+
+            return Solve(overrideStyle, containingBlock, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
         }
 
         private static void SolveHorizontal(
