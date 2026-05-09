@@ -225,12 +225,12 @@ var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
                 if (_microtaskQueue.HasPendingMicrotasks)
                 {
                     PerformMicrotaskCheckpoint(deadline);
-                    ProcessRenderingUpdate();
+                    ProcessRenderingUpdate(deadline);
                     EnsureIdlePhase();
                     return new TaskProcessingResult(true, TaskSource.Other, TaskPriorityGroup.Background);
                 }
 
-                ProcessRenderingUpdate();
+                ProcessRenderingUpdate(deadline);
                 return TaskProcessingResult.None;
             }
 
@@ -250,12 +250,12 @@ EngineContext.Current.EndPhase();
 }
 
 PerformMicrotaskCheckpoint(deadline);
-ProcessRenderingUpdate();
+ProcessRenderingUpdate(deadline);
 EnsureIdlePhase();
 return new TaskProcessingResult(true, task.Source, priorityGroup);
         }
 
-        public void PerformMicrotaskCheckpoint()
+        public void PerformMicrotaskCheckpoint(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
 
@@ -265,6 +265,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 var passes = 0;
                 while (true)
                 {
+                    deadline?.Check();
                     _microtaskQueue.DrainAll();
                     var deliveredMutationObservers = DeliverMutationObserverRecords();
                     if (!deliveredMutationObservers &&
@@ -290,7 +291,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             }
         }
 
-        public void ProcessRenderingUpdate()
+        public void ProcessRenderingUpdate(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             var now = Environment.TickCount64;
             bool hasRenderingOpportunity = (now - _lastRenderTime) >= 16 || _layoutDirty;
@@ -299,7 +300,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 return;
             }
 
-            ProcessAnimationFrames();
+            ProcessAnimationFrames(deadline);
 
             if (_layoutDirty && _renderCallback != null)
             {
@@ -343,7 +344,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             EnsureIdlePhase();
         }
 
-        private void ProcessAnimationFrames()
+        private void ProcessAnimationFrames(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             Queue<Action> callbacks;
             lock (_animationLock)
@@ -419,7 +420,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                     continue;
                 }
 
-                PerformMicrotaskCheckpoint(deadline);
+                PerformMicrotaskCheckpoint();
             }
         }
 

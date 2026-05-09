@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.Css;
@@ -273,7 +274,7 @@ if (element != null && _styleCache.TryGetValue(element, out var cachedStyle))
 {
 if (pseudoElement == null)
 {
-return cachedStyle.Map ?? new Dictionary<string, CssDeclaration>();
+return ConvertComputedMapToDeclarations(cachedStyle.Map);
 }
 // For pseudo-elements, still need to recompute
 }
@@ -329,11 +330,35 @@ ApplyDeclaration(computed, match.Declaration);
 if (element != null && string.IsNullOrEmpty(pseudoElement))
 {
 var cssComputed = new CssComputed();
-cssComputed.Map = computed;
+foreach (var kvp in computed)
+{
+    cssComputed.Map[kvp.Key] = kvp.Value?.Value ?? string.Empty;
+}
 _styleCache[element] = cssComputed;
 }
 
 return computed;
+        }
+
+        private static Dictionary<string, CssDeclaration> ConvertComputedMapToDeclarations(Dictionary<string, string> map)
+        {
+            var declarations = new Dictionary<string, CssDeclaration>(StringComparer.OrdinalIgnoreCase);
+            if (map == null)
+            {
+                return declarations;
+            }
+
+            foreach (var kvp in map)
+            {
+                declarations[kvp.Key] = new CssDeclaration
+                {
+                    Property = kvp.Key,
+                    Value = kvp.Value ?? string.Empty,
+                    IsImportant = false
+                };
+            }
+
+            return declarations;
         }
 
         private static void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)

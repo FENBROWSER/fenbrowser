@@ -7784,7 +7784,28 @@ window.Set("createImageBitmap", FenValue.FromFunction(new FenFunction("createIma
 (args, thisVal) => FenBrowser.FenEngine.WebAPIs.ImageBitmapAPI.CreateImageBitmap(args, _context))));
 
 // navigation - Navigation API - https://wicg.github.io/navigation-api/
-var navigation = FenBrowser.FenEngine.WebAPIs.NavigationAPI.CreateNavigation(_context);
+var navigation = FenBrowser.FenEngine.WebAPIs.NavigationAPI.CreateNavigationObject(_context, (target, info) =>
+{
+    if (string.IsNullOrWhiteSpace(target))
+    {
+        return;
+    }
+
+    if (!Uri.TryCreate(target, UriKind.RelativeOrAbsolute, out var targetUri))
+    {
+        return;
+    }
+
+    if (!targetUri.IsAbsoluteUri && BaseUri != null)
+    {
+        targetUri = new Uri(BaseUri, targetUri);
+    }
+
+    if (targetUri.IsAbsoluteUri)
+    {
+        NavigationRequested?.Invoke(targetUri);
+    }
+});
 window.Set("navigation", FenValue.FromObject(navigation));
 
 // EventTarget prototype for Window + generic EventTarget APIs.

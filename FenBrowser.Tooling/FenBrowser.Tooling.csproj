@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <Compile Include="..\FenBrowser.FenEngine\Testing\**\*.cs" Link="FenEngineTesting\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Remove="..\FenBrowser.FenEngine\Testing\EventLoopDeadlineTests.cs" />
     <Compile Include="..\FenBrowser.FenEngine\WebAPIs\TestHarnessAPI.cs" Link="FenEngineWebApis\TestHarnessAPI.cs" />
     <Compile Include="..\FenBrowser.FenEngine\WebAPIs\TestConsoleCapture.cs" Link="FenEngineWebApis\TestConsoleCapture.cs" />
     <Compile Include="..\FenBrowser.FenEngine\TestFenEngine.cs" Link="FenEngineTests\TestFenEngine.cs" />

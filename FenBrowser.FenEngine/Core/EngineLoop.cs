@@ -60,9 +60,11 @@ namespace FenBrowser.FenEngine.Core
 
             try
             {
+                var frameDeadline = new FenBrowser.Core.Deadlines.FrameDeadline(FrameBudgetMs, "RunFrame");
+
                 // 1. Pump Events (User Input, Timers, Network, Microtasks)
                 // This delegates to Coordinator but we limit how much we process to avoid starving render
-                _coordinator.ProcessNextTaskDetailed(false, deadline);
+                _coordinator.ProcessNextTaskDetailed(false, frameDeadline);
                 
                 // Ensure microtasks are drained before rendering
                 // _coordinator.PerformMicrotaskCheckpoint(); // Assumed handled by ProcessNextTask
@@ -70,9 +72,8 @@ namespace FenBrowser.FenEngine.Core
                 // 2. Check Dirty Flags & Render
                 if (_treeIsDirty)
                 {
-// using FenBrowser.FenEngine.System;
-                    var deadline = new FenBrowser.Core.Deadlines.FrameDeadline(FrameBudgetMs, "FullRender");
-                    PerformRendering(deadline);
+                    frameDeadline.Check();
+                    PerformRendering(frameDeadline);
                 }
                 
                 // 3. Check Frame Budget

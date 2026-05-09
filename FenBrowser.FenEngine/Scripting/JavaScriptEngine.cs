@@ -1117,6 +1117,47 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 winObj.Set("ResizeObserver", resizeObserverGlobalValue);
             }
+
+            // AudioContext on window
+            var audioContextGlobal = _fenRuntime.GetGlobal("AudioContext");
+            if (audioContextGlobal is FenValue audioCtxValue && (audioCtxValue.IsFunction || audioCtxValue.IsObject))
+                winObj.Set("AudioContext", audioCtxValue);
+
+            // Navigation API on window
+            var navApiValue = _fenRuntime.GetGlobal("__navigation_api");
+            if (navApiValue.IsObject)
+            {
+                var navObj = navApiValue.AsObject();
+                winObj.Set("navigation", FenValue.FromObject(navObj));
+                _fenRuntime.SetGlobal("__navigation_api", FenValue.Undefined);
+                try { EngineLogCompat.Debug("[JS] window.navigation registered", LogCategory.JavaScript); } catch { }
+            }
+
+            // View Transitions API - document.startViewTransition
+            try
+            {
+                var docObj = docFenValue.AsObject();
+                var startVT = FenBrowser.FenEngine.WebAPIs.ViewTransitionAPI.CreateStartViewTransitionMethod(_fenRuntime.Context);
+                docObj.Set("startViewTransition", startVT);
+                try { EngineLogCompat.Debug("[JS] document.startViewTransition registered", LogCategory.JavaScript); } catch { }
+            }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JS] ViewTransition registration failed: {ex.Message}", LogCategory.JavaScript); }
+
+            // CSS Typed OM - CSSStyleValue, CSSUnitValue, CSSKeywordValue, CSSMath* constructors on window
+            try
+            {
+                var mathGroup = CssTypedOM.CreateCssMathConstructorGroup();
+                winObj.Set("CSSMathSum", mathGroup.Get("CSSMathSum"));
+                winObj.Set("CSSMathProduct", mathGroup.Get("CSSMathProduct"));
+                winObj.Set("CSSMathNegate", mathGroup.Get("CSSMathNegate"));
+                winObj.Set("CSSMathInvert", mathGroup.Get("CSSMathInvert"));
+                winObj.Set("CSSMathMin", mathGroup.Get("CSSMathMin"));
+                winObj.Set("CSSMathMax", mathGroup.Get("CSSMathMax"));
+                winObj.Set("CSSMathClamp", mathGroup.Get("CSSMathClamp"));
+                try { EngineLogCompat.Debug("[JS] CSS Typed OM registered", LogCategory.JavaScript); } catch { }
+            }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JS] CSS Typed OM registration failed: {ex.Message}", LogCategory.JavaScript); }
+
             // Bridge object listeners into DOM event flow for window/document and native object listeners.
             FenBrowser.FenEngine.DOM.EventTarget.ExternalListenerInvoker = InvokeObjectListenersForDomEvent;
             FenBrowser.FenEngine.DOM.EventTarget.ResolveDocumentTarget = ResolveDocumentEventTarget;
@@ -1736,6 +1777,45 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 _fenRuntime.SetGlobal("Notification", FenValue.FromObject(notificationCtor));
             }
+
+            // Web Audio API - AudioContext global constructor
+            try
+            {
+                var audioCtxCtor = FenBrowser.FenEngine.WebAPIs.WebAudioApi.CreateAudioContextConstructor(_fenRuntime.Context);
+                if (audioCtxCtor is FenFunction audioFn) _fenRuntime.SetGlobal("AudioContext", FenValue.FromFunction(audioFn));
+                else _fenRuntime.SetGlobal("AudioContext", FenValue.FromObject(audioCtxCtor));
+            }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JS] AudioContext registration failed: {ex.Message}", LogCategory.JavaScript); }
+
+            // Navigation API - window.navigation
+            try
+            {
+                var navigationObject = FenBrowser.FenEngine.WebAPIs.NavigationAPI.CreateNavigationObject(_fenRuntime.Context, (url, info) =>
+                {
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        return;
+                    }
+
+                    if (!Uri.TryCreate(url, UriKind.RelativeOrAbsolute, out var targetUri))
+                    {
+                        return;
+                    }
+
+                    if (!targetUri.IsAbsoluteUri && _ctx?.BaseUri != null)
+                    {
+                        targetUri = new Uri(_ctx.BaseUri, targetUri);
+                    }
+
+                    if (targetUri.IsAbsoluteUri)
+                    {
+                        TryNavigate(targetUri);
+                    }
+                });
+                navigationObject.Set("navigation", FenValue.FromObject(navigationObject)); // temp until window wiring
+                _fenRuntime.SetGlobal("__navigation_api", FenValue.FromObject(navigationObject));
+            }
+            catch (Exception ex) { EngineLogCompat.Warn($"[JS] NavigationAPI registration failed: {ex.Message}", LogCategory.JavaScript); }
 
             ApplyBrowserSurfaceToRuntime();
         }
