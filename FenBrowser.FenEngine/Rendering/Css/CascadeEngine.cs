@@ -14,18 +14,22 @@ using FenBrowser.FenEngine.DOM;
 
 namespace FenBrowser.FenEngine.Rendering
 {
-    public class CascadeEngine
-    {
-        private readonly StyleSet _styleSet;
-        private readonly bool _logCascade;
-        
-        // PERF: Multi-level indexing for fast rule lookup
-        private Dictionary<string, List<CssStyleRule>> _idIndex;     // #id rules
-        private Dictionary<string, List<CssStyleRule>> _classIndex;  // .class rules
-        private Dictionary<string, List<CssStyleRule>> _tagIndex;    // tag rules
-        private List<CssStyleRule> _universalRules;                  // * and attribute-only rules
-        private bool _indexed = false;
-        [ThreadStatic] private static HashSet<CssStyleRule> _processedRules;               // Track duplicates
+public class CascadeEngine
+{
+private readonly StyleSet _styleSet;
+private readonly bool _logCascade;
+
+// PERF: Multi-level indexing for fast rule lookup
+private Dictionary<string, List<CssStyleRule>> _idIndex; // #id rules
+private Dictionary<string, List<CssStyleRule>> _classIndex; // .class rules
+private Dictionary<string, List<CssStyleRule>> _tagIndex; // tag rules
+private List<CssStyleRule> _universalRules; // * and attribute-only rules
+private bool _indexed = false;
+[ThreadStatic] private static HashSet<CssStyleRule> _processedRules; // Track duplicates
+
+// PERF: Style cache to avoid recomputing styles for unchanged elements
+private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node, CssComputed>();
+private int _domGeneration = 0;
         
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
@@ -262,16 +266,26 @@ namespace FenBrowser.FenEngine.Rendering
             list.Add(rule);
         }
 
-        public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
-        {
-            EnsureIndex();
-            var results = new List<MatchedDeclaration>();
-            if (_processedRules == null) _processedRules = new HashSet<CssStyleRule>();
-            _processedRules.Clear();
+public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+{
+// PERF: Check style cache first to avoid recomputation
+if (element != null && _styleCache.TryGetValue(element, out var cachedStyle))
+{
+if (pseudoElement == null)
+{
+return cachedStyle.Map ?? new Dictionary<string, CssDeclaration>();
+}
+// For pseudo-elements, still need to recompute
+}
 
-            // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
-            CollectMatches(element, results, pseudoElement);
-            CollectInlineStyleMatches(element, results, pseudoElement);
+EnsureIndex();
+var results = new List<MatchedDeclaration>();
+if (_processedRules == null) _processedRules = new HashSet<CssStyleRule>();
+_processedRules.Clear();
+
+// 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
+CollectMatches(element, results, pseudoElement);
+CollectInlineStyleMatches(element, results, pseudoElement);
 
             /*
             if (_logCascade && results.Count > 0)
@@ -297,21 +311,29 @@ namespace FenBrowser.FenEngine.Rendering
                 LogCascadeWinners(element, pseudoElement, results);
             }
 
-            // 3. Apply the cascade declaration-by-declaration so shorthand expansion
-            // participates in origin/specificity/order resolution. Expanding after
-            // selecting winners per declared property is incorrect because a higher-
-            // priority shorthand (for example author `background`) must override a
-            // lower-priority longhand (for example UA `background-color`).
-            // CSS custom properties are case-sensitive and must not be merged by
-            // case-insensitive dictionary keys.
-            var computed = new Dictionary<string, CssDeclaration>(StringComparer.Ordinal);
-            foreach (var match in results)
-            {
-                deadline?.Check();
-                ApplyDeclaration(computed, match.Declaration);
-            }
+// 3. Apply the cascade declaration-by-declaration so shorthand expansion
+// participates in origin/specificity/order resolution. Expanding after
+// selecting winners per declared property is incorrect because a higher-
+// priority shorthand (for example author `background`) must override a
+// lower-priority longhand (for example UA `background-color`).
+// CSS custom properties are case-sensitive and must not be merged by
+// case-insensitive dictionary keys.
+var computed = new Dictionary<string, CssDeclaration>(StringComparer.Ordinal);
+foreach (var match in results)
+{
+deadline?.Check();
+ApplyDeclaration(computed, match.Declaration);
+}
 
-            return computed;
+// PERF: Store result in cache for future reuse
+if (element != null && string.IsNullOrEmpty(pseudoElement))
+{
+var cssComputed = new CssComputed();
+cssComputed.Map = computed;
+_styleCache[element] = cssComputed;
+}
+
+return computed;
         }
 
         private static void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
