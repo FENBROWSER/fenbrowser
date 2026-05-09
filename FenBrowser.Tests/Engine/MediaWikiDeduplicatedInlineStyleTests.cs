@@ -87,5 +87,40 @@ namespace FenBrowser.Tests.Engine
             Assert.True(computed.TryGetValue(laterList, out var ulStyle));
             Assert.Equal("none", ulStyle.ListStyleType);
         }
+
+        [Fact]
+        public async Task WikipediaHost_DoesNotApplyPostCascadeToolbarHack()
+        {
+            const string html = @"<!doctype html>
+<html>
+<head></head>
+<body>
+  <div id='p-associated-pages'>
+    <ul>
+      <li id='mw-item' class='mw-list-item'>Read</li>
+    </ul>
+  </div>
+  <div id='toolbar' class='vector-page-toolbar'>Toolbar</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://en.wikipedia.org/wiki/Example"));
+            var document = parser.Parse();
+            var root = document.DocumentElement ?? document.Children.OfType<Element>().First();
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://en.wikipedia.org/wiki/Example"), null);
+
+            var mwItem = root.Descendants().OfType<Element>()
+                .First(e => string.Equals(e.GetAttribute("id"), "mw-item", StringComparison.Ordinal));
+            var toolbar = root.Descendants().OfType<Element>()
+                .First(e => string.Equals(e.GetAttribute("id"), "toolbar", StringComparison.Ordinal));
+
+            Assert.True(computed.TryGetValue(mwItem, out var mwItemStyle));
+            Assert.NotEqual("inline-block", mwItemStyle.Display);
+            Assert.False(mwItemStyle.Map.TryGetValue("margin-right", out var marginRight) &&
+                         string.Equals(marginRight, "12px", StringComparison.OrdinalIgnoreCase));
+
+            Assert.True(computed.TryGetValue(toolbar, out var toolbarStyle));
+            Assert.NotEqual("none", toolbarStyle.Display);
+        }
     }
 }

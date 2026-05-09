@@ -736,7 +736,6 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
             var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(root, styleSet, log, deadline);
-            ApplyMediaWikiToolbarLayoutFallbacks(computed, baseUri);
             EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
                 return new CssLoadResult
@@ -766,95 +765,6 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return normalized;
-        }
-
-        private static void ApplyMediaWikiToolbarLayoutFallbacks(
-            Dictionary<Node, CssComputed> computed,
-            Uri baseUri)
-        {
-            if (computed == null || computed.Count == 0 || baseUri == null)
-            {
-                return;
-            }
-
-            string host = baseUri.Host ?? string.Empty;
-            if (!(host.EndsWith(".wikipedia.org", StringComparison.OrdinalIgnoreCase) ||
-                  host.EndsWith(".wikimedia.org", StringComparison.OrdinalIgnoreCase)))
-            {
-                return;
-            }
-
-            foreach (var kv in computed)
-            {
-                if (kv.Key is not Element element)
-                {
-                    continue;
-                }
-
-                var style = kv.Value;
-                if (style == null)
-                {
-                    continue;
-                }
-
-                bool inNamespaceTabs = IsDescendantOfId(element, "p-associated-pages");
-                bool inViewsTabs = IsDescendantOfId(element, "p-views");
-                if (!inNamespaceTabs && !inViewsTabs)
-                {
-                    if (string.Equals(element.TagName, "div", StringComparison.OrdinalIgnoreCase) &&
-                        HasClassToken(element.GetAttribute("class"), "vector-page-toolbar"))
-                    {
-                        style.Display = "none";
-                        style.Map["display"] = "none";
-                    }
-                    continue;
-                }
-
-                if (string.Equals(element.TagName, "li", StringComparison.OrdinalIgnoreCase) &&
-                    HasClassToken(element.GetAttribute("class"), "mw-list-item"))
-                {
-                    style.Float = "none";
-                    style.Map["float"] = "none";
-                    style.Display = "inline-block";
-                    style.Map["display"] = "inline-block";
-                    if (!style.Map.ContainsKey("margin-right"))
-                    {
-                        style.Map["margin-right"] = "12px";
-                    }
-                }
-            }
-        }
-
-        private static bool IsDescendantOfId(Element node, string id)
-        {
-            for (Element current = node; current != null; current = current.ParentElement)
-            {
-                if (string.Equals(current.Id, id, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool HasClassToken(string classList, string token)
-        {
-            if (string.IsNullOrWhiteSpace(classList) || string.IsNullOrWhiteSpace(token))
-            {
-                return false;
-            }
-
-            var parts = classList.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                if (string.Equals(part, token, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         /// <summary>
