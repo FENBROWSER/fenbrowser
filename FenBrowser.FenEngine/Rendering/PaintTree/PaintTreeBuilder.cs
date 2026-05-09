@@ -8,16 +8,24 @@ using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
-    /// <summary>
-    /// Constructs a PaintTree from the DOM, Style, and Layout data.
-    /// Handles stacking contexts, z-index sorting, and visibility culling.
-    /// </summary>
-    public sealed class PaintTreeBuilder
-    {
-        private readonly IReadOnlyDictionary<Node, BoxModel> _boxes;
-        private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
-        private readonly float _viewportWidth;
-        private readonly float _viewportHeight;
+/// <summary>
+/// Constructs a PaintTree from the DOM, Style, and Layout data.
+/// Handles stacking contexts, z-index sorting, and visibility culling.
+/// </summary>
+public sealed class PaintTreeBuilder
+{
+private static readonly ObjectPool<PaintNode> s_paintNodePool = new ObjectPool<PaintNode>(
+() => new PaintNode(),
+node => node.Reset());
+
+private static readonly ObjectPool<StackingContext> s_stackingContextPool = new ObjectPool<StackingContext>(
+() => new StackingContext(),
+ctx => ctx.Reset());
+
+private readonly IReadOnlyDictionary<Node, BoxModel> _boxes;
+private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
+private readonly float _viewportWidth;
+private readonly float _viewportHeight;
 
         private PaintTreeBuilder(
             IReadOnlyDictionary<Node, BoxModel> boxes,
@@ -30,6 +38,34 @@ namespace FenBrowser.FenEngine.Rendering
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
         }
+
+// PERF: Object pooling helpers
+private static PaintNode GetPaintNode()
+{
+    return s_paintNodePool.Get();
+}
+
+private static StackingContext GetStackingContext(Node source)
+{
+    var ctx = s_stackingContextPool.Get();
+    ctx.SourceNode = source;
+    return ctx;
+}
+
+public static void ReturnPaintNode(PaintNode node)
+{
+    if (node != null)
+    {
+        s_paintNodePool.Return(node);
+    }
+}
+
+public static void ClearPools()
+{
+    s_paintNodePool.Clear();
+    s_stackingContextPool.Clear();
+}
+
 
         /// <summary>
         /// Builds a paint tree for the given root element and layout/style state.
@@ -46,7 +82,7 @@ namespace FenBrowser.FenEngine.Rendering
             var builder = new PaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight);
             
             // The root effectively creates the initial stacking context
-            var rootContext = new StackingContext(root);
+            var rootContext = GetStackingContext(root);
             builder.BuildRecursive(root, rootContext, null, 0);
             
             // Sort and finalize the root context into a PaintNode tree
@@ -110,25 +146,23 @@ namespace FenBrowser.FenEngine.Rendering
             _styles.TryGetValue(node, out var style);
             if (LayoutHelper.ShouldHide(node, style)) return;
 
-            // Create PaintNode
-            var paintNode = new PaintNode
-            {
-                DomNode = node,
-                Box = box,
-                Style = style,
-                IsText = node is Text,
-                TextContent = (node as Text)?.Data,
-                ZIndex = style?.ZIndex ?? 0,
-                Opacity = (float)(style?.Opacity ?? 1.0),
-                IsVisible = true, // We already checked ShouldHide
-                BackgroundColor = style?.BackgroundColor,
-                BorderColor = style?.BorderBrushColor,
-                BorderRadius = ParseBorderRadius(style),
-                Transform = ParseTransform(style?.Transform),
-                BoxShadows = !string.IsNullOrEmpty(style?.BoxShadow) ? BoxShadowParsed.Parse(style.BoxShadow) : null,
-                CreatesStackingContext = DetermineCreatesStackingContext(style),
-                ClipRect = (style?.Overflow?.ToLowerInvariant() == "hidden") ? box.PaddingBox : (SKRect?)null
-            };
+// Create PaintNode
+var paintNode = GetPaintNode();
+paintNode.DomNode = node;
+paintNode.Box = box;
+paintNode.Style = style;
+paintNode.IsText = node is Text;
+paintNode.TextContent = (node as Text)?.Data;
+paintNode.ZIndex = style?.ZIndex ?? 0;
+paintNode.Opacity = (float)(style?.Opacity ?? 1.0);
+paintNode.IsVisible = true; // We already checked ShouldHide
+paintNode.BackgroundColor = style?.BackgroundColor;
+paintNode.BorderColor = style?.BorderBrushColor;
+paintNode.BorderRadius = ParseBorderRadius(style);
+paintNode.Transform = ParseTransform(style?.Transform);
+paintNode.BoxShadows = !string.IsNullOrEmpty(style?.BoxShadow) ? BoxShadowParsed.Parse(style.BoxShadow) : null;
+paintNode.CreatesStackingContext = DetermineCreatesStackingContext(style);
+paintNode.ClipRect = (style?.Overflow?.ToLowerInvariant() == "hidden") ? box.PaddingBox : (SKRect?)null;
 
             // Link to parent (Build Tree) or Stacking Context (Layer)
             // Logic:
@@ -141,7 +175,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (paintNode.CreatesStackingContext)
             {
-                newContext = new StackingContext(node) { RootNode = paintNode };
+                newContext = GetStackingContext(node); newContext.RootNode = paintNode;
                 currentContext.AddChildContext(newContext);
                 isLayer = true;
             }
@@ -240,10 +274,27 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Represents a Stacking Context for gathering and sorting PaintNodes.
         /// </summary>
-        private class StackingContext
-        {
-            public Node SourceNode { get; }
-            public PaintNode RootNode { get; set; }
+private class StackingContext
+{
+public StackingContext()
+{
+    // Parameterless constructor for object pooling
+}
+
+internal void Reset()
+{
+    SourceNode = null;
+    RootNode = null;
+    NegativeZIndexChildren.Clear();
+    BlockChildren.Clear();
+    FloatChildren.Clear();
+    InlineChildren.Clear();
+    AutoZIndexChildren.Clear();
+    PositiveZIndexChildren.Clear();
+}
+
+public Node SourceNode { get; set; }
+public PaintNode RootNode { get; set; }
             
             // Categories based on Paint Order (simplification of CSS spec)
             public List<StackingContext> NegativeZIndexChildren { get; } = new List<StackingContext>();
