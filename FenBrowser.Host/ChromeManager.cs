@@ -63,6 +63,8 @@ namespace FenBrowser.Host
         private CoalescedPointerMoveEvent _pendingPointerMove;
         private bool _hasPendingPointerMove;
         private bool _hostPresentedScreenshotCaptured;
+        private string _pendingHostPresentedScreenshotReason;
+        private long _pendingHostPresentedCaptureAfterFrameSequence;
 
         private ChromeManager() { }
 
@@ -431,6 +433,11 @@ namespace FenBrowser.Host
             _compositorThread?.RequestFrame();
         }
 
+        internal void RequestCompositorFrame()
+        {
+            _compositorThread?.RequestFrame();
+        }
+
         private void OnNavigate(string url)
         {
             if (string.IsNullOrWhiteSpace(url)) return;
@@ -503,8 +510,9 @@ namespace FenBrowser.Host
 
                 if (!tab.IsLoading && !_hostPresentedScreenshotCaptured)
                 {
-                    CaptureHostPresentedScreenshot("navigation-complete");
-                    _hostPresentedScreenshotCaptured = true;
+                    _pendingHostPresentedScreenshotReason = "navigation-complete";
+                    _pendingHostPresentedCaptureAfterFrameSequence = _compositorThread?.LastCommittedFrameSequence ?? 0;
+                    _compositorThread?.RequestFrame();
                 }
             });
         }
@@ -623,18 +631,45 @@ namespace FenBrowser.Host
             // when intermediate frame sources contain transparency.
             canvas.Clear(ThemeManager.Current.Background);
 
-            if (_compositorThread == null || !_compositorThread.TryDrawLatest(canvas, logicalSize))
+            // Present directly from the authoritative widget tree. This avoids
+            // stale off-thread snapshots causing blank host presentation while
+            // engine frames continue to commit.
+            Widget.WithTreeWriteLock(() =>
             {
-                Widget.WithTreeWriteLock(() =>
+                lock (_compositor)
                 {
-                    lock (_compositor)
-                    {
-                        _compositor.Composite(canvas, logicalSize);
-                    }
-                });
-            }
+                    _compositor.Composite(canvas, logicalSize);
+                }
+            });
 
             DrawTooltip(canvas);
+            TryCaptureHostPresentedScreenshotAfterFramePresent();
+        }
+
+        private void TryCaptureHostPresentedScreenshotAfterFramePresent()
+        {
+            if (_hostPresentedScreenshotCaptured || string.IsNullOrWhiteSpace(_pendingHostPresentedScreenshotReason))
+            {
+                return;
+            }
+
+            var compositorThread = _compositorThread;
+            if (compositorThread == null)
+            {
+                return;
+            }
+
+            var currentCommittedSequence = compositorThread.LastCommittedFrameSequence;
+            if (currentCommittedSequence <= _pendingHostPresentedCaptureAfterFrameSequence)
+            {
+                compositorThread.RequestFrame();
+                return;
+            }
+
+            CaptureHostPresentedScreenshot(_pendingHostPresentedScreenshotReason);
+            _hostPresentedScreenshotCaptured = true;
+            _pendingHostPresentedScreenshotReason = null;
+            _pendingHostPresentedCaptureAfterFrameSequence = 0;
         }
         
         // --- Input Propagation ---

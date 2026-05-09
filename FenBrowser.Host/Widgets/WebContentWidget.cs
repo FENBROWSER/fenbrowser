@@ -66,6 +66,10 @@ public class WebContentWidget : Widget
 
     private void OnBrowserNeedsRepaint()
     {
+        // Wake Host compositor directly from engine frame commits so presentation
+        // does not depend solely on UI-thread invalidation timing.
+        ChromeManager.Instance.RequestCompositorFrame();
+
         // Force dirty propagation for the full content surface to avoid
         // stale compositor snapshots when only non-content widgets are dirty.
         if (Bounds.Width > 1 && Bounds.Height > 1)

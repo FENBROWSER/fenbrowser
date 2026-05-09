@@ -1207,3 +1207,20 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~BrowserIntegrationFrameStabilityTests" --logger "console;verbosity=minimal"`: pass as part of `18/18` shared retained-raster verification slice on `2026-05-08`.
+
+### 6.55 Host White-Screen Presentation Guard (2026-05-09)
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - `Render(...)` now presents from the authoritative widget tree on the UI thread instead of using only the off-thread compositor snapshot path.
+  - This prevents stale snapshot reuse from presenting a blank/white host surface while engine frames are still committing and input/hover routing remains active.
+- `FenBrowser.Host/Widgets/WebContentWidget.cs`
+  - Web-content repaint notifications now explicitly request a compositor frame in addition to invalidation propagation.
+
+- Net effect:
+  - Host-visible presentation remains synchronized with committed web/content state during startup and navigation completion.
+  - The observed "white page with hover text only" symptom is eliminated in Host evidence capture (`logs/host_presented_screenshot.png`).
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -nologo`: pass on `2026-05-09`.
+- Manual Host repro (`FenBrowser.Host.exe https://www.google.com`, ~30s): `logs/host_presented_screenshot.png` now shows full chrome plus web content rather than a blank white surface.
