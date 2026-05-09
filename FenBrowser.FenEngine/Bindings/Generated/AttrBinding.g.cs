@@ -185,7 +185,7 @@ namespace FenBrowser.FenEngine.Bindings.Generated
             if (UnwrapImpl != null) return UnwrapImpl(obj);
             var slot = obj.Get("[[NativeRef]]");
             // NativeRef slot stores target as IObject with Target property (dynamic dispatch)
-            if (slot.IsObject) { dynamic wrapper = slot.AsObject(); try { return wrapper.Target; } catch { } }
+            if (slot.IsObject) { dynamic wrapper = slot.AsObject(); try { return wrapper.Target; } catch (Exception) { return null; } }
             return null;
         }
 

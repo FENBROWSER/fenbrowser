@@ -23,8 +23,10 @@
     <WebIdlGenerateBindings Condition="'$(WebIdlGenerateBindings)' == ''">true</WebIdlGenerateBindings>
     <WebIdlGenDll Condition="'$(Configuration)' != ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\$(Configuration)\net8.0\webidlgen.dll</WebIdlGenDll>
     <WebIdlGenDll Condition="'$(Configuration)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\Debug\net8.0\webidlgen.dll</WebIdlGenDll>
-    <WebIdlOutDir Condition="'$(WebIdlOutDir)' == ''">$(MSBuildThisFileDirectory)Bindings\Generated\</WebIdlOutDir>
+    <WebIdlOutDir Condition="'$(WebIdlOutDir)' == ''">$(MSBuildProjectDirectory)\Bindings\Generated\</WebIdlOutDir>
     <WebIdlInDir Condition="'$(WebIdlInDir)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.Core\WebIDL\Idl\</WebIdlInDir>
+    <WebIdlOutDirArg>$([System.String]::Copy('$(WebIdlOutDir)').TrimEnd('\'))</WebIdlOutDirArg>
+    <WebIdlInDirArg>$([System.String]::Copy('$(WebIdlInDir)').TrimEnd('\'))</WebIdlInDirArg>
   </PropertyGroup>
   
   <!-- Target: Generate WebIDL Bindings -->
@@ -42,7 +44,7 @@
     <MakeDir Directories="$(WebIdlOutDir)" />
     
     <Exec 
-      Command="dotnet &quot;$(WebIdlGenDll)&quot; --idl &quot;$(WebIdlInDir)&quot; --out &quot;$(WebIdlOutDir)&quot;"
+      Command="dotnet &quot;$(WebIdlGenDll)&quot; --idl &quot;$(WebIdlInDirArg)&quot; --out &quot;$(WebIdlOutDirArg)&quot;"
       WorkingDirectory="$(MSBuildProjectDirectory)"
       ConsoleToMSBuild="true" />
     
@@ -54,11 +56,6 @@
     <RemoveDir Directories="$(WebIdlOutDir)" Condition="Exists('$(WebIdlOutDir)')" />
     <Message Text="[webidlgen] WebIDL cache cleared." Importance="high" />
   </Target>
-  
-  <!-- Ensure generated files are compiled -->
-  <ItemGroup>
-    <Compile Include="$(WebIdlOutDir)**\*.g.cs" />
-  </ItemGroup>
   
   <!-- Clean generated files on clean -->
   <Target Name="CleanWebIdlGenerated" AfterTargets="Clean">
