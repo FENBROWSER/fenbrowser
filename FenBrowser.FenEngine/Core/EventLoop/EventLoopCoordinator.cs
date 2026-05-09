@@ -210,21 +210,21 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         #region Event Loop Execution
 
-        public bool ProcessNextTask()
-        {
-            return ProcessNextTaskDetailed().Processed;
-        }
+public bool ProcessNextTask()
+{
+return ProcessNextTaskDetailed().Processed;
+}
 
-        public TaskProcessingResult ProcessNextTaskDetailed(bool prioritizeInteractive = false)
-        {
-            PromoteDueDelayedTasks();
+public TaskProcessingResult ProcessNextTaskDetailed(bool prioritizeInteractive = false, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+{
+PromoteDueDelayedTasks();
 
-            var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
+var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
             if (task == null)
             {
                 if (_microtaskQueue.HasPendingMicrotasks)
                 {
-                    PerformMicrotaskCheckpoint();
+                    PerformMicrotaskCheckpoint(deadline);
                     ProcessRenderingUpdate();
                     EnsureIdlePhase();
                     return new TaskProcessingResult(true, TaskSource.Other, TaskPriorityGroup.Background);
@@ -234,25 +234,25 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 return TaskProcessingResult.None;
             }
 
-            EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
-            try
-            {
-                EngineLogCompat.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
-                task.Callback.Invoke();
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
-            }
-            finally
-            {
-                EngineContext.Current.EndPhase();
-            }
+EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
+try
+{
+EngineLogCompat.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
+task.Callback.Invoke();
+}
+catch (Exception ex)
+{
+EngineLogCompat.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
+}
+finally
+{
+EngineContext.Current.EndPhase();
+}
 
-            PerformMicrotaskCheckpoint();
-            ProcessRenderingUpdate();
-            EnsureIdlePhase();
-            return new TaskProcessingResult(true, task.Source, priorityGroup);
+PerformMicrotaskCheckpoint(deadline);
+ProcessRenderingUpdate();
+EnsureIdlePhase();
+return new TaskProcessingResult(true, task.Source, priorityGroup);
         }
 
         public void PerformMicrotaskCheckpoint()
@@ -337,7 +337,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     EngineContext.Current.EndPhase();
                 }
 
-                PerformMicrotaskCheckpoint();
+                PerformMicrotaskCheckpoint(deadline);
             }
 
             EnsureIdlePhase();
@@ -383,7 +383,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     EngineContext.Current.EndPhase();
                 }
 
-                PerformMicrotaskCheckpoint();
+                PerformMicrotaskCheckpoint(deadline);
             }
         }
 
@@ -419,7 +419,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     continue;
                 }
 
-                PerformMicrotaskCheckpoint();
+                PerformMicrotaskCheckpoint(deadline);
             }
         }
 
@@ -545,3 +545,4 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         }
     }
 }
+

@@ -62,7 +62,7 @@ namespace FenBrowser.FenEngine.Core
             {
                 // 1. Pump Events (User Input, Timers, Network, Microtasks)
                 // This delegates to Coordinator but we limit how much we process to avoid starving render
-                _coordinator.ProcessNextTask(); 
+                _coordinator.ProcessNextTaskDetailed(false, deadline);
                 
                 // Ensure microtasks are drained before rendering
                 // _coordinator.PerformMicrotaskCheckpoint(); // Assumed handled by ProcessNextTask
