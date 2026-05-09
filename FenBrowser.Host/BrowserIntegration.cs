@@ -1192,11 +1192,14 @@ public class BrowserIntegration
             var viewport = new SKRect(0, 0, viewportSize.Width, viewportSize.Height);
             SKImage reusableSeedImage = null;
             bool canReuseBaseFrame;
+            // Guard against carrying an early unstyled/blank frame forward via incremental damage.
+            // Reuse is re-enabled automatically once we have produced a styled frame.
+            var allowBaseFrameReuse = _hasFirstStyledRender && _styles != null && _styles.Count > 0;
             var nowUtc = DateTime.UtcNow;
 
             lock (_frameLock)
             {
-                canReuseBaseFrame = BaseFrameReusePolicy.CanReuseBaseFrame(
+                canReuseBaseFrame = allowBaseFrameReuse && BaseFrameReusePolicy.CanReuseBaseFrame(
                     _currentFrameSeedImage != null,
                     _lastCommittedFrameViewport,
                     viewportSize,
