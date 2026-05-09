@@ -4,7 +4,6 @@
 // FallbackPolicy: spec-defined
 using System;
 using System.Runtime.CompilerServices;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
@@ -16,7 +15,7 @@ using SkiaSharp;
 using System.Text;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Css;
-using FenBrowser.FenEngine.Layout;  // For MarginCollapseComputer, AbsolutePositionSolver
+using FenBrowser.FenEngine.Layout; // For MarginCollapseComputer, AbsolutePositionSolver
 using System.IO;
 
 namespace FenBrowser.FenEngine.Layout
@@ -26,12 +25,12 @@ namespace FenBrowser.FenEngine.Layout
     /// REVISED: Added User Agent (UA) Default Styles to fix missing margins/padding.
     ///          Improved Heuristics for "Example Domain" centering.
     /// </summary>
-    public partial class MinimalLayoutComputer : ILayoutComputer
-    {
-        private const float DefaultFontSize = 16f;
-        private readonly ConcurrentDictionary<Node, BoxModel> _boxes = new ConcurrentDictionary<Node, BoxModel>();
-        private readonly Dictionary<Node, SKSize> _desiredSizes = new Dictionary<Node, SKSize>();
-        private readonly Dictionary<Node, Node> _parents = new Dictionary<Node, Node>();
+public partial class MinimalLayoutComputer : ILayoutComputer
+{
+private const float DefaultFontSize = 16f;
+private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
+private readonly Dictionary<Node, SKSize> _desiredSizes = new Dictionary<Node, SKSize>();
+private readonly Dictionary<Node, Node> _parents = new Dictionary<Node, Node>();
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
         private readonly float _viewportWidth;
         private readonly float _viewportHeight;
