@@ -741,7 +741,7 @@ namespace FenBrowser.Tests.Engine
         // ── Finding #28: simulated WebAudio surface removed ──
 
         [Fact]
-        public void JavaScriptEngine_DoesNotExpose_WebAudioSimulationSurfaces()
+        public void JavaScriptEngine_Exposes_WebAudioCoreSurfaces()
         {
             var engine = new JavaScriptEngine(CreateHost());
             engine.Reset(new JsContext { BaseUri = new Uri("https://example.com/page") });
@@ -754,13 +754,13 @@ namespace FenBrowser.Tests.Engine
 
             // `Audio` is a spec HTML constructor (HTMLAudioElement), not a WebAudio context API.
             Assert.False(runtime.GetGlobal("Audio").IsUndefined);
-            Assert.True(runtime.GetGlobal("AudioContext").IsUndefined);
+            Assert.True(runtime.GetGlobal("AudioContext").IsFunction);
             Assert.True(runtime.GetGlobal("webkitAudioContext").IsUndefined);
 
             var window = runtime.GetGlobal("window").AsObject();
             Assert.NotNull(window);
             Assert.False(window.Get("Audio").IsUndefined);
-            Assert.True(window.Get("AudioContext").IsUndefined);
+            Assert.True(window.Get("AudioContext").IsFunction);
             Assert.True(window.Get("webkitAudioContext").IsUndefined);
         }
 
