@@ -1,3 +1,5 @@
+    private static readonly ConcurrentDictionary<string, (LayoutMetrics Metrics, List<ComputedTextLine> Lines)> _textLayoutCache = new();
+using System.Collections.Concurrent;
 using System;
 using System.Collections.Generic;
 using SkiaSharp;
@@ -15,7 +17,20 @@ namespace FenBrowser.FenEngine.Layout
     {
         private const float DefaultFontSize = 16f;
 
-        public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
+            // Text layout cache for repeated measurements
+    private static readonly ConcurrentDictionary<TextLayoutCacheKey, (LayoutMetrics Metrics, List<ComputedTextLine> Lines)> s_textLayoutCache = new();
+    private const int MaxTextLayoutCacheSize = 5000;
+
+    private readonly record struct TextLayoutCacheKey(
+        string Text,
+        string FontFamily,
+        float FontSize,
+        int FontWeight,
+        SKFontStyleSlant FontStyle,
+        float AvailableWidth,
+        float? LineHeight,
+        string WhiteSpaceMode
+    );public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
             Node node, 
             CssComputed style, 
             SKSize availableSize, 
@@ -45,7 +60,12 @@ namespace FenBrowser.FenEngine.Layout
             float lineHeight = normalizedMetrics.LineHeight;
             float baselineOffset = normalizedMetrics.GetBaselineOffset();
 
-            // 2. Resolve White-Space Mode
+            // Check cache
+        string cacheKey = $"{textNode?.Data}_{style?.FontFamilyName}_{style?.FontSize}_{availableSize.Width}";
+        if (_textLayoutCache.TryGetValue(cacheKey, out var cached))
+        {
+            return cached;
+        }        // 2. Resolve White-Space Mode
             string ws = style?.WhiteSpace?.ToLowerInvariant() ?? "normal";
             bool collapseWhitespace = (ws == "normal" || ws == "nowrap" || ws == "pre-line");
             bool preserveNewlines = (ws == "pre" || ws == "pre-wrap" || ws == "pre-line");
@@ -165,116 +185,16 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            return (new LayoutMetrics 
-            { 
-                ContentHeight = currentY, 
-                MaxChildWidth = finalWidth, 
-                Baseline = baselineOffset 
-            }, lines);
-        }
-
-        private struct TextToken
+                    // Cache result
+        string cacheKey = $"{textNode?.Data}_{style?.FontFamilyName}_{style?.FontSize}_{availableSize.Width}";
+        var result = (metrics: new LayoutMetrics
         {
-            public string Text;
-            public bool IsWhitespace;
-            public bool IsNewline;
-        }
-
-        private static int _debugLogCount = 0;
-        private static List<TextToken> Tokenize(string text, bool collapseWhitespace, bool preserveNewlines)
+            ContentHeight = currentY,
+            MaxChildWidth = finalWidth,
+            Baseline = baselineOffset
+        }, lines: lines);
+        if (lines != null && lines.Count > 0)
         {
-             // DEBUG trace - UNCONDITIONAL
-             if (_debugLogCount < 20) 
-             {
-                 _debugLogCount++;
-                 System.Console.WriteLine($"[TOKENIZE-ALL] '{text.Replace("\n","\\n")}' Len={text.Length} Collapse={collapseWhitespace}");
-             }
-             
-             var tokens = new List<TextToken>();
-            if (string.IsNullOrEmpty(text)) return tokens;
-
-            int i = 0;
-            while (i < text.Length)
-            {
-                char c = text[i];
-                
-                if (c == '\r' || c == '\n')
-                {
-                    if (preserveNewlines)
-                    {
-                        tokens.Add(new TextToken { Text = "\n", IsNewline = true });
-                    }
-                    else if (collapseWhitespace)
-                    {
-                        // Treat as space (if previous wasn't space, or just loop to next char to merge)
-                        // Look ahead to merge with spaces?
-                        // Simplified: Treat as space.
-                        // But we want to merge runs of whitespace+newlines into single space.
-                    }
-                    
-                     // Consume sequence of newlines/whitespace if collapsing
-                    if (collapseWhitespace)
-                    {
-                         // Check previous token. If space, ignore this. Else add space.
-                         // FIX: Do not add space if this is the start of the text (strip leading whitespace)
-                         if (tokens.Count > 0)
-                         {
-                             var last = tokens[tokens.Count - 1];
-                             if (!last.IsWhitespace) 
-                             {
-                                 tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
-                             }
-                         }
-                    }
-                    i++;
-                }
-                else if (char.IsWhiteSpace(c))
-                {
-                    // Tab or Space
-                    // Tab or Space
-                    if (collapseWhitespace)
-                    {
-                        // FIX: Do not add space if this is the start of the text (strip leading whitespace)
-                        if (tokens.Count > 0)
-                        {
-                            var last = tokens[tokens.Count - 1];
-                            if (!last.IsWhitespace)
-                                tokens.Add(new TextToken { Text = " ", IsWhitespace = true });
-                        }
-                        i++;
-                    }
-                    else
-                    {
-                        // Preserve exact whitespace char
-                        tokens.Add(new TextToken { Text = c.ToString(), IsWhitespace = true });
-                        i++;
-                    }
-                }
-                else
-                {
-                    // Word boundary
-                    int start = i;
-                    while (i < text.Length && !char.IsWhiteSpace(text[i]) && text[i] != '\r' && text[i] != '\n')
-                    {
-                        i++;
-                    }
-                    string word = text.Substring(start, i - start);
-                    tokens.Add(new TextToken { Text = word, IsWhitespace = false });
-                }
-            }
-
-            
-            // FIX: Strip trailing whitespace (HTML spec: sequence of white space at end of block is removed)
-            if (collapseWhitespace)
-            {
-                while (tokens.Count > 0 && tokens[tokens.Count - 1].IsWhitespace)
-                {
-                    tokens.RemoveAt(tokens.Count - 1);
-                }
-            }
-
-            return tokens;
+            _textLayoutCache.TryAdd(cacheKey, result);
         }
-    }
-}
-
+        return result;
