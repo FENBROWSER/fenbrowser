@@ -50,16 +50,16 @@ public class Compositor
     {
         // 1. Layout Pass (Top-Down, only if dirty)
         // Layout always works in logical units
-        EnsureLayout(logicalSize);
+        var layoutExecuted = EnsureLayout(logicalSize);
         
         // 2. Render Pass
-        Render(canvas, logicalSize);
+        Render(canvas, logicalSize, layoutExecuted);
         
         // 3. Composite any additional layers
         CompositeLayers(canvas, logicalSize);
     }
     
-    private void EnsureLayout(SKSize logicalSize)
+    private bool EnsureLayout(SKSize logicalSize)
     {
         if (_root.IsLayoutDirty)
         {
@@ -70,15 +70,18 @@ public class Compositor
             _root.Arrange(new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
             
             EngineLogBridge.Debug($"[Compositor] Layout executed for size {logicalSize.Width}x{logicalSize.Height}. Root desired: {_root.DesiredSize.Width}x{_root.DesiredSize.Height}", LogCategory.General);
+            return true;
         }
+
+        return false;
     }
     
-    private void Render(SKCanvas canvas, SKSize logicalSize)
+    private void Render(SKCanvas canvas, SKSize logicalSize, bool layoutExecuted)
     {
         var dirtyRect = _root.DirtyRect;
 
         EnsureFrameBuffer(logicalSize);
-        var needsRepaint = dirtyRect.HasValue || _frameSnapshot == null;
+        var needsRepaint = layoutExecuted || dirtyRect.HasValue || _frameSnapshot == null;
         var isBootstrapFrame = _frameSnapshot == null;
 
         if (needsRepaint && _frameSurface != null)
@@ -87,7 +90,7 @@ public class Compositor
             offscreen.Save();
             offscreen.Scale(DpiScale, DpiScale);
 
-            if (_frameSnapshot != null && dirtyRect.HasValue)
+            if (!layoutExecuted && _frameSnapshot != null && dirtyRect.HasValue)
             {
                 // Seed from last composed frame, then repaint only dirty region.
                 offscreen.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
@@ -97,7 +100,7 @@ public class Compositor
             else
             {
                 offscreen.Clear(ThemeManager.Current.Background);
-                if (!isBootstrapFrame && dirtyRect.HasValue)
+                if (!layoutExecuted && !isBootstrapFrame && dirtyRect.HasValue)
                 {
                     offscreen.ClipRect(dirtyRect.Value);
                     _lastDirtyRect = dirtyRect;
