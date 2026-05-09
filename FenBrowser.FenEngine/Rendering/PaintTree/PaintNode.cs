@@ -158,15 +158,52 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
         
-        /// <summary>
-        /// Resolves z-index to an integer value.
-        /// </summary>
-        private static int ResolveZIndex(CssComputed style)
-        {
-            if (style?.ZIndex.HasValue == true)
-                return style.ZIndex.Value;
-            return 0;
-        }
-    }
+/// <summary>
+/// Resolves z-index to an integer value.
+/// </summary>
+private static int ResolveZIndex(CssComputed style)
+{
+if (style?.ZIndex.HasValue == true)
+return style.ZIndex.Value;
+return 0;
+}
+
+/// <summary>
+/// Resets the paint node for reuse in object pooling.
+/// </summary>
+internal void Reset()
+{
+DomNode = null;
+Box = null;
+Style = null;
+ZIndex = 0;
+Opacity = 1.0f;
+IsVisible = true;
+IsText = false;
+TextContent = null;
+BackgroundColor = null;
+BorderColor = null;
+BorderRadius = null;
+Transform = null;
+BoxShadows = null;
+CreatesStackingContext = false;
+ClipRect = null;
+VisualBounds = SKRect.Empty;
+
+if (Children != null)
+{
+// Return children to pool
+foreach (var child in Children)
+{
+PaintTreeBuilder.ReturnPaintNode(child);
+}
+Children.Clear();
+}
+else
+{
+Children = new List<PaintNode>();
+}
+}
+}
 }
 
