@@ -116,14 +116,8 @@ namespace FenBrowser.Host
                 return;
             }
 
-            // Respect explicit operator mode selection.
-            var explicitMode = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
-            if (!string.IsNullOrWhiteSpace(explicitMode))
-            {
-                return;
-            }
-
             // Enabled by default for usability on hosts where AppContainer child launch is unavailable.
+            // Operators can force strict brokered-only behavior with FEN_PROCESS_ISOLATION_AUTO_FALLBACK=0.
             var autoFallback = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION_AUTO_FALLBACK");
             if (string.Equals(autoFallback, "0", StringComparison.OrdinalIgnoreCase))
             {
