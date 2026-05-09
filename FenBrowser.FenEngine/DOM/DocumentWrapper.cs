@@ -515,13 +515,20 @@ namespace FenBrowser.FenEngine.DOM
                 throw new FenSecurityError("DOM read permission required");
 
             if (args.Length == 0) return FenValue.Null;
+            if (_root is not ContainerNode container) return FenValue.Null;
 
             var selector = args[0].ToString();
-
-            var element = FindFirstSelector(_root, selector);
-            return element != null
-                ? DomWrapperFactory.Wrap(element, _context)
-                : FenValue.Null;
+            try
+            {
+                var element = container.QuerySelector(selector);
+                return element != null
+                    ? DomWrapperFactory.Wrap(element, _context)
+                    : FenValue.Null;
+            }
+            catch (DomException)
+            {
+                return FenValue.Null;
+            }
         }
 
         public void SetReadyState(string state)
@@ -992,46 +999,57 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
             }
 
-            var selector = args[0].ToString();
-            var results = new List<Element>();
-            RecursiveQuerySelector(_root, selector, results);
+            if (_root is not ContainerNode container)
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
 
-            return FenValue.FromObject(new NodeListWrapper(results.Cast<Node>(), _context));
+            var selector = args[0].ToString();
+            try
+            {
+                var results = container.QuerySelectorAll(selector);
+                return FenValue.FromObject(new NodeListWrapper(results, _context));
+            }
+            catch (DomException)
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
         }
 
         private FenValue GetElementsByClassName(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var classNames = args[0].ToString().Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-            return FenValue.FromObject(new HTMLCollectionWrapper(() =>
-            {
-                var results = new List<Element>();
-                RecursiveClassName(_root, classNames, results);
-                return results;
-            }, _context));
+            if (_root is not ContainerNode container) return FenValue.Null;
+            var classNames = args[0].ToString();
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => container.GetElementsByClassName(classNames), _context));
         }
 
         private FenValue GetElementsByTagName(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
+            if (_root is not ContainerNode container) return FenValue.Null;
             var tagName = args[0].ToString();
-            return FenValue.FromObject(new HTMLCollectionWrapper(() =>
-            {
-                var results = new List<Element>();
-                RecursiveTagName(_root, tagName, results);
-                return results;
-            }, _context));
+            return FenValue.FromObject(new HTMLCollectionWrapper(() => container.GetElementsByTagName(tagName), _context));
         }
 
         private FenValue GetElementsByTagNameNS(FenValue[] args, FenValue thisVal)
         {
+            if (_root is not ContainerNode container) return FenValue.Null;
             var namespaceUri = args.Length > 0 ? args[0].ToString() : "*";
             var localName = args.Length > 1 ? args[1].ToString() : "*";
             return FenValue.FromObject(new HTMLCollectionWrapper(() =>
             {
-                var results = new List<Element>();
-                RecursiveTagNameNs(_root, namespaceUri, localName, results);
-                return results;
+                return container.Descendants()
+                    .OfType<Element>()
+                    .Where(el =>
+                    {
+                        var namespaceMatch = namespaceUri == "*" ||
+                                             string.Equals(el.NamespaceUri ?? string.Empty, namespaceUri ?? string.Empty, StringComparison.Ordinal);
+                        var localNameMatch = localName == "*" ||
+                                             string.Equals(el.LocalName ?? el.NodeName, localName, StringComparison.OrdinalIgnoreCase);
+                        return namespaceMatch && localNameMatch;
+                    })
+                    .ToList();
             }, _context));
         }
 
@@ -1068,121 +1086,6 @@ namespace FenBrowser.FenEngine.DOM
 
             var created = document.CreateElementNS(namespaceUri, qualifiedName);
             return DomWrapperFactory.Wrap(created, _context);
-        }
-
-        private Element FindFirstSelector(Node node, string selector)
-        {
-            if (node is Element el)
-            {
-                if (MatchesSelectorForDomQueries(el, selector)) return el;
-            }
-            if (node.ChildNodes != null) {
-                foreach(var c in node.ChildNodes.OfType<Element>()) {
-                    var f = FindFirstSelector(c, selector);
-                    if (f != null) return f;
-                }
-            }
-            return null;
-        }
-
-        private void RecursiveQuerySelector(Node node, string selector, List<Element> results)
-        {
-            if (node is Element el && MatchesSelectorForDomQueries(el, selector)) results.Add(el);
-            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveQuerySelector(c, selector, results); // Recurse on all nodes
-        }
-
-        internal static bool MatchesSelectorForDomQueries(Element element, string selector)
-        {
-            if (element == null || string.IsNullOrWhiteSpace(selector))
-            {
-                return false;
-            }
-
-            if (CssLoader.MatchesSelector(element, selector))
-            {
-                return true;
-            }
-
-            var selectorParts = selector
-                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(part => part.Trim())
-                .Where(part => part.Length > 0)
-                .ToArray();
-
-            if (selectorParts.Length < 2)
-            {
-                return false;
-            }
-
-            if (!CssLoader.MatchesSelector(element, selectorParts[selectorParts.Length - 1]))
-            {
-                return false;
-            }
-
-            var currentAncestor = element.ParentElement;
-            for (int i = selectorParts.Length - 2; i >= 0; i--)
-            {
-                while (currentAncestor != null && !CssLoader.MatchesSelector(currentAncestor, selectorParts[i]))
-                {
-                    currentAncestor = currentAncestor.ParentElement;
-                }
-
-                if (currentAncestor == null)
-                {
-                    return false;
-                }
-
-                currentAncestor = currentAncestor.ParentElement;
-            }
-
-            return true;
-        }
-
-        private void RecursiveClassName(Node node, string[] classes, List<Element> results)
-        {
-            if (node is Element el)
-            {
-                var elClass = el.GetAttribute("class") ?? "";
-                var elClasses = elClass.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-                bool match = true;
-                foreach (var cls in classes) {
-                    if (!elClasses.Contains(cls, StringComparer.Ordinal)) { match = false; break; }
-                }
-                if (match && classes.Length > 0) results.Add(el);
-            }
-            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveClassName(c, classes, results);
-        }
-
-        private void RecursiveTagName(Node node, string tagName, List<Element> results)
-        {
-            if (node is Element el)
-            {
-                if (string.Equals(el.NodeName, tagName, StringComparison.OrdinalIgnoreCase) || tagName == "*") results.Add(el);
-            }
-            if (node.ChildNodes != null) foreach(var c in node.ChildNodes) RecursiveTagName(c, tagName, results);
-        }
-
-        private void RecursiveTagNameNs(Node node, string namespaceUri, string localName, List<Element> results)
-        {
-            if (node is Element el)
-            {
-                var namespaceMatch = namespaceUri == "*" ||
-                                     string.Equals(el.NamespaceUri ?? string.Empty, namespaceUri ?? string.Empty, StringComparison.Ordinal);
-                var localNameMatch = localName == "*" ||
-                                     string.Equals(el.LocalName ?? el.NodeName, localName, StringComparison.OrdinalIgnoreCase);
-                if (namespaceMatch && localNameMatch)
-                {
-                    results.Add(el);
-                }
-            }
-
-            if (node.ChildNodes != null)
-            {
-                foreach (var c in node.ChildNodes)
-                {
-                    RecursiveTagNameNs(c, namespaceUri, localName, results);
-                }
-            }
         }
 
         private Element FindElementById(Node node, string id)

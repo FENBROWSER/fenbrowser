@@ -89,9 +89,18 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue QuerySelector(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var selector = args[0].ToString();
-            var result = FindFirstDescendant(_shadowRoot, selector);
-            return result != null ? DomWrapperFactory.Wrap(result, _context) : FenValue.Null;
+            if (string.IsNullOrWhiteSpace(args[0].ToString())) return FenValue.Null;
+
+            try
+            {
+                var selector = args[0].ToString();
+                var result = _shadowRoot.QuerySelector(selector);
+                return result != null ? DomWrapperFactory.Wrap(result, _context) : FenValue.Null;
+            }
+            catch
+            {
+                return FenValue.Null;
+            }
         }
 
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -101,38 +110,20 @@ namespace FenBrowser.FenEngine.DOM
                 return FenValue.FromObject(new NodeListWrapper(System.Array.Empty<Node>(), _context));
             }
 
-            var selector = args[0].ToString();
-            var results = new System.Collections.Generic.List<Node>();
-            FindAllDescendants(_shadowRoot, selector, results);
-            return FenValue.FromObject(new NodeListWrapper(results, _context));
-        }
-
-        private static Element FindFirstDescendant(Node parent, string selector)
-        {
-            if (parent?.ChildNodes == null) return null;
-
-            foreach (var child in parent.ChildNodes.OfType<Element>())
+            if (string.IsNullOrWhiteSpace(args[0].ToString()))
             {
-                if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) return child;
-                var nested = FindFirstDescendant(child, selector);
-                if (nested != null) return nested;
+                return FenValue.FromObject(new NodeListWrapper(System.Array.Empty<Node>(), _context));
             }
 
-            return null;
-        }
-
-        private static void FindAllDescendants(Node parent, string selector, System.Collections.Generic.List<Node> results)
-        {
-            if (parent?.ChildNodes == null) return;
-
-            foreach (var child in parent.ChildNodes.OfType<Element>())
+            try
             {
-                if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector))
-                {
-                    results.Add(child);
-                }
-
-                FindAllDescendants(child, selector, results);
+                var selector = args[0].ToString();
+                var results = _shadowRoot.QuerySelectorAll(selector);
+                return FenValue.FromObject(new NodeListWrapper(results, _context));
+            }
+            catch
+            {
+                return FenValue.FromObject(new NodeListWrapper(System.Array.Empty<Node>(), _context));
             }
         }
 

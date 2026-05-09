@@ -63,41 +63,16 @@ namespace FenBrowser.FenEngine.Scripting
 
             public IEnumerable<Element> getElementsByTagName(string tag)
             {
-                if (string.IsNullOrEmpty(tag) || Root  == null) return Enumerable.Empty<Element>();
-                var list = new List<Element>();
-                foreach (var n in Root.Descendants().OfType<Element>())
-                    if (string.Equals(n.NodeName, tag, StringComparison.OrdinalIgnoreCase))
-                        list.Add(n);
-                return list;
+                if (string.IsNullOrEmpty(tag) || Root == null) return Enumerable.Empty<Element>();
+                if (Root is not ContainerNode container) return Enumerable.Empty<Element>();
+                return container.GetElementsByTagName(tag);
             }
 
             public IEnumerable<Element> getElementsByClassName(string className)
             {
-                if (string.IsNullOrWhiteSpace(className) || Root  == null) return Enumerable.Empty<Element>();
-                var targetClasses = className.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (targetClasses.Length == 0) return Enumerable.Empty<Element>();
-
-                var list = new List<Element>();
-                foreach (var n in Root.Descendants().OfType<Element>())
-                {
-                    var cls = n.GetAttribute("class");
-                    if (!string.IsNullOrWhiteSpace(cls))
-                    {
-                        var elementClasses = cls.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        // Check if all target classes are present in element classes
-                        bool match = true;
-                        foreach (var target in targetClasses)
-                        {
-                            if (!elementClasses.Contains(target, StringComparer.Ordinal))
-                            {
-                                match = false;
-                                break;
-                            }
-                        }
-                        if (match) list.Add(n);
-                    }
-                }
-                return list;
+                if (string.IsNullOrWhiteSpace(className) || Root == null) return Enumerable.Empty<Element>();
+                if (Root is not ContainerNode container) return Enumerable.Empty<Element>();
+                return container.GetElementsByClassName(className);
             }
 
             public object querySelector(string sel)
@@ -108,52 +83,26 @@ namespace FenBrowser.FenEngine.Scripting
 
             public object[] querySelectorAll(string sel)
             {
-                if (string.IsNullOrWhiteSpace(sel) || Root  == null) return new object[0];
-                sel = sel.Trim();
-                var list = new List<object>();
-                if (sel.StartsWith("#"))
+                if (string.IsNullOrWhiteSpace(sel) || Root == null) return Array.Empty<object>();
+                if (Root is not ContainerNode container) return Array.Empty<object>();
+
+                try
                 {
-                    var id = sel.Substring(1);
-                    var e1 = getElementById(id);
-                    return e1  == null ? new object[0] : new[] { e1 };
-                }
-                else if (sel.StartsWith("."))
-                {
-                    var cls = sel.Substring(1);
-                    foreach (var n in Root.Descendants().OfType<Element>())
+                    var list = new List<object>();
+                    foreach (var node in container.QuerySelectorAll(sel))
                     {
-                        var v = n.GetAttribute("class");
-                        if (!string.IsNullOrWhiteSpace(v))
+                        if (node is Element element)
                         {
-                            var parts = v.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                            for (int i = 0; i < parts.Length; i++)
-                                if (string.Equals(parts[i], cls, StringComparison.Ordinal)) { list.Add(new JsDomElement(_e, n)); break; }
+                            list.Add(new JsDomElement(_e, element));
                         }
                     }
+
+                    return list.ToArray();
                 }
-                else
+                catch (DomException)
                 {
-                    if (sel.Contains(" "))
-                    {
-                        var parts = sel.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        var current = new List<Node> { Root };
-                        foreach (var p in parts)
-                        {
-                            var next = new List<Node>();
-                            foreach (var c in current)
-                                if (c is ContainerNode cn)
-                                    foreach (var d in cn.Descendants().OfType<Element>())
-                                        if (MatchesSimpleSelector(d, p)) next.Add(d);
-                            current = next;
-                        }
-                        foreach (var it in current) if (it is Element el) list.Add(new JsDomElement(_e, el));
-                    }
-                    else
-                    {
-                        foreach (var n in Root.Descendants().OfType<Element>()) if (MatchesSimpleSelector(n, sel)) list.Add(new JsDomElement(_e, n));
-                    }
+                    return Array.Empty<object>();
                 }
-                return list.ToArray();
             }
 
             internal static bool MatchesSimpleSelector(Element n, string sel)
@@ -1113,15 +1062,15 @@ namespace FenBrowser.FenEngine.Scripting
                          return el != null ? FenValue.FromObject(new JsDomElement(_e, el)) : FenValue.Null;
                     }));
                     case "querySelector": return FenValue.FromFunction(new FenFunction("querySelector", (args, _) => {
-                         if (args.Length == 0) return FenValue.Null;
-                         var sel = args[0].ToString();
-                         var el = _node.Descendants().OfType<Element>().FirstOrDefault(e => e.Matches(sel));
+                        if (args.Length == 0) return FenValue.Null;
+                        var sel = args[0].ToString();
+                         var el = _node.QuerySelector(sel);
                          return el != null ? FenValue.FromObject(new JsDomElement(_e, el)) : FenValue.Null;
                     }));
                     case "querySelectorAll": return FenValue.FromFunction(new FenFunction("querySelectorAll", (args, _) => {
                         if (args.Length == 0) return FenValue.FromObject(new FenObject()); 
                         var sel = args[0].ToString();
-                        var results = _node.Descendants().OfType<Element>().Where(e => e.Matches(sel)).ToArray();
+                        var results = _node.QuerySelectorAll(sel).OfType<Element>().ToArray();
                         var arr = new FenObject();
                         arr.Set("length", FenValue.FromNumber(results.Length));
                         for (int i = 0; i < results.Length; i++)

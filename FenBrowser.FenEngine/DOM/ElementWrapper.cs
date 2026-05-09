@@ -4972,7 +4972,7 @@ namespace FenBrowser.FenEngine.DOM
             try
             {
                 var selector = args[0].ToString();
-                var result = FenBrowser.FenEngine.Rendering.Css.SelectorMatcher.Matches(_element, selector);
+                var result = _element.Matches(selector);
                 return FenValue.FromBoolean(result);
             }
             catch
@@ -4991,18 +4991,8 @@ namespace FenBrowser.FenEngine.DOM
             try
             {
                 var selector = args[0].ToString();
-                var current = _element;
-                
-                while (current != null)
-                {
-                    if (DocumentWrapper.MatchesSelectorForDomQueries(current, selector))
-                    {
-                        return DomWrapperFactory.Wrap(current, _context);
-                    }
-                    current = current.ParentNode as Element;
-                }
-                
-                return FenValue.Null;
+                var closest = _element.Closest(selector);
+                return closest != null ? DomWrapperFactory.Wrap(closest, _context) : FenValue.Null;
             }
             catch
             {
@@ -5013,12 +5003,18 @@ namespace FenBrowser.FenEngine.DOM
         private FenValue QuerySelector(FenValue[] args, FenValue thisVal)
         {
             if (args.Length == 0) return FenValue.Null;
-            var selector = args[0].ToString();
-            
-            // Should probably use the DocumentWrapper implementation or a static helper
-            // For now simplified recursive search
-            var result = FindFirstDescendant(_element, selector);
-            return result != null ? DomWrapperFactory.Wrap(result, _context) : FenValue.Null;
+            if (string.IsNullOrWhiteSpace(args[0].ToString())) return FenValue.Null;
+
+            try
+            {
+                var selector = args[0].ToString();
+                var result = _element.QuerySelector(selector);
+                return result != null ? DomWrapperFactory.Wrap(result, _context) : FenValue.Null;
+            }
+            catch
+            {
+                return FenValue.Null;
+            }
         }
         
         private FenValue QuerySelectorAll(FenValue[] args, FenValue thisVal)
@@ -5027,34 +5023,22 @@ namespace FenBrowser.FenEngine.DOM
             {
                 return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
             }
-            var selector = args[0].ToString();
-            var results = new List<Node>();
-            FindAllDescendants(_element, selector, results);
-            return FenValue.FromObject(new NodeListWrapper(results, _context));
-        }
 
-        private Element FindFirstDescendant(Element parent, string selector)
-        {
-             if (parent.ChildNodes == null) return null;
-             
-             foreach (var child in parent.ChildNodes.OfType<Element>())
-             {
-                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) return child;
-                 var f = FindFirstDescendant(child, selector);
-                 if (f != null) return f;
-             }
-             return null;
-        }
-        
-        private void FindAllDescendants(Element parent, string selector, List<Node> results)
-        {
-             if (parent.ChildNodes == null) return;
-             
-             foreach (var child in parent.ChildNodes.OfType<Element>())
-             {
-                 if (DocumentWrapper.MatchesSelectorForDomQueries(child, selector)) results.Add(child);
-                 FindAllDescendants(child, selector, results);
-             }
+            if (string.IsNullOrWhiteSpace(args[0].ToString()))
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
+
+            try
+            {
+                var selector = args[0].ToString();
+                var results = _element.QuerySelectorAll(selector);
+                return FenValue.FromObject(new NodeListWrapper(results, _context));
+            }
+            catch
+            {
+                return FenValue.FromObject(new NodeListWrapper(Array.Empty<Node>(), _context));
+            }
         }
 
         private FenValue GetElementsByTagNameMethod(FenValue[] args, FenValue thisVal)

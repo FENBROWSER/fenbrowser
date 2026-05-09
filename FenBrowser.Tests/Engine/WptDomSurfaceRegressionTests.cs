@@ -134,6 +134,37 @@ public class WptDomSurfaceRegressionTests
         ")?.ToString());
     }
 
+    [Fact]
+    public async Task QuerySelector_Matches_Closest_Share_Level4SelectorBehavior()
+    {
+        var baseUri = new Uri("https://example.com/index.html");
+        var parser = new HtmlParser(
+            "<html><body>" +
+            "<section id='scope'>" +
+            "  <ul>" +
+            "    <li id='n1' class='keep'>one</li>" +
+            "    <li id='n2'>two</li>" +
+            "    <li id='n3' class='keep'>three</li>" +
+            "    <li id='n4' class='keep'>four</li>" +
+            "  </ul>" +
+            "  <article id='article'><span id='leaf' class='leaf'>leaf</span></article>" +
+            "</section>" +
+            "</body></html>",
+            baseUri);
+        var doc = parser.Parse();
+        var engine = new JavaScriptEngine(CreateHost());
+
+        await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+        var bridgeSelection = engine.QuerySelector("li:nth-child(2 of .keep)");
+        Assert.True(bridgeSelection.IsObject);
+        Assert.Equal("n3", bridgeSelection.AsObject().Get("id").ToString());
+
+        Assert.Equal("n3", engine.Evaluate("document.querySelector('li:nth-child(2 of .keep)').id")?.ToString());
+        Assert.Equal("true", engine.Evaluate("String(document.getElementById('n3').matches('li:nth-child(2 of .keep)'))")?.ToString());
+        Assert.Equal("scope", engine.Evaluate("document.getElementById('leaf').closest('section:has(> article .leaf)').id")?.ToString());
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(
