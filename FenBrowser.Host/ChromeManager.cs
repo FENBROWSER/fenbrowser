@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.IO;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -61,6 +62,7 @@ namespace FenBrowser.Host
         private bool _isPointerMoveDispatchScheduled;
         private CoalescedPointerMoveEvent _pendingPointerMove;
         private bool _hasPendingPointerMove;
+        private bool _hostPresentedScreenshotCaptured;
 
         private ChromeManager() { }
 
@@ -498,7 +500,40 @@ namespace FenBrowser.Host
 
                 _statusBar.SetLoading(tab.IsLoading);
                 _root?.Invalidate();
+
+                if (!tab.IsLoading && !_hostPresentedScreenshotCaptured)
+                {
+                    CaptureHostPresentedScreenshot("navigation-complete");
+                    _hostPresentedScreenshotCaptured = true;
+                }
             });
+        }
+
+        private static void CaptureHostPresentedScreenshot(string reason)
+        {
+            try
+            {
+                using var bitmap = WindowManager.Instance.CaptureScreenshot();
+                if (bitmap == null)
+                {
+                    return;
+                }
+
+                using var image = SKImage.FromBitmap(bitmap);
+                using var data = image?.Encode(SKEncodedImageFormat.Png, 100);
+                if (data == null)
+                {
+                    return;
+                }
+
+                var filePath = DiagnosticPaths.GetRootArtifactPath("host_presented_screenshot.png");
+                File.WriteAllBytes(filePath, data.ToArray());
+                EngineLogBridge.Info($"[ChromeManager] Captured host-presented screenshot ({reason}): {filePath}", LogCategory.General);
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[ChromeManager] Failed to capture host-presented screenshot ({reason}): {ex.Message}", LogCategory.General);
+            }
         }
 
         private void OnActiveTabTitleChanged(BrowserTab tab)
