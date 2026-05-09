@@ -440,12 +440,19 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private void ApplyExecutionOriginHeader(HttpRequestMessage request)
         {
-            if (request?.RequestUri == null || string.IsNullOrWhiteSpace(_context?.CurrentUrl))
+            if (request?.RequestUri == null)
             {
                 return;
             }
 
-            if (!Uri.TryCreate(_context.CurrentUrl, UriKind.Absolute, out var executionUri))
+            Uri executionUri = null;
+            if (!string.IsNullOrWhiteSpace(_context?.CurrentUrl))
+            {
+                Uri.TryCreate(_context.CurrentUrl, UriKind.Absolute, out executionUri);
+            }
+
+            executionUri ??= _context?.DocumentUrl;
+            if (executionUri == null)
             {
                 return;
             }

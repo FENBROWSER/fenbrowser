@@ -11,6 +11,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
     public class BlockBox : LayoutBox
     {
         public BlockBox(LayoutBoxStore store, int storeId) : base(store, storeId) { }
+
+        // Compatibility constructor for tests that create standalone boxes.
+        public BlockBox(Node sourceNode, CssComputed style)
+            : base(CreateStandaloneStore(sourceNode, style, out var storeId), storeId)
+        {
+        }
+
+        private static LayoutBoxStore CreateStandaloneStore(Node sourceNode, CssComputed style, out int storeId)
+        {
+            var store = new LayoutBoxStore();
+            storeId = store.CreateBox(sourceNode, style ?? new CssComputed(), LayoutBoxStore.BoxType.Block);
+            return store;
+        }
     }
 
     /// <summary>

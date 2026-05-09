@@ -386,6 +386,11 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return current;
             }
 
+            if (context?.DocumentUrl != null)
+            {
+                return context.DocumentUrl;
+            }
+
             FenValue locationValue = FenValue.Undefined;
             if (context?.Environment != null)
             {

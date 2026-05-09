@@ -17,6 +17,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
         private readonly LayoutBoxStore _store;
         
+        public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles)
+            : this(styles, new LayoutBoxStore())
+        {
+        }
+
         public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles, LayoutBoxStore store)
         {
             _styles = styles;

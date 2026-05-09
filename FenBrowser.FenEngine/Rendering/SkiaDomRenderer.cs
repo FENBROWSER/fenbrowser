@@ -618,7 +618,10 @@ namespace FenBrowser.FenEngine.Rendering
                     LastDamageAreaRatio = damageAreaRatio;
                     LastFrameUsedDamageRasterization = useDamageRasterization;
                     LastRetainedTileRasterization = default;
-                    bool mustPresentFreshFrame = rebuiltPaintTree && paintInvalidationSignal;
+                    // Rebuilt paint trees must never preserve a stale base frame.
+                    // Under watchdog pressure this prevents "white/stale lock" where
+                    // we keep reusing an old frame after building a new tree.
+                    bool mustPresentFreshFrame = rebuiltPaintTree;
 
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
                     {

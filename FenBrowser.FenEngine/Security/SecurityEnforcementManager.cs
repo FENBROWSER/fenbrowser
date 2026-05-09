@@ -36,7 +36,7 @@ namespace FenBrowser.FenEngine.Security
             var limits = GetLimitsForDocument(documentId);
             if (!limits.CheckSvgRecursion(currentDepth))
             {
-                Logger.Error($"[Security] SVG recursion depth exceeded: {currentDepth} > {limits.MaxSvgRecursionDepth} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] SVG recursion depth exceeded: {currentDepth} > {limits.MaxSvgRecursionDepth} in document {documentId}", LogCategory.Security);
                 return false;
             }
             return true;
@@ -50,7 +50,7 @@ namespace FenBrowser.FenEngine.Security
             var limits = GetLimitsForDocument(documentId);
             if (!limits.CheckSvgElementCount(elementCount))
             {
-                Logger.Error($"[Security] SVG element count exceeded: {elementCount} > {limits.MaxSvgElementCount} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] SVG element count exceeded: {elementCount} > {limits.MaxSvgElementCount} in document {documentId}", LogCategory.Security);
                 return false;
             }
             return true;
@@ -64,7 +64,7 @@ namespace FenBrowser.FenEngine.Security
             var limits = GetLimitsForDocument(documentId);
             if (!limits.CheckFilterComplexity(elementCount, chainLength))
             {
-                Logger.Error($"[Security] CSS filter complexity exceeded: elements={elementCount}, chain={chainLength > {limits.MaxFilterElementCount}/{limits.MaxFilterChainLength} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] CSS filter complexity exceeded: elements={elementCount}, chain={chainLength} > {limits.MaxFilterElementCount}/{limits.MaxFilterChainLength} in document {documentId}", LogCategory.Security);
                 return false;
             }
             return true;
@@ -78,7 +78,7 @@ namespace FenBrowser.FenEngine.Security
             var context = _documentContexts.GetOrAdd(documentId, _ => new DocumentContext());
             if (!GetLimitsForDocument(documentId).CheckCanvasDimensions(width, height, context.CanvasCount))
             {
-                Logger.Error($"[Security] Canvas creation rejected: {width}x{height}, count={context.CanvasCount} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] Canvas creation rejected: {width}x{height}, count={context.CanvasCount} in document {documentId}", LogCategory.Security);
                 return false;
             }
             
@@ -94,7 +94,7 @@ namespace FenBrowser.FenEngine.Security
             var limits = GetLimitsForDocument(documentId);
             if (!limits.CheckNestedIframes(depth))
             {
-                Logger.Error($"[Security] Nested iframe depth exceeded: {depth} > {limits.MaxNestedIframes} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] Nested iframe depth exceeded: {depth} > {limits.MaxNestedIframes} in document {documentId}", LogCategory.Security);
                 return false;
             }
             return true;
@@ -108,7 +108,7 @@ namespace FenBrowser.FenEngine.Security
             var limits = GetLimitsForDocument(documentId);
             if (!limits.CheckNestedTables(depth, totalCellCount))
             {
-                Logger.Error($"[Security] Table nesting/cells exceeded: depth={depth}, cells={totalCellCount} in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] Table nesting/cells exceeded: depth={depth}, cells={totalCellCount} in document {documentId}", LogCategory.Security);
                 return false;
             }
             return true;
@@ -137,7 +137,7 @@ namespace FenBrowser.FenEngine.Security
             
             if (!limits.CheckFrameRenderTime(elapsed))
             {
-                Logger.Error($"[Security] Render frame time exceeded: {elapsed.TotalMilliseconds}ms > {limits.MaxFrameRenderTime.TotalMilliseconds}ms in document {documentId}");
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] Render frame time exceeded: {elapsed.TotalMilliseconds}ms > {limits.MaxFrameRenderTime.TotalMilliseconds}ms in document {documentId}", LogCategory.Security);
                 stopwatch.Stop();
                 _renderWatchdogs.TryRemove(documentId, out _);
                 return false;

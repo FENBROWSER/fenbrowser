@@ -110,6 +110,22 @@ namespace FenBrowser.Tests.Rendering
                 }
             };
 
+            // Prime renderer state once so the next pass represents a reusable-frame path
+            // instead of first-paint tree construction.
+            using (var warmBitmap = new SKBitmap(128, 128))
+            using (var warmCanvas = new SKCanvas(warmBitmap))
+            {
+                renderer.Render(
+                    html,
+                    warmCanvas,
+                    styles,
+                    new SKRect(0, 0, 128, 128),
+                    "https://test.local/",
+                    (size, overlays) => { },
+                    hasBaseFrame: false);
+                warmCanvas.Flush();
+            }
+
             using var bitmap = new SKBitmap(128, 128);
             bitmap.Erase(SKColors.Blue);
             using var canvas = new SKCanvas(bitmap);

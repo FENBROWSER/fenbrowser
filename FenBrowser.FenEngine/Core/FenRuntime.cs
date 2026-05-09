@@ -19043,8 +19043,21 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     _context.StrictMode = true;
                 }
 
-                // Set context URL for debugging
-                if (_context != null) _context.CurrentUrl = url;
+                // Preserve the document/execution URL for runtime-origin semantics.
+                // Values like "inline" and "eval.js" are source labels, not navigable
+                // document URLs, and overwriting CurrentUrl with them breaks fetch/XHR
+                // origin propagation for page scripts.
+                if (_context != null)
+                {
+                    if (Uri.TryCreate(url, UriKind.Absolute, out var absoluteExecutionUrl))
+                    {
+                        _context.CurrentUrl = absoluteExecutionUrl.AbsoluteUri;
+                    }
+                    else if (string.IsNullOrWhiteSpace(_context.CurrentUrl) && _context is ExecutionContext executionContext)
+                    {
+                        _context.CurrentUrl = executionContext.DocumentUrl?.AbsoluteUri ?? _context.CurrentUrl;
+                    }
+                }
 
                 try
                 {
