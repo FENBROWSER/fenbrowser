@@ -39,6 +39,11 @@ namespace FenBrowser.Core.Logging
         Accessibility= 1 << 26,  // Accessibility trees, platform bridge events
         ProcessIsolation = 1 << 27, // Child process contracts, sandbox lifecycle, IPC boundaries
         DevTools     = 1 << 28,  // Remote debugging, protocol traffic, instrumentation
+        // Compatibility aliases used by newer pipeline components.
+        Telemetry    = Performance,
+        Warning      = Errors,
+        Error        = Errors,
+        Critical     = Errors | Security,
         All          = int.MaxValue
     }
 
@@ -73,6 +78,7 @@ namespace FenBrowser.Core.Logging
     {
         Error = 0,  // Critical failures
         Warn = 1,   // Non-critical issues
+        Warning = Warn, // Compatibility alias
         Info = 2,   // General information
         Debug = 3,  // Detailed debugging
         Trace = 4   // Very verbose (method entry/exit)

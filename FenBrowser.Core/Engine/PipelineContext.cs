@@ -510,6 +510,8 @@ namespace FenBrowser.Core.Engine
     {
         public PipelineStage? CurrentStage { get; }
         public PipelineStage? AttemptedStage { get; }
+        public string AdditionalContext { get; private set; }
+        public bool Recoverable { get; private set; } = true;
 
         public PipelineStageException(string message) : base(message)
         {
@@ -522,5 +524,26 @@ namespace FenBrowser.Core.Engine
             CurrentStage = current;
             AttemptedStage = attempted;
         }
+
+        public PipelineStageException(string message, PipelineStage current, PipelineStage attempted, Exception inner)
+            : base(message, inner)
+        {
+            CurrentStage = current;
+            AttemptedStage = attempted;
+        }
+
+        public PipelineStageException WithAdditionalContext(string context)
+        {
+            AdditionalContext = context;
+            return this;
+        }
+
+        public PipelineStageException MarkUnrecoverable()
+        {
+            Recoverable = false;
+            return this;
+        }
+
+        public bool IsRecoverable() => Recoverable;
     }
 }

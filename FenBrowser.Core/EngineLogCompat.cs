@@ -100,8 +100,14 @@ public static class EngineLogCompat
     public static void Warn(string message, LogCategory category = LogCategory.General)
         => Log(message, category, LogLevel.Warn);
 
+    public static void Warn(string message, LogCategory category, Exception ex)
+        => Log(message, category, LogLevel.Warn, ex);
+
     public static void Error(string message, LogCategory category = LogCategory.General, Exception ex = null)
         => Log(message, category, LogLevel.Error, ex);
+
+    public static void Trace(string message, LogCategory category = LogCategory.General)
+        => Log(message, category, LogLevel.Trace);
 
     public static void LogMetric(string name, double value, string unit = "ms", LogCategory category = LogCategory.Performance)
     {

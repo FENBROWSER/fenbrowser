@@ -21,6 +21,8 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Engine
 {
@@ -310,7 +312,7 @@ namespace FenBrowser.Core.Engine
                     LogCategory.Rendering,
                     exception);
             }
-            else if (EnableDetailedLogging)
+            else if (PipelineTelemetry.EnableDetailedLogging)
             {
                 EngineLogCompat.Debug(
                     $"[PIPELINE] {stage}:{operationName} at {location} completed in {duration.TotalMilliseconds:F1}ms",
@@ -320,7 +322,7 @@ namespace FenBrowser.Core.Engine
 
         private static string FormatLocation(string caller, string filePath, int lineNumber)
         {
-            var simpleName = filePath?.Split('\', '/')[^1] ?? "<unknown>";
+            var simpleName = filePath?.Split('\\', '/')[^1] ?? "<unknown>";
             return $"{simpleName}:{lineNumber}:{caller}";
         }
 
@@ -399,26 +401,18 @@ namespace FenBrowser.Core.Engine
 
         private static object CreateFallbackStyles()
         {
-            // Return empty style collection
-            return new System.Collections.Generic.Dictionary<Core.Dom.V2.Node, Core.Css.CssComputed>();
+            // Keep fallback type-agnostic to avoid cross-assembly coupling from Core.
+            return new System.Collections.Generic.Dictionary<string, object>();
         }
 
         private static object CreateFallbackLayout()
         {
-            // Return empty layout result
-            return new FenBrowser.FenEngine.Layout.LayoutResult(
-                Array.Empty<FenBrowser.FenEngine.Layout.LayoutBox>(),
-                new System.Collections.Generic.Dictionary<Core.Dom.V2.Node, FenBrowser.FenEngine.Layout.BoxModel>(),
-                0, 0
-            );
+            return null;
         }
 
         private static object CreateFallbackPaint()
         {
-            // Return empty paint tree
-            return new FenBrowser.FenEngine.Rendering.PaintTree.ImmutablePaintTree(
-                Array.Empty<FenBrowser.FenEngine.Rendering.PaintTree.PaintNode>()
-            );
+            return null;
         }
 
         private static object CreateFallbackRaster()

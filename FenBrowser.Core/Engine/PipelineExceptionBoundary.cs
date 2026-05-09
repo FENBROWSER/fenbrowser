@@ -133,7 +133,7 @@ namespace FenBrowser.Core.Engine
             try
             {
                 // Set up exception context
-                using var _ = BeginStageExceptionContext(stage, operationName);
+                BeginStageExceptionContext(stage, operationName);
                 
                 // Execute stage with narrow exception windows
                 var result = stageAction();
@@ -252,6 +252,8 @@ namespace FenBrowser.Core.Engine
             }
             finally
             {
+                ClearExceptionContext();
+
                 // Always record telemetry
                 if (capturedException != null)
                 {
@@ -276,7 +278,7 @@ namespace FenBrowser.Core.Engine
 
             try
             {
-                using var _ = BeginStageExceptionContext(stage, operationName);
+                BeginStageExceptionContext(stage, operationName);
                 
                 var result = await stageAction().ConfigureAwait(false);
                 
@@ -378,6 +380,8 @@ namespace FenBrowser.Core.Engine
             }
             finally
             {
+                ClearExceptionContext();
+
                 if (capturedException != null)
                 {
                     RecordStageException(context, stage, capturedException, stopwatch.Elapsed, operationName);

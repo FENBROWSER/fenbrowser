@@ -42,9 +42,9 @@ namespace FenBrowser.Core.Engine
         private static readonly Counter<long> _stageFailures = _pipelineMeter.CreateCounter<long>("pipeline.stage.failures");
         private static readonly Histogram<double> _stageDuration = _pipelineMeter.CreateHistogram<double>("pipeline.stage.duration_ms");
         private static readonly Histogram<double> _frameDuration = _pipelineMeter.CreateHistogram<double>("pipeline.frame.duration_ms");
-        private static readonly Gauge<long> _memoryBytes = _pipelineMeter.CreateGauge<long>("pipeline.memory.bytes");
-        private static readonly Gauge<int> _domNodeCount = _pipelineMeter.CreateGauge<int>("pipeline.dom.nodes");
-        private static readonly Gauge<int> _layoutBoxCount = _pipelineMeter.CreateGauge<int>("pipeline.layout.boxes");
+        private static readonly Histogram<long> _memoryBytes = _pipelineMeter.CreateHistogram<long>("pipeline.memory.bytes");
+        private static readonly Histogram<int> _domNodeCount = _pipelineMeter.CreateHistogram<int>("pipeline.dom.nodes");
+        private static readonly Histogram<int> _layoutBoxCount = _pipelineMeter.CreateHistogram<int>("pipeline.layout.boxes");
         private static readonly Counter<long> _criticalFailures = _pipelineMeter.CreateCounter<long>("pipeline.failures.critical");
         
         // Health metrics
@@ -379,6 +379,24 @@ namespace FenBrowser.Core.Engine
             }
         }
 
+        /// <summary>
+        /// Resets in-memory counters and rolling state used by telemetry tests.
+        /// </summary>
+        public static void Reset()
+        {
+            lock (_telemetryLock)
+            {
+                _totalFrames = 0;
+                _successfulFrames = 0;
+                _failedFrames = 0;
+                _totalErrors = 0;
+                _recentFrameTimes.Clear();
+                _recentFrameSuccess.Clear();
+                _recentErrors.Clear();
+                _lastHealthCheckErrors = 0;
+            }
+        }
+
         #endregion
 
         #region Periodic Diagnostics
@@ -392,7 +410,7 @@ namespace FenBrowser.Core.Engine
             
             EngineLogCompat.Log(
                 $"[PIPELINE HEALTH] " +
-                $"Uptime: {health.Uptime:hh\:mm\:ss}, " +
+                $"Uptime: {health.Uptime:hh\\:mm\\:ss}, " +
                 $"Frames: {health.TotalFrames:N0} ({health.SuccessRate:P1} success, {health.RecentSuccessRate:P1} recent), " +
                 $"AvgFrame: {health.AverageFrameTimeMs:F1}ms, " +
                 $"Errors: {health.TotalErrors:N0} ({health.ErrorRatePerMinute:F2}/min), " +
@@ -424,7 +442,7 @@ namespace FenBrowser.Core.Engine
         public override string ToString()
         {
             var status = IsHealthy ? "HEALTHY" : "UNHEALTHY";
-            return $"[PIPELINE {status}] Up={Uptime:hh\:mm\:ss}, " +
+            return $"[PIPELINE {status}] Up={Uptime:hh\\:mm\\:ss}, " +
                    $"Frames={TotalFrames:N0} ({SuccessRate:P1}), " +
                    $"Avg={AverageFrameTimeMs:F1}ms, " +
                    $"Errors={TotalErrors:N0} ({ErrorRatePerMinute:F2}/min)";

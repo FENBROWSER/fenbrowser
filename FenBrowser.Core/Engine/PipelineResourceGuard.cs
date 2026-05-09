@@ -84,6 +84,34 @@ namespace FenBrowser.Core.Engine
 
         #endregion
 
+        #region Budget Validation
+
+        /// <summary>
+        /// Validate coarse stage budget constraints before stage work begins.
+        /// </summary>
+        public void ValidateStageBudget(PipelineStage stage, string operationName)
+        {
+            var stageResources = _stageResources[(int)stage];
+            lock (stageResources.SyncRoot)
+            {
+                if (stageResources.CurrentMemory > MaxStageMemoryPerFrame)
+                {
+                    throw new PipelineResourceException(
+                        stage,
+                        $"Pre-stage memory {stageResources.CurrentMemory:N0} exceeds stage budget {MaxStageMemoryPerFrame:N0} for {operationName}");
+                }
+            }
+
+            if (Interlocked.Read(ref _totalMemoryUsed) > MaxTotalMemoryPerFrame)
+            {
+                throw new PipelineResourceException(
+                    stage,
+                    $"Total tracked memory exceeds frame budget before {operationName}");
+            }
+        }
+
+        #endregion
+
         #region Memory Tracking
 
         /// <summary>
@@ -130,7 +158,7 @@ namespace FenBrowser.Core.Engine
 
                 // Update stage memory (we've already updated total)
                 stageResources.CurrentMemory = newStageMemory;
-                Interlocked.Add(ref stageResources.TotalAllocated, bytes);
+                stageResources.TotalAllocated += bytes;
                 stageResources.AllocationCount++;
 
                 // Track peak memory

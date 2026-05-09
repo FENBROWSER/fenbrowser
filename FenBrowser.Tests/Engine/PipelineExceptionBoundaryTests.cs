@@ -14,6 +14,7 @@
 // =============================================================================
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -435,7 +436,7 @@ namespace FenBrowser.Tests.Engine
             // When: Fallback fails
             var ex = Assert.Throws<PipelineStageException>(() =>
             {
-                PipelineIntegrationLayer.ExecuteStage(
+                PipelineIntegrationLayer.ExecuteStage<int>(
                     PipelineStage.Styling,
                     "FallbackFail",
                     () => throw new Exception("original"),
