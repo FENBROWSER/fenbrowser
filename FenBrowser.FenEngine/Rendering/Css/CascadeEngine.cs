@@ -702,6 +702,9 @@ namespace FenBrowser.FenEngine.Rendering
                 case "transition":
                     ApplyTransitionShorthand(computed, declaration, value);
                     break;
+                case "font":
+                    ApplyFontShorthand(computed, declaration, value);
+                    break;
             }
         }
 
@@ -1147,6 +1150,245 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (string.IsNullOrWhiteSpace(value)) return;
             ExpandTransitionShorthandCore(value, (property, shorthandValue) => SetExpanded(computed, property, shorthandValue, source));
+        }
+
+        private static readonly HashSet<string> FontStyleKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "normal", "italic", "oblique"
+        };
+
+        private static readonly HashSet<string> FontVariantKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "normal", "small-caps"
+        };
+
+        private static readonly HashSet<string> FontWeightKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "normal", "bold", "bolder", "lighter",
+            "100", "200", "300", "400", "500", "600", "700", "800", "900"
+        };
+
+        private static readonly HashSet<string> FontStretchKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "normal",
+            "ultra-condensed", "extra-condensed", "condensed", "semi-condensed",
+            "semi-expanded", "expanded", "extra-expanded", "ultra-expanded"
+        };
+
+        private static readonly HashSet<string> FontSizeKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large",
+            "xxx-large", "smaller", "larger"
+        };
+
+        private static readonly HashSet<string> CssWideKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "inherit", "initial", "unset", "revert", "revert-layer"
+        };
+
+        private static readonly HashSet<string> SystemFontKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "caption", "icon", "menu", "message-box", "small-caption", "status-bar"
+        };
+
+        private static void ApplyFontShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            string raw = value.Trim();
+            string lowerRaw = raw.ToLowerInvariant();
+
+            if (CssWideKeywords.Contains(lowerRaw))
+            {
+                SetExpanded(computed, "font-style", raw, source);
+                SetExpanded(computed, "font-variant", raw, source);
+                SetExpanded(computed, "font-weight", raw, source);
+                SetExpanded(computed, "font-stretch", raw, source);
+                SetExpanded(computed, "font-size", raw, source);
+                SetExpanded(computed, "line-height", raw, source);
+                SetExpanded(computed, "font-family", raw, source);
+                return;
+            }
+
+            if (SystemFontKeywords.Contains(lowerRaw))
+            {
+                // System font keywords are valid but intentionally left as raw shorthand
+                // for now because full platform mapping is not implemented yet.
+                return;
+            }
+
+            var parts = SplitCssValue(raw);
+            if (parts.Length == 0)
+            {
+                return;
+            }
+
+            string fontStyle = null;
+            string fontVariant = null;
+            string fontWeight = null;
+            string fontStretch = null;
+            string fontSize = null;
+            string lineHeight = null;
+            int sizeIndex = -1;
+            int familyStartIndex = -1;
+
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var token = parts[i];
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    continue;
+                }
+
+                if (TryParseFontSizeToken(token, out var parsedSize, out var parsedLineHeight))
+                {
+                    fontSize = parsedSize;
+                    lineHeight = parsedLineHeight;
+                    sizeIndex = i;
+                    familyStartIndex = i + 1;
+
+                    if (lineHeight == null &&
+                        familyStartIndex < parts.Length &&
+                        string.Equals(parts[familyStartIndex], "/", StringComparison.Ordinal))
+                    {
+                        if (familyStartIndex + 1 < parts.Length)
+                        {
+                            lineHeight = parts[familyStartIndex + 1];
+                            familyStartIndex += 2;
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+
+                    break;
+                }
+            }
+
+            if (sizeIndex < 0 || string.IsNullOrWhiteSpace(fontSize) || familyStartIndex >= parts.Length)
+            {
+                return;
+            }
+
+            for (int i = 0; i < sizeIndex; i++)
+            {
+                var token = parts[i];
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    continue;
+                }
+
+                if (fontStyle == null && FontStyleKeywords.Contains(token))
+                {
+                    fontStyle = token;
+                    continue;
+                }
+
+                if (fontVariant == null && FontVariantKeywords.Contains(token))
+                {
+                    fontVariant = token;
+                    continue;
+                }
+
+                if (fontWeight == null && FontWeightKeywords.Contains(token))
+                {
+                    fontWeight = token;
+                    continue;
+                }
+
+                if (fontStretch == null && FontStretchKeywords.Contains(token))
+                {
+                    fontStretch = token;
+                    continue;
+                }
+            }
+
+            string fontFamily = string.Join(" ", parts.Skip(familyStartIndex)).Trim();
+            if (string.IsNullOrWhiteSpace(fontFamily))
+            {
+                return;
+            }
+
+            // CSS Fonts: omitted longhands in font shorthand reset to initial values.
+            SetExpanded(computed, "font-style", fontStyle ?? "normal", source);
+            SetExpanded(computed, "font-variant", fontVariant ?? "normal", source);
+            SetExpanded(computed, "font-weight", fontWeight ?? "normal", source);
+            SetExpanded(computed, "font-stretch", fontStretch ?? "normal", source);
+            SetExpanded(computed, "font-size", fontSize, source);
+            SetExpanded(computed, "line-height", lineHeight ?? "normal", source);
+            SetExpanded(computed, "font-family", fontFamily, source);
+        }
+
+        private static bool TryParseFontSizeToken(string token, out string fontSize, out string lineHeight)
+        {
+            fontSize = null;
+            lineHeight = null;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            var trimmed = token.Trim();
+            int slash = trimmed.IndexOf('/');
+            if (slash >= 0)
+            {
+                var left = trimmed.Substring(0, slash).Trim();
+                var right = trimmed.Substring(slash + 1).Trim();
+                if (!IsFontSizeToken(left))
+                {
+                    return false;
+                }
+
+                fontSize = left;
+                if (!string.IsNullOrEmpty(right))
+                {
+                    lineHeight = right;
+                }
+
+                return true;
+            }
+
+            if (!IsFontSizeToken(trimmed))
+            {
+                return false;
+            }
+
+            fontSize = trimmed;
+            return true;
+        }
+
+        private static bool IsFontSizeToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            var normalized = token.Trim().ToLowerInvariant();
+            if (FontSizeKeywords.Contains(normalized))
+            {
+                return true;
+            }
+
+            if (normalized == "0")
+            {
+                return true;
+            }
+
+            if (normalized.StartsWith("var(", StringComparison.Ordinal) ||
+                normalized.StartsWith("calc(", StringComparison.Ordinal) ||
+                normalized.StartsWith("min(", StringComparison.Ordinal) ||
+                normalized.StartsWith("max(", StringComparison.Ordinal) ||
+                normalized.StartsWith("clamp(", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return IsCssLength(normalized);
         }
 
         /// <summary>

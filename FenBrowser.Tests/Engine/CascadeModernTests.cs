@@ -655,6 +655,93 @@ html {
         }
 
         [Fact]
+        public async Task FontShorthand_CascadeOrder_LaterShorthandOverridesEarlierFontSize()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .probe {
+            font-size: 20px;
+            font: 12px/1.5 serif;
+        }
+    </style>
+</head>
+<body>
+    <p id='probe' class='probe'>probe</p>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://test.local/"));
+            var doc = parser.Parse();
+            var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), null);
+            var probe = doc.GetElementById("probe");
+
+            Assert.Equal("12px", computed[probe].Map["font-size"]);
+            Assert.Equal("1.5", computed[probe].Map["line-height"]);
+            Assert.InRange(computed[probe].FontSize ?? 0d, 11.999d, 12.001d);
+        }
+
+        [Fact]
+        public async Task FontShorthand_CascadeOrder_LaterFontSizeOverridesEarlierShorthand()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .probe {
+            font: 12px/1.5 serif;
+            font-size: 20px;
+        }
+    </style>
+</head>
+<body>
+    <p id='probe' class='probe'>probe</p>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://test.local/"));
+            var doc = parser.Parse();
+            var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), null);
+            var probe = doc.GetElementById("probe");
+
+            Assert.Equal("20px", computed[probe].Map["font-size"]);
+            Assert.InRange(computed[probe].FontSize ?? 0d, 19.999d, 20.001d);
+        }
+
+        [Fact]
+        public async Task FontShorthand_ResetsOmittedFontStyleToNormal()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>
+        .probe {
+            font-style: italic;
+            font: 14px serif;
+        }
+    </style>
+</head>
+<body>
+    <p id='probe' class='probe'>probe</p>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://test.local/"));
+            var doc = parser.Parse();
+            var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), null);
+            var probe = doc.GetElementById("probe");
+
+            Assert.Equal("normal", computed[probe].Map["font-style"]);
+        }
+
+        [Fact]
         public async Task InvalidUnitlessWidth_DoesNotOverrideEarlierValidWidth()
         {
             const string html = @"
