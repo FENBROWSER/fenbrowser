@@ -1082,10 +1082,10 @@ private readonly Dictionary<Node, Node> _parents = new Dictionary<Node, Node>();
             // ============================================================
             if (depth == 0 && tag == "HTML")
             {
-                System.Console.WriteLine($"[ICB-TRACE] HTML depth=0 h={h} _viewportHeight={_viewportHeight}");
+                EngineLogCompat.Debug($"[ICB-TRACE] HTML depth=0 h={h} _viewportHeight={_viewportHeight}", LogCategory.Layout);
                 if (h < _viewportHeight)
                 {
-                    System.Console.WriteLine($"[ICB] OVERRIDE: HTML height {h}px < viewport {_viewportHeight}px. Forcing to viewport.");
+                    EngineLogCompat.Debug($"[ICB] OVERRIDE: HTML height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
                     h = _viewportHeight;
                 }
                 if (w < _viewportWidth)
@@ -1097,10 +1097,10 @@ private readonly Dictionary<Node, Node> _parents = new Dictionary<Node, Node>();
             // BODY can be at depth 1 or 2 depending on HEAD presence
             else if (depth <= 2 && tag == "BODY")
             {
-                System.Console.WriteLine($"[ICB-TRACE] BODY depth={depth} h={h} _viewportHeight={_viewportHeight}");
+                EngineLogCompat.Debug($"[ICB-TRACE] BODY depth={depth} h={h} _viewportHeight={_viewportHeight}", LogCategory.Layout);
                 if (h < _viewportHeight)
                 {
-                    System.Console.WriteLine($"[ICB] OVERRIDE: BODY height {h}px < viewport {_viewportHeight}px. Forcing to viewport.");
+                    EngineLogCompat.Debug($"[ICB] OVERRIDE: BODY height {h}px < viewport {_viewportHeight}px. Forcing to viewport.", LogCategory.Layout);
                     h = _viewportHeight;
                 }
                 if (w < _viewportWidth)
