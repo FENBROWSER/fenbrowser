@@ -39,14 +39,14 @@ public class WebContentWidget : Widget
     {
         if (_subscribedTab != null)
         {
-            _subscribedTab.Browser.NeedsRepaint -= Invalidate;
+            _subscribedTab.Browser.NeedsRepaint -= OnBrowserNeedsRepaint;
         }
 
         _subscribedTab = tab;
 
         if (_subscribedTab != null)
         {
-            _subscribedTab.Browser.NeedsRepaint += Invalidate;
+            _subscribedTab.Browser.NeedsRepaint += OnBrowserNeedsRepaint;
             
             // Cold launch can activate a tab before this widget has been arranged.
             // Treat OnArrange as the authoritative source for the first usable viewport.
@@ -63,6 +63,19 @@ public class WebContentWidget : Widget
         }
         Invalidate();
     }
+
+    private void OnBrowserNeedsRepaint()
+    {
+        // Force dirty propagation for the full content surface to avoid
+        // stale compositor snapshots when only non-content widgets are dirty.
+        if (Bounds.Width > 1 && Bounds.Height > 1)
+        {
+            Invalidate(Bounds);
+            return;
+        }
+
+        Invalidate();
+    }
     
     protected override SKSize OnMeasure(SKSize availableSpace)
     {
@@ -73,6 +86,7 @@ public class WebContentWidget : Widget
     protected override void OnArrange(SKRect finalRect)
     {
         // Hot path: avoid per-frame logging/file writes to keep pointer/hover interactions responsive.
+        var hadArrangedBounds = _hasArrangedBounds;
         _hasArrangedBounds = finalRect.Width > 1 && finalRect.Height > 1;
 
         // Bounds set by parent
@@ -81,6 +95,14 @@ public class WebContentWidget : Widget
         {
             activeTab.Browser.UpdateViewport(new SKSize(finalRect.Width, finalRect.Height));
             activeTab.NotifyViewportReady();
+
+            // Startup guarantee: tab activation can happen before we have a usable viewport.
+            // Kick a repaint once bounds become valid so first visible web frame is not missed.
+            if (!hadArrangedBounds)
+            {
+                activeTab.Browser.RequestRepaint();
+                Invalidate();
+            }
         }
         
         // Arrange settings page (always full fill)
