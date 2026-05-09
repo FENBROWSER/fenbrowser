@@ -52,6 +52,7 @@ namespace FenBrowser.Host
         private FenBrowser.DevTools.Instrumentation.DomInstrumenter _domInstrumenter;
         
         private IProcessIsolationCoordinator _processIsolation;
+        private bool _processIsolationAutoFallbackTriggered;
 
         // Track Active Tab
         private BrowserTab _currentActiveTab;
@@ -70,6 +71,7 @@ namespace FenBrowser.Host
             _processIsolation = ProcessIsolationCoordinatorFactory.CreateFromEnvironment();
             _processIsolation.Initialize();
             ProcessIsolationRuntime.SetCoordinator(_processIsolation);
+            TryWireProcessIsolationAutoFallback();
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
@@ -105,6 +107,94 @@ namespace FenBrowser.Host
             
             // Wire WindowManager Events
             WireWindowEvents();
+        }
+
+        private void TryWireProcessIsolationAutoFallback()
+        {
+            if (_processIsolation is not BrokeredProcessIsolationCoordinator)
+            {
+                return;
+            }
+
+            // Respect explicit operator mode selection.
+            var explicitMode = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
+            if (!string.IsNullOrWhiteSpace(explicitMode))
+            {
+                return;
+            }
+
+            // Enabled by default for usability on hosts where AppContainer child launch is unavailable.
+            var autoFallback = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION_AUTO_FALLBACK");
+            if (string.Equals(autoFallback, "0", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _processIsolation.RendererCrashed += OnProcessIsolationRendererCrashed;
+        }
+
+        private void OnProcessIsolationRendererCrashed(int tabId, string reason)
+        {
+            if (_processIsolationAutoFallbackTriggered)
+            {
+                return;
+            }
+
+            if (!string.Equals(reason, "renderer-startup-failed", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _processIsolationAutoFallbackTriggered = true;
+            RunOnUiThread(() => AutoFallbackToInProcess(tabId));
+        }
+
+        private void AutoFallbackToInProcess(int tabId)
+        {
+            if (_processIsolation is not BrokeredProcessIsolationCoordinator)
+            {
+                return;
+            }
+
+            try
+            {
+                _processIsolation.RendererCrashed -= OnProcessIsolationRendererCrashed;
+                _processIsolation.Shutdown();
+
+                _processIsolation = new InProcessIsolationCoordinator();
+                _processIsolation.Initialize();
+                ProcessIsolationRuntime.SetCoordinator(_processIsolation);
+
+                EngineLogBridge.Warn("[ProcessIsolation] Auto-fallback activated: brokered renderer startup failed, switched to in-process mode for this session.", LogCategory.ProcessIsolation);
+
+                var tab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Id == tabId) ?? TabManager.Instance.ActiveTab;
+                if (tab != null)
+                {
+                    // Clear a latched crash-screen state from the failed
+                    // brokered startup before issuing the in-process retry.
+                    tab.ClearCrashState();
+
+                    var retryUrl = _toolbar?.AddressBar?.Text;
+                    if (string.IsNullOrWhiteSpace(retryUrl))
+                    {
+                        retryUrl = tab.Url;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(retryUrl))
+                    {
+                        retryUrl = "fen://newtab";
+                    }
+
+                    _ = tab.NavigateProgrammaticAsync(retryUrl);
+                    tab.Browser.RequestRepaint();
+                }
+
+                _root?.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Error($"[ProcessIsolation] Auto-fallback to in-process failed: {ex.Message}", LogCategory.ProcessIsolation);
+            }
         }
 
         private void WireWindowEvents()
@@ -498,6 +588,11 @@ namespace FenBrowser.Host
         {
             if (_compositor == null) return;
             var logicalSize = new SKSize(WindowManager.Instance.LogicalWidth, WindowManager.Instance.LogicalHeight);
+
+            // Always clear the host surface before compositing.
+            // This prevents UI-overlay ghost trails (for example tooltip stamps)
+            // when intermediate frame sources contain transparency.
+            canvas.Clear(ThemeManager.Current.Background);
 
             if (_compositorThread == null || !_compositorThread.TryDrawLatest(canvas, logicalSize))
             {

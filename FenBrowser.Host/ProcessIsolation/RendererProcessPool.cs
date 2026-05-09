@@ -231,38 +231,44 @@ namespace FenBrowser.Host.ProcessIsolation
         private async Task<RendererProcessSlot> SpawnNewProcessAsync(string assignmentKey, CancellationToken cancellationToken)
         {
             await _startupLock.WaitAsync(cancellationToken);
-            
-            Interlocked.Increment(ref _totalProcessesSpawned);
-            
             try
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
-                    $"[RendererProcessPool] Spawning new process for assignment {assignmentKey}");
+                Interlocked.Increment(ref _totalProcessesSpawned);
+                
+                try
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
+                        $"[RendererProcessPool] Spawning new process for assignment {assignmentKey}");
 
-                var slot = await RendererProcessSlot.CreateAsync(
-                    assignmentKey: assignmentKey,
-                    sandboxFactory: _sandboxFactory,
+                    var slot = await RendererProcessSlot.CreateAsync(
+                        assignmentKey: assignmentKey,
+                        sandboxFactory: _sandboxFactory,
+                        
+                        timeout: _config.ProcessStartupTimeout,
+                        cancellationToken: cancellationToken);
+
+                    _activeSlots.TryAdd(slot.ProcessId, slot);
+                    _processStartTimes.TryAdd(slot.ProcessId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
+                        $"[RendererProcessPool] Spawned process {slot.ProcessId} for assignment {assignmentKey} " +
+                        $"(spawn #{_totalProcessesSpawned}, avg startup: {GetAverageStartupTime()}ms)");
+
+                    return slot;
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref _totalSpawnsFailed);
                     
-                    timeout: _config.ProcessStartupTimeout,
-                    cancellationToken: cancellationToken);
-
-                _activeSlots.TryAdd(slot.ProcessId, slot);
-                _processStartTimes.TryAdd(slot.ProcessId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
-                    $"[RendererProcessPool] Spawned process {slot.ProcessId} for assignment {assignmentKey} " +
-                    $"(spawn #{_totalProcessesSpawned}, avg startup: {GetAverageStartupTime()}ms)");
-
-                return slot;
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
+                        $"[RendererProcessPool] Process spawn failed for assignment {assignmentKey}: {ex.Message}");
+                    
+                    throw new RendererProcessPoolException("Failed to spawn renderer process", ex);
+                }
             }
-            catch (Exception ex)
+            finally
             {
-                Interlocked.Increment(ref _totalSpawnsFailed);
-                
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
-                    $"[RendererProcessPool] Process spawn failed for assignment {assignmentKey}: {ex.Message}");
-                
-                throw new RendererProcessPoolException("Failed to spawn renderer process", ex);
+                _startupLock.Release();
             }
         }
 
@@ -286,25 +292,31 @@ namespace FenBrowser.Host.ProcessIsolation
                             try
                             {
                                 await _startupLock.WaitAsync(_shutdownToken.Token);
-                                
-                                Interlocked.Increment(ref _warmupSpawns);
-                                var slot = await RendererProcessSlot.CreateAsync(
-                                    assignmentKey: "warm-pool", // Generic warm-up assignment
-                                    sandboxFactory: _sandboxFactory,
-                                    
-                                    timeout: _config.ProcessStartupTimeout,
-                                    cancellationToken: _shutdownToken.Token);
+                                try
+                                {
+                                    Interlocked.Increment(ref _warmupSpawns);
+                                    var slot = await RendererProcessSlot.CreateAsync(
+                                        assignmentKey: "warm-pool", // Generic warm-up assignment
+                                        sandboxFactory: _sandboxFactory,
+                                        
+                                        timeout: _config.ProcessStartupTimeout,
+                                        cancellationToken: _shutdownToken.Token);
 
-                                slot.ResetForReuse();
-                                if (_warmPool.TryAdd(slot))
-                                {
-                                    Interlocked.Increment(ref _totalProcessesReused);
-                                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
-                                        $"[RendererProcessPool] Pre-warmed process {slot.ProcessId}");
+                                    slot.ResetForReuse();
+                                    if (_warmPool.TryAdd(slot))
+                                    {
+                                        Interlocked.Increment(ref _totalProcessesReused);
+                                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
+                                            $"[RendererProcessPool] Pre-warmed process {slot.ProcessId}");
+                                    }
+                                    else
+                                    {
+                                        DestructSlot(slot, "pool-full-on-warmup");
+                                    }
                                 }
-                                else
+                                finally
                                 {
-                                    DestructSlot(slot, "pool-full-on-warmup");
+                                    _startupLock.Release();
                                 }
                             }
                             catch (Exception ex)

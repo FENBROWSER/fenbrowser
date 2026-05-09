@@ -90,6 +90,7 @@ namespace FenBrowser.Host.ProcessIsolation
             if (!TryStartSession(state, restartAttempt: 0, restartReason: "tab-created"))
             {
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Initial renderer spawn failed for tab {tab.Id}; will retry on next navigation.");
+                RendererCrashed?.Invoke(tab.Id, "renderer-startup-failed");
                 return;
             }
         }
@@ -147,6 +148,7 @@ namespace FenBrowser.Host.ProcessIsolation
             {
                 if (!TryStartSession(state, restartAttempt: 0, restartReason: "navigation"))
                 {
+                    RendererCrashed?.Invoke(tab.Id, "renderer-startup-failed");
                     return;
                 }
                 session = state.Session;

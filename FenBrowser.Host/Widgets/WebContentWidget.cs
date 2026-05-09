@@ -113,8 +113,10 @@ public class WebContentWidget : Widget
 
             ProcessIsolationRuntime.Current?.OnFrameRequested(activeTab, Bounds.Width, Bounds.Height);
             
-            // Draw the display list (buffered frame)
-            activeTab.Browser.Render(canvas, localViewport);
+            // Route through BrowserTab.Render so crash-state rendering is honored.
+            // Direct Browser.Render bypasses BrowserTab crash UI and can present a
+            // silent black surface when renderer startup fails.
+            activeTab.Render(canvas, localViewport);
             
             canvas.Restore();
         }

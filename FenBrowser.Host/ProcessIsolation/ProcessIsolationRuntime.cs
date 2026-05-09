@@ -20,11 +20,13 @@ namespace FenBrowser.Host.ProcessIsolation
         public static Network.NetworkProcessCoordinator NetworkCoordinator { get; private set; }
 
         public static IProcessIsolationCoordinator Current { get; private set; }
+        public static event Action<IProcessIsolationCoordinator> CoordinatorChanged;
 
         public static void SetCoordinator(IProcessIsolationCoordinator coordinator)
         {
             ShutdownAuxiliaryTargets();
             Current = coordinator;
+            CoordinatorChanged?.Invoke(Current);
 
             if (coordinator?.UsesOutOfProcessRenderer == true)
             {

@@ -1131,13 +1131,24 @@ public class BrowserIntegration
         
         // RELAXED GATING: Allow early structural frames
         // Only skip when BOTH root AND styles are missing
-        if (_root == null && _styles == null) 
+        if (_root == null && _styles == null)
         {
-            // STOP THE HOT LOOP: If we can't record, stop asking to repaint immediately.
-            // We will repaint again when state changes (RepaintReady/Loading/etc) trigger a wake.
+            bool outOfProcess = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true;
+            var navAge = DateTime.Now - _lastNavigationTime;
+
+            // In-process startup can briefly have no snapshot while parse/style work is still in flight.
+            // Keep the repaint request alive for a short warmup window so first paint is not input-gated.
+            if (!outOfProcess && navAge.TotalSeconds <= 5)
+            {
+                EngineLogBridge.Debug("[BrowserIntegration] RecordFrame skipped: awaiting initial DOM/style snapshot.", LogCategory.Rendering);
+                return;
+            }
+
+            // Outside the warmup window (or in out-of-process mode without remote content),
+            // stop requesting immediate repaints until a new invalidation source arrives.
             ClearPendingFrameRequest();
             EngineLogBridge.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
-            return; 
+            return;
         }
 
         // PROGRESSIVE RENDERING: Always render with whatever we have.

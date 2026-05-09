@@ -1,5 +1,7 @@
 using SkiaSharp;
 using FenBrowser.Host.ProcessIsolation;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.Tabs;
 
@@ -12,6 +14,7 @@ public class TabManager
     private readonly List<BrowserTab> _tabs = new();
     private int _activeIndex = -1;
     private readonly Stack<BrowserTab> _closedTabs = new();
+    private IProcessIsolationCoordinator _subscribedCoordinator;
     
     private static TabManager _instance;
     public static TabManager Instance 
@@ -30,14 +33,42 @@ public class TabManager
     // Wire up crash events
     private void Initialize()
     {
-        if (ProcessIsolationRuntime.Current != null)
+        ProcessIsolationRuntime.CoordinatorChanged += BindProcessIsolationCoordinator;
+        BindProcessIsolationCoordinator(ProcessIsolationRuntime.Current);
+    }
+
+    private void BindProcessIsolationCoordinator(IProcessIsolationCoordinator coordinator)
+    {
+        if (ReferenceEquals(_subscribedCoordinator, coordinator))
         {
-            ProcessIsolationRuntime.Current.RendererCrashed += OnRendererCrashed;
+            return;
+        }
+
+        if (_subscribedCoordinator != null)
+        {
+            _subscribedCoordinator.RendererCrashed -= OnRendererCrashed;
+        }
+
+        _subscribedCoordinator = coordinator;
+        if (_subscribedCoordinator != null)
+        {
+            _subscribedCoordinator.RendererCrashed += OnRendererCrashed;
         }
     }
 
     private void OnRendererCrashed(int tabId, string reason)
     {
+        // Brokered startup failure can be reported while ChromeManager is
+        // simultaneously switching coordinators to in-process fallback.
+        // Ignore this stale crash signal once fallback is active.
+        if (ProcessIsolationRuntime.Current is InProcessIsolationCoordinator &&
+            string.Equals(reason, "renderer-startup-failed", StringComparison.Ordinal))
+        {
+            EngineLogBridge.Warn($"[TabManager] Ignoring stale renderer crash for tab {tabId} after in-process fallback.", LogCategory.ProcessIsolation);
+            return;
+        }
+
+        EngineLogBridge.Warn($"[TabManager] Renderer crash for tab {tabId}: {reason}", LogCategory.ProcessIsolation);
         var tab = _tabs.FirstOrDefault(t => t.Id == tabId);
         if (tab != null)
         {

@@ -199,6 +199,22 @@ public class BrowserTab
         Crashed?.Invoke(this, reason);
         NeedsRepaint?.Invoke(this);
     }
+
+    /// <summary>
+    /// Clears a previously latched crash state.
+    /// Used when process-isolation fallback recovers the tab in-process.
+    /// </summary>
+    public void ClearCrashState()
+    {
+        if (!IsCrashed && string.IsNullOrEmpty(CrashReason))
+        {
+            return;
+        }
+
+        IsCrashed = false;
+        CrashReason = null;
+        NeedsRepaint?.Invoke(this);
+    }
     
     /// <summary>
     /// Render this tab's content.

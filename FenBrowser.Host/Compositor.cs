@@ -79,6 +79,7 @@ public class Compositor
 
         EnsureFrameBuffer(logicalSize);
         var needsRepaint = dirtyRect.HasValue || _frameSnapshot == null;
+        var isBootstrapFrame = _frameSnapshot == null;
 
         if (needsRepaint && _frameSurface != null)
         {
@@ -96,13 +97,16 @@ public class Compositor
             else
             {
                 offscreen.Clear(ThemeManager.Current.Background);
-                if (dirtyRect.HasValue)
+                if (!isBootstrapFrame && dirtyRect.HasValue)
                 {
                     offscreen.ClipRect(dirtyRect.Value);
                     _lastDirtyRect = dirtyRect;
                 }
                 else
                 {
+                    // First presentable frame must repaint the full surface.
+                    // Clipping bootstrap paint to a partial dirty rect can leave
+                    // most of the host canvas at stale/blank background.
                     _lastDirtyRect = new SKRect(0, 0, logicalSize.Width, logicalSize.Height);
                 }
             }
