@@ -33,7 +33,7 @@ namespace FenBrowser.FenEngine.Workers
         private readonly MicrotaskQueue _microtaskQueue;
         private readonly CancellationTokenSource _cts;
         private readonly AutoResetEvent _taskSignal;
-        private readonly Thread _workerThread;
+        private Thread _workerThread;
         private readonly Task<string> _bootstrapScriptLoadTask;
         private bool _isRunning;
         private bool _bootstrapCompleted;
@@ -65,37 +65,16 @@ namespace FenBrowser.FenEngine.Workers
             Func<Uri, bool> scriptUriAllowed = null,
             bool isServiceWorker = false)
         {
-            var worker = new WorkerRuntime();
-            worker._scriptUrl = scriptUrl ?? throw new ArgumentNullException(nameof(scriptUrl));
-            worker._origin = origin ?? "null";
-            worker._storageBackend = storageBackend ?? new FenBrowser.FenEngine.Storage.InMemoryStorageBackend();
-            worker._scriptFetcher = scriptFetcher;
-            worker._scriptUriAllowed = scriptUriAllowed;
-            worker._isServiceWorker = isServiceWorker;
-            worker._taskQueue = new TaskQueue();
-            worker._microtaskQueue = new MicrotaskQueue();
-            worker._cts = new CancellationTokenSource();
-            worker._taskSignal = new AutoResetEvent(false);
-            worker.Context = new FenBrowser.FenEngine.Core.ExecutionContext(null);
-            worker._isRunning = true;
-
-            if (!Uri.TryCreate(worker._scriptUrl, UriKind.Absolute, out worker._resolvedScriptUri))
-            {
-                if (Uri.TryCreate(worker._origin, UriKind.Absolute, out var originUri) &&
-                    Uri.TryCreate(originUri, worker._scriptUrl, out var resolvedFromOrigin))
-                {
-                    worker._resolvedScriptUri = resolvedFromOrigin;
-                }
-                else
-                {
-                    throw new ArgumentException($"Worker script URL must be absolute or origin-resolvable: {worker._scriptUrl}", nameof(scriptUrl));
-                }
-            }
+            var worker = new WorkerRuntime(
+                scriptUrl,
+                origin,
+                storageBackend,
+                scriptFetcher,
+                scriptUriAllowed,
+                isServiceWorker);
 
             try
             {
-                // Load script asynchronously before starting worker thread
-                worker._bootstrapScriptLoadTask = worker.LoadWorkerScriptAsync();
                 var scriptContent = await worker._bootstrapScriptLoadTask.ConfigureAwait(false);
                 worker._bootstrapCompleted = true;
                 

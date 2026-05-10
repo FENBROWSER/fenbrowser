@@ -5,6 +5,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Telemetry

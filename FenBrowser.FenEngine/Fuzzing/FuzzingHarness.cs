@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Layout.Tree;
 
 namespace FenBrowser.FenEngine.Fuzzing
@@ -213,12 +216,12 @@ namespace FenBrowser.FenEngine.Fuzzing
         private static LayoutBox CreateRandomBox(string tagName)
         {
             var element = new Element(tagName);
-            return new LayoutBox(element);
+            return new BlockBox(element, null);
         }
         
-        private static ComputedStyle GenerateRandomStyles()
+        private static CssComputed GenerateRandomStyles()
         {
-            var style = new ComputedStyle();
+            var style = new CssComputed();
             
             // Random display types
             var displays = new[] { "block", "inline", "flex", "grid", "none" };
@@ -233,10 +236,7 @@ namespace FenBrowser.FenEngine.Fuzzing
             style.JustifyContent = new[] { "flex-start", "center", "flex-end" }[new Random().Next(3)];
             
             // Add malformed/malicious properties
-            style.Map = new Dictionary<string, string> 
-            { 
-                ["custom-property"] = new string('x', 10000) // potential overflow
-            };
+            style.Map["custom-property"] = new string('x', 10000); // potential overflow
             
             return style;
         }
@@ -285,8 +285,8 @@ namespace FenBrowser.FenEngine.Fuzzing
                             var result = CssFuzzer.FuzzCssParser(css, input =>
                             {
                                 // Trigger CSS parsing
-                                var style = new ComputedStyle();
-                                style.Map = new Dictionary<string, string> { ["test"] = input };
+                                var style = new CssComputed();
+                                style.Map["test"] = input;
                             });
                             
                             if (result.Crashes > 0)

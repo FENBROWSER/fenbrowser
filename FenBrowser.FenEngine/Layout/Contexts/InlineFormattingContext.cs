@@ -1316,8 +1316,38 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             else if (!string.IsNullOrEmpty(style.MaxHeightExpression))
                 maxH = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight);
 
+            if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                float horizontalChrome = GetPaddingBorderWidth(style);
+                float verticalChrome = GetPaddingBorderHeight(style);
+
+                float borderBoxWidth = Math.Max(0f, width + horizontalChrome);
+                float borderBoxHeight = Math.Max(0f, height + verticalChrome);
+
+                borderBoxWidth = Math.Max(minW, Math.Min(borderBoxWidth, maxW));
+                borderBoxHeight = Math.Max(minH, Math.Min(borderBoxHeight, maxH));
+
+                width = Math.Max(0f, borderBoxWidth - horizontalChrome);
+                height = Math.Max(0f, borderBoxHeight - verticalChrome);
+                return;
+            }
+
             width = Math.Max(minW, Math.Min(width, maxW));
             height = Math.Max(minH, Math.Min(height, maxH));
+        }
+
+        private static float GetPaddingBorderWidth(CssComputed style)
+        {
+            var padding = style?.Padding ?? new Thickness();
+            var border = style?.BorderThickness ?? new Thickness();
+            return (float)(padding.Left + padding.Right + border.Left + border.Right);
+        }
+
+        private static float GetPaddingBorderHeight(CssComputed style)
+        {
+            var padding = style?.Padding ?? new Thickness();
+            var border = style?.BorderThickness ?? new Thickness();
+            return (float)(padding.Top + padding.Bottom + border.Top + border.Bottom);
         }
 
         private void ResetTextBoxGeometry(TextLayoutBox textBox)

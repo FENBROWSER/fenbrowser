@@ -60,9 +60,11 @@ namespace FenBrowser.FenEngine.Layout
             float intrinsicWidth = box.Geometry.ContentBox.Width;
             float intrinsicHeight = box.Geometry.ContentBox.Height;
             EnsureIntrinsicSize(box, style, cbRect, ref intrinsicWidth, ref intrinsicHeight);
+            bool resolvedAutoSizeFromChildren = ResolveAutoSizeFromChildren(box, style, ref intrinsicWidth, ref intrinsicHeight);
             NormalizeIntrinsicSizeForAutoPositionedBox(box, style, cbRect, ref intrinsicWidth, ref intrinsicHeight);
             bool preserveIntrinsicAutoSize = box.SourceNode is Element sourceElement &&
                                              ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(sourceElement);
+            preserveIntrinsicAutoSize |= resolvedAutoSizeFromChildren;
 
             var cb = new ContainingBlock
             {
@@ -459,6 +461,124 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     intrinsicHeight = contentHeightEstimate;
                 }
+            }
+        }
+
+        private static bool ResolveAutoSizeFromChildren(
+            LayoutBox box,
+            CssComputed style,
+            ref float intrinsicWidth,
+            ref float intrinsicHeight)
+        {
+            if (box?.Geometry == null || style == null || box.Children.Count == 0)
+            {
+                return false;
+            }
+
+            bool hasAutoWidth = !style.Width.HasValue &&
+                                !style.WidthPercent.HasValue &&
+                                string.IsNullOrWhiteSpace(style.WidthExpression);
+            bool hasAutoHeight = !style.Height.HasValue &&
+                                 !style.HeightPercent.HasValue &&
+                                 string.IsNullOrWhiteSpace(style.HeightExpression);
+
+            if (!hasAutoWidth && !hasAutoHeight)
+            {
+                return false;
+            }
+
+            if (!TryMeasureDescendantExtent(box, out float descendantWidth, out float descendantHeight))
+            {
+                return false;
+            }
+
+            bool resolved = false;
+            if (hasAutoWidth && intrinsicWidth <= 0.5f && descendantWidth > 0.5f)
+            {
+                intrinsicWidth = descendantWidth;
+                resolved = true;
+            }
+
+            if (hasAutoHeight && intrinsicHeight <= 0.5f && descendantHeight > 0.5f)
+            {
+                intrinsicHeight = descendantHeight;
+                resolved = true;
+            }
+
+            return resolved;
+        }
+
+        private static bool TryMeasureDescendantExtent(LayoutBox box, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+
+            if (box?.Geometry == null || box.Children.Count == 0)
+            {
+                return false;
+            }
+
+            float originX = box.Geometry.ContentBox.Left;
+            float originY = box.Geometry.ContentBox.Top;
+            bool found = false;
+            var visited = new HashSet<LayoutBox>();
+
+            foreach (var child in box.Children)
+            {
+                AccumulateDescendantExtent(child, originX, originY, visited, ref width, ref height, ref found);
+            }
+
+            return found;
+        }
+
+        private static void AccumulateDescendantExtent(
+            LayoutBox box,
+            float originX,
+            float originY,
+            HashSet<LayoutBox> visited,
+            ref float width,
+            ref float height,
+            ref bool found)
+        {
+            if (box?.Geometry == null || visited == null || !visited.Add(box))
+            {
+                return;
+            }
+
+            var rect = box.Geometry.MarginBox;
+            float rectWidth = rect.Width;
+            float rectHeight = rect.Height;
+            if ((rectWidth <= 0.5f || rectHeight <= 0.5f) && box.ComputedStyle != null)
+            {
+                if (rectWidth <= 0.5f && box.ComputedStyle.Width.GetValueOrDefault() > 0d)
+                {
+                    rectWidth = (float)box.ComputedStyle.Width.Value +
+                                (float)(box.ComputedStyle.Padding.Left + box.ComputedStyle.Padding.Right +
+                                        box.ComputedStyle.BorderThickness.Left + box.ComputedStyle.BorderThickness.Right);
+                }
+
+                if (rectHeight <= 0.5f && box.ComputedStyle.Height.GetValueOrDefault() > 0d)
+                {
+                    rectHeight = (float)box.ComputedStyle.Height.Value +
+                                 (float)(box.ComputedStyle.Padding.Top + box.ComputedStyle.Padding.Bottom +
+                                         box.ComputedStyle.BorderThickness.Top + box.ComputedStyle.BorderThickness.Bottom);
+                }
+            }
+
+            if (float.IsFinite(rect.Left) &&
+                float.IsFinite(rect.Top) &&
+                float.IsFinite(rect.Right) &&
+                float.IsFinite(rect.Bottom) &&
+                (rectWidth > 0.5f || rectHeight > 0.5f))
+            {
+                width = Math.Max(width, rect.Left + Math.Max(0f, rectWidth) - originX);
+                height = Math.Max(height, rect.Top + Math.Max(0f, rectHeight) - originY);
+                found = true;
+            }
+
+            foreach (var child in box.Children)
+            {
+                AccumulateDescendantExtent(child, originX, originY, visited, ref width, ref height, ref found);
             }
         }
 

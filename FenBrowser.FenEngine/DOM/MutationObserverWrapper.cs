@@ -18,19 +18,15 @@ namespace FenBrowser.FenEngine.DOM
         private readonly List<MutationRecord> _pendingRecords = new List<MutationRecord>();
         private readonly List<(Node Target, MutationObserverOptions Options)> _observations = new List<(Node Target, MutationObserverOptions Options)>();
         private bool _disconnected;
+        private bool _deliveryQueued;
 
-    public MutationObserverWrapper(FenFunction callback, IExecutionContext context)
-    {
-        Callback = callback ?? throw new ArgumentNullException(nameof(callback));
-        Context = context ?? throw new ArgumentNullException(nameof(context));
-
-        // The Core.Dom.MutationObserver expects Action<List<MutationRecord>, MutationObserver>
-        // Queue records as microtasks per DOM4 spec
-        _coreObserver = new MutationObserver((records, obs) => 
+        public MutationObserverWrapper(FenFunction callback, IExecutionContext context)
         {
-            QueueRecordsAsMicrotask(records);
-        });
-    }
+            Callback = callback ?? throw new ArgumentNullException(nameof(callback));
+            Context = context ?? throw new ArgumentNullException(nameof(context));
+
+            _coreObserver = new MutationObserver((records, obs) => QueueRecordsAsMicrotask(records));
+        }
 
         public bool HasPendingRecords
         {
@@ -66,6 +62,7 @@ namespace FenBrowser.FenEngine.DOM
             lock (_pendingRecords)
             {
                 _disconnected = true;
+                _deliveryQueued = false;
                 _pendingRecords.Clear();
                 _observations.Clear();
             }
@@ -128,13 +125,48 @@ namespace FenBrowser.FenEngine.DOM
                 RemovedNodes = removedNodes ?? new List<Node>()
             };
 
+            bool shouldQueue;
             lock (_pendingRecords)
             {
                 _pendingRecords.Add(record);
+                shouldQueue = !_deliveryQueued;
+                _deliveryQueued = true;
             }
 
-            // Queue microtask to deliver mutations asynchronously per DOM4 spec
-            if (Context?.Environment != null)
+            if (shouldQueue)
+            {
+                QueueMicrotaskForDelivery();
+            }
+        }
+
+        private void QueueRecordsAsMicrotask(IEnumerable<MutationRecord> records)
+        {
+            if (records == null)
+            {
+                return;
+            }
+
+            bool shouldQueue = false;
+            lock (_pendingRecords)
+            {
+                if (_disconnected)
+                {
+                    return;
+                }
+
+                foreach (var record in records)
+                {
+                    _pendingRecords.Add(record);
+                }
+
+                if (_pendingRecords.Count > 0 && !_deliveryQueued)
+                {
+                    _deliveryQueued = true;
+                    shouldQueue = true;
+                }
+            }
+
+            if (shouldQueue)
             {
                 QueueMicrotaskForDelivery();
             }
@@ -142,15 +174,12 @@ namespace FenBrowser.FenEngine.DOM
 
         private void QueueMicrotaskForDelivery()
         {
-            // Use the execution context's microtask queue if available, or fallback to event loop
-            var microtaskService = Context?.GetMicrotaskQueue();
-            if (microtaskService != null)
+            if (Context?.ScheduleMicrotask != null)
             {
-                microtaskService.Enqueue(DeliverRecords);
+                Context.ScheduleMicrotask(DeliverRecords);
             }
             else
             {
-                // Fallback: direct async callback
                 Task.Run(() => DeliverRecords());
             }
         }
@@ -159,6 +188,11 @@ namespace FenBrowser.FenEngine.DOM
         {
             try
             {
+                lock (_pendingRecords)
+                {
+                    _deliveryQueued = false;
+                }
+
                 var records = TakeRecords(Context);
                 if (records.Length > 0 && Callback != null)
                 {

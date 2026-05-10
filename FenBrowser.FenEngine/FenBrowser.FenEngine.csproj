@@ -29,6 +29,7 @@
   <ItemGroup>
     <Compile Remove="Program.cs" />
     <Compile Remove="TestFenEngine.cs" />
+    <Compile Remove="Tests\**\*.cs" />
     <Compile Remove="HTML\**\*.cs" />
     <Compile Remove="Testing\**\*.cs" />
     <Compile Remove="WebAPIs\TestHarnessAPI.cs" />

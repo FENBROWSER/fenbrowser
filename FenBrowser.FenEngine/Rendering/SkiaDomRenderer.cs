@@ -16,6 +16,7 @@ using FenBrowser.Core.Engine;
 using FenBrowser.Core.Memory;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using FenBrowser.FenEngine.Rendering.Performance;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -156,7 +157,7 @@ namespace FenBrowser.FenEngine.Rendering
     /// <summary>
     /// Main render entry point - performs layout and paint.
     /// </summary>
-        private bool _isRendering = false;
+        private int _renderGate;
 
         public RenderFrameResult RenderFrame(RenderFrameRequest request)
         {
@@ -211,13 +212,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (root == null || canvas == null) return;
             
             // Re-entrancy Guard
-            if (_isRendering)
+            if (Interlocked.Exchange(ref _renderGate, 1) == 1)
             {
                 // EngineLogCompat.Warn("Skipping re-entrant Render call.");
                 return;
             }
-            
-            _isRendering = true;
+
             CssAnimationEngine.ScrollStateResolver = el =>
             {
                 var state = _scrollManager.GetScrollState(el);
@@ -829,7 +829,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             finally
             {
-                _isRendering = false;
+                Volatile.Write(ref _renderGate, 0);
             }
         }
 

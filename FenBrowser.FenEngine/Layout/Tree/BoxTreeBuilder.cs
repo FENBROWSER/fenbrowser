@@ -64,7 +64,9 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
 
             // Get style: prefer node.ComputedStyle (single source of truth), fall back to dictionary
-            var style = node.ComputedStyle;
+            var style = node is PseudoElement pseudoElement
+                ? pseudoElement.ComputedStyle
+                : node.ComputedStyle;
             if (style == null)
                 _styles.TryGetValue(node, out style);
 
@@ -75,7 +77,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             LayoutStyleResolver.NormalizeForLayout(style);
 
-            var display = ResolveDisplay(node, style);
+            var display = ResolveDisplay(node, style, parentStyle);
 
             // 1. Handle Display: None and Hidden Tags
             if (display == "none")
@@ -171,7 +173,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     if (style.Before.PseudoElementInstance == null)
                         style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
                     EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
-                    childBoxes.AddRange(ConstructBox(style.Before.PseudoElementInstance, style));
+                    childBoxes.AddRange(ConstructBox(style.Before.PseudoElementInstance, style.Before));
                 }
 
                 // Recurse on children
@@ -186,7 +188,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     if (style.After.PseudoElementInstance == null)
                         style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
                     EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
-                    childBoxes.AddRange(ConstructBox(style.After.PseudoElementInstance, style));
+                    childBoxes.AddRange(ConstructBox(style.After.PseudoElementInstance, style.After));
                 }
 
                 // Handle Block-in-Inline Splitting (CSS 2.1 Section 9.2.1.1)
@@ -267,7 +269,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             return element.ChildNodes;
         }
 
-        private static string ResolveDisplay(Node node, CssComputed style)
+        private static string ResolveDisplay(Node node, CssComputed style, CssComputed parentStyle)
         {
             if (node is Text) return "inline";
 
@@ -300,7 +302,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             // float: left/right or position: absolute/fixed converts inline-level display to block-level.
             string floatVal = style?.Float?.Trim().ToLowerInvariant();
             string posVal = LayoutStyleResolver.GetEffectivePosition(style);
-            bool isFloated = floatVal == "left" || floatVal == "right";
+            bool isFlexOrGridItem = IsFlexOrGridContainerDisplay(parentStyle?.Display);
+            bool isFloated = !isFlexOrGridItem && (floatVal == "left" || floatVal == "right");
             bool isAbsFixed = posVal == "absolute" || posVal == "fixed";
 
             if (isFloated || isAbsFixed)
@@ -320,6 +323,27 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
 
             return display;
+        }
+
+        private static bool IsFlexOrGridContainerDisplay(string display)
+        {
+            if (string.IsNullOrWhiteSpace(display))
+            {
+                return false;
+            }
+
+            switch (display.Trim().ToLowerInvariant())
+            {
+                case "flex":
+                case "inline-flex":
+                case "-webkit-flex":
+                case "-webkit-inline-flex":
+                case "grid":
+                case "inline-grid":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static string GetDefaultDisplay(string tag)

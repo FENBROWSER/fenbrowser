@@ -98,6 +98,62 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(0f, autoBox.Geometry.MarginBox.Top, 1);
         }
 
+        [Fact]
+        public void GridFormattingContext_PercentageHeightItemInAutoTrack_DoesNotUseViewportAsIntrinsicHeight()
+        {
+            var root = new Element("div");
+            var item = new Element("div");
+            var image = new Element("img");
+            root.AppendChild(item);
+            item.AppendChild(image);
+
+            image.SetAttribute("width", "500");
+            image.SetAttribute("height", "200");
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 600,
+                    GridTemplateColumns = "600px",
+                    GridTemplateRows = "minmax(0,1fr)",
+                    AlignItems = "center",
+                    JustifyItems = "center"
+                },
+                [item] = new CssComputed
+                {
+                    Display = "block",
+                    HeightPercent = 100,
+                    MaxHeight = 230,
+                    GridArea = "1/1",
+                    Position = "relative"
+                },
+                [image] = new CssComputed
+                {
+                    Display = "inline-block",
+                    Width = 500,
+                    Height = 200,
+                    MaxHeightPercent = 100,
+                    MaxWidthPercent = 100,
+                    ObjectFit = "contain"
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 600, 900);
+            var itemBox = FindBox(rootBox, item);
+            var imageBox = FindBox(rootBox, image);
+
+            Assert.NotNull(itemBox);
+            Assert.NotNull(imageBox);
+
+            Assert.InRange(rootBox.Geometry.MarginBox.Height, 190f, 260f);
+            Assert.True(
+                imageBox.Geometry.MarginBox.Top >= rootBox.Geometry.MarginBox.Top - 1f &&
+                imageBox.Geometry.MarginBox.Bottom <= rootBox.Geometry.MarginBox.Bottom + 1f,
+                $"Expected percentage-height grid item descendants to stay inside the auto-sized grid container. root={rootBox.Geometry.MarginBox} item={itemBox.Geometry.MarginBox} image={imageBox.Geometry.MarginBox}");
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

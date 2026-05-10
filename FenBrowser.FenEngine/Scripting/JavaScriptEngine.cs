@@ -1421,7 +1421,7 @@ namespace FenBrowser.FenEngine.Scripting
 
                 // Use the new DOM-compliant wrapper
                 var callback = args[0].AsFunction();
-                var wrapper = new MutationObserverWrapper(callback);
+                var wrapper = new MutationObserverWrapper(callback, _fenRuntime.Context);
 
                 lock (_mutationLock)
                 {

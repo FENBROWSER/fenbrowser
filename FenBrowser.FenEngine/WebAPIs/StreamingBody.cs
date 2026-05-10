@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
 
 namespace FenBrowser.FenEngine.WebAPIs
 {
@@ -36,6 +37,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         }
         
         public IExecutionContext Context { get; }
+        internal Stream UnderlyingStream => _underlyingStream;
         
         public bool IsDisturbed => _isDisturbed;
         public bool IsLocked => _isLocked;
@@ -52,7 +54,15 @@ namespace FenBrowser.FenEngine.WebAPIs
             Set("locked", FenValue.FromBoolean(true));
             
             var options = args.Length > 0 && args[0].IsObject ? args[0].AsObject() : null;
-            var mode = options?.Get("mode")?.ToString();
+            string mode = null;
+            if (options != null)
+            {
+                var modeValue = options.Get("mode");
+                if (!modeValue.IsUndefined && !modeValue.IsNull)
+                {
+                    mode = modeValue.ToString();
+                }
+            }
             
             if (mode == "byob")
             {
@@ -67,17 +77,17 @@ namespace FenBrowser.FenEngine.WebAPIs
         
         private FenValue Cancel(FenValue[] args, FenValue thisVal)
         {
-            if (_isCancelled) return FenValue.FromUndefined();
+            if (_isCancelled) return FenValue.Undefined;
             
             _isCancelled = true;
             _underlyingStream?.Close();
             
-            var reason = args.Length > 0 ? args[0] : FenValue.FromUndefined();
+            var reason = args.Length > 0 ? args[0] : FenValue.Undefined;
             return FenValue.FromObject(new JsPromise(FenValue.FromFunction(new FenFunction("cancelResolver", 
                 (resolveArgs, resolveThis) => 
                 {
                     resolveArgs[0].AsFunction().Invoke(new[] { reason }, Context);
-                    return FenValue.FromUndefined();
+                    return FenValue.Undefined;
                 })), Context));
         }
         
@@ -139,41 +149,42 @@ namespace FenBrowser.FenEngine.WebAPIs
         private FenValue Read(FenValue[] args, FenValue thisVal)
         {
             return FenValue.FromObject(new JsPromise(FenValue.FromFunction(new FenFunction("readResolver", 
-                async (resolveArgs, resolveThis) => 
+                (resolveArgs, resolveThis) => 
                 {
                     try
                     {
                         var resolve = resolveArgs[0].AsFunction();
-                        var reject = resolveArgs[1].AsFunction();
                         
                         if (_isClosed)
                         {
                             var doneResult = new FenObject();
                             doneResult.Set("done", FenValue.FromBoolean(true));
-                            doneResult.Set("value", FenValue.FromUndefined());
+                            doneResult.Set("value", FenValue.Undefined);
                             resolve.Invoke(new[] { FenValue.FromObject(doneResult) }, _context);
-                            return FenValue.FromUndefined();
+                            return FenValue.Undefined;
                         }
                         
                         var buffer = new byte[4096];
-                        var bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length);
+                        var bytesRead = _stream.Read(buffer, 0, buffer.Length);
                         
                         if (bytesRead == 0)
                         {
                             _isClosed = true;
                             var doneResult = new FenObject();
                             doneResult.Set("done", FenValue.FromBoolean(true));
-                            doneResult.Set("value", FenValue.FromUndefined());
+                            doneResult.Set("value", FenValue.Undefined);
                             resolve.Invoke(new[] { FenValue.FromObject(doneResult) }, _context);
                         }
                         else
                         {
                             var chunk = new byte[bytesRead];
                             Array.Copy(buffer, chunk, bytesRead);
+                            var chunkBuffer = new JsArrayBuffer(bytesRead);
+                            Array.Copy(chunk, chunkBuffer.Data, bytesRead);
                             
                             var result = new FenObject();
                             result.Set("done", FenValue.FromBoolean(false));
-                            result.Set("value", FenValue.FromObject(new JsUint8Array(chunk)));
+                            result.Set("value", FenValue.FromObject(new JsUint8Array(chunkBuffer)));
                             resolve.Invoke(new[] { FenValue.FromObject(result) }, _context);
                         }
                     }
@@ -183,7 +194,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                         reject.Invoke(new[] { FenValue.FromString($"Read error: {ex.Message}") }, _context);
                     }
                     
-                    return FenValue.FromUndefined();
+                    return FenValue.Undefined;
                 })), _context));
         }
         
@@ -194,7 +205,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 _stream?.Close();
                 _isClosed = true;
             }
-            return FenValue.FromUndefined();
+            return FenValue.Undefined;
         }
         
         private FenValue CreateClosedPromise()
@@ -208,7 +219,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                     {
                         resolveArgs[0].AsFunction().Invoke(new FenValue[] { }, _context);
                     }
-                    return FenValue.FromUndefined();
+                    return FenValue.Undefined;
                 })), _context));
         }
     }
@@ -232,7 +243,7 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             var reason = args.Length > 0 ? args[0] : FenValue.FromString("AbortError");
             _signal.Abort(reason);
-            return FenValue.FromUndefined();
+            return FenValue.Undefined;
         }
         
         public JsAbortSignal Signal => _signal;
@@ -250,11 +261,11 @@ namespace FenBrowser.FenEngine.WebAPIs
             _context = context;
             
             Set("aborted", FenValue.FromBoolean(false));
-            Set("reason", FenValue.FromUndefined());
+            Set("reason", FenValue.Undefined);
             Set("throwIfAborted", FenValue.FromFunction(new FenFunction("throwIfAborted", ThrowIfAborted)));
             Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", AddEventListener)));
             Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", RemoveEventListener)));
-            Set("onabort", FenValue.FromUndefined()); // Event handler property
+            Set("onabort", FenValue.Undefined); // Event handler property
         }
         
         public bool Aborted => _aborted;
@@ -268,7 +279,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 // This should throw - in JS this would be a real exception
                 return FenValue.FromError($"AbortError: {reason}");
             }
-            return FenValue.FromUndefined();
+            return FenValue.Undefined;
         }
         
         private FenValue AddEventListener(FenValue[] args, FenValue thisVal)
@@ -277,7 +288,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 _abortHandlers.Add(args[1].AsFunction());
             }
-            return FenValue.FromUndefined();
+            return FenValue.Undefined;
         }
         
         private FenValue RemoveEventListener(FenValue[] args, FenValue thisVal)
@@ -286,7 +297,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 _abortHandlers.Remove(args[1].AsFunction());
             }
-            return FenValue.FromUndefined();
+            return FenValue.Undefined;
         }
         
         public void Abort(FenValue reason)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Layout.Tree;
 using FenBrowser.FenEngine.Layout;
@@ -78,7 +79,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 
         public static void ShiftSubtree(LayoutBox box, float dx, float dy)
         {
+            ShiftSubtree(box, dx, dy, new HashSet<LayoutBox>());
+        }
+
+        private static void ShiftSubtree(LayoutBox box, float dx, float dy, HashSet<LayoutBox> visited)
+        {
             if (box?.Geometry == null)
+            {
+                return;
+            }
+
+            if (!visited.Add(box))
             {
                 return;
             }
@@ -93,7 +104,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                     continue;
                 }
 
-                ShiftSubtree(child, dx, dy);
+                ShiftSubtree(child, dx, dy, visited);
             }
         }
 
@@ -104,6 +115,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
+            var visited = new HashSet<LayoutBox> { box };
             foreach (var child in box.Children)
             {
                 var childPosition = LayoutStyleResolver.GetEffectivePosition(child?.ComputedStyle);
@@ -112,7 +124,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                     continue;
                 }
 
-                ShiftSubtree(child, dx, dy);
+                ShiftSubtree(child, dx, dy, visited);
             }
         }
 

@@ -33,16 +33,16 @@ namespace FenBrowser.Tests.Core
             var doc = parser.Parse();
             var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
 
-            var computed = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth: 1600, viewportHeight: 900);
+            var computed = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth: 1920, viewportHeight: 899);
             var renderer = new SkiaDomRenderer();
-            using var bitmap = new SKBitmap(1600, 900);
+            using var bitmap = new SKBitmap(1920, 899);
             using var canvas = new SKCanvas(bitmap);
 
             renderer.Render(
                 root,
                 canvas,
                 computed,
-                new SKRect(0, 0, 1600, 900),
+                new SKRect(0, 0, 1920, 899),
                 baseUri.AbsoluteUri,
                 (size, overlays) => { });
             canvas.Flush();
@@ -58,6 +58,7 @@ namespace FenBrowser.Tests.Core
             Element topNav = FindFirst(root, e => HasClass(e, "Ne6nSd"));
             Element appsButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Google apps", StringComparison.OrdinalIgnoreCase));
             Element signInButton = FindFirst(root, e => string.Equals(e.GetAttribute("aria-label"), "Sign in", StringComparison.OrdinalIgnoreCase));
+            Element doodleShareButton = FindFirst(root, e => HasClass(e, "IzOpfd"));
             Element languagesPromptContainer = FindFirst(root, e => string.Equals(e.GetAttribute("id"), "SIvCob", StringComparison.OrdinalIgnoreCase))
                 ?? FindFirst(root, e =>
                     e.Descendants().OfType<Text>().Any(t => (t.Data?.IndexOf("Google offered in", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0) &&
@@ -71,6 +72,7 @@ namespace FenBrowser.Tests.Core
                     .OfType<Element>()
                     .FirstOrDefault(IsAnchorWithText);
             Element doodleBand = FindFirst(root, e => HasClass(e, "LS8OJ"));
+            Element doodleImage = FindFirst(root, e => string.Equals(e.GetAttribute("id"), "hplogo", StringComparison.OrdinalIgnoreCase));
             Element formBand = FindFirst(root, e => HasClass(e, "ikrT4e"));
             Element nativeForm = FindFirst(root, e => string.Equals(e.TagName, "FORM", StringComparison.OrdinalIgnoreCase));
 
@@ -83,6 +85,7 @@ namespace FenBrowser.Tests.Core
             Assert.NotNull(appsButton);
             Assert.NotNull(signInButton);
             Assert.NotNull(languageOfferLink);
+            Assert.NotNull(doodleImage);
 
             Assert.True(renderer.LastLayout.TryGetElementRect(searchShell, out var searchShellRect), "Missing layout rect for .RNNXgb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchTextWrapper, out var searchTextWrapperRect), "Missing layout rect for .a4bIc");
@@ -90,9 +93,15 @@ namespace FenBrowser.Tests.Core
             Assert.True(renderer.LastLayout.TryGetElementRect(searchShellInnerBand, out var searchShellInnerBandRect), "Missing layout rect for .SDkEP");
             Assert.True(renderer.LastLayout.TryGetElementRect(aiModeButton, out var aiModeButtonRect), "Missing layout rect for .plR5qb");
             Assert.True(renderer.LastLayout.TryGetElementRect(searchButtonsBand, out var searchButtonsBandRect), "Missing layout rect for .lJ9FBc");
+            Assert.True(renderer.LastLayout.TryGetElementRect(doodleImage, out var doodleImageRect), "Missing layout rect for #hplogo");
+            Assert.True(renderer.LastLayout.TryGetElementRect(languagesPromptContainer, out var languagesPromptRect), "Missing layout rect for #SIvCob");
             Assert.True(renderer.LastLayout.TryGetElementRect(topNav, out var topNavRect), "Missing layout rect for .Ne6nSd");
             Assert.True(renderer.LastLayout.TryGetElementRect(appsButton, out var appsButtonRect), "Missing layout rect for Google apps button");
             Assert.True(renderer.LastLayout.TryGetElementRect(signInButton, out var signInButtonRect), "Missing layout rect for Sign in button");
+            Assert.True(TryFindNearestPrecedingTopNavRect(renderer.LastLayout, topNav, appsButtonRect, out var precedingAppsRect), "Missing top-nav control before Google apps button");
+            ElementGeometry doodleShareRect = default;
+            bool hasDoodleShareRect = doodleShareButton != null &&
+                                      renderer.LastLayout.TryGetElementRect(doodleShareButton, out doodleShareRect);
             Assert.True(computed.TryGetValue(signInButton, out var signInStyle), "Missing computed style for Sign in button");
             computed.TryGetValue(searchTextArea, out var searchTextAreaStyle);
             computed.TryGetValue(searchTextWrapper, out var searchTextWrapperStyle);
@@ -108,7 +117,7 @@ namespace FenBrowser.Tests.Core
 
             string layoutContext =
                 $"main={DescribeRect(renderer.LastLayout, mainColumn)} nav={DescribeRect(renderer.LastLayout, topNav)} " +
-                $"doodle={DescribeRect(renderer.LastLayout, doodleBand)} form={DescribeRect(renderer.LastLayout, formBand)} " +
+                $"doodle={DescribeRect(renderer.LastLayout, doodleBand)} hplogo={DescribeRect(doodleImageRect)} form={DescribeRect(renderer.LastLayout, formBand)} " +
                 $"wrapper={DescribeRect(renderer.LastLayout, searchFormWrapper)} shell={DescribeRect(searchShellRect)} shellInner={DescribeRect(searchShellInnerBandRect)} " +
                 $"textWrap={DescribeRect(searchTextWrapperRect)} textArea={DescribeRect(searchTextAreaRect)} textAreaTextLen={searchTextAreaTextLength} " +
                 $"buttons={DescribeRect(searchButtonsBandRect)} {searchStyleContext}";
@@ -130,7 +139,13 @@ namespace FenBrowser.Tests.Core
             Assert.True(searchShellRect.Width >= 400f, $"Expected .RNNXgb width >= 400, got {searchShellRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchShellRect.Height >= 48f, $"Expected .RNNXgb height >= 48, got {searchShellRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchShellRect.Top < 450f, $"Expected .RNNXgb to remain within the first half of the viewport, got top={searchShellRect.Top}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
-            Assert.True(searchTextWrapperRect.Width >= 220f, $"Expected .a4bIc width >= 220, got {searchTextWrapperRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+            Assert.True(
+                doodleImageRect.Bottom + 4f <= searchShellRect.Top,
+                $"Expected Google doodle to stay above search shell without overlap. hplogo={DescribeRect(doodleImageRect)} shell={DescribeRect(searchShellRect)}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+            Assert.True(
+                searchButtonsBandRect.Bottom + 4f <= languagesPromptRect.Top,
+                $"Expected language prompt to stay below search controls without overlap. buttons={DescribeRect(searchButtonsBandRect)} languages={DescribeRect(languagesPromptRect)} hplogo={DescribeRect(doodleImageRect)}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
+            Assert.True(searchTextWrapperRect.Width >= 180f, $"Expected .a4bIc width >= 180, got {searchTextWrapperRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchTextAreaRect.Width >= 180f, $"Expected #APjFqb width >= 180, got {searchTextAreaRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(aiModeButtonRect.Width >= 60f, $"Expected .plR5qb width >= 60, got {aiModeButtonRect.Width}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
             Assert.True(searchButtonsBandRect.Height >= 30f, $"Expected .lJ9FBc height >= 30, got {searchButtonsBandRect.Height}. {layoutContext}{rawBoxContext}{ancestryContext}{childContext}");
@@ -143,8 +158,28 @@ namespace FenBrowser.Tests.Core
             Assert.InRange(signInButtonRect.Top, navBandTop, navBandBottom);
             Assert.InRange(appsButtonRect.Height, 24f, 64f);
             Assert.InRange(appsButtonRect.Width, 24f, 64f);
-            Assert.InRange(signInButtonRect.Height, 36f, 72f);
-            Assert.InRange(signInButtonRect.Width, 80f, 160f);
+            Assert.InRange(signInButtonRect.Height, 38f, 44f);
+            Assert.InRange(signInButtonRect.Width, 84f, 120f);
+            Assert.True(
+                precedingAppsRect.Right + 6f <= appsButtonRect.Left,
+                $"Expected the control before Google apps to remain separate with a visible gap. previous={DescribeRect(precedingAppsRect)} apps={DescribeRect(appsButtonRect)} nav={DescribeRect(topNavRect)}");
+            if (hasDoodleShareRect && renderer.LastLayout.TryGetElementRect(doodleBand, out var doodleBandRect))
+            {
+                Assert.True(
+                    doodleShareRect.Left >= doodleBandRect.Left + (doodleBandRect.Width * 0.60f) &&
+                    doodleShareRect.Left <= doodleBandRect.Right + 80f,
+                    $"Expected doodle Share button to resolve beside doodle bounds, not viewport right. share={DescribeRect(doodleShareRect)} doodle={DescribeRect(doodleBandRect)}");
+                Assert.InRange(doodleShareRect.Width, 32f, 72f);
+                Assert.InRange(doodleShareRect.Height, 32f, 72f);
+                Assert.True(
+                    doodleShareRect.Left >= doodleImageRect.Right - 72f &&
+                    doodleShareRect.Left <= doodleImageRect.Right + 96f,
+                    $"Expected doodle Share button beside the doodle image, not near the viewport edge. share={DescribeRect(doodleShareRect)} image={DescribeRect(doodleImageRect)} doodle={DescribeRect(doodleBandRect)}");
+                Assert.True(
+                    doodleShareRect.Top >= doodleImageRect.Top - 24f &&
+                    doodleShareRect.Bottom <= doodleImageRect.Bottom + 32f,
+                    $"Expected doodle Share button to stay vertically attached to the doodle image. share={DescribeRect(doodleShareRect)} image={DescribeRect(doodleImageRect)}");
+            }
             Assert.True(aiModeButtonRect.Top > topNavRect.Bottom + 8f, $"Expected AI mode button to remain below top nav band. ai={DescribeRect(aiModeButtonRect)} nav={DescribeRect(topNavRect)}. {layoutContext}");
             Assert.True(searchShellRect.Top > topNavRect.Bottom + 8f, $"Expected search shell to remain below top nav band. shell={DescribeRect(searchShellRect)} nav={DescribeRect(topNavRect)}. {layoutContext}");
             float shellCenterY = searchShellRect.Top + (searchShellRect.Height * 0.5f);
@@ -241,6 +276,21 @@ namespace FenBrowser.Tests.Core
             Assert.True(aiModePaintCount > 0, $"Expected paint nodes for .plR5qb.{paintContext}");
             Assert.True(wrapperPaintCount > 0 || textAreaPaintCount > 0, $"Expected search wrapper descendants to materialize into paint coverage.{paintContext}");
             Assert.True(buttonsBandPaintCount > 0 || paintNodes.Any(n => searchButtonsBand.Contains(n.SourceNode as Node)), $"Expected .lJ9FBc descendants to materialize into paint coverage.{paintContext}");
+            var signInBackground = paintNodes
+                .OfType<BackgroundPaintNode>()
+                .Where(n => ReferenceEquals(n.SourceNode, signInButton) &&
+                            n.Color.HasValue &&
+                            IsGoogleSignInBlue(n.Color.Value))
+                .OrderByDescending(n => Math.Max(0f, n.Bounds.Width) * Math.Max(0f, n.Bounds.Height))
+                .FirstOrDefault();
+            Assert.NotNull(signInBackground);
+            Assert.InRange(signInBackground.Bounds.Height, 38f, 44f);
+            Assert.InRange(signInBackground.Bounds.Width, 84f, 120f);
+            Assert.True(
+                TryFindTopRightBlueBounds(bitmap, out var signInBlueBounds),
+                $"Expected Sign in blue pixels in top-right viewport. {paintContext}");
+            Assert.InRange(signInBlueBounds.Height, 38f, 44f);
+            Assert.InRange(signInBlueBounds.Width, 84f, 120f);
             Assert.True(
                 topBandArtifactTextNodes.Count == 0,
                 $"Expected no leaked top-band artifact text nodes. found={string.Join(" | ", topBandArtifactTextNodes.Take(6).Select(DescribePaintNode))}. {paintContext}");
@@ -515,6 +565,40 @@ namespace FenBrowser.Tests.Core
             return text.Length > 0;
         }
 
+        private static bool TryFindNearestPrecedingTopNavRect(LayoutResult layout, Element topNav, ElementGeometry appsRect, out ElementGeometry rect)
+        {
+            rect = default;
+            if (layout == null || topNav == null)
+            {
+                return false;
+            }
+
+            var candidates = topNav
+                .Descendants()
+                .OfType<Element>()
+                .Select(e =>
+                {
+                    bool hasRect = layout.TryGetElementRect(e, out var candidateRect);
+                    return (hasRect, candidateRect);
+                })
+                .Where(x => x.hasRect &&
+                            x.candidateRect.Width >= 12f &&
+                            x.candidateRect.Height >= 12f &&
+                            x.candidateRect.Right <= appsRect.Left + 0.5f &&
+                            x.candidateRect.Top < appsRect.Bottom &&
+                            x.candidateRect.Bottom > appsRect.Top)
+                .OrderByDescending(x => x.candidateRect.Right)
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                return false;
+            }
+
+            rect = candidates[0].candidateRect;
+            return true;
+        }
+
         private static bool TryResolveRenderedTextColor(IEnumerable<PaintNodeBase> nodes, Element element, out SKColor color)
         {
             color = default;
@@ -542,6 +626,52 @@ namespace FenBrowser.Tests.Core
         private static bool IsNearBlack(SKColor color)
         {
             return color.Red <= 48 && color.Green <= 48 && color.Blue <= 48;
+        }
+
+        private static bool IsGoogleSignInBlue(SKColor color)
+        {
+            return color.Blue >= 120 && color.Red <= 80 && color.Green <= 140;
+        }
+
+        private static bool TryFindTopRightBlueBounds(SKBitmap bitmap, out SKRect bounds)
+        {
+            bounds = default;
+            if (bitmap == null)
+            {
+                return false;
+            }
+
+            int minX = int.MaxValue;
+            int minY = int.MaxValue;
+            int maxX = -1;
+            int maxY = -1;
+            int startX = Math.Max(0, bitmap.Width - 500);
+            int endY = Math.Min(bitmap.Height, 140);
+
+            for (int y = 0; y < endY; y++)
+            {
+                for (int x = startX; x < bitmap.Width; x++)
+                {
+                    SKColor color = bitmap.GetPixel(x, y);
+                    if (!IsGoogleSignInBlue(color))
+                    {
+                        continue;
+                    }
+
+                    minX = Math.Min(minX, x);
+                    minY = Math.Min(minY, y);
+                    maxX = Math.Max(maxX, x);
+                    maxY = Math.Max(maxY, y);
+                }
+            }
+
+            if (maxX < minX || maxY < minY)
+            {
+                return false;
+            }
+
+            bounds = new SKRect(minX, minY, maxX + 1, maxY + 1);
+            return true;
         }
 
         private static string DescribeRect(LayoutResult layout, Element element)

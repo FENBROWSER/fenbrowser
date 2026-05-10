@@ -864,7 +864,9 @@ namespace FenBrowser.Tests.Core
             };
             styles[anchor] = new CssComputed
             {
-                Display = "inline-block",
+                Display = "block",
+                Float = "right",
+                BoxSizing = "border-box",
                 MinWidth = 85,
                 MinHeight = 40,
                 Padding = new Thickness(12, 10, 12, 10),
@@ -893,8 +895,75 @@ namespace FenBrowser.Tests.Core
             Assert.True(renderer.LastLayout.TryGetElementRect(label, out var labelRect));
 
             Assert.True(anchorRect.Width >= 85f, $"Expected sign-in anchor width to stay at least 85px, got {anchorRect.Width}.");
+            Assert.InRange(anchorRect.Width, 85f, 96f);
+            Assert.InRange(anchorRect.Height, 40f, 44f);
             Assert.True(labelRect.Left >= anchorRect.Left - 1f, $"Expected label left edge to stay inside the anchor, got label={labelRect.Left} anchor={anchorRect.Left}.");
             Assert.True(labelRect.Right <= anchorRect.Right + 1f, $"Expected label right edge to stay inside the anchor, got label={labelRect.Right} anchor={anchorRect.Right}.");
+        }
+
+        [Fact]
+        public void FloatedSignInAnchor_WithNestedClampedSpan_UsesBorderBoxMinHeight()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var root = new Element("div");
+            var wrapper = new Element("div");
+            var anchor = new Element("a");
+            var label = new Element("span");
+
+            root.AppendChild(wrapper);
+            wrapper.AppendChild(anchor);
+            anchor.AppendChild(label);
+            label.AppendChild(new Text("Sign in"));
+
+            styles[root] = new CssComputed
+            {
+                Display = "block",
+                Width = 400
+            };
+            styles[wrapper] = new CssComputed
+            {
+                Display = "block",
+                Width = 117,
+                Height = 48,
+                Padding = new Thickness(4, 4, 4, 4)
+            };
+            styles[anchor] = new CssComputed
+            {
+                Display = "inline-block",
+                Float = "right",
+                BoxSizing = "border-box",
+                MinWidth = 85,
+                MinHeight = 40,
+                Padding = new Thickness(12, 10, 12, 10),
+                LineHeight = 18,
+                TextAlign = SKTextAlign.Center
+            };
+            styles[label] = new CssComputed
+            {
+                Display = "inline",
+                MaxWidthPercent = 100,
+                MaxHeight = 40,
+                Overflow = "hidden",
+                OverflowWrap = "break-word",
+                WordBreak = "break-word"
+            };
+
+            renderer.Render(
+                root,
+                new SKCanvas(new SKBitmap(800, 600)),
+                styles,
+                new SKRect(0, 0, 800, 600),
+                "http://example.com",
+                (size, overlays) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(anchor, out var anchorRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(label, out var labelRect));
+
+            Assert.InRange(anchorRect.Width, 85f, 120f);
+            Assert.InRange(anchorRect.Height, 38f, 44f);
+            Assert.True(labelRect.Height <= 24f, $"Expected label line box to stay near line-height, got {labelRect.Height}.");
         }
 
         [Fact]

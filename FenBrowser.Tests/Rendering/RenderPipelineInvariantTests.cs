@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
 using Xunit;
 
@@ -79,6 +81,39 @@ namespace FenBrowser.Tests.Rendering
             RenderPipeline.EndFrame();
 
             Assert.True(RenderPipeline.LastFrameDuration > TimeSpan.Zero);
+        }
+
+        [Fact]
+        public void ConcurrentThreads_CanRunIndependentFrameSequences()
+        {
+            var failures = new ConcurrentQueue<Exception>();
+            using var ready = new Barrier(2);
+
+            void runFrame()
+            {
+                try
+                {
+                    RenderPipeline.Reset();
+                    ready.SignalAndWait();
+                    RenderPipeline.EnterLayout();
+                    Thread.Sleep(5);
+                    RenderPipeline.EndLayout();
+                    RenderPipeline.EnterPaint();
+                    RenderPipeline.EndPaint();
+                    RenderPipeline.EnterPresent();
+                    RenderPipeline.EndFrame();
+                }
+                catch (Exception ex)
+                {
+                    failures.Enqueue(ex);
+                }
+            }
+
+            var first = Task.Run(runFrame);
+            var second = Task.Run(runFrame);
+            Task.WaitAll(first, second);
+
+            Assert.Empty(failures);
         }
     }
 }

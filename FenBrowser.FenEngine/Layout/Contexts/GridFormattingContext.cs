@@ -55,9 +55,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
 
                 float childHeight = availableSize.Height;
-                if (float.IsNaN(childHeight) || float.IsInfinity(childHeight))
+                bool hasDefiniteChildHeight =
+                    !float.IsNaN(childHeight) &&
+                    !float.IsInfinity(childHeight) &&
+                    childHeight > 0f;
+                if (!hasDefiniteChildHeight)
                 {
-                    childHeight = state.ContainingBlockHeight > 0f ? state.ContainingBlockHeight : state.ViewportHeight;
+                    // Intrinsic grid measurement is not a definite containing block
+                    // for percentage-height items. Falling back to the viewport here
+                    // lets grid items center inside a synthetic viewport-height track
+                    // while the auto-height grid container later shrinks to content.
+                    childHeight = 0f;
                 }
 
                 float containingWidth = (!float.IsInfinity(childWidth) && childWidth > 0f)
@@ -67,7 +75,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 var childState = new LayoutState(
                     new SKSize(childWidth, childHeight),
                     containingWidth,
-                    childHeight,
+                    hasDefiniteChildHeight ? childHeight : 0f,
                     state.ViewportWidth,
                     state.ViewportHeight,
                     state.Deadline);

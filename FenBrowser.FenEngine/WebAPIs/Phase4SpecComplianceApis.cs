@@ -1,4 +1,6 @@
 using System;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.Interfaces;
 
@@ -74,7 +76,7 @@ namespace FenBrowser.FenEngine.WebAPIs
                 var streamObj = args[0].AsObject();
                 if (streamObj is JsReadableStream stream)
                 {
-                    var reader = new JsReadableStreamDefaultReader(stream, context);
+                    var reader = new JsReadableStreamDefaultReader(stream.UnderlyingStream, context);
                     return FenValue.FromObject(reader);
                 }
                 

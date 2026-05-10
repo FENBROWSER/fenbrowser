@@ -20,14 +20,8 @@ namespace FenBrowser.FenEngine.Rendering
 
     public static class RenderPipeline
     {
-        private static RenderPhase _currentPhase = RenderPhase.Idle;
-        private static long _frameSequence;
-        private static DateTime _frameStartedUtc;
-        private static TimeSpan _lastFrameDuration;
-        private static bool _firstLayoutLogged;
-        private static bool _firstPaintLogged;
-        private static int _ownerThreadId;
-        private static readonly object s_stateLock = new object();
+        [ThreadStatic]
+        private static RenderPipelineState t_state;
 
         public static bool StrictInvariants { get; set; } = true;
         public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
@@ -36,9 +30,10 @@ namespace FenBrowser.FenEngine.Rendering
         {
             get
             {
-                lock (s_stateLock)
+                var state = GetState();
+                lock (state.SyncRoot)
                 {
-                    return _currentPhase;
+                    return state.CurrentPhase;
                 }
             }
         }
@@ -47,9 +42,10 @@ namespace FenBrowser.FenEngine.Rendering
         {
             get
             {
-                lock (s_stateLock)
+                var state = GetState();
+                lock (state.SyncRoot)
                 {
-                    return _frameSequence;
+                    return state.FrameSequence;
                 }
             }
         }
@@ -58,9 +54,10 @@ namespace FenBrowser.FenEngine.Rendering
         {
             get
             {
-                lock (s_stateLock)
+                var state = GetState();
+                lock (state.SyncRoot)
                 {
-                    return _lastFrameDuration;
+                    return state.LastFrameDuration;
                 }
             }
         }
@@ -69,48 +66,52 @@ namespace FenBrowser.FenEngine.Rendering
         {
             get
             {
-                lock (s_stateLock)
+                var state = GetState();
+                lock (state.SyncRoot)
                 {
-                    return _lastFrameDuration > FrameBudget;
+                    return state.LastFrameDuration > FrameBudget;
                 }
             }
         }
 
         public static void Reset()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                _currentPhase = RenderPhase.Idle;
-                _frameStartedUtc = default;
-                _lastFrameDuration = TimeSpan.Zero;
-                _firstLayoutLogged = false;
-                _firstPaintLogged = false;
-                _ownerThreadId = 0;
+                state.CurrentPhase = RenderPhase.Idle;
+                state.FrameStartedUtc = default;
+                state.LastFrameDuration = TimeSpan.Zero;
+                state.FirstLayoutLogged = false;
+                state.FirstPaintLogged = false;
+                state.OwnerThreadId = 0;
             }
         }
 
         public static void EnterLayout()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EnterLayout), acquireIfUnclaimed: true);
-                RequirePhase(RenderPhase.Idle, nameof(EnterLayout));
-                _frameSequence++;
-                _frameStartedUtc = DateTime.UtcNow;
-                _currentPhase = RenderPhase.Layout;
+                EnsureThreadAffinity(state, nameof(EnterLayout), acquireIfUnclaimed: true);
+                RequirePhase(state, RenderPhase.Idle, nameof(EnterLayout));
+                state.FrameSequence++;
+                state.FrameStartedUtc = DateTime.UtcNow;
+                state.CurrentPhase = RenderPhase.Layout;
             }
         }
 
         public static void EndLayout()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EndLayout));
-                RequirePhase(RenderPhase.Layout, nameof(EndLayout));
-                _currentPhase = RenderPhase.LayoutFrozen;
-                if (!_firstLayoutLogged)
+                EnsureThreadAffinity(state, nameof(EndLayout));
+                RequirePhase(state, RenderPhase.Layout, nameof(EndLayout));
+                state.CurrentPhase = RenderPhase.LayoutFrozen;
+                if (!state.FirstLayoutLogged)
                 {
-                    _firstLayoutLogged = true;
+                    state.FirstLayoutLogged = true;
                     EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
                 }
             }
@@ -118,24 +119,26 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static void EnterPaint()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EnterPaint));
-                RequirePhase(RenderPhase.LayoutFrozen, nameof(EnterPaint));
-                _currentPhase = RenderPhase.Paint;
+                EnsureThreadAffinity(state, nameof(EnterPaint));
+                RequirePhase(state, RenderPhase.LayoutFrozen, nameof(EnterPaint));
+                state.CurrentPhase = RenderPhase.Paint;
             }
         }
 
         public static void EndPaint()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EndPaint));
-                RequirePhase(RenderPhase.Paint, nameof(EndPaint));
-                _currentPhase = RenderPhase.Composite;
-                if (!_firstPaintLogged)
+                EnsureThreadAffinity(state, nameof(EndPaint));
+                RequirePhase(state, RenderPhase.Paint, nameof(EndPaint));
+                state.CurrentPhase = RenderPhase.Composite;
+                if (!state.FirstPaintLogged)
                 {
-                    _firstPaintLogged = true;
+                    state.FirstPaintLogged = true;
                     EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
                 }
             }
@@ -143,45 +146,48 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static void EnterPresent()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EnterPresent));
-                RequirePhase(RenderPhase.Composite, nameof(EnterPresent));
-                _currentPhase = RenderPhase.Present;
+                EnsureThreadAffinity(state, nameof(EnterPresent));
+                RequirePhase(state, RenderPhase.Composite, nameof(EnterPresent));
+                state.CurrentPhase = RenderPhase.Present;
             }
         }
 
         public static void EndFrame()
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                EnsureThreadAffinity(nameof(EndFrame));
-                RequirePhase(RenderPhase.Present, nameof(EndFrame));
-                if (_frameStartedUtc != default)
+                EnsureThreadAffinity(state, nameof(EndFrame));
+                RequirePhase(state, RenderPhase.Present, nameof(EndFrame));
+                if (state.FrameStartedUtc != default)
                 {
-                    _lastFrameDuration = DateTime.UtcNow - _frameStartedUtc;
+                    state.LastFrameDuration = DateTime.UtcNow - state.FrameStartedUtc;
                     EngineLogCompat.Debug(
-                        $"[PIPELINE][SUMMARY] frame={_frameSequence} durationMs={_lastFrameDuration.TotalMilliseconds:F2} phase={_currentPhase}",
+                        $"[PIPELINE][SUMMARY] frame={state.FrameSequence} durationMs={state.LastFrameDuration.TotalMilliseconds:F2} phase={state.CurrentPhase}",
                         LogCategory.Rendering);
-                    if (_lastFrameDuration > FrameBudget)
+                    if (state.LastFrameDuration > FrameBudget)
                     {
-                        EngineLogCompat.Warn($"[PIPELINE] Frame {_frameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                        EngineLogCompat.Warn($"[PIPELINE] Frame {state.FrameSequence} exceeded budget: {state.LastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
                     }
                 }
 
-                _currentPhase = RenderPhase.Idle;
-                _frameStartedUtc = default;
-                _ownerThreadId = 0;
+                state.CurrentPhase = RenderPhase.Idle;
+                state.FrameStartedUtc = default;
+                state.OwnerThreadId = 0;
             }
         }
 
         public static void AssertPhase(RenderPhase expected)
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                if (_currentPhase != expected)
+                if (state.CurrentPhase != expected)
                 {
-                    HandleViolation($"AssertPhase failed. Expected {expected}, actual {_currentPhase}", null);
+                    HandleViolation(state, $"AssertPhase failed. Expected {expected}, actual {state.CurrentPhase}", null);
                 }
             }
         }
@@ -191,11 +197,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void AssertNotPhase(RenderPhase forbidden)
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                if (_currentPhase == forbidden)
+                if (state.CurrentPhase == forbidden)
                 {
-                    HandleViolation($"AssertNotPhase failed. Forbidden phase {forbidden} is active.", null);
+                    HandleViolation(state, $"AssertNotPhase failed. Forbidden phase {forbidden} is active.", null);
                 }
             }
         }
@@ -205,43 +212,50 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void AssertLayerSeparation(bool isDebugOrOverlay)
         {
-            lock (s_stateLock)
+            var state = GetState();
+            lock (state.SyncRoot)
             {
-                if (isDebugOrOverlay && _currentPhase != RenderPhase.Composite && _currentPhase != RenderPhase.Present)
+                if (isDebugOrOverlay && state.CurrentPhase != RenderPhase.Composite && state.CurrentPhase != RenderPhase.Present)
                 {
-                    HandleViolation($"Debug/overlay drawing must happen in Composite/Present. Actual: {_currentPhase}", null);
+                    HandleViolation(state, $"Debug/overlay drawing must happen in Composite/Present. Actual: {state.CurrentPhase}", null);
                 }
             }
         }
 
-        private static void RequirePhase(RenderPhase expected, string operation)
+        private static RenderPipelineState GetState()
         {
-            if (_currentPhase != expected)
+            return t_state ??= new RenderPipelineState();
+        }
+
+        private static void RequirePhase(RenderPipelineState state, RenderPhase expected, string operation)
+        {
+            if (state.CurrentPhase != expected)
             {
-                HandleViolation($"{operation} requires phase {expected}, actual {_currentPhase}", expected);
+                HandleViolation(state, $"{operation} requires phase {expected}, actual {state.CurrentPhase}", expected);
             }
         }
 
-        private static void EnsureThreadAffinity(string operation, bool acquireIfUnclaimed = false)
+        private static void EnsureThreadAffinity(RenderPipelineState state, string operation, bool acquireIfUnclaimed = false)
         {
             var currentThreadId = Environment.CurrentManagedThreadId;
-            if (_ownerThreadId == 0 && acquireIfUnclaimed)
+            if (state.OwnerThreadId == 0 && acquireIfUnclaimed)
             {
-                _ownerThreadId = currentThreadId;
+                state.OwnerThreadId = currentThreadId;
                 return;
             }
 
-            if (_ownerThreadId == 0 || _ownerThreadId == currentThreadId)
+            if (state.OwnerThreadId == 0 || state.OwnerThreadId == currentThreadId)
             {
                 return;
             }
 
             HandleViolation(
-                $"{operation} called on thread {currentThreadId}, but active frame is owned by thread {_ownerThreadId}",
+                state,
+                $"{operation} called on thread {currentThreadId}, but active frame is owned by thread {state.OwnerThreadId}",
                 null);
         }
 
-        private static void HandleViolation(string message, RenderPhase? recoverTo)
+        private static void HandleViolation(RenderPipelineState state, string message, RenderPhase? recoverTo)
         {
             if (StrictInvariants)
             {
@@ -251,8 +265,27 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Warn($"[PIPELINE RECOVERY] {message}", LogCategory.Rendering);
             if (recoverTo.HasValue)
             {
-                _currentPhase = recoverTo.Value;
+                state.CurrentPhase = recoverTo.Value;
             }
+        }
+
+        private sealed class RenderPipelineState
+        {
+            public object SyncRoot { get; } = new object();
+
+            public RenderPhase CurrentPhase { get; set; } = RenderPhase.Idle;
+
+            public long FrameSequence { get; set; }
+
+            public DateTime FrameStartedUtc { get; set; }
+
+            public TimeSpan LastFrameDuration { get; set; }
+
+            public bool FirstLayoutLogged { get; set; }
+
+            public bool FirstPaintLogged { get; set; }
+
+            public int OwnerThreadId { get; set; }
         }
     }
 

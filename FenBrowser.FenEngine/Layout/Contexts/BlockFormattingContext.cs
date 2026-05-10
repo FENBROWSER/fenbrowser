@@ -490,6 +490,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (maxWidth > 0f)
                 {
                     maxWidth = MathF.Ceiling(maxWidth - 0.001f);
+                    if (string.Equals(blockBox.ComputedStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) &&
+                        TryResolveBorderBoxMinWidth(blockBox, state, out float borderBoxMinWidth) &&
+                        maxWidth <= borderBoxMinWidth + 0.5f)
+                    {
+                        float horizontalChrome =
+                            (float)blockBox.Geometry.Padding.Left +
+                            (float)blockBox.Geometry.Padding.Right +
+                            (float)blockBox.Geometry.Border.Left +
+                            (float)blockBox.Geometry.Border.Right;
+                        maxWidth = Math.Max(0f, borderBoxMinWidth - horizontalChrome);
+                    }
                 }
                  
                 // Update ContentBox width
@@ -657,7 +668,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     if (minH > 0f)
                     {
+                        float borderBoxMinHeight = minH;
                         minH = Math.Max(0f, minH - nonContentHeight);
+                        if (ShouldClampClippedInlineLabelAutoHeight(blockBox, borderBoxMinHeight, nonContentHeight, resolvedContentHeight))
+                        {
+                            resolvedContentHeight = minH;
+                        }
                     }
 
                     if (float.IsFinite(maxH))
@@ -717,6 +733,139 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state,
                     collapsePositioningMarginsInFinalGeometry: true);
             }
+        }
+
+        private static bool ShouldClampClippedInlineLabelAutoHeight(LayoutBox box, float borderBoxMinHeight, float nonContentHeight, float resolvedContentHeight)
+        {
+            if (box?.ComputedStyle == null ||
+                borderBoxMinHeight <= 0f ||
+                !string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) ||
+                box.Children.Count(c => c != null && !c.IsOutOfFlow) != 1)
+            {
+                return false;
+            }
+
+            var child = box.Children.FirstOrDefault(c => c != null && !c.IsOutOfFlow);
+            var childStyle = child?.ComputedStyle;
+            if (child == null ||
+                !HasClippedInlineMaxHeight(child))
+            {
+                return false;
+            }
+
+            float currentBorderBoxHeight = resolvedContentHeight + nonContentHeight;
+            if (currentBorderBoxHeight <= borderBoxMinHeight + 0.5f ||
+                !ContainsOnlyInlineTextContent(child))
+            {
+                return false;
+            }
+
+            float lineHeight = box.ComputedStyle.LineHeight.HasValue && box.ComputedStyle.LineHeight.Value > 0
+                ? (float)box.ComputedStyle.LineHeight.Value
+                : (float)(box.ComputedStyle.FontSize ?? 16d) * 1.2f;
+            float minContentHeight = Math.Max(0f, borderBoxMinHeight - nonContentHeight);
+            return lineHeight <= minContentHeight + 0.5f;
+        }
+
+        private static bool HasClippedInlineMaxHeight(LayoutBox box)
+        {
+            if (box == null)
+            {
+                return false;
+            }
+
+            var style = box.ComputedStyle;
+            if (style != null &&
+                string.Equals(style.Display, "inline", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(style.Overflow, "hidden", StringComparison.OrdinalIgnoreCase) &&
+                style.MaxHeight.HasValue)
+            {
+                return true;
+            }
+
+            foreach (var child in box.Children)
+            {
+                if (HasClippedInlineMaxHeight(child))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ContainsOnlyInlineTextContent(LayoutBox box)
+        {
+            if (box == null)
+            {
+                return true;
+            }
+
+            foreach (var child in box.Children)
+            {
+                if (child == null)
+                {
+                    continue;
+                }
+
+                if (child.SourceNode is FenBrowser.Core.Dom.V2.Element &&
+                    !string.Equals(child.ComputedStyle?.Display, "inline", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (!ContainsOnlyInlineTextContent(child))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool TryResolveBorderBoxMinWidth(LayoutBox box, LayoutState state, out float minWidth)
+        {
+            minWidth = 0f;
+            var style = box?.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.MinWidth.HasValue)
+            {
+                minWidth = (float)style.MinWidth.Value;
+                return minWidth > 0f;
+            }
+
+            if (style.MinWidthPercent.HasValue)
+            {
+                float parentWidth = state.AvailableSize.Width;
+                if (!float.IsFinite(parentWidth) || parentWidth <= 0f)
+                {
+                    parentWidth = state.ContainingBlockWidth > 0f ? state.ContainingBlockWidth : state.ViewportWidth;
+                }
+
+                if (parentWidth > 0f)
+                {
+                    minWidth = (float)(style.MinWidthPercent.Value / 100.0 * parentWidth);
+                    return minWidth > 0f;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(style.MinWidthExpression))
+            {
+                float parentWidth = state.AvailableSize.Width;
+                if (!float.IsFinite(parentWidth) || parentWidth <= 0f)
+                {
+                    parentWidth = state.ContainingBlockWidth > 0f ? state.ContainingBlockWidth : state.ViewportWidth;
+                }
+
+                minWidth = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                return minWidth > 0f;
+            }
+
+            return false;
         }
 
         private static float MeasureShrinkToFitWidth(LayoutBox box)
