@@ -54,10 +54,71 @@ namespace FenBrowser.FenEngine.Workers
         public IExecutionContext Context { get; private set; } // Added for Phase G
 
         /// <summary>
-        /// Creates a new worker runtime with isolated execution context
+        /// Async factory method to create a worker without blocking the main thread.
+        /// Returns a Task<WorkerRuntime> that completes when the worker is ready.
         /// </summary>
-        /// <param name="scriptUrl">URL of the worker script</param>
-        /// <param name="origin">Origin for security context</param>
+        public static async Task<WorkerRuntime> CreateAsync(
+            string scriptUrl,
+            string origin,
+            FenBrowser.FenEngine.Storage.IStorageBackend storageBackend = null,
+            Func<Uri, Task<string>> scriptFetcher = null,
+            Func<Uri, bool> scriptUriAllowed = null,
+            bool isServiceWorker = false)
+        {
+            var worker = new WorkerRuntime();
+            worker._scriptUrl = scriptUrl ?? throw new ArgumentNullException(nameof(scriptUrl));
+            worker._origin = origin ?? "null";
+            worker._storageBackend = storageBackend ?? new FenBrowser.FenEngine.Storage.InMemoryStorageBackend();
+            worker._scriptFetcher = scriptFetcher;
+            worker._scriptUriAllowed = scriptUriAllowed;
+            worker._isServiceWorker = isServiceWorker;
+            worker._taskQueue = new TaskQueue();
+            worker._microtaskQueue = new MicrotaskQueue();
+            worker._cts = new CancellationTokenSource();
+            worker._taskSignal = new AutoResetEvent(false);
+            worker.Context = new FenBrowser.FenEngine.Core.ExecutionContext(null);
+            worker._isRunning = true;
+
+            if (!Uri.TryCreate(worker._scriptUrl, UriKind.Absolute, out worker._resolvedScriptUri))
+            {
+                if (Uri.TryCreate(worker._origin, UriKind.Absolute, out var originUri) &&
+                    Uri.TryCreate(originUri, worker._scriptUrl, out var resolvedFromOrigin))
+                {
+                    worker._resolvedScriptUri = resolvedFromOrigin;
+                }
+                else
+                {
+                    throw new ArgumentException($"Worker script URL must be absolute or origin-resolvable: {worker._scriptUrl}", nameof(scriptUrl));
+                }
+            }
+
+            try
+            {
+                // Load script asynchronously before starting worker thread
+                worker._bootstrapScriptLoadTask = worker.LoadWorkerScriptAsync();
+                var scriptContent = await worker._bootstrapScriptLoadTask.ConfigureAwait(false);
+                worker._bootstrapCompleted = true;
+                
+                // Only start worker thread after script is successfully loaded
+                worker._workerThread = new Thread(worker.WorkerThreadProc)
+                {
+                    Name = $"Worker-{Guid.NewGuid():N}",
+                    IsBackground = true
+                };
+                worker._workerThread.Start();
+                
+                EngineLogCompat.Debug($"[WorkerRuntime] Worker initialized and thread started for {scriptUrl}", LogCategory.JavaScript);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[WorkerRuntime] Failed to initialize worker: {ex.Message}", LogCategory.Errors);
+                worker.OnError?.Invoke(ex);
+            }
+
+            return worker;
+        }
+        
+        // Legacy constructor kept for compatibility - delegates to async factory
         public WorkerRuntime(
             string scriptUrl,
             string origin,
@@ -92,18 +153,12 @@ namespace FenBrowser.FenEngine.Workers
                 }
             }
 
-            _bootstrapScriptLoadTask = Task.Run(() => LoadWorkerScriptAsync(), CancellationToken.None);
+            // Phase 4: Async Worker Initialization - Start loading script asynchronously
+            // The worker thread will be started only when script is ready or failed
+            _bootstrapScriptLoadTask = LoadWorkerScriptAsync();
             _ = ObserveBootstrapCompletionAsync();
 
-            // Start worker thread
-            _workerThread = new Thread(WorkerThreadProc)
-            {
-                Name = $"Worker-{Guid.NewGuid():N}",
-                IsBackground = true
-            };
-            _workerThread.Start();
-
-            EngineLogCompat.Debug($"[WorkerRuntime] Created worker for {scriptUrl} (origin: {origin})", LogCategory.JavaScript);
+            EngineLogCompat.Debug($"[WorkerRuntime] Queued async worker initialization for {scriptUrl} (origin: {origin})", LogCategory.JavaScript);
         }
 
         private async Task ObserveBootstrapCompletionAsync()

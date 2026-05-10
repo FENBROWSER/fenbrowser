@@ -13,18 +13,24 @@ namespace FenBrowser.FenEngine.DOM
     public class MutationObserverWrapper
     {
         public FenFunction Callback { get; }
+        public IExecutionContext Context { get; }
         private readonly MutationObserver _coreObserver;
         private readonly List<MutationRecord> _pendingRecords = new List<MutationRecord>();
         private readonly List<(Node Target, MutationObserverOptions Options)> _observations = new List<(Node Target, MutationObserverOptions Options)>();
         private bool _disconnected;
 
-        public MutationObserverWrapper(FenFunction callback)
+    public MutationObserverWrapper(FenFunction callback, IExecutionContext context)
+    {
+        Callback = callback ?? throw new ArgumentNullException(nameof(callback));
+        Context = context ?? throw new ArgumentNullException(nameof(context));
+
+        // The Core.Dom.MutationObserver expects Action<List<MutationRecord>, MutationObserver>
+        // Queue records as microtasks per DOM4 spec
+        _coreObserver = new MutationObserver((records, obs) => 
         {
-            Callback = callback ?? throw new ArgumentNullException(nameof(callback));
-            
-            // The Core.Dom.MutationObserver expects Action<List<MutationRecord>, MutationObserver>
-            _coreObserver = new MutationObserver((records, obs) => { });
-        }
+            QueueRecordsAsMicrotask(records);
+        });
+    }
 
         public bool HasPendingRecords
         {
@@ -84,7 +90,7 @@ namespace FenBrowser.FenEngine.DOM
 
         /// <summary>
         /// Record a mutation (called by legacy DOM mutation methods).
-        /// Forwards to the core observer.
+        /// Forwards to the core observer and queues as microtask per DOM4 spec.
         /// </summary>
         public void RecordMutation(Node target, string type, string attributeName = null,
             string oldValue = null, List<Node> addedNodes = null, List<Node> removedNodes = null)
@@ -121,10 +127,57 @@ namespace FenBrowser.FenEngine.DOM
                 AddedNodes = addedNodes ?? new List<Node>(),
                 RemovedNodes = removedNodes ?? new List<Node>()
             };
-            
+
             lock (_pendingRecords)
             {
                 _pendingRecords.Add(record);
+            }
+
+            // Queue microtask to deliver mutations asynchronously per DOM4 spec
+            if (Context?.Environment != null)
+            {
+                QueueMicrotaskForDelivery();
+            }
+        }
+
+        private void QueueMicrotaskForDelivery()
+        {
+            // Use the execution context's microtask queue if available, or fallback to event loop
+            var microtaskService = Context?.GetMicrotaskQueue();
+            if (microtaskService != null)
+            {
+                microtaskService.Enqueue(DeliverRecords);
+            }
+            else
+            {
+                // Fallback: direct async callback
+                Task.Run(() => DeliverRecords());
+            }
+        }
+
+        private void DeliverRecords()
+        {
+            try
+            {
+                var records = TakeRecords(Context);
+                if (records.Length > 0 && Callback != null)
+                {
+                    // Create array of mutation records for the callback
+                    var recordsArray = new FenObject();
+                    recordsArray.Set("length", FenValue.FromNumber(records.Length));
+                    for (int i = 0; i < records.Length; i++)
+                    {
+                        recordsArray.Set(i.ToString(), FenValue.FromObject(records[i]));
+                    }
+
+                    // Invoke callback with records and observer as arguments
+                    Callback.Invoke(new[] { FenValue.FromObject(recordsArray), FenValue.FromObject(ToFenObject(Context)) }, Context);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log but don't rethrow to avoid breaking the microtask queue
+                Console.Error.WriteLine($"[MutationObserver] Error delivering records: {ex}");
             }
         }
 
