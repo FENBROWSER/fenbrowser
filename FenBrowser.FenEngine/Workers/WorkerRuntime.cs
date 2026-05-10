@@ -92,7 +92,7 @@ namespace FenBrowser.FenEngine.Workers
                 }
             }
 
-            _bootstrapScriptLoadTask = LoadWorkerScriptAsync();
+            _bootstrapScriptLoadTask = Task.Run(() => LoadWorkerScriptAsync(), CancellationToken.None);
             _ = ObserveBootstrapCompletionAsync();
 
             // Start worker thread
@@ -198,9 +198,9 @@ namespace FenBrowser.FenEngine.Workers
                 // Inject globals into the worker runtime
                 foreach (var key in _globalScope.Keys())
                 {
-                    _runtime.SetGlobal(key, _globalScope.Get(key));
+                    _runtime.SetGlobalUnmirrored(key, _globalScope.Get(key));
                 }
-                _runtime.SetGlobal("self", FenValue.FromObject(_globalScope));
+                _runtime.SetGlobalUnmirrored("self", FenValue.FromObject(_globalScope));
 
                 while (_isRunning && !_cts.IsCancellationRequested)
                 {
@@ -336,12 +336,10 @@ namespace FenBrowser.FenEngine.Workers
             if (_isDisposed) return;
 
             var clonedData = StructuredClone.Clone(data);
-            
-            // Schedule on main thread's event loop
-            EventLoopCoordinator.Instance.ScheduleTask(() =>
-            {
-                OnMessage?.Invoke(clonedData);
-            }, TaskSource.Messaging, "Worker.onmessage");
+            EventLoopCoordinator.Instance.ScheduleTask(
+                () => OnMessage?.Invoke(clonedData),
+                TaskSource.Messaging,
+                "Worker.onmessage");
         }
 
         /// <summary>

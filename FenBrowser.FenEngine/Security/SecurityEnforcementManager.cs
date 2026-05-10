@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Threading;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Security
@@ -75,14 +76,14 @@ namespace FenBrowser.FenEngine.Security
         /// </summary>
         public bool CheckCanvasCreation(string documentId, int width, int height)
         {
+            var limits = GetLimitsForDocument(documentId);
             var context = _documentContexts.GetOrAdd(documentId, _ => new DocumentContext());
-            if (!GetLimitsForDocument(documentId).CheckCanvasDimensions(width, height, context.CanvasCount))
+            if (!context.TryReserveCanvas(limits, width, height, out var currentCount))
             {
-                FenBrowser.Core.EngineLogCompat.Error($"[Security] Canvas creation rejected: {width}x{height}, count={context.CanvasCount} in document {documentId}", LogCategory.Security);
+                FenBrowser.Core.EngineLogCompat.Error($"[Security] Canvas creation rejected: {width}x{height}, count={currentCount} in document {documentId}", LogCategory.Security);
                 return false;
             }
-            
-            context.CanvasCount++;
+
             return true;
         }
         
@@ -162,7 +163,10 @@ namespace FenBrowser.FenEngine.Security
         public void CleanupDocument(string documentId)
         {
             _documentContexts.TryRemove(documentId, out _);
-            _renderWatchdogs.TryRemove(documentId, out _);
+            if (_renderWatchdogs.TryRemove(documentId, out var stopwatch))
+            {
+                stopwatch.Stop();
+            }
         }
         
         /// <summary>
@@ -177,7 +181,25 @@ namespace FenBrowser.FenEngine.Security
         
         private class DocumentContext
         {
-            public int CanvasCount { get; set; }
+            private readonly object _canvasLock = new object();
+            private int _canvasCount;
+
+            public bool TryReserveCanvas(IRenderingResourceLimits limits, int width, int height, out int currentCount)
+            {
+                lock (_canvasLock)
+                {
+                    currentCount = _canvasCount;
+                    if (!limits.CheckCanvasDimensions(width, height, _canvasCount))
+                    {
+                        return false;
+                    }
+
+                    _canvasCount++;
+                    return true;
+                }
+            }
+
+            public int CanvasCount => Volatile.Read(ref _canvasCount);
             public int SvgElementCount { get; set; }
             public int NestedIframeDepth { get; set; }
         }

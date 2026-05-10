@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -8,7 +8,7 @@ namespace FenBrowser.FenEngine.Rendering
 /// </summary>
 internal class ObjectPool<T> where T : new()
 {
-private readonly Stack<T> _objects = new Stack<T>();
+private readonly ConcurrentStack<T> _objects = new ConcurrentStack<T>();
 private readonly Func<T> _factory;
 private readonly Action<T> _reset;
 
@@ -20,28 +20,19 @@ _reset = reset;
 
 public T Get()
 {
-lock (_objects)
-{
-return _objects.Count > 0 ? _objects.Pop() : _factory();
-}
+return _objects.TryPop(out var item) ? item : _factory();
 }
 
 public void Return(T obj)
 {
 if (obj == null) return;
 _reset?.Invoke(obj);
-lock (_objects)
-{
 _objects.Push(obj);
-}
 }
 
 public void Clear()
 {
-lock (_objects)
-{
-_objects.Clear();
-}
+while (_objects.TryPop(out _)) { }
 }
 }
 }

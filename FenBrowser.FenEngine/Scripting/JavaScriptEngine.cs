@@ -2794,7 +2794,7 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 if (!SandboxAllows(SandboxFeature.Storage, "localStorage.setItem")) return;
-                StorageApi.SetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, value);
+                StorageApi.SetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, value, _sessionStoragePartitionId);
             }
             catch (Exception ex)
             {
@@ -2807,7 +2807,7 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 if (!SandboxAllows(SandboxFeature.Storage, "localStorage.getItem")) return null;
-                return StorageApi.GetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+                return StorageApi.GetLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, _sessionStoragePartitionId);
             }
             catch (Exception ex)
             {
@@ -2821,7 +2821,7 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 if (!SandboxAllows(SandboxFeature.Storage, "localStorage.removeItem")) return;
-                StorageApi.RemoveLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key);
+                StorageApi.RemoveLocalStorageItem(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), key, _sessionStoragePartitionId);
             }
             catch (Exception ex)
             {
@@ -2834,7 +2834,7 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 if (!SandboxAllows(SandboxFeature.Storage, "localStorage.clear")) return;
-                StorageApi.ClearLocalStorage(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri));
+                StorageApi.ClearLocalStorage(OriginKey(ctx?.BaseUri ?? _ctx?.BaseUri), _sessionStoragePartitionId);
             }
             catch (Exception ex)
             {
@@ -2845,6 +2845,7 @@ namespace FenBrowser.FenEngine.Scripting
     public void Reset(JsContext ctx)
         {
             _ctx = ctx ?? new JsContext();
+            FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.Clear();
             ClearSandboxBlockLog();
             ClearGeolocationWatches();
             

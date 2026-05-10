@@ -20,102 +20,169 @@ namespace FenBrowser.FenEngine.Rendering
 
     public static class RenderPipeline
     {
-        [ThreadStatic]
         private static RenderPhase _currentPhase = RenderPhase.Idle;
-        [ThreadStatic]
         private static long _frameSequence;
-        [ThreadStatic]
         private static DateTime _frameStartedUtc;
-        [ThreadStatic]
         private static TimeSpan _lastFrameDuration;
-        [ThreadStatic]
         private static bool _firstLayoutLogged;
-        [ThreadStatic]
         private static bool _firstPaintLogged;
+        private static int _ownerThreadId;
+        private static readonly object s_stateLock = new object();
 
         public static bool StrictInvariants { get; set; } = true;
         public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
 
-        public static RenderPhase CurrentPhase => _currentPhase;
-        public static long FrameSequence => _frameSequence;
-        public static TimeSpan LastFrameDuration => _lastFrameDuration;
-        public static bool LastFrameExceededBudget => _lastFrameDuration > FrameBudget;
+        public static RenderPhase CurrentPhase
+        {
+            get
+            {
+                lock (s_stateLock)
+                {
+                    return _currentPhase;
+                }
+            }
+        }
+
+        public static long FrameSequence
+        {
+            get
+            {
+                lock (s_stateLock)
+                {
+                    return _frameSequence;
+                }
+            }
+        }
+
+        public static TimeSpan LastFrameDuration
+        {
+            get
+            {
+                lock (s_stateLock)
+                {
+                    return _lastFrameDuration;
+                }
+            }
+        }
+
+        public static bool LastFrameExceededBudget
+        {
+            get
+            {
+                lock (s_stateLock)
+                {
+                    return _lastFrameDuration > FrameBudget;
+                }
+            }
+        }
 
         public static void Reset()
         {
-            _currentPhase = RenderPhase.Idle;
-            _frameStartedUtc = default;
-            _lastFrameDuration = TimeSpan.Zero;
-            _firstLayoutLogged = false;
-            _firstPaintLogged = false;
+            lock (s_stateLock)
+            {
+                _currentPhase = RenderPhase.Idle;
+                _frameStartedUtc = default;
+                _lastFrameDuration = TimeSpan.Zero;
+                _firstLayoutLogged = false;
+                _firstPaintLogged = false;
+                _ownerThreadId = 0;
+            }
         }
 
         public static void EnterLayout()
         {
-            RequirePhase(RenderPhase.Idle, nameof(EnterLayout));
-            _frameSequence++;
-            _frameStartedUtc = DateTime.UtcNow;
-            _currentPhase = RenderPhase.Layout;
+            lock (s_stateLock)
+            {
+                EnsureThreadAffinity(nameof(EnterLayout), acquireIfUnclaimed: true);
+                RequirePhase(RenderPhase.Idle, nameof(EnterLayout));
+                _frameSequence++;
+                _frameStartedUtc = DateTime.UtcNow;
+                _currentPhase = RenderPhase.Layout;
+            }
         }
 
         public static void EndLayout()
         {
-            RequirePhase(RenderPhase.Layout, nameof(EndLayout));
-            _currentPhase = RenderPhase.LayoutFrozen;
-            if (!_firstLayoutLogged)
+            lock (s_stateLock)
             {
-                _firstLayoutLogged = true;
-                EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
+                EnsureThreadAffinity(nameof(EndLayout));
+                RequirePhase(RenderPhase.Layout, nameof(EndLayout));
+                _currentPhase = RenderPhase.LayoutFrozen;
+                if (!_firstLayoutLogged)
+                {
+                    _firstLayoutLogged = true;
+                    EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
+                }
             }
         }
 
         public static void EnterPaint()
         {
-            RequirePhase(RenderPhase.LayoutFrozen, nameof(EnterPaint));
-            _currentPhase = RenderPhase.Paint;
+            lock (s_stateLock)
+            {
+                EnsureThreadAffinity(nameof(EnterPaint));
+                RequirePhase(RenderPhase.LayoutFrozen, nameof(EnterPaint));
+                _currentPhase = RenderPhase.Paint;
+            }
         }
 
         public static void EndPaint()
         {
-            RequirePhase(RenderPhase.Paint, nameof(EndPaint));
-            _currentPhase = RenderPhase.Composite;
-            if (!_firstPaintLogged)
+            lock (s_stateLock)
             {
-                _firstPaintLogged = true;
-                EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
+                EnsureThreadAffinity(nameof(EndPaint));
+                RequirePhase(RenderPhase.Paint, nameof(EndPaint));
+                _currentPhase = RenderPhase.Composite;
+                if (!_firstPaintLogged)
+                {
+                    _firstPaintLogged = true;
+                    EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
+                }
             }
         }
 
         public static void EnterPresent()
         {
-            RequirePhase(RenderPhase.Composite, nameof(EnterPresent));
-            _currentPhase = RenderPhase.Present;
+            lock (s_stateLock)
+            {
+                EnsureThreadAffinity(nameof(EnterPresent));
+                RequirePhase(RenderPhase.Composite, nameof(EnterPresent));
+                _currentPhase = RenderPhase.Present;
+            }
         }
 
         public static void EndFrame()
         {
-            RequirePhase(RenderPhase.Present, nameof(EndFrame));
-            if (_frameStartedUtc != default)
+            lock (s_stateLock)
             {
-                _lastFrameDuration = DateTime.UtcNow - _frameStartedUtc;
-                EngineLogCompat.Debug(
-                    $"[PIPELINE][SUMMARY] frame={FrameSequence} durationMs={_lastFrameDuration.TotalMilliseconds:F2} phase={_currentPhase}",
-                    LogCategory.Rendering);
-                if (LastFrameExceededBudget)
+                EnsureThreadAffinity(nameof(EndFrame));
+                RequirePhase(RenderPhase.Present, nameof(EndFrame));
+                if (_frameStartedUtc != default)
                 {
-                    EngineLogCompat.Warn($"[PIPELINE] Frame {FrameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                    _lastFrameDuration = DateTime.UtcNow - _frameStartedUtc;
+                    EngineLogCompat.Debug(
+                        $"[PIPELINE][SUMMARY] frame={_frameSequence} durationMs={_lastFrameDuration.TotalMilliseconds:F2} phase={_currentPhase}",
+                        LogCategory.Rendering);
+                    if (_lastFrameDuration > FrameBudget)
+                    {
+                        EngineLogCompat.Warn($"[PIPELINE] Frame {_frameSequence} exceeded budget: {_lastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                    }
                 }
-            }
 
-            _currentPhase = RenderPhase.Idle;
-            _frameStartedUtc = default;
+                _currentPhase = RenderPhase.Idle;
+                _frameStartedUtc = default;
+                _ownerThreadId = 0;
+            }
         }
 
         public static void AssertPhase(RenderPhase expected)
         {
-            if (_currentPhase != expected)
+            lock (s_stateLock)
             {
-                HandleViolation($"AssertPhase failed. Expected {expected}, actual {_currentPhase}", null);
+                if (_currentPhase != expected)
+                {
+                    HandleViolation($"AssertPhase failed. Expected {expected}, actual {_currentPhase}", null);
+                }
             }
         }
 
@@ -124,9 +191,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void AssertNotPhase(RenderPhase forbidden)
         {
-            if (_currentPhase == forbidden)
+            lock (s_stateLock)
             {
-                HandleViolation($"AssertNotPhase failed. Forbidden phase {forbidden} is active.", null);
+                if (_currentPhase == forbidden)
+                {
+                    HandleViolation($"AssertNotPhase failed. Forbidden phase {forbidden} is active.", null);
+                }
             }
         }
         
@@ -135,9 +205,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void AssertLayerSeparation(bool isDebugOrOverlay)
         {
-            if (isDebugOrOverlay && _currentPhase != RenderPhase.Composite && _currentPhase != RenderPhase.Present)
+            lock (s_stateLock)
             {
-                HandleViolation($"Debug/overlay drawing must happen in Composite/Present. Actual: {_currentPhase}", null);
+                if (isDebugOrOverlay && _currentPhase != RenderPhase.Composite && _currentPhase != RenderPhase.Present)
+                {
+                    HandleViolation($"Debug/overlay drawing must happen in Composite/Present. Actual: {_currentPhase}", null);
+                }
             }
         }
 
@@ -147,6 +220,25 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 HandleViolation($"{operation} requires phase {expected}, actual {_currentPhase}", expected);
             }
+        }
+
+        private static void EnsureThreadAffinity(string operation, bool acquireIfUnclaimed = false)
+        {
+            var currentThreadId = Environment.CurrentManagedThreadId;
+            if (_ownerThreadId == 0 && acquireIfUnclaimed)
+            {
+                _ownerThreadId = currentThreadId;
+                return;
+            }
+
+            if (_ownerThreadId == 0 || _ownerThreadId == currentThreadId)
+            {
+                return;
+            }
+
+            HandleViolation(
+                $"{operation} called on thread {currentThreadId}, but active frame is owned by thread {_ownerThreadId}",
+                null);
         }
 
         private static void HandleViolation(string message, RenderPhase? recoverTo)

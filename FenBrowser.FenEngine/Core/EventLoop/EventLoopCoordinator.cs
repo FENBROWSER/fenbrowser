@@ -27,8 +27,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     public class EventLoopCoordinator
     {
         private const int MaxMicrotaskCheckpointPasses = 1024;
-        private static EventLoopCoordinator _instance;
-        public static EventLoopCoordinator Instance => _instance ??= new EventLoopCoordinator();
+        private static EventLoopCoordinator s_sharedInstance;
+        private static readonly AsyncLocal<EventLoopCoordinator> s_boundInstance = new AsyncLocal<EventLoopCoordinator>();
+        public static EventLoopCoordinator Instance => s_boundInstance.Value ?? (s_sharedInstance ??= new EventLoopCoordinator());
+        public static EventLoopCoordinator ThreadDefault => s_sharedInstance ??= new EventLoopCoordinator();
 
         private sealed class DelayedTaskEntry
         {
@@ -64,6 +66,40 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public event Action OnWorkEnqueued;
 
         #region Task Scheduling
+
+        public static EventLoopCoordinator CreateIsolated()
+        {
+            return new EventLoopCoordinator();
+        }
+
+        public static IDisposable Bind(EventLoopCoordinator coordinator)
+        {
+            var previous = s_boundInstance.Value;
+            s_boundInstance.Value = coordinator;
+            return new BindingScope(previous);
+        }
+
+        private sealed class BindingScope : IDisposable
+        {
+            private readonly EventLoopCoordinator _previous;
+            private bool _disposed;
+
+            public BindingScope(EventLoopCoordinator previous)
+            {
+                _previous = previous;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                s_boundInstance.Value = _previous;
+            }
+        }
 
         public void ScheduleTask(Action callback, TaskSource source, string description = null)
         {
@@ -192,7 +228,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         public void NotifyLayoutDirty()
         {
-            _layoutDirty = true;
+            Volatile.Write(ref _layoutDirty, true);
             OnWorkEnqueued?.Invoke();
         }
 
@@ -294,7 +330,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
         public void ProcessRenderingUpdate(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             var now = Environment.TickCount64;
-            bool hasRenderingOpportunity = (now - _lastRenderTime) >= 16 || _layoutDirty;
+            bool hasRenderingOpportunity = (now - _lastRenderTime) >= 16 || Volatile.Read(ref _layoutDirty);
             if (!hasRenderingOpportunity)
             {
                 return;
@@ -317,7 +353,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 }
                 finally
                 {
-                    _layoutDirty = false;
+                    Volatile.Write(ref _layoutDirty, false);
                     EngineContext.Current.EndPhase();
                 }
             }
@@ -403,12 +439,12 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
         {
             while (_taskQueue.HasPendingTasks ||
                    HasPendingDelayedTasks ||
-                   _animationFrameCallbacks.Count > 0 ||
+                   HasPendingAnimationFrames ||
                    _microtaskQueue.HasPendingMicrotasks)
             {
                 PromoteDueDelayedTasks();
 
-                if (_taskQueue.HasPendingTasks || _animationFrameCallbacks.Count > 0)
+                if (_taskQueue.HasPendingTasks || HasPendingAnimationFrames)
                 {
                     ProcessNextTask();
                     continue;
@@ -444,7 +480,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             {
                 _delayedTasks.Clear();
             }
-            _layoutDirty = false;
+            Volatile.Write(ref _layoutDirty, false);
             _lastRenderTime = 0;
             _nextDelayedTaskSequence = 0;
             EngineLogCompat.Debug("[EventLoop] All queues cleared", LogCategory.JavaScript);
@@ -452,7 +488,8 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
         public static void ResetInstance()
         {
-            _instance = new EventLoopCoordinator();
+            s_boundInstance.Value = null;
+            s_sharedInstance = new EventLoopCoordinator();
         }
 
         public int TaskCount => _taskQueue.Count;
@@ -466,6 +503,17 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 lock (_delayedTaskLock)
                 {
                     return _delayedTasks.Count > 0;
+                }
+            }
+        }
+
+        private bool HasPendingAnimationFrames
+        {
+            get
+            {
+                lock (_animationLock)
+                {
+                    return _animationFrameCallbacks.Count > 0;
                 }
             }
         }

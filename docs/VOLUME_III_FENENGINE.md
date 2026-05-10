@@ -8406,3 +8406,40 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Debug --no-restore /p:BuildProjectReferences=false /clp:ErrorsOnly`: pass on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DamageRasterizationPolicyTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests" --logger "console;verbosity=minimal"`: pass (`18/18`) on `2026-05-08`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-restore --filter "FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~DamageRasterizationPolicyTests|FullyQualifiedName~BrowserIntegrationFrameStabilityTests"` currently fails to build in this tree due unrelated pre-existing `FenBrowser.Tests/Layout/*` compile debt (`BoxTreeBuilder`/`LayoutBoxOps` signature drift), not from retained-tile changes.
+
+## 2.311 FenEngine Chromium Audit Remediation Tranche A (2026-05-10)
+
+- `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`
+  - Added bindable coordinator scopes (`Bind(...)`) and isolated coordinator factory (`CreateIsolated()`), so runtime scopes can execute against an explicitly selected loop instance instead of only ambient global access.
+  - Hardened queue-state access with lock/volatile-safe reads (`_layoutDirty`, animation-frame queue checks), and reset now clears bound coordinator state.
+- `FenBrowser.FenEngine/Core/FenRuntime.cs`
+  - Replaced `[ThreadStatic]` active-runtime tracking with `AsyncLocal<FenRuntime>` so runtime affinity follows async continuations.
+  - Added runtime-scope event-loop binding (`ActiveRuntimeScope`) so JS execution uses the runtime-owned coordinator binding.
+  - Added unmirrored global binding path (`SetGlobalUnmirrored(...)`) for environments that must avoid `window` accessor side effects.
+- `FenBrowser.FenEngine/Workers/WorkerRuntime.cs`
+  - Worker bootstrap fetch now starts on background execution (`Task.Run(...)`) to keep worker construction non-blocking and async from caller threads.
+  - Worker-global injection now uses unmirrored bindings to avoid browser-window setter collisions (notably `location`) during worker runtime startup.
+- `FenBrowser.FenEngine/WebAPIs/StorageApi.cs`
+  - Local storage access now supports partition-aware scoping (`partitionId + origin`) and canonicalized origin keys (`scheme://host:port`), reducing cross-context bleed.
+  - `CreateLocalStorage(...)` now accepts optional partition providers for runtime wiring.
+- `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`
+  - LocalStorage bridge calls now pass the runtime session partition identifier.
+  - Runtime reset now clears pending coordinator queues to prevent stale task carry-over.
+- `FenBrowser.FenEngine/Security/SecurityEnforcementManager.cs`
+  - Canvas quota checks are now atomic (`TryReserveCanvas(...)`) to close check-then-increment TOCTOU windows.
+  - Cleanup now stops/removes render watchdog timers deterministically.
+- `FenBrowser.FenEngine/Rendering/PaintTree/ObjectPool.cs`
+  - Replaced lock-based stack with `ConcurrentStack<T>` for hot-path pool operations (`Get/Return/Clear`).
+- `FenBrowser.FenEngine/Layout/Tree/LayoutBoxStore.cs`
+  - Added generation tracking and stale-access validation so wrappers from prior layout generations fail closed.
+- `FenBrowser.FenEngine/Layout/Tree/LayoutBox.cs`
+  - Added generation-aware liveness checks on key accessors/mutators (`SourceNode`, `ComputedStyle`, `Parent`, `Children`, `Geometry`, etc.).
+- `FenBrowser.FenEngine/Rendering/RenderPipeline.cs`
+  - Removed `ThreadStatic` phase fields and added owner-thread affinity checks with synchronized phase/frame state transitions.
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Added retained layout-engine reuse keyed by style-map identity and viewport/base-url inputs to reduce repeated allocation churn on successive layout passes.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --nologo -v minimal`: pass on `2026-05-10`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WorkerTests|FullyQualifiedName~EventLoop|FullyQualifiedName~Storage|FullyQualifiedName~RenderPipeline|FullyQualifiedName~ExecutionContextScheduling|FullyQualifiedName~SecurityEnforcement" --nologo -v minimal`: pass (`63/63`) on `2026-05-10`.

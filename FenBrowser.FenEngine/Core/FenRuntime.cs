@@ -27,6 +27,7 @@ using FenBrowser.FenEngine.Compatibility;
 using FenBrowser.FenEngine.Security;
 using System.Diagnostics;
 using FenBrowser.FenEngine.Workers;
+using FenBrowser.FenEngine.Core.EventLoop;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -35,12 +36,12 @@ namespace FenBrowser.FenEngine.Core
     /// </summary>
     public class FenRuntime
     {
-        [ThreadStatic]
-        private static FenRuntime _activeRuntime;
+        private static readonly AsyncLocal<FenRuntime> s_activeRuntime = new AsyncLocal<FenRuntime>();
 
         private readonly FenEnvironment _globalEnv;
         private readonly IExecutionContext _context;
         private readonly IStorageBackend _storageBackend;
+        private readonly EventLoopCoordinator _eventLoopCoordinator;
         private readonly IDomBridge _domBridge; // Bridge to Engine's DOM
         private IHistoryBridge _historyBridge;
         private readonly List<HistoryEntryState> _localHistoryEntries = new List<HistoryEntryState>();
@@ -177,8 +178,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
         public FenRuntime(IExecutionContext context = null, IStorageBackend storageBackend = null,
             IDomBridge domBridge = null, IHistoryBridge historyBridge = null)
         {
-            var previousActiveRuntime = _activeRuntime;
-            _activeRuntime = this;
+            var previousActiveRuntime = s_activeRuntime.Value;
+            s_activeRuntime.Value = this;
 
             try
             {
@@ -195,6 +196,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
 /* [PERF-REMOVED] */
     _context = context ?? new ExecutionContext(new PermissionManager(Security.JsPermissions.StandardWeb));
     _storageBackend = storageBackend ?? new InMemoryStorageBackend();
+    _eventLoopCoordinator = EventLoopCoordinator.Instance;
     _isMainThread = context != null;
                 _domBridge = domBridge;
                 _historyBridge = historyBridge;
@@ -214,7 +216,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             }
             finally
             {
-                _activeRuntime = previousActiveRuntime;
+                s_activeRuntime.Value = previousActiveRuntime;
                 previousActiveRuntime?.ActivateRealmIntrinsics();
             }
         }
@@ -1286,7 +1288,7 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
 
         internal static FenRuntime GetActiveRuntime()
         {
-            return _activeRuntime;
+            return s_activeRuntime.Value;
         }
 
         /// <summary>
@@ -1555,17 +1557,20 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
         private readonly struct ActiveRuntimeScope : IDisposable
         {
             private readonly FenRuntime _previousRuntime;
+            private readonly IDisposable _eventLoopBinding;
 
             public ActiveRuntimeScope(FenRuntime runtime)
             {
-                _previousRuntime = _activeRuntime;
-                _activeRuntime = runtime;
+                _previousRuntime = s_activeRuntime.Value;
+                s_activeRuntime.Value = runtime;
+                _eventLoopBinding = EventLoopCoordinator.Bind(runtime?._eventLoopCoordinator);
                 runtime?.ActivateRealmIntrinsics();
             }
 
             public void Dispose()
             {
-                _activeRuntime = _previousRuntime;
+                _eventLoopBinding?.Dispose();
+                s_activeRuntime.Value = _previousRuntime;
                 _previousRuntime?.ActivateRealmIntrinsics();
             }
         }
@@ -7678,7 +7683,9 @@ SetGlobal("navigator", FenValue.FromObject(navigator));
             SetGlobal("screen", FenValue.FromObject(screen));
 
             // localStorage - Partitioned using StorageApi
-            var localStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateLocalStorage(GetCurrentOrigin);
+            var localStorage = FenBrowser.FenEngine.WebAPIs.StorageApi.CreateLocalStorage(
+                GetCurrentOrigin,
+                () => _domBridge?.SessionStoragePartitionId);
             SetGlobal("localStorage", FenValue.FromObject(localStorage));
 
             // sessionStorage - Partitioned by tab/session identity and origin, so reloads in the
@@ -18696,7 +18703,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             globalObject.Set(name, value);
         }
 
-        public void SetGlobal(string name, FenValue value)
+        private void SetGlobalCore(string name, FenValue value, bool mirrorPrimaryGlobalObject)
         {
             if ((string.Equals(name, "window", StringComparison.Ordinal) || string.Equals(name, "globalThis", StringComparison.Ordinal)) && value.IsObject)
             {
@@ -18704,6 +18711,11 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
 
             _globalEnv.Set(name, value);
+
+            if (!mirrorPrimaryGlobalObject)
+            {
+                return;
+            }
 
             if (string.Equals(name, "window", StringComparison.Ordinal) &&
                 value.IsObject &&
@@ -18724,6 +18736,16 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
 
             MirrorBindingOntoPrimaryGlobalObject(name, value);
+        }
+
+        public void SetGlobal(string name, FenValue value)
+        {
+            SetGlobalCore(name, value, mirrorPrimaryGlobalObject: true);
+        }
+
+        public void SetGlobalUnmirrored(string name, FenValue value)
+        {
+            SetGlobalCore(name, value, mirrorPrimaryGlobalObject: false);
         }
 
         private void NormalizeGlobalIntrinsicFunctionPrototypes(FenObject functionPrototype)

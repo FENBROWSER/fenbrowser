@@ -13,6 +13,8 @@ namespace FenBrowser.FenEngine.WebAPIs
 {
     public static class StorageApi
     {
+        private const string DefaultPartitionId = "default";
+
         // Thread-safe dictionary: Origin -> (Key -> Value)
         private static ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _localStorage = new();
         private static ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _sessionStorage = new();
@@ -180,42 +182,46 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         public static string BuildSessionScope(string partitionId, string origin)
         {
-            var normalizedPartition = string.IsNullOrWhiteSpace(partitionId) ? "default" : partitionId.Trim().ToLowerInvariant();
-            return $"{normalizedPartition}:{NormalizeOrigin(origin)}";
+            return $"{NormalizePartitionId(partitionId)}:{NormalizeOrigin(origin)}";
         }
 
-        public static string GetLocalStorageItem(string origin, string key)
+        public static string BuildLocalScope(string partitionId, string origin)
+        {
+            return $"{NormalizePartitionId(partitionId)}:{NormalizeOrigin(origin)}";
+        }
+
+        public static string GetLocalStorageItem(string origin, string key, string partitionId = null)
         {
             if (string.IsNullOrEmpty(key)) return null;
-            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            var store = _localStorage.GetOrAdd(BuildLocalScope(partitionId, origin), _ => new ConcurrentDictionary<string, string>());
             return store.TryGetValue(key, out var value) ? value : null;
         }
 
-        public static void SetLocalStorageItem(string origin, string key, string value)
+        public static void SetLocalStorageItem(string origin, string key, string value, string partitionId = null)
         {
             if (string.IsNullOrEmpty(key)) return;
-            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            var store = _localStorage.GetOrAdd(BuildLocalScope(partitionId, origin), _ => new ConcurrentDictionary<string, string>());
             store[key] = value ?? string.Empty;
             ScheduleSave();
         }
 
-        public static void RemoveLocalStorageItem(string origin, string key)
+        public static void RemoveLocalStorageItem(string origin, string key, string partitionId = null)
         {
             if (string.IsNullOrEmpty(key)) return;
-            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            var store = _localStorage.GetOrAdd(BuildLocalScope(partitionId, origin), _ => new ConcurrentDictionary<string, string>());
             store.TryRemove(key, out _);
             ScheduleSave();
         }
 
-        public static void ClearLocalStorage(string origin)
+        public static void ClearLocalStorage(string origin, string partitionId = null)
         {
-            _localStorage.TryRemove(NormalizeOrigin(origin), out _);
+            _localStorage.TryRemove(BuildLocalScope(partitionId, origin), out _);
             ScheduleSave();
         }
 
-        public static IReadOnlyDictionary<string, string> GetAllLocalStorageItems(string origin)
+        public static IReadOnlyDictionary<string, string> GetAllLocalStorageItems(string origin, string partitionId = null)
         {
-            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            var store = _localStorage.GetOrAdd(BuildLocalScope(partitionId, origin), _ => new ConcurrentDictionary<string, string>());
             return new Dictionary<string, string>(store);
         }
 
@@ -254,9 +260,9 @@ namespace FenBrowser.FenEngine.WebAPIs
         /// <summary>
         /// Creates a persistent, origin-keyed storage (localStorage).
         /// </summary>
-        public static FenObject CreateLocalStorage(Func<string> getOrigin)
+        public static FenObject CreateLocalStorage(Func<string> getOrigin, Func<string> getPartitionId = null)
         {
-             return new DomStorage("localStorage", () => NormalizeOrigin(getOrigin?.Invoke()), (origin) => 
+             return new DomStorage("localStorage", () => BuildLocalScope(getPartitionId?.Invoke(), getOrigin?.Invoke()), (origin) => 
              {
                  return _localStorage.GetOrAdd(origin, _ => new ConcurrentDictionary<string, string>());
              }, Save);
@@ -285,7 +291,27 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return "null";
             }
 
-            return origin.Trim().ToLowerInvariant();
+            var trimmed = origin.Trim();
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+            {
+                var scheme = uri.Scheme.ToLowerInvariant();
+                if (scheme == Uri.UriSchemeHttp || scheme == Uri.UriSchemeHttps)
+                {
+                    var port = uri.IsDefaultPort
+                        ? (scheme == Uri.UriSchemeHttps ? 443 : 80)
+                        : uri.Port;
+                    return $"{scheme}://{uri.Host.ToLowerInvariant()}:{port}";
+                }
+            }
+
+            return trimmed.ToLowerInvariant();
+        }
+
+        private static string NormalizePartitionId(string partitionId)
+        {
+            return string.IsNullOrWhiteSpace(partitionId)
+                ? DefaultPartitionId
+                : partitionId.Trim().ToLowerInvariant();
         }
 
         /// <summary>Per-origin storage quota: 5 MB, measured as UTF-16 code units × 2 bytes (matching browser standard).</summary>
@@ -297,9 +323,9 @@ namespace FenBrowser.FenEngine.WebAPIs
         private static long CalculateStoreBytes(ConcurrentDictionary<string, string> store)
             => store.Sum(kvp => ((long)kvp.Key.Length + kvp.Value.Length) * 2);
 
-        public static long GetLocalStorageUsageBytes(string origin)
+        public static long GetLocalStorageUsageBytes(string origin, string partitionId = null)
         {
-            var store = _localStorage.GetOrAdd(NormalizeOrigin(origin), _ => new ConcurrentDictionary<string, string>());
+            var store = _localStorage.GetOrAdd(BuildLocalScope(partitionId, origin), _ => new ConcurrentDictionary<string, string>());
             return CalculateStoreBytes(store);
         }
 

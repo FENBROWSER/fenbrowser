@@ -64,6 +64,11 @@ namespace FenBrowser.FenEngine.Rendering
         public int LastFrameIncrementalLayoutRootCount { get; private set; }
         public int LastPromotedLayerCount { get; private set; }
         private readonly Stopwatch _lastDomDumpWatch = new Stopwatch();
+        private LayoutEngine _retainedLayoutEngine;
+        private IReadOnlyDictionary<Node, CssComputed> _retainedLayoutStyles;
+        private float _retainedLayoutViewportWidth;
+        private float _retainedLayoutViewportHeight;
+        private string _retainedLayoutBaseUrl;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -410,12 +415,8 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (!usedIncrementalLayout)
                         {
-                            var layoutEngine = new LayoutEngine(
-                                styles ?? new Dictionary<Node, CssComputed>(),
-                                _viewportWidth,
-                                _viewportHeight,
-                                null,
-                                baseUrl);
+                            var effectiveStyles = (IReadOnlyDictionary<Node, CssComputed>)(styles ?? new Dictionary<Node, CssComputed>());
+                            var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
 
                             _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, _viewportHeight);
                             _boxes.Clear();
@@ -1100,7 +1101,7 @@ namespace FenBrowser.FenEngine.Rendering
                     availableHeight = _viewportHeight;
                 }
 
-                var layoutEngine = new LayoutEngine(styles, _viewportWidth, _viewportHeight, null, baseUrl);
+                var layoutEngine = GetOrCreateLayoutEngine(styles, baseUrl);
                 var partial = layoutEngine.ComputeLayout(dirtyRoot, availableWidth, availableHeight);
                 if (partial == null)
                 {
@@ -1144,6 +1145,33 @@ namespace FenBrowser.FenEngine.Rendering
             LastFrameUsedIncrementalLayout = true;
             LastFrameIncrementalLayoutRootCount = appliedRoots;
             return true;
+        }
+
+        private LayoutEngine GetOrCreateLayoutEngine(IReadOnlyDictionary<Node, CssComputed> styles, string baseUrl)
+        {
+            var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
+            bool needsNewEngine =
+                _retainedLayoutEngine == null ||
+                !ReferenceEquals(_retainedLayoutStyles, effectiveStyles) ||
+                Math.Abs(_retainedLayoutViewportWidth - _viewportWidth) > 0.01f ||
+                Math.Abs(_retainedLayoutViewportHeight - _viewportHeight) > 0.01f ||
+                !string.Equals(_retainedLayoutBaseUrl, baseUrl, StringComparison.Ordinal);
+
+            if (needsNewEngine)
+            {
+                _retainedLayoutEngine = new LayoutEngine(
+                    effectiveStyles,
+                    _viewportWidth,
+                    _viewportHeight,
+                    null,
+                    baseUrl);
+                _retainedLayoutStyles = effectiveStyles;
+                _retainedLayoutViewportWidth = _viewportWidth;
+                _retainedLayoutViewportHeight = _viewportHeight;
+                _retainedLayoutBaseUrl = baseUrl;
+            }
+
+            return _retainedLayoutEngine;
         }
 
         private void CaptureLayoutCaches()

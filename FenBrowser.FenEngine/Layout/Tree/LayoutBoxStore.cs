@@ -26,6 +26,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private bool[] _isAnonymous;
 
         private int _count;
+        private int _generation = 1;
 
         public enum BoxType : byte
         {
@@ -74,6 +75,15 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         public void Reset()
         {
+            unchecked
+            {
+                _generation++;
+                if (_generation == 0)
+                {
+                    _generation = 1;
+                }
+            }
+
             // Clear reference arrays to prevent memory leaks
             Array.Clear(_sourceNodes, 0, _count);
             Array.Clear(_styles, 0, _count);
@@ -181,6 +191,20 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public BoxType GetBoxType(int id) => (BoxType)_boxTypes[id];
         public bool GetIsAnonymous(int id) => _isAnonymous[id];
         public int Count => _count;
+        internal int Generation => _generation;
+
+        internal void ValidateAccess(int id, int expectedGeneration)
+        {
+            if (expectedGeneration != _generation)
+            {
+                throw new InvalidOperationException("LayoutBox is stale: underlying LayoutBoxStore generation has advanced.");
+            }
+
+            if ((uint)id >= (uint)_count)
+            {
+                throw new InvalidOperationException("LayoutBox is stale: requested node id is outside the active layout tree.");
+            }
+        }
 
         public LayoutBox GetWrapper(int id)
         {
