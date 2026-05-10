@@ -25,7 +25,15 @@ namespace FenBrowser.FenEngine.Rendering
     internal sealed class RetainedTileRasterizer : IDisposable
     {
         private const int DefaultTileSizePx = 256;
+        private const int DefaultMaxRetainedTiles = 2048;
+        private const int DefaultMaxVisibleTiles = 4096;
+        private const int DefaultMaxDamageRegionsScanned = 256;
+        private const int DefaultMaxDirtyTilesPerFrame = 16384;
         private readonly int _tileSizePx;
+        private readonly int _maxRetainedTiles;
+        private readonly int _maxVisibleTiles;
+        private readonly int _maxDamageRegionsScanned;
+        private readonly int _maxDirtyTilesPerFrame;
         private readonly Dictionary<TileKey, RetainedTile> _tiles = new Dictionary<TileKey, RetainedTile>();
 
         private ImmutablePaintTree _displayListSourceTree;
@@ -35,9 +43,18 @@ namespace FenBrowser.FenEngine.Rendering
         private int _rasterFrameSequence;
         private bool _disposed;
 
-        public RetainedTileRasterizer(int tileSizePx = DefaultTileSizePx)
+        public RetainedTileRasterizer(
+            int tileSizePx = DefaultTileSizePx,
+            int maxRetainedTiles = DefaultMaxRetainedTiles,
+            int maxVisibleTiles = DefaultMaxVisibleTiles,
+            int maxDamageRegionsScanned = DefaultMaxDamageRegionsScanned,
+            int maxDirtyTilesPerFrame = DefaultMaxDirtyTilesPerFrame)
         {
             _tileSizePx = Math.Clamp(tileSizePx, 64, 1024);
+            _maxRetainedTiles = Math.Max(64, maxRetainedTiles);
+            _maxVisibleTiles = Math.Max(64, maxVisibleTiles);
+            _maxDamageRegionsScanned = Math.Max(16, maxDamageRegionsScanned);
+            _maxDirtyTilesPerFrame = Math.Max(256, maxDirtyTilesPerFrame);
         }
 
         public bool HasRetainedContent => _displayList != null && _tiles.Count > 0;
@@ -208,7 +225,14 @@ namespace FenBrowser.FenEngine.Rendering
                 return dirty;
             }
 
-            for (var i = 0; i < damageRegions.Count; i++)
+            int damageRegionBudget = Math.Min(damageRegions.Count, _maxDamageRegionsScanned);
+            if (damageRegions.Count > damageRegionBudget)
+            {
+                return BuildDirtySetForAllVisibleTiles(visibleTiles);
+            }
+
+            int dirtyTileBudgetRemaining = _maxDirtyTilesPerFrame;
+            for (var i = 0; i < damageRegionBudget; i++)
             {
                 if (!TryIntersect(damageRegions[i], viewport, out var clippedDamage))
                 {
@@ -224,6 +248,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     for (int tileX = minTileX; tileX <= maxTileX; tileX++)
                     {
+                        if (dirtyTileBudgetRemaining-- <= 0)
+                        {
+                            return BuildDirtySetForAllVisibleTiles(visibleTiles);
+                        }
+
                         dirty.Add(new TileKey(tileX, tileY));
                     }
                 }
@@ -287,6 +316,11 @@ namespace FenBrowser.FenEngine.Rendering
                         return false;
                     }
 
+                    if (!_tiles.ContainsKey(tileKey) && _tiles.Count >= _maxRetainedTiles)
+                    {
+                        EvictLeastRecentlyUsed(_maxRetainedTiles - 1);
+                    }
+
                     _tiles.TryGetValue(tileKey, out var existing);
                     existing.Image?.Dispose();
                     existing.Image = snapshot;
@@ -340,6 +374,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                 _tiles.Remove(staleKeys[i]);
             }
+
+            if (_tiles.Count > _maxRetainedTiles)
+            {
+                EvictLeastRecentlyUsed(_maxRetainedTiles);
+            }
         }
 
         private List<VisibleTile> BuildVisibleTiles(SKRect viewport)
@@ -363,11 +402,66 @@ namespace FenBrowser.FenEngine.Rendering
                     if (TryIntersect(tileRect, viewport, out var clipped))
                     {
                         visible.Add(new VisibleTile(new TileKey(tileX, tileY), clipped));
+                        if (visible.Count > _maxVisibleTiles)
+                        {
+                            // Fail closed: retained tile pass is optional; caller falls back to
+                            // direct full/damage rasterization for oversized visible tile sets.
+                            visible.Clear();
+                            return visible;
+                        }
                     }
                 }
             }
 
             return visible;
+        }
+
+        private HashSet<TileKey> BuildDirtySetForAllVisibleTiles(IReadOnlyList<VisibleTile> visibleTiles)
+        {
+            var all = new HashSet<TileKey>();
+            for (var i = 0; i < visibleTiles.Count; i++)
+            {
+                all.Add(visibleTiles[i].Key);
+            }
+
+            return all;
+        }
+
+        private void EvictLeastRecentlyUsed(int targetCount)
+        {
+            if (targetCount < 0)
+            {
+                targetCount = 0;
+            }
+
+            while (_tiles.Count > targetCount)
+            {
+                bool found = false;
+                TileKey lruKey = default;
+                int lruFrame = int.MaxValue;
+
+                foreach (var kv in _tiles)
+                {
+                    if (!found || kv.Value.LastAccessFrame < lruFrame)
+                    {
+                        found = true;
+                        lruKey = kv.Key;
+                        lruFrame = kv.Value.LastAccessFrame;
+                    }
+                }
+
+                if (!found)
+                {
+                    break;
+                }
+
+                if (_tiles.TryGetValue(lruKey, out var stale))
+                {
+                    stale.Image?.Dispose();
+                }
+
+                _tiles.Remove(lruKey);
+            }
         }
 
         private static bool TryIntersect(SKRect a, SKRect b, out SKRect intersection)

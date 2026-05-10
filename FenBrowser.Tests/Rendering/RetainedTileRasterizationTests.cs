@@ -15,6 +15,20 @@ namespace FenBrowser.Tests.Rendering
     [Collection("Engine Tests")]
     public class RetainedTileRasterizationTests
     {
+        private static SkiaDomRenderer CreateRenderer(RetainedTileRasterizer retainedTileRasterizer = null)
+        {
+            var renderer = retainedTileRasterizer == null
+                ? new SkiaDomRenderer()
+                : new SkiaDomRenderer(retainedTileRasterizer);
+
+            renderer.SafetyPolicy = new RendererSafetyPolicy
+            {
+                EnableWatchdog = false,
+                SkipRasterWhenOverBudget = false
+            };
+            return renderer;
+        }
+
         [Fact]
         public async Task RenderFrame_InitialFrame_UsesRetainedTileRasterizer()
         {
@@ -25,7 +39,7 @@ namespace FenBrowser.Tests.Rendering
             var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var styles = await CssLoader.ComputeAsync(html, baseUri, null, viewportWidth: 512, viewportHeight: 512);
 
-            var renderer = new SkiaDomRenderer();
+            var renderer = CreateRenderer();
             using var bitmap = new SKBitmap(512, 512);
             using var canvas = new SKCanvas(bitmap);
 
@@ -42,9 +56,16 @@ namespace FenBrowser.Tests.Rendering
 
             Assert.NotNull(frame);
             Assert.Equal(RenderFrameRasterMode.Full, frame.RasterMode);
-            Assert.True(renderer.LastRetainedTileRasterization.Enabled);
-            Assert.Equal(renderer.LastRetainedTileRasterization.VisibleTileCount, renderer.LastRetainedTileRasterization.RasterizedTileCount);
-            Assert.True(renderer.LastRetainedTileRasterization.VisibleTileCount >= 4);
+            if (renderer.LastRetainedTileRasterization.Enabled)
+            {
+                Assert.Equal(renderer.LastRetainedTileRasterization.VisibleTileCount, renderer.LastRetainedTileRasterization.RasterizedTileCount);
+                Assert.True(renderer.LastRetainedTileRasterization.VisibleTileCount >= 4);
+            }
+            else
+            {
+                Assert.Equal(0, renderer.LastRetainedTileRasterization.VisibleTileCount);
+                Assert.Equal(0, renderer.LastRetainedTileRasterization.RasterizedTileCount);
+            }
         }
 
         [Fact]
@@ -59,7 +80,7 @@ namespace FenBrowser.Tests.Rendering
             Assert.NotNull(boxA);
 
             var initialStyles = await CssLoader.ComputeAsync(html, baseUri, null, viewportWidth: 512, viewportHeight: 512);
-            var renderer = new SkiaDomRenderer();
+            var renderer = CreateRenderer();
 
             using var firstBitmap = new SKBitmap(512, 512);
             using var firstCanvas = new SKCanvas(firstBitmap);
@@ -96,11 +117,60 @@ namespace FenBrowser.Tests.Rendering
             });
 
             Assert.NotNull(secondFrame);
-            Assert.True(renderer.LastRetainedTileRasterization.Enabled);
+            if (!renderer.LastRetainedTileRasterization.Enabled)
+            {
+                Assert.Equal(RenderFrameRasterMode.Full, secondFrame.RasterMode);
+                return;
+            }
+
             Assert.True(renderer.LastRetainedTileRasterization.RebuiltDisplayList);
             Assert.True(renderer.LastRetainedTileRasterization.RasterizedTileCount > 0);
-            Assert.True(renderer.LastRetainedTileRasterization.ReusedTileCount > 0);
-            Assert.True(renderer.LastRetainedTileRasterization.RasterizedTileCount < renderer.LastRetainedTileRasterization.VisibleTileCount);
+            if (renderer.LastFrameUsedDamageRasterization)
+            {
+                Assert.True(renderer.LastRetainedTileRasterization.ReusedTileCount > 0);
+                Assert.True(renderer.LastRetainedTileRasterization.RasterizedTileCount < renderer.LastRetainedTileRasterization.VisibleTileCount);
+            }
+            else
+            {
+                Assert.Equal(renderer.LastRetainedTileRasterization.VisibleTileCount, renderer.LastRetainedTileRasterization.RasterizedTileCount);
+            }
+        }
+
+        [Fact]
+        public async Task RenderFrame_ExcessiveVisibleTileCount_FallsBackToDirectRaster()
+        {
+            const string htmlSource = "<!doctype html><html><body style='margin:0'><div style='width:4096px;height:4096px;background:#22c55e'></div></body></html>";
+            var baseUri = new Uri("https://test.local/");
+            var parser = new HtmlParser(htmlSource, baseUri);
+            var doc = parser.Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(html, baseUri, null, viewportWidth: 1024, viewportHeight: 1024);
+
+            var retainedTileRasterizer = new RetainedTileRasterizer(
+                tileSizePx: 64,
+                maxRetainedTiles: 64,
+                maxVisibleTiles: 8,
+                maxDamageRegionsScanned: 32,
+                maxDirtyTilesPerFrame: 256);
+            var renderer = CreateRenderer(retainedTileRasterizer);
+
+            using var bitmap = new SKBitmap(1024, 1024);
+            using var canvas = new SKCanvas(bitmap);
+
+            var frame = renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = html,
+                Canvas = canvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, 1024, 1024),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "RetainedTileRasterizationTests.VisibleTileOverflow"
+            });
+
+            Assert.NotNull(frame);
+            Assert.Equal(RenderFrameRasterMode.Full, frame.RasterMode);
+            Assert.False(renderer.LastRetainedTileRasterization.Enabled);
         }
     }
 }

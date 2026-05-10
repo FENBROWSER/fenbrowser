@@ -8443,3 +8443,27 @@ Verification:
 
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --nologo -v minimal`: pass on `2026-05-10`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~WorkerTests|FullyQualifiedName~EventLoop|FullyQualifiedName~Storage|FullyQualifiedName~RenderPipeline|FullyQualifiedName~ExecutionContextScheduling|FullyQualifiedName~SecurityEnforcement" --nologo -v minimal`: pass (`63/63`) on `2026-05-10`.
+
+## 2.312 FenEngine Chromium Audit Remediation Tranche B (Phase 3 Performance Hardening) (2026-05-10)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/ObjectPool.cs`
+  - Added bounded retained-capacity control (`maxRetained`) and lock-free counters for retained/drop tracking (`RetainedCount`, `DroppedReturns`).
+  - Pool returns now fail closed when retention is saturated instead of allowing unbounded growth.
+- `FenBrowser.FenEngine/Rendering/Compositing/RetainedTileRasterizer.cs`
+  - Added bounded retained-tile and visible-tile limits to keep retained rasterization predictable under large viewports.
+  - Added damage-region and per-frame dirty-tile scan budgets with fail-closed fallback to full visible-tile invalidation when budgets are exceeded.
+  - Added LRU eviction for retained tile cache saturation to prevent unbounded tile-image retention.
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Added incremental-layout dirty-scan and root-count guardrails (`MaxIncrementalLayoutDirtyNodeScan`, `MaxIncrementalLayoutRootCount`).
+  - Added isolation-root resolution/validation for incremental-layout planning so subtree updates are bounded to explicit layout-isolation boundaries.
+  - Added test-time retained-rasterizer injection constructor to support deterministic retained-raster behavior verification.
+- `FenBrowser.Tests/Rendering/ObjectPoolCapacityTests.cs` (new)
+  - Added coverage for bounded pool retention and retained-count decrement semantics.
+- `FenBrowser.Tests/Rendering/CompositorLayerAndIncrementalLayoutTests.cs`
+  - Added/updated coverage to assert telemetry-consistent behavior across incremental-layout usage and safe full-layout fallback.
+- `FenBrowser.Tests/Rendering/RetainedTileRasterizationTests.cs`
+  - Added oversized-visible-tile fallback coverage and updated assertions for fail-closed retained-raster fallback semantics.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.ObjectPoolCapacityTests|FullyQualifiedName~FenBrowser.Tests.Rendering.CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~FenBrowser.Tests.Rendering.RetainedTileRasterizationTests" --configuration Release --logger "console;verbosity=minimal"`: pass (`8/8`) on `2026-05-10`.

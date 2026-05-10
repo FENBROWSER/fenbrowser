@@ -38,7 +38,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly FrameBudgetAdaptivePolicy _frameBudgetAdaptivePolicy = new FrameBudgetAdaptivePolicy();
         private readonly IncrementalLayoutManager _incrementalLayoutManager = new IncrementalLayoutManager();
         private readonly PaintTreeLayerizer _paintTreeLayerizer = new PaintTreeLayerizer();
-        private readonly RetainedTileRasterizer _retainedTileRasterizer = new RetainedTileRasterizer();
+        private readonly RetainedTileRasterizer _retainedTileRasterizer;
         private GRContext _gpuRasterContext;
 
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
@@ -69,6 +69,8 @@ namespace FenBrowser.FenEngine.Rendering
         private float _retainedLayoutViewportWidth;
         private float _retainedLayoutViewportHeight;
         private string _retainedLayoutBaseUrl;
+        private const int MaxIncrementalLayoutDirtyNodeScan = 8192;
+        private const int MaxIncrementalLayoutRootCount = 16;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -95,6 +97,16 @@ namespace FenBrowser.FenEngine.Rendering
         /// Last layout result.
         /// </summary>
         public LayoutResult LastLayout => _lastLayout;
+
+    public SkiaDomRenderer()
+        : this(null)
+    {
+    }
+
+    internal SkiaDomRenderer(RetainedTileRasterizer retainedTileRasterizer)
+    {
+        _retainedTileRasterizer = retainedTileRasterizer ?? new RetainedTileRasterizer();
+    }
         
     /// <summary>
     /// Get the layout box for a specific element.
@@ -1002,7 +1014,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var dirtyElements = new List<Element>();
-            CollectLayoutDirtyElements(root, dirtyElements);
+            bool dirtyScanBudgetExceeded = CollectLayoutDirtyElements(root, dirtyElements, MaxIncrementalLayoutDirtyNodeScan);
+            if (dirtyScanBudgetExceeded)
+            {
+                return IncrementalLayoutPlan.Full("dirty-scan-budget-exceeded");
+            }
+
             if (dirtyElements.Count == 0)
             {
                 return IncrementalLayoutPlan.Full("layout-dirty-without-elements");
@@ -1029,27 +1046,48 @@ namespace FenBrowser.FenEngine.Rendering
                 return IncrementalLayoutPlan.Full("no-root-dirty-elements");
             }
 
-            if (roots.Count > 16)
+            if (roots.Count > MaxIncrementalLayoutRootCount)
             {
                 return IncrementalLayoutPlan.Full("too-many-dirty-roots");
             }
 
+            var isolatedRoots = new HashSet<Element>();
             for (var i = 0; i < roots.Count; i++)
             {
                 var rootElement = roots[i];
-                if (!IsSafeIncrementalLayoutRoot(rootElement, styles))
+                if (!TryResolveIncrementalLayoutIsolationRoot(rootElement, root, styles, out var isolatedRoot))
                 {
                     return IncrementalLayoutPlan.Full($"unsupported-root:{rootElement.TagName}");
                 }
 
-                var parent = rootElement.ParentElement;
+                isolatedRoots.Add(isolatedRoot);
+            }
+
+            if (isolatedRoots.Count == 0)
+            {
+                return IncrementalLayoutPlan.Full("no-isolated-layout-roots");
+            }
+
+            if (isolatedRoots.Count > MaxIncrementalLayoutRootCount)
+            {
+                return IncrementalLayoutPlan.Full("too-many-isolated-roots");
+            }
+
+            foreach (var isolatedRoot in isolatedRoots)
+            {
+                if (!IsSafeIncrementalLayoutRoot(isolatedRoot, styles))
+                {
+                    return IncrementalLayoutPlan.Full($"unsupported-isolated-root:{isolatedRoot.TagName}");
+                }
+
+                var parent = isolatedRoot.ParentElement;
                 if (parent == null || !_boxes.ContainsKey(parent))
                 {
                     return IncrementalLayoutPlan.Full("missing-parent-box");
                 }
             }
 
-            return IncrementalLayoutPlan.Incremental(roots);
+            return IncrementalLayoutPlan.Incremental(isolatedRoots.ToList());
         }
 
         private bool TryRunIncrementalLayout(
@@ -1187,17 +1225,28 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static void CollectLayoutDirtyElements(Node root, List<Element> target)
+        private static bool CollectLayoutDirtyElements(Node root, List<Element> target, int maxNodeScan)
         {
             if (root == null || target == null)
             {
-                return;
+                return false;
             }
 
+            if (maxNodeScan <= 0)
+            {
+                return true;
+            }
+
+            var scanned = 0;
             var stack = new Stack<Node>();
             stack.Push(root);
             while (stack.Count > 0)
             {
+                if (scanned++ >= maxNodeScan)
+                {
+                    return true;
+                }
+
                 var current = stack.Pop();
                 if (current == null)
                 {
@@ -1220,6 +1269,8 @@ namespace FenBrowser.FenEngine.Rendering
                     stack.Push(children[i]);
                 }
             }
+
+            return false;
         }
 
         private static bool HasLayoutDirtyAncestor(Element element, HashSet<Element> dirtySet)
@@ -1245,9 +1296,156 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
+            return IsLayoutIsolationBoundary(element, style);
+        }
+
+        private static bool TryResolveIncrementalLayoutIsolationRoot(
+            Element dirtyRoot,
+            Node documentRoot,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            out Element isolatedRoot)
+        {
+            isolatedRoot = null;
+            if (dirtyRoot == null || styles == null)
+            {
+                return false;
+            }
+
+            var current = dirtyRoot;
+            var depth = 0;
+            while (current != null && depth++ < 128)
+            {
+                if (!styles.TryGetValue(current, out var style) || style == null)
+                {
+                    return false;
+                }
+
+                if (IsLayoutIsolationBoundary(current, style))
+                {
+                    isolatedRoot = current;
+                    break;
+                }
+
+                current = current.ParentElement;
+            }
+
+            if (isolatedRoot == null)
+            {
+                return false;
+            }
+
+            if (ReferenceEquals(isolatedRoot, documentRoot) || isolatedRoot.ParentElement == null)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsLayoutIsolationBoundary(Element element, CssComputed style)
+        {
+            if (element == null || style == null)
+            {
+                return false;
+            }
+
             var position = LayoutStyleResolver.GetEffectivePosition(style);
-            return string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var display = style.Display;
+            if (string.IsNullOrWhiteSpace(display) &&
+                style.Map != null &&
+                style.Map.TryGetValue("display", out var mappedDisplay))
+            {
+                display = mappedDisplay;
+            }
+
+            if (!string.IsNullOrWhiteSpace(display))
+            {
+                var normalizedDisplay = display.Trim().ToLowerInvariant();
+                if (normalizedDisplay == "flow-root" ||
+                    normalizedDisplay == "flex" ||
+                    normalizedDisplay == "inline-flex" ||
+                    normalizedDisplay == "grid" ||
+                    normalizedDisplay == "inline-grid" ||
+                    normalizedDisplay == "inline-block" ||
+                    normalizedDisplay == "table" ||
+                    normalizedDisplay == "inline-table" ||
+                    normalizedDisplay == "table-cell")
+                {
+                    return true;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(style.Float) &&
+                !string.Equals(style.Float, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (HasNonVisibleOverflow(style))
+            {
+                return true;
+            }
+
+            return HasLayoutContainment(style.Contain, style.Map);
+        }
+
+        private static bool HasNonVisibleOverflow(CssComputed style)
+        {
+            static bool isBoundaryValue(string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return false;
+                }
+
+                var normalized = value.Trim().ToLowerInvariant();
+                return normalized != "visible" && normalized != "clip";
+            }
+
+            if (isBoundaryValue(style.OverflowX) || isBoundaryValue(style.OverflowY) || isBoundaryValue(style.Overflow))
+            {
+                return true;
+            }
+
+            if (style.Map == null)
+            {
+                return false;
+            }
+
+            return (style.Map.TryGetValue("overflow", out var overflow) && isBoundaryValue(overflow)) ||
+                   (style.Map.TryGetValue("overflow-x", out var overflowX) && isBoundaryValue(overflowX)) ||
+                   (style.Map.TryGetValue("overflow-y", out var overflowY) && isBoundaryValue(overflowY));
+        }
+
+        private static bool HasLayoutContainment(string contain, IReadOnlyDictionary<string, string> map)
+        {
+            if (string.IsNullOrWhiteSpace(contain) && map != null)
+            {
+                map.TryGetValue("contain", out contain);
+            }
+
+            if (string.IsNullOrWhiteSpace(contain))
+            {
+                return false;
+            }
+
+            var tokens = contain.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < tokens.Length; i++)
+            {
+                var token = tokens[i].Trim().ToLowerInvariant();
+                if (token == "layout" || token == "content" || token == "strict")
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void RemoveBoxesForSubtree(Node root)
