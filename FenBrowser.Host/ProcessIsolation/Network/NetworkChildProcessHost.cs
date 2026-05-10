@@ -95,14 +95,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 sandbox?.ApplyToProcessStartInfo(startInfo);
 
                 Process child;
-                if (sandbox.RequiresCustomSpawn)
+                if (sandbox != null && sandbox.RequiresCustomSpawn)
                 {
                     child = sandbox.SpawnProcess(startInfo);
                 }
                 else
                 {
                     child = Process.Start(startInfo);
-                    if (child != null)
+                    if (child != null && sandbox != null)
                     {
                         sandbox.AttachToProcess(child);
                     }

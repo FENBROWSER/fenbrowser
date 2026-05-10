@@ -1224,3 +1224,25 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -nologo`: pass on `2026-05-09`.
 - Manual Host repro (`FenBrowser.Host.exe https://www.google.com`, ~30s): `logs/host_presented_screenshot.png` now shows full chrome plus web content rather than a blank white surface.
+
+### 6.56 Phase 2 Sandbox Fallback Launch Hardening (2026-05-10)
+
+- `FenBrowser.Host/ProcessIsolation/Network/NetworkChildProcessHost.cs`
+  - Fixed unsandboxed-fallback launch flow to avoid dereferencing `sandbox` when `SandboxLaunchPolicy` allows fallback and returns `null`.
+  - Child launch now only uses custom spawn/attach hooks when an actual sandbox instance is present.
+- `FenBrowser.Host/ProcessIsolation/Targets/TargetChildProcessHost.cs`
+  - Applied the same null-safe sandbox launch contract for GPU/utility target child startup.
+  - Preserves fail-closed behavior when fallback is disabled, while keeping fallback-enabled startup deterministic.
+- `FenBrowser.Tests/Core/SandboxLaunchPolicyTests.cs` (new)
+  - Added coverage for sandbox-launch policy outcomes (deny without fallback, allow with unsandboxed fallback, acquire concrete sandbox).
+- `FenBrowser.Tests/Core/StoragePartitioningTests.cs` (new)
+  - Added origin+partition isolation and `ClearPartition(...)` coverage across local/session storage, cookies, and HTTP cache to validate the Phase 2 storage-partition boundary.
+
+- Net effect:
+  - Brokered auxiliary-process launchers no longer crash on fallback-enabled platforms/sessions that intentionally run without a live OS sandbox object.
+  - Phase 2 storage partition boundaries now have explicit regression tests across all primary storage backends.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests|FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~SandboxLaunchPolicyTests|FullyQualifiedName~StoragePartitioningTests|FullyQualifiedName~StorageTests" --nologo -v minimal`: pass on `2026-05-10`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests|FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~SandboxLaunchPolicyTests|FullyQualifiedName~StoragePartitioningTests|FullyQualifiedName~StorageTests" --logger "console;verbosity=minimal"`: pass (`51/51`) on `2026-05-10`.
