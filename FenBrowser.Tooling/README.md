@@ -121,6 +121,7 @@ Main options:
 - `--max <N>`: max number of test files (deterministic first N after sort).
 - `--filter <text>`: include only paths containing substring.
 - `--output <json_path>`: report output path.
+- `--event-log <jsonl_path>`: append-only per-scenario event log path. Defaults to the output path with `.events.jsonl`.
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --workers 20 --max 1000 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json
@@ -196,6 +197,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.p
 - Output JSON includes:
   - summary (`passed`, `failed`, `skipped`, `timedOut`, `totalScenarios`, `categories`, etc.)
   - per-scenario results (`file`, `scenario`, `outcome`, `category`, `durationMs`, `message`)
+- Output JSONL event log includes one per-scenario record as it completes; parent runs merge worker event logs into the configured event path.
 - Worker runs stream low-noise `[test262] progress shard=<index>/<count> files=<done>/<total> pass=<n> fail=<n> skip=<n> timeout=<n> total=<n>` lines so long runs show live status before the final summary.
 - A timed-out scenario aborts the current shard after recording the timeout result; this avoids reporting later unexecuted files as completed.
 

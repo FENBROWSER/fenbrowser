@@ -431,7 +431,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
-            Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>]");
+            Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>] [--event-log <jsonl_path>]");
             Console.WriteLine("  wpt [--root <wpt_path>] [--binary <host_exe>] [--webdriver-binary <launcher>] [--processes N] [--timeout-seconds N] [--venv <path>] [--skip-venv-setup] [--output-dir <dir>] [--tests <paths>]");
         }
 

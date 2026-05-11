@@ -60,6 +60,13 @@ namespace FenBrowser.Tooling
         {
             var options = ParseOptions(args);
             Directory.CreateDirectory(Path.GetDirectoryName(options.OutputPath) ?? Directory.GetCurrentDirectory());
+            options.EventLogPath = string.IsNullOrWhiteSpace(options.EventLogPath)
+                ? Path.ChangeExtension(options.OutputPath, ".events.jsonl")
+                : options.EventLogPath;
+            if (File.Exists(options.EventLogPath) && !options.WorkerMode)
+            {
+                File.Delete(options.EventLogPath);
+            }
 
             var tests = DiscoverTests(options);
             if (options.ShardCount > 0)
@@ -85,6 +92,7 @@ namespace FenBrowser.Tooling
         {
             var results = new ConcurrentBag<Test262CaseResult>();
             var processed = 0;
+            var eventLogLock = new object();
             var parallelOptions = new ParallelOptions
             {
                 MaxDegreeOfParallelism = Math.Max(1, options.Workers)
@@ -103,6 +111,7 @@ namespace FenBrowser.Tooling
                     foreach (var result in scenarioResults)
                     {
                         results.Add(result);
+                        AppendEvent(options.EventLogPath, eventLogLock, result);
                     }
 
                     var done = Interlocked.Increment(ref processed);
@@ -138,6 +147,7 @@ namespace FenBrowser.Tooling
             File.WriteAllText(options.OutputPath, json, new UTF8Encoding(false));
 
             Console.WriteLine($"[test262] output={options.OutputPath}");
+            Console.WriteLine($"[test262] events={options.EventLogPath}");
             Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} timeout={summary.TimedOut} total={summary.TotalScenarios}");
             Console.WriteLine($"[test262] categories={FormatCategoryCounts(summary.Categories)}");
         }
@@ -157,12 +167,15 @@ namespace FenBrowser.Tooling
             Directory.CreateDirectory(workerDir);
 
             var workerOutputs = new string[workerCount];
+            var workerEventLogs = new string[workerCount];
             var workerTasks = new List<Task<int>>(workerCount);
             for (var i = 0; i < workerCount; i++)
             {
                 var workerOutput = Path.Combine(workerDir, $"worker_{i:D2}.json");
+                var workerEventLog = Path.Combine(workerDir, $"worker_{i:D2}.events.jsonl");
                 workerOutputs[i] = workerOutput;
-                workerTasks.Add(LaunchWorkerAsync(dllPath, options, i, workerCount, workerOutput));
+                workerEventLogs[i] = workerEventLog;
+                workerTasks.Add(LaunchWorkerAsync(dllPath, options, i, workerCount, workerOutput, workerEventLog));
             }
 
             var exitCodes = await Task.WhenAll(workerTasks).ConfigureAwait(false);
@@ -192,6 +205,7 @@ namespace FenBrowser.Tooling
                 .OrderBy(r => r.File, StringComparer.Ordinal)
                 .ThenBy(r => r.Scenario, StringComparer.Ordinal)
                 .ToList();
+            MergeEventLogs(workerEventLogs, options.EventLogPath);
             var summary = BuildSummary(options, discoveredTests, ordered);
             var mergedPayload = new Test262ReportPayload
             {
@@ -203,6 +217,7 @@ namespace FenBrowser.Tooling
             File.WriteAllText(options.OutputPath, json, new UTF8Encoding(false));
 
             Console.WriteLine($"[test262] output={options.OutputPath}");
+            Console.WriteLine($"[test262] events={options.EventLogPath}");
             Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} timeout={summary.TimedOut} total={summary.TotalScenarios}");
             Console.WriteLine($"[test262] categories={FormatCategoryCounts(summary.Categories)}");
             return true;
@@ -219,7 +234,7 @@ namespace FenBrowser.Tooling
             return JsonSerializer.Deserialize<Test262ReportPayload>(json);
         }
 
-        private static async Task<int> LaunchWorkerAsync(string dllPath, Test262Options options, int shardIndex, int shardCount, string workerOutput)
+        private static async Task<int> LaunchWorkerAsync(string dllPath, Test262Options options, int shardIndex, int shardCount, string workerOutput, string workerEventLog)
         {
             var args = new StringBuilder();
             args.Append('"').Append(dllPath).Append('"');
@@ -238,6 +253,7 @@ namespace FenBrowser.Tooling
             }
 
             args.Append(" --output ").Append('"').Append(workerOutput).Append('"');
+            args.Append(" --event-log ").Append('"').Append(workerEventLog).Append('"');
             args.Append(" --worker-mode");
             args.Append(" --shard-index ").Append(shardIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
             args.Append(" --shard-count ").Append(shardCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -321,6 +337,7 @@ namespace FenBrowser.Tooling
                 TimeoutMs = options.TimeoutMs,
                 Filter = options.Filter ?? string.Empty,
                 MaxTests = options.MaxTests ?? 0,
+                EventLogPath = options.EventLogPath ?? string.Empty,
                 DiscoveredTests = discoveredTests,
                 TotalScenarios = results.Count,
                 Passed = pass,
@@ -340,6 +357,46 @@ namespace FenBrowser.Tooling
             }
 
             return string.Join(",", categories.Select(kvp => $"{kvp.Key}:{kvp.Value}"));
+        }
+
+        private static void AppendEvent(string eventLogPath, object eventLogLock, Test262CaseResult result)
+        {
+            if (string.IsNullOrWhiteSpace(eventLogPath))
+            {
+                return;
+            }
+
+            var json = JsonSerializer.Serialize(result);
+            lock (eventLogLock)
+            {
+                File.AppendAllText(eventLogPath, json + Environment.NewLine, new UTF8Encoding(false));
+            }
+        }
+
+        private static void MergeEventLogs(IEnumerable<string> workerEventLogs, string mergedEventLogPath)
+        {
+            if (string.IsNullOrWhiteSpace(mergedEventLogPath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(mergedEventLogPath) ?? Directory.GetCurrentDirectory());
+            using var writer = new StreamWriter(mergedEventLogPath, append: false, new UTF8Encoding(false));
+            foreach (var workerEventLog in workerEventLogs)
+            {
+                if (!File.Exists(workerEventLog))
+                {
+                    continue;
+                }
+
+                foreach (var line in File.ReadLines(workerEventLog))
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                    {
+                        writer.WriteLine(line);
+                    }
+                }
+            }
         }
 
         private static List<string> DiscoverTests(Test262Options options)
@@ -838,6 +895,18 @@ namespace FenBrowser.Tooling
                     continue;
                 }
 
+                if (arg.StartsWith("--event-log=", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.EventLogPath = Path.GetFullPath(arg.Substring("--event-log=".Length));
+                    continue;
+                }
+
+                if (string.Equals(arg, "--event-log", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    options.EventLogPath = Path.GetFullPath(args[++i]);
+                    continue;
+                }
+
                 if (string.Equals(arg, "--worker-mode", StringComparison.OrdinalIgnoreCase))
                 {
                     options.WorkerMode = true;
@@ -907,6 +976,7 @@ namespace FenBrowser.Tooling
             public int? MaxTests { get; set; }
             public string Filter { get; set; }
             public string OutputPath { get; set; }
+            public string EventLogPath { get; set; }
             public bool WorkerMode { get; set; }
             public int ShardIndex { get; set; }
             public int ShardCount { get; set; }
@@ -933,6 +1003,7 @@ namespace FenBrowser.Tooling
             public int TimeoutMs { get; set; }
             public string Filter { get; set; }
             public int MaxTests { get; set; }
+            public string EventLogPath { get; set; }
             public int DiscoveredTests { get; set; }
             public int TotalScenarios { get; set; }
             public int Passed { get; set; }
