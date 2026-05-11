@@ -428,7 +428,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
-            Console.WriteLine("  test262 --root <path> [--workers N] [--max N] [--filter <substring>] [--output <json_path>]");
+            Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>]");
         }
 
         private static async Task<SKBitmap> CaptureWindowScreenshotAsync(string url, int settleMs = 3500)

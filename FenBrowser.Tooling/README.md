@@ -117,6 +117,7 @@ Required:
 
 Main options:
 - `--workers <N>`: number of worker processes.
+- `--timeout-ms <N>`: per-scenario execution timeout in milliseconds (default: `10000`).
 - `--max <N>`: max number of test files (deterministic first N after sort).
 - `--filter <text>`: include only paths containing substring.
 - `--output <json_path>`: report output path.
@@ -159,9 +160,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.p
   - `module`
   - `async`
 - Output JSON includes:
-  - summary (`passed`, `failed`, `skipped`, `totalScenarios`, etc.)
-  - per-scenario results (`file`, `scenario`, `outcome`, `message`)
-- Worker runs stream low-noise `[test262] progress shard=<index>/<count> files=<done>/<total> pass=<n> fail=<n> skip=<n> total=<n>` lines so long runs show live status before the final summary.
+  - summary (`passed`, `failed`, `skipped`, `timedOut`, `totalScenarios`, `categories`, etc.)
+  - per-scenario results (`file`, `scenario`, `outcome`, `category`, `durationMs`, `message`)
+- Worker runs stream low-noise `[test262] progress shard=<index>/<count> files=<done>/<total> pass=<n> fail=<n> skip=<n> timeout=<n> total=<n>` lines so long runs show live status before the final summary.
+- A timed-out scenario aborts the current shard after recording the timeout result; this avoids reporting later unexecuted files as completed.
 
 ## Output Locations
 
@@ -177,6 +179,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.p
   - check `--filter` and `--max` values.
 - Worker failures:
   - rerun with `--workers 1` to isolate a failing case.
+- Timeout failures:
+  - inspect `outcome: "timeout"` and `category: "timeout"` entries in the JSON report, then rerun that file with a narrower `--filter`.
 - Large runs:
   - start with `--max 100` and scale up.
 

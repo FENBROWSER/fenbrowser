@@ -21,6 +21,7 @@ namespace FenBrowser.Tooling
     {
         private static readonly Regex FrontMatterRegex = new Regex(@"/\*---(?<meta>.*?)---\*/", RegexOptions.Singleline | RegexOptions.Compiled);
         private static readonly object EngineExecutionLock = new object();
+        private const int DefaultTimeoutMs = 10000;
         private const string Test262HostBootstrap = @"
 (function (g) {
   if (g.$262) { return; }
@@ -94,26 +95,36 @@ namespace FenBrowser.Tooling
                 ? $" shard={options.ShardIndex}/{options.ShardCount}"
                 : string.Empty;
 
-            await Parallel.ForEachAsync(tests, parallelOptions, (testPath, ct) =>
+            try
             {
-                var scenarioResults = RunSingleTest(options.RootPath, testPath);
-                foreach (var result in scenarioResults)
+                await Parallel.ForEachAsync(tests, parallelOptions, (testPath, ct) =>
                 {
-                    results.Add(result);
-                }
+                    var scenarioResults = RunSingleTest(options, testPath);
+                    foreach (var result in scenarioResults)
+                    {
+                        results.Add(result);
+                    }
 
-                var done = Interlocked.Increment(ref processed);
-                if (done % progressInterval == 0 || done == tests.Count)
-                {
-                    var snapshot = results.ToArray();
-                    var pass = snapshot.Count(r => r.Outcome == "pass");
-                    var fail = snapshot.Count(r => r.Outcome == "fail");
-                    var skip = snapshot.Count(r => r.Outcome == "skip");
-                    Console.WriteLine($"[test262] progress{progressScope} files={done}/{tests.Count} pass={pass} fail={fail} skip={skip} total={snapshot.Length}");
-                }
+                    var done = Interlocked.Increment(ref processed);
+                    if (done % progressInterval == 0 || done == tests.Count)
+                    {
+                        var snapshot = results.ToArray();
+                        var progressSummary = BuildSummary(options, tests.Count, snapshot);
+                        Console.WriteLine($"[test262] progress{progressScope} files={done}/{tests.Count} pass={progressSummary.Passed} fail={progressSummary.Failed} skip={progressSummary.Skipped} timeout={progressSummary.TimedOut} total={progressSummary.TotalScenarios}");
+                    }
 
-                return ValueTask.CompletedTask;
-            }).ConfigureAwait(false);
+                    if (scenarioResults.Any(r => r.Outcome == "timeout"))
+                    {
+                        throw new Test262RunAbortedException("Stopping shard after scenario timeout to avoid reporting unexecuted tests as completed.");
+                    }
+
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+            }
+            catch (Test262RunAbortedException ex)
+            {
+                Console.WriteLine($"[test262] aborted{progressScope} {ex.Message}");
+            }
 
             var ordered = results.OrderBy(r => r.File, StringComparer.Ordinal).ThenBy(r => r.Scenario, StringComparer.Ordinal).ToList();
             var summary = BuildSummary(options, tests.Count, ordered);
@@ -127,7 +138,8 @@ namespace FenBrowser.Tooling
             File.WriteAllText(options.OutputPath, json, new UTF8Encoding(false));
 
             Console.WriteLine($"[test262] output={options.OutputPath}");
-            Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} total={summary.TotalScenarios}");
+            Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} timeout={summary.TimedOut} total={summary.TotalScenarios}");
+            Console.WriteLine($"[test262] categories={FormatCategoryCounts(summary.Categories)}");
         }
 
         private static async Task<bool> RunShardedAsync(Test262Options options)
@@ -191,7 +203,8 @@ namespace FenBrowser.Tooling
             File.WriteAllText(options.OutputPath, json, new UTF8Encoding(false));
 
             Console.WriteLine($"[test262] output={options.OutputPath}");
-            Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} total={summary.TotalScenarios}");
+            Console.WriteLine($"[test262] pass={summary.Passed} fail={summary.Failed} skip={summary.Skipped} timeout={summary.TimedOut} total={summary.TotalScenarios}");
+            Console.WriteLine($"[test262] categories={FormatCategoryCounts(summary.Categories)}");
             return true;
         }
 
@@ -213,6 +226,7 @@ namespace FenBrowser.Tooling
             args.Append(" test262");
             args.Append(" --root ").Append('"').Append(options.RootPath).Append('"');
             args.Append(" --workers 1");
+            args.Append(" --timeout-ms ").Append(options.TimeoutMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
             if (options.MaxTests.HasValue)
             {
                 args.Append(" --max ").Append(options.MaxTests.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -287,13 +301,24 @@ namespace FenBrowser.Tooling
 
         private static Test262Summary BuildSummary(Test262Options options, int discoveredTests, List<Test262CaseResult> results)
         {
+            return BuildSummary(options, discoveredTests, (IReadOnlyCollection<Test262CaseResult>)results);
+        }
+
+        private static Test262Summary BuildSummary(Test262Options options, int discoveredTests, IReadOnlyCollection<Test262CaseResult> results)
+        {
             var pass = results.Count(r => r.Outcome == "pass");
             var fail = results.Count(r => r.Outcome == "fail");
             var skip = results.Count(r => r.Outcome == "skip");
+            var timeout = results.Count(r => r.Outcome == "timeout");
+            var categories = results
+                .GroupBy(r => string.IsNullOrWhiteSpace(r.Category) ? "unknown" : r.Category, StringComparer.Ordinal)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
             return new Test262Summary
             {
                 Root = options.RootPath,
                 Workers = options.Workers,
+                TimeoutMs = options.TimeoutMs,
                 Filter = options.Filter ?? string.Empty,
                 MaxTests = options.MaxTests ?? 0,
                 DiscoveredTests = discoveredTests,
@@ -301,8 +326,20 @@ namespace FenBrowser.Tooling
                 Passed = pass,
                 Failed = fail,
                 Skipped = skip,
+                TimedOut = timeout,
+                Categories = categories,
                 RunAtUtc = DateTime.UtcNow.ToString("o")
             };
+        }
+
+        private static string FormatCategoryCounts(Dictionary<string, int> categories)
+        {
+            if (categories == null || categories.Count == 0)
+            {
+                return "none";
+            }
+
+            return string.Join(",", categories.Select(kvp => $"{kvp.Key}:{kvp.Value}"));
         }
 
         private static List<string> DiscoverTests(Test262Options options)
@@ -331,9 +368,9 @@ namespace FenBrowser.Tooling
             return ordered;
         }
 
-        private static List<Test262CaseResult> RunSingleTest(string rootPath, string absolutePath)
+        private static List<Test262CaseResult> RunSingleTest(Test262Options options, string absolutePath)
         {
-            var relative = Path.GetRelativePath(Path.Combine(rootPath, "test"), absolutePath).Replace('\\', '/');
+            var relative = Path.GetRelativePath(Path.Combine(options.RootPath, "test"), absolutePath).Replace('\\', '/');
 
             string content;
             try
@@ -349,6 +386,7 @@ namespace FenBrowser.Tooling
                         File = relative,
                         Scenario = "default",
                         Outcome = "fail",
+                        Category = "io_error",
                         Message = $"Unable to read test file: {ex.Message}"
                     }
                 };
@@ -364,45 +402,67 @@ namespace FenBrowser.Tooling
                         File = relative,
                         Scenario = "default",
                         Outcome = "skip",
+                        Category = metadata.Flags.Contains("module") ? "unsupported_module" : "unsupported_async",
                         Message = "Skipped unsupported test flag (module/async)."
                     }
                 };
             }
 
             var scenarios = GetScenarios(metadata.Flags);
-            var harnessSource = BuildHarnessSource(rootPath, metadata.Includes);
+            var harnessSource = BuildHarnessSource(options.RootPath, metadata.Includes);
             var testBody = StripFrontMatter(content);
             var results = new List<Test262CaseResult>();
 
             foreach (var scenario in scenarios)
             {
                 var script = ComposeScenarioScript(harnessSource, testBody, scenario);
-                var runResult = ExecuteScript(script, metadata, scenario);
+                var runResult = ExecuteScript(script, metadata, scenario, options.TimeoutMs);
                 runResult.File = relative;
                 runResult.Scenario = scenario;
                 results.Add(runResult);
+                if (runResult.Outcome == "timeout")
+                {
+                    break;
+                }
             }
 
             return results;
         }
 
-        private static Test262CaseResult ExecuteScript(string script, Test262Metadata metadata, string scenario)
+        private static Test262CaseResult ExecuteScript(string script, Test262Metadata metadata, string scenario, int timeoutMs)
         {
-            object raw;
-            lock (EngineExecutionLock)
+            var stopwatch = Stopwatch.StartNew();
+            var task = Task.Run(() =>
             {
-                var host = new JsHostAdapter(_ => { }, (_, __) => { }, _ => { }, log: _ => { });
-                var engine = new JavaScriptEngine(host, JavaScriptRuntimeProfile.Balanced);
-                try
+                lock (EngineExecutionLock)
                 {
-                    raw = engine.Evaluate(script);
+                    var host = new JsHostAdapter(_ => { }, (_, __) => { }, _ => { }, log: _ => { });
+                    var engine = new JavaScriptEngine(host, JavaScriptRuntimeProfile.Balanced);
+                    try
+                    {
+                        return engine.Evaluate(script);
+                    }
+                    catch (Exception ex)
+                    {
+                        return $"Error: {ex.GetBaseException().Message}";
+                    }
                 }
-                catch (Exception ex)
+            });
+
+            if (!task.Wait(timeoutMs))
+            {
+                stopwatch.Stop();
+                return new Test262CaseResult
                 {
-                    raw = $"Error: {ex.GetBaseException().Message}";
-                }
+                    Outcome = "timeout",
+                    Category = "timeout",
+                    DurationMs = stopwatch.ElapsedMilliseconds,
+                    Message = $"Timed out after {timeoutMs}ms."
+                };
             }
 
+            stopwatch.Stop();
+            var raw = task.Result;
             var text = raw?.ToString() ?? string.Empty;
             var threw = IsErrorResult(text);
 
@@ -411,6 +471,8 @@ namespace FenBrowser.Tooling
                 return new Test262CaseResult
                 {
                     Outcome = threw ? "fail" : "pass",
+                    Category = threw ? ClassifyError(text) : "pass",
+                    DurationMs = stopwatch.ElapsedMilliseconds,
                     Message = threw ? text : "ok"
                 };
             }
@@ -420,6 +482,8 @@ namespace FenBrowser.Tooling
                 return new Test262CaseResult
                 {
                     Outcome = "fail",
+                    Category = "negative_missed",
+                    DurationMs = stopwatch.ElapsedMilliseconds,
                     Message = $"Expected negative {metadata.NegativeType} but script succeeded."
                 };
             }
@@ -428,8 +492,40 @@ namespace FenBrowser.Tooling
             return new Test262CaseResult
             {
                 Outcome = matched ? "pass" : "fail",
+                Category = matched ? "negative_expected" : "negative_mismatch",
+                DurationMs = stopwatch.ElapsedMilliseconds,
                 Message = matched ? $"Expected negative matched: {metadata.NegativeType}" : $"Expected {metadata.NegativeType}, got: {text}"
             };
+        }
+
+        private static string ClassifyError(string text)
+        {
+            if (text.Contains("Test262Error", StringComparison.Ordinal))
+            {
+                return "assertion";
+            }
+
+            if (text.Contains("SyntaxError", StringComparison.Ordinal))
+            {
+                return "syntax_error";
+            }
+
+            if (text.Contains("TypeError", StringComparison.Ordinal))
+            {
+                return "type_error";
+            }
+
+            if (text.Contains("ReferenceError", StringComparison.Ordinal))
+            {
+                return "reference_error";
+            }
+
+            if (text.Contains("RangeError", StringComparison.Ordinal))
+            {
+                return "range_error";
+            }
+
+            return "runtime_error";
         }
 
         private static bool IsErrorResult(string text)
@@ -639,6 +735,7 @@ namespace FenBrowser.Tooling
             {
                 RootPath = string.Empty,
                 Workers = Environment.ProcessorCount,
+                TimeoutMs = DefaultTimeoutMs,
                 OutputPath = Path.Combine(Directory.GetCurrentDirectory(), "Results", "test262_fenrunner_results.json")
             };
 
@@ -672,6 +769,26 @@ namespace FenBrowser.Tooling
                     if (int.TryParse(args[++i], out var workers) && workers > 0)
                     {
                         options.Workers = workers;
+                    }
+
+                    continue;
+                }
+
+                if (arg.StartsWith("--timeout-ms=", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(arg.Substring("--timeout-ms=".Length), out var timeoutMs) && timeoutMs > 0)
+                    {
+                        options.TimeoutMs = timeoutMs;
+                    }
+
+                    continue;
+                }
+
+                if (string.Equals(arg, "--timeout-ms", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    if (int.TryParse(args[++i], out var timeoutMs) && timeoutMs > 0)
+                    {
+                        options.TimeoutMs = timeoutMs;
                     }
 
                     continue;
@@ -786,6 +903,7 @@ namespace FenBrowser.Tooling
         {
             public string RootPath { get; set; }
             public int Workers { get; set; }
+            public int TimeoutMs { get; set; }
             public int? MaxTests { get; set; }
             public string Filter { get; set; }
             public string OutputPath { get; set; }
@@ -812,6 +930,7 @@ namespace FenBrowser.Tooling
         {
             public string Root { get; set; }
             public int Workers { get; set; }
+            public int TimeoutMs { get; set; }
             public string Filter { get; set; }
             public int MaxTests { get; set; }
             public int DiscoveredTests { get; set; }
@@ -819,6 +938,8 @@ namespace FenBrowser.Tooling
             public int Passed { get; set; }
             public int Failed { get; set; }
             public int Skipped { get; set; }
+            public int TimedOut { get; set; }
+            public Dictionary<string, int> Categories { get; set; }
             public string RunAtUtc { get; set; }
         }
 
@@ -827,7 +948,17 @@ namespace FenBrowser.Tooling
             public string File { get; set; }
             public string Scenario { get; set; }
             public string Outcome { get; set; }
+            public string Category { get; set; }
+            public long DurationMs { get; set; }
             public string Message { get; set; }
+        }
+
+        private sealed class Test262RunAbortedException : Exception
+        {
+            public Test262RunAbortedException(string message)
+                : base(message)
+            {
+            }
         }
     }
 }
