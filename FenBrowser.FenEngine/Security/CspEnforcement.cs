@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core;
 
@@ -68,7 +69,7 @@ namespace FenBrowser.FenEngine.Security
             // Self-check
             if (sourceUri != null && uri.Host == sourceUri.Host)
             {
-                if (policy.Directives.ContainsKey("self") || policy.Directives.ContainsKey($"'{uri.Scheme}://{uri.Host}'"))
+                if (policy.Directives.Values.Any(sources => sources.Contains("'self'")))
                     return true;
             }
             
@@ -77,8 +78,12 @@ namespace FenBrowser.FenEngine.Security
                 return true;
             
             // Specific source check
-            var sourceKey = $"'{uri.Scheme}://{uri.Host}'";
-            return policy.Directives.Values.Any(sources => sources.Contains(sourceKey) || sources.Contains(uri.Scheme));
+            var origin = $"{uri.Scheme}://{uri.Host}";
+            var quotedOrigin = $"'{origin}'";
+            return policy.Directives.Values.Any(sources =>
+                sources.Contains(origin) ||
+                sources.Contains(quotedOrigin) ||
+                sources.Contains($"{uri.Scheme}:"));
         }
         
         private class CspPolicy
