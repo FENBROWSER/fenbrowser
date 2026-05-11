@@ -153,7 +153,7 @@ Outputs:
 - `wpt.mach.log`
 - `wpt.stdout.log`
 - `wpt.stderr.log`
-- `wpt.summary.json`
+- `wpt.summary.json`, including `failurePhase: "wpt_startup"` when the watchdog fires before WPT emits any `test_start` events.
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- wpt --tests acid/acid2/reftest.html --processes 1 --timeout-seconds 120

@@ -56,6 +56,7 @@ namespace FenBrowser.Tooling
                 SkipVenvSetup = options.SkipVenvSetup,
                 TimedOut = result.TimedOut,
                 ExitCode = result.ExitCode,
+                FailurePhase = result.TimedOut && rawCounts.TestStart == 0 ? "wpt_startup" : string.Empty,
                 StartedAtUtc = startedAt.ToString("o"),
                 FinishedAtUtc = endedAt.ToString("o"),
                 DurationSeconds = (endedAt - startedAt).TotalSeconds,
@@ -76,7 +77,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"[wpt] summary={summaryPath}");
             Console.WriteLine($"[wpt] raw={rawLogPath}");
             Console.WriteLine($"[wpt] report={reportPath}");
-            Console.WriteLine($"[wpt] exit={summary.ExitCode} timedOut={summary.TimedOut} testStart={summary.TestStart} testEnd={summary.TestEnd} statuses={FormatStatusCounts(summary.StatusCounts)}");
+            Console.WriteLine($"[wpt] exit={summary.ExitCode} timedOut={summary.TimedOut} phase={summary.FailurePhase} testStart={summary.TestStart} testEnd={summary.TestEnd} statuses={FormatStatusCounts(summary.StatusCounts)}");
         }
 
         private static WptCommand BuildCommand(WptOptions options, string rawLogPath, string reportPath, string machLogPath)
@@ -100,6 +101,7 @@ namespace FenBrowser.Tooling
             {
                 "run",
                 "--yes",
+                "--no-manifest-update",
                 "--no-pause-after-test",
                 "--processes",
                 options.Processes.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -434,6 +436,7 @@ namespace FenBrowser.Tooling
             public bool SkipVenvSetup { get; set; }
             public bool TimedOut { get; set; }
             public int ExitCode { get; set; }
+            public string FailurePhase { get; set; }
             public string StartedAtUtc { get; set; }
             public string FinishedAtUtc { get; set; }
             public double DurationSeconds { get; set; }

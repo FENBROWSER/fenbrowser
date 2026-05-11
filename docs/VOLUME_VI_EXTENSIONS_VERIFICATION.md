@@ -35,6 +35,7 @@ This volume details the infrastructure used to extend the browser and verify its
   - `wpt.stderr.log`
   - `wpt.summary.json`
 - `wpt.summary.json` records the exact command inputs, binaries, duration, watchdog outcome, raw-log test counts, and final status buckets.
+- If the watchdog fires before any raw-log `test_start` event, the summary records `failurePhase: "wpt_startup"` so harness/bootstrap failures are not confused with browser test failures.
 - Use this wrapper for local and CI WPT slices so pass/fail/timeout claims are backed by machine-readable artifacts instead of terminal-only output.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
