@@ -89,6 +89,11 @@ namespace FenBrowser.Tooling
                 MaxDegreeOfParallelism = Math.Max(1, options.Workers)
             };
 
+            var progressInterval = GetProgressInterval(tests.Count);
+            var progressScope = options.ShardCount > 0
+                ? $" shard={options.ShardIndex}/{options.ShardCount}"
+                : string.Empty;
+
             await Parallel.ForEachAsync(tests, parallelOptions, (testPath, ct) =>
             {
                 var scenarioResults = RunSingleTest(options.RootPath, testPath);
@@ -98,9 +103,13 @@ namespace FenBrowser.Tooling
                 }
 
                 var done = Interlocked.Increment(ref processed);
-                if (done % 100 == 0 || done == tests.Count)
+                if (done % progressInterval == 0 || done == tests.Count)
                 {
-                    Console.WriteLine($"[test262] progress {done}/{tests.Count}");
+                    var snapshot = results.ToArray();
+                    var pass = snapshot.Count(r => r.Outcome == "pass");
+                    var fail = snapshot.Count(r => r.Outcome == "fail");
+                    var skip = snapshot.Count(r => r.Outcome == "skip");
+                    Console.WriteLine($"[test262] progress{progressScope} files={done}/{tests.Count} pass={pass} fail={fail} skip={skip} total={snapshot.Length}");
                 }
 
                 return ValueTask.CompletedTask;
@@ -224,8 +233,8 @@ namespace FenBrowser.Tooling
                 FileName = "dotnet",
                 Arguments = args.ToString(),
                 UseShellExecute = false,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 CreateNoWindow = true
             };
 
@@ -235,8 +244,45 @@ namespace FenBrowser.Tooling
                 return 1;
             }
 
+            var stdoutTask = RelayOutputAsync(process.StandardOutput, string.Empty, test262Only: true);
+            var stderrTask = RelayOutputAsync(process.StandardError, "[test262][worker-stderr] ", test262Only: false);
             await process.WaitForExitAsync().ConfigureAwait(false);
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
             return process.ExitCode;
+        }
+
+        private static async Task RelayOutputAsync(StreamReader reader, string prefix, bool test262Only)
+        {
+            string line;
+            while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
+            {
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+
+                if (test262Only && !line.StartsWith("[test262]", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                Console.WriteLine(prefix + line);
+            }
+        }
+
+        private static int GetProgressInterval(int totalTests)
+        {
+            if (totalTests <= 100)
+            {
+                return 10;
+            }
+
+            if (totalTests <= 1000)
+            {
+                return 50;
+            }
+
+            return 100;
         }
 
         private static Test262Summary BuildSummary(Test262Options options, int discoveredTests, List<Test262CaseResult> results)
@@ -309,7 +355,7 @@ namespace FenBrowser.Tooling
             }
 
             var metadata = ParseMetadata(content);
-            if (metadata.Flags.Contains("module") || metadata.Flags.Contains("async") || metadata.Flags.Contains("generated"))
+            if (metadata.Flags.Contains("module") || metadata.Flags.Contains("async"))
             {
                 return new List<Test262CaseResult>
                 {
@@ -318,7 +364,7 @@ namespace FenBrowser.Tooling
                         File = relative,
                         Scenario = "default",
                         Outcome = "skip",
-                        Message = "Skipped unsupported test flag (module/async/generated)."
+                        Message = "Skipped unsupported test flag (module/async)."
                     }
                 };
             }

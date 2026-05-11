@@ -158,10 +158,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.p
 - Current runner skips tests with flags:
   - `module`
   - `async`
-  - `generated`
 - Output JSON includes:
   - summary (`passed`, `failed`, `skipped`, `totalScenarios`, etc.)
   - per-scenario results (`file`, `scenario`, `outcome`, `message`)
+- Worker runs stream low-noise `[test262] progress shard=<index>/<count> files=<done>/<total> pass=<n> fail=<n> skip=<n> total=<n>` lines so long runs show live status before the final summary.
 
 ## Output Locations
 
