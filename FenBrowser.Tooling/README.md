@@ -126,6 +126,40 @@ Main options:
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --workers 20 --max 1000 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json
 ```
 
+### `wpt`
+
+Run upstream WPT through the external WebDriver harness and write a deterministic result bundle.
+
+Defaults:
+- WPT root: `C:\Users\udayk\Videos\wpt`
+- Host binary: first existing `FenBrowser.Host\bin\Debug\net8.0\FenBrowser.Host.exe`, then Release.
+- WebDriver launcher: `scripts\wpt-webdriver-launcher.cmd`
+- Output: timestamped `Results\wpt_*`
+
+Main options:
+- `--root <path>`: upstream WPT checkout.
+- `--binary <path>`: FenBrowser Host executable.
+- `--webdriver-binary <path>`: launcher that starts `FenBrowser.Tooling webdriver`.
+- `--processes <N>`: WPT worker process count.
+- `--timeout-seconds <N>`: watchdog for the whole WPT run.
+- `--venv <path>`: WPT virtualenv path; defaults to `C:\Users\udayk\Videos\wpt\_venv3` when present.
+- `--skip-venv-setup`: use the specified virtualenv as-is.
+- `--output-dir <path>`: result bundle directory.
+- `--tests <paths>`: comma-separated WPT paths. Trailing positional paths are also accepted.
+
+Outputs:
+- `wpt.raw.json`
+- `wpt.report.json`
+- `wpt.mach.log`
+- `wpt.stdout.log`
+- `wpt.stderr.log`
+- `wpt.summary.json`
+
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- wpt --tests acid/acid2/reftest.html --processes 1 --timeout-seconds 120
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- wpt --tests html/ --processes 20 --timeout-seconds 1800 --output-dir C:\Users\udayk\Videos\fenbrowser-test\Results\wpt_html_current
+```
+
 ### Staged Recovery Baseline Bundle
 
 Run staged Stage 0-3 baseline slices and emit a JSON result bundle under `Results/`:

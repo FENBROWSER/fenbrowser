@@ -23,6 +23,20 @@ This volume details the infrastructure used to extend the browser and verify its
   - local harness-specific unit tests and helper scripts
 - Verification input now comes from official upstream harness runs only, with FenBrowser consuming the resulting artifacts/reports.
 
+### 1.3 External WPT Execution Wrapper (2026-05-11)
+
+- `FenBrowser.Tooling wpt` is the repo-owned wrapper for upstream WPT execution.
+- It does not host or fork WPT tests. It invokes the upstream checkout with the `fenbrowser` product adapter and FenBrowser WebDriver launcher.
+- Every run writes a deterministic bundle under `Results/`:
+  - `wpt.raw.json`
+  - `wpt.report.json`
+  - `wpt.mach.log`
+  - `wpt.stdout.log`
+  - `wpt.stderr.log`
+  - `wpt.summary.json`
+- `wpt.summary.json` records the exact command inputs, binaries, duration, watchdog outcome, raw-log test counts, and final status buckets.
+- Use this wrapper for local and CI WPT slices so pass/fail/timeout claims are backed by machine-readable artifacts instead of terminal-only output.
+
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
 FenBrowser includes a compliant W3C WebDriver server, allowing it to be controlled by automation tools like Selenium.

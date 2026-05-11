@@ -15,5 +15,13 @@ if not defined PORT (
   echo [wpt-webdriver-launcher] Missing --port argument 1>&2
   exit /b 2
 )
-"C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.Tooling\bin\Release\net8.0\FenBrowser.Tooling.exe" webdriver --headless --port "%PORT%"
+set "REPO_ROOT=%~dp0.."
+set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Release\net8.0\FenBrowser.Tooling.exe"
+if defined FEN_WPT_TOOLING_EXE set "TOOLING_EXE=%FEN_WPT_TOOLING_EXE%"
+if not exist "%TOOLING_EXE%" set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Debug\net8.0\FenBrowser.Tooling.exe"
+if not exist "%TOOLING_EXE%" (
+  echo [wpt-webdriver-launcher] FenBrowser.Tooling.exe not found. Build FenBrowser.Tooling first or set FEN_WPT_TOOLING_EXE. 1>&2
+  exit /b 3
+)
+"%TOOLING_EXE%" webdriver --headless --port "%PORT%"
 exit /b %ERRORLEVEL%

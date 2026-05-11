@@ -64,6 +64,9 @@ namespace FenBrowser.Tooling
                 case "test262":
                     await Test262ToolRunner.RunAsync(args).ConfigureAwait(false);
                     return;
+                case "wpt":
+                    await WptToolRunner.RunAsync(args).ConfigureAwait(false);
+                    return;
                 default:
                     PrintUsage();
                     return;
@@ -429,6 +432,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
             Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>]");
+            Console.WriteLine("  wpt [--root <wpt_path>] [--binary <host_exe>] [--webdriver-binary <launcher>] [--processes N] [--timeout-seconds N] [--venv <path>] [--skip-venv-setup] [--output-dir <dir>] [--tests <paths>]");
         }
 
         private static async Task<SKBitmap> CaptureWindowScreenshotAsync(string url, int settleMs = 3500)
