@@ -5,6 +5,8 @@ using System.Globalization;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core;
+using FenBrowser.Core.Css;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -84,19 +86,5 @@ namespace FenBrowser.FenEngine.Layout
             // Calculate relative units like em, rem
             return 0f;
         }
-    }
-    
-    public class ContainerQuery
-    {
-        public string Selector { get; set; }
-        public List<QueryCondition> Conditions { get; set; } = new();
-        public Dictionary<string, string> Rules { get; set; } = new();
-    }
-    
-    public class QueryCondition
-    {
-        public string Feature { get; set; }
-        public string Value { get; set; }
-        public bool IsNot { get; set; }
     }
 }

@@ -2,6 +2,7 @@ using SkiaSharp;
 using FenBrowser.Core;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;
+using System.Linq;
 
 namespace FenBrowser.Core.Css
 {
@@ -30,6 +31,11 @@ namespace FenBrowser.Core.Css
         
         // Cache for virtual DOM node used in Rendering
         public PseudoElement PseudoElementInstance { get; set; }
+        
+        /// <summary>
+        /// Container queries for responsive layouts based on container size
+        /// </summary>
+        public List<ContainerQuery> ContainerQueries { get; set; }
 
         public CssComputed()
         {
