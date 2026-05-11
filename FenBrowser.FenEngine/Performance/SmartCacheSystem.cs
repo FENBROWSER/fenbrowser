@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.FenEngine.Performance
@@ -53,6 +54,9 @@ namespace FenBrowser.FenEngine.Performance
         /// </summary>
         public static CacheStats GetStats()
         {
+            var totalHits = LayoutCache.Hits + StyleCache.Hits + PaintCache.Hits;
+            var totalMisses = LayoutCache.Misses + StyleCache.Misses + PaintCache.Misses;
+
             return new CacheStats
             {
                 LayoutHits = LayoutCache.Hits,
@@ -61,6 +65,7 @@ namespace FenBrowser.FenEngine.Performance
                 StyleMisses = StyleCache.Misses,
                 PaintHits = PaintCache.Hits,
                 PaintMisses = PaintCache.Misses,
+                HitRate = totalHits + totalMisses > 0 ? (double)totalHits / (totalHits + totalMisses) : 0,
                 TotalMemoryMB = GC.GetTotalMemory(false) / (1024.0 * 1024.0)
             };
         }
