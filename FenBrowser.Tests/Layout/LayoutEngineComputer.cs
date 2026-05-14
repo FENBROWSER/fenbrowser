@@ -30,20 +30,39 @@ namespace FenBrowser.Tests.Layout
 
         public LayoutMetrics Measure(Node node, SKSize availableSize)
         {
-            _engine.ComputeLayout(node, availableSize.Width, availableSize.Height);
+            var root = ResolveLayoutRoot(node);
+            _engine.ComputeLayout(root, availableSize.Width, availableSize.Height);
             _layoutDone = true;
-            _laidOutRoot = node;
+            _laidOutRoot = root;
             return ExtractMetrics(node);
         }
 
         public void Arrange(Node node, SKRect finalRect)
         {
-            if (!_layoutDone || !ReferenceEquals(_laidOutRoot, node))
+            var root = ResolveLayoutRoot(node);
+            if (!_layoutDone || !ReferenceEquals(_laidOutRoot, root))
             {
-                _engine.ComputeLayout(node, finalRect.Width, finalRect.Height);
+                _engine.ComputeLayout(root, finalRect.Width, finalRect.Height);
                 _layoutDone = true;
-                _laidOutRoot = node;
+                _laidOutRoot = root;
             }
+        }
+
+        private static Node ResolveLayoutRoot(Node node)
+        {
+            // Walk up to a parent whose semantics depend on its children for layout
+            // (notably <picture> for responsive <img>). Without this, ComputeLayout
+            // starts at the leaf and can't see the parent's <source> siblings.
+            if (node is Element el)
+            {
+                string tag = el.TagName?.ToUpperInvariant();
+                if (tag == "IMG" && node.ParentNode is Element parent &&
+                    string.Equals(parent.TagName, "PICTURE", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return parent;
+                }
+            }
+            return node;
         }
 
         public BoxModel GetBox(Node node)
