@@ -193,6 +193,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         continue;
                     }
 
+                    // FAST PATH: if the entire collapsed text fits on the remaining
+                    // space of the current line, emit it as a single segment.
+                    if (!isShrinkToFitProbe)
+                    {
+                        float wholeWidth = MeasureString(fullText, textBox.ComputedStyle).Width;
+                        if (curX + wholeWidth <= contentLimit + 0.5f)
+                        {
+                            textBoxLines[textBox].Add(new TextLineInfo
+                            {
+                                Text = fullText,
+                                X = curX,
+                                Width = wholeWidth,
+                                Height = lineHeight,
+                                Baseline = baseline,
+                                LineIndex = lines.Count - 1
+                            });
+                            currentLine.Width = curX + wholeWidth;
+                            currentLine.IncludeMetrics(baseline, descent);
+                            curX += wholeWidth;
+                            previousEndedWithSpace = fullText.EndsWith(" ", StringComparison.Ordinal);
+                            continue;
+                        }
+                    }
+
                     // WORD FLOW - track segments for this textBox
                     int startIdx = 0;
                     int currentLineStartIdx = 0;
@@ -691,25 +715,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (child is TextLayoutBox textBox)
             {
-                string text = NormalizeIsolatedText(textBox.TextContent);
-                if (text.Length == 0)
+                // Use the same whitespace-collapsed (not trimmed) text the word-flow
+                // path will process, so the aggregated width agrees with the sum
+                // produced during re-layout. NormalizeIsolatedText trims edge
+                // whitespace; using it here can leave the aggregated width short
+                // of the word-flow total by the trimmed spaces' widths and trigger
+                // spurious wraps.
+                string collapsed = CollapseWhitespace(textBox.TextContent ?? string.Empty);
+                if (collapsed.Length == 0)
                 {
                     return SKSize.Empty;
                 }
 
-                // Match word-flow's per-word measurement so the aggregated parent
-                // width agrees with what a re-layout pass will produce.
-                if (text.IndexOf(' ') >= 0 &&
+                if (collapsed.IndexOf(' ') >= 0 &&
                     !UsesNoWrapWhiteSpace(textBox.ComputedStyle ?? child.ComputedStyle))
                 {
                     float totalWidth = 0f;
                     float maxHeight = 0f;
                     int startIdx = 0;
-                    while (startIdx < text.Length)
+                    while (startIdx < collapsed.Length)
                     {
-                        int nextSpace = text.IndexOf(' ', startIdx);
-                        int endIdx = nextSpace == -1 ? text.Length : nextSpace + 1;
-                        string word = text.Substring(startIdx, endIdx - startIdx);
+                        int nextSpace = collapsed.IndexOf(' ', startIdx);
+                        int endIdx = nextSpace == -1 ? collapsed.Length : nextSpace + 1;
+                        string word = collapsed.Substring(startIdx, endIdx - startIdx);
                         var wordSize = MeasureString(word, textBox.ComputedStyle);
                         totalWidth += wordSize.Width;
                         maxHeight = Math.Max(maxHeight, wordSize.Height);
@@ -718,7 +746,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return new SKSize(totalWidth, maxHeight);
                 }
 
-                return MeasureString(text, textBox.ComputedStyle);
+                return MeasureString(collapsed, textBox.ComputedStyle);
             }
             else if (child is InlineBox inlineBox)
             {
