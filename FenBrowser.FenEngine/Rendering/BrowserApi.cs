@@ -948,6 +948,13 @@ namespace FenBrowser.FenEngine.Rendering
             };
             _imageLoaderContext = CreateImageLoaderContext();
 
+            // Wire static ImageLoader callbacks so image-load notifications routed
+            // outside an explicit ambient context (e.g. background prewarms) still
+            // reach this host. Last host instantiated wins, mirroring how a single
+            // process hosts one active browser at a time.
+            ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
+            ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
+
             // Wire up FontRegistry to trigger full relayout/repaint when fonts finish loading
             _fontLoadedHandler = (family) =>
             {

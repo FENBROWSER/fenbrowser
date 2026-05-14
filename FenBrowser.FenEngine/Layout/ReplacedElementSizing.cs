@@ -222,7 +222,14 @@ namespace FenBrowser.FenEngine.Layout
                 return false;
             }
 
-            string src = element.GetAttribute("src");
+            // For <img> inside <picture>, the selected source's srcset wins over the
+            // fallback src per HTML responsive image rules. Try the picture-aware
+            // resolver first; fall back to the bare img src.
+            string candidate = FenBrowser.FenEngine.Rendering.ResponsiveImageSourceSelector
+                .PickCurrentImageSource(element, viewportWidth: 1920, viewportHeight: 1080);
+            string src = !string.IsNullOrWhiteSpace(candidate)
+                ? candidate
+                : element.GetAttribute("src");
             if (string.IsNullOrWhiteSpace(src))
             {
                 return false;
