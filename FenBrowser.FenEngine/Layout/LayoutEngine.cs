@@ -31,6 +31,9 @@ namespace FenBrowser.FenEngine.Layout
         
         /// <summary>
         /// Creates a new layout engine from style dictionary and viewport.
+        /// Production path uses the box-tree pipeline (BoxTreeBuilder + FormattingContext)
+        /// and does not require an ILayoutComputer. The computer parameter is retained
+        /// only for tests that still drive the legacy Measure/Arrange path directly.
         /// </summary>
         public LayoutEngine(
             IReadOnlyDictionary<Node, CssComputed> styles,
@@ -40,16 +43,16 @@ namespace FenBrowser.FenEngine.Layout
             string baseUri = null)
         {
             _context = new LayoutContext(styles, viewportWidth, viewportHeight);
-            _computer = computer ?? new MinimalLayoutComputer(styles, viewportWidth, viewportHeight, baseUri);
+            _computer = computer;
         }
-        
+
         /// <summary>
         /// Creates a default layout engine (for simple use cases).
         /// </summary>
         public LayoutEngine()
         {
             _context = new LayoutContext(new Dictionary<Node, CssComputed>(), 1920, 1080);
-            _computer = new MinimalLayoutComputer(_context.Styles, 1920, 1080, null);
+            _computer = null;
         }
         
         /// <summary>
@@ -148,21 +151,6 @@ namespace FenBrowser.FenEngine.Layout
                 0,
                 contentHeight
             );
-            
-
-            // LEGACY PIPELINE RESTORATION (DISABLED)
-            /*
-            // Ensure we use the computer to generate boxes
-            if (_computer is MinimalLayoutComputer minComp)
-            {
-                minComp.Deadline = deadline;
-            }
-
-            var measureMetrics = _computer.Measure(node, new SKSize(availableWidth, availableHeight));
-            _computer.Arrange(node, new SKRect(0, 0, availableWidth, availableHeight));
-            
-            return BuildResult(measureMetrics.MaxChildWidth, measureMetrics.ContentHeight);
-            */
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
