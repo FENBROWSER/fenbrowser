@@ -594,6 +594,9 @@ namespace FenBrowser.Core.Css
             ["grid-template-rows"] = "none",
             ["gap"] = "0",
             
+            // Box Sizing
+            ["box-sizing"] = "content-box",
+
             // Other
             ["opacity"] = "1",
             ["overflow"] = "visible",

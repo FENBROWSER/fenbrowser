@@ -755,6 +755,22 @@ return computed;
             }
         }
 
+        // CSS Display Level 3 two-keyword values → single-keyword equivalents.
+        // Spec: https://drafts.csswg.org/css-display/#typedef-display-outside
+        private static readonly Dictionary<string, string> TwoKeywordDisplayMap = new(StringComparer.Ordinal)
+        {
+            ["block flow"] = "block",
+            ["block flow-root"] = "flow-root",
+            ["inline flow"] = "inline",
+            ["inline flow-root"] = "inline-block",
+            ["block flex"] = "flex",
+            ["inline flex"] = "inline-flex",
+            ["block grid"] = "grid",
+            ["inline grid"] = "inline-grid",
+            ["block table"] = "table",
+            ["inline table"] = "inline-table",
+        };
+
         private static bool TryNormalizeDisplayValue(string rawValue, out string normalized)
         {
             normalized = null;
@@ -781,6 +797,13 @@ return computed;
             if (SupportedDisplayKeywords.Contains(value))
             {
                 normalized = value;
+                return true;
+            }
+
+            // CSS Display Level 3: two-keyword syntax (e.g. "inline flex" → "inline-flex")
+            if (TwoKeywordDisplayMap.TryGetValue(value, out var mapped))
+            {
+                normalized = mapped;
                 return true;
             }
 
