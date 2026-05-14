@@ -48,53 +48,56 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             InitializeBox(tableBox);
 
             var rows = NormalizeRows(tableBox);
+            var grid = BuildSlotGrid(rows);
             var style = tableBox.ComputedStyle;
             float specifiedWidth = ResolveSpecifiedWidth(style, state);
             float specifiedHeight = ResolveSpecifiedHeight(style, state);
-            float[] columnWidths = MeasureColumnWidths(rows, state);
+            float[] columnWidths = MeasureColumnWidths(grid, state);
             float intrinsicWidth = columnWidths.Sum();
 
-            if (specifiedWidth > intrinsicWidth && rows.Count > 0)
+            if (specifiedWidth > intrinsicWidth && columnWidths.Length > 0)
             {
                 float extra = specifiedWidth - intrinsicWidth;
-                float perColumn = extra / Math.Max(1, columnWidths.Length);
+                float perColumn = extra / columnWidths.Length;
                 for (int i = 0; i < columnWidths.Length; i++)
                 {
                     columnWidths[i] += perColumn;
                 }
             }
 
+            float[] rowHeights = MeasureRowHeights(grid, columnWidths, state);
             float contentWidth = Math.Max(specifiedWidth, intrinsicWidth);
             float currentY = tableBox.Geometry.ContentBox.Top;
             float contentLeft = tableBox.Geometry.ContentBox.Left;
             float maxRight = contentLeft;
 
-            foreach (var row in rows)
+            for (int rowIdx = 0; rowIdx < grid.Count; rowIdx++)
             {
-                float rowHeight = MeasureRowHeight(row, columnWidths, state);
-                float currentX = contentLeft;
+                var row = grid[rowIdx];
+                float rowHeight = rowHeights[rowIdx];
 
-                for (int i = 0; i < row.Cells.Count; i++)
+                foreach (var slot in row.Slots)
                 {
-                    var cell = row.Cells[i];
-                    float cellWidth = i < columnWidths.Length ? columnWidths[i] : 0f;
-                    LayoutCell(cell, cellWidth, rowHeight, state);
-                    LayoutBoxOps.PositionSubtree(cell, currentX, currentY, CreateChildState(cellWidth, rowHeight, state));
+                    float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
+                    float spannedRowHeight = SumRowHeights(rowHeights, rowIdx, slot.RowSpan);
+                    LayoutCell(slot.Cell, cellWidth, spannedRowHeight, state);
+                    float cellX = contentLeft + SumColumnWidths(columnWidths, 0, slot.ColumnIndex);
+                    LayoutBoxOps.PositionSubtree(slot.Cell, cellX, currentY, CreateChildState(cellWidth, spannedRowHeight, state));
 
-                    if (IsTableCell(cell))
+                    if (IsTableCell(slot.Cell))
                     {
-                        StretchBorderHeight(cell, rowHeight);
+                        StretchBorderHeight(slot.Cell, spannedRowHeight);
                     }
 
-                    maxRight = Math.Max(maxRight, currentX + Math.Max(cellWidth, cell.Geometry.MarginBox.Width));
-                    currentX += cellWidth;
+                    maxRight = Math.Max(maxRight, cellX + Math.Max(cellWidth, slot.Cell.Geometry.MarginBox.Width));
                 }
 
                 if (row.RowBox != null)
                 {
+                    float rowWidth = columnWidths.Sum();
                     InitializeBox(row.RowBox);
-                    SetContentSize(row.RowBox, Math.Max(0f, currentX - contentLeft), rowHeight);
-                    LayoutBoxOps.PositionSubtree(row.RowBox, contentLeft, currentY, CreateChildState(Math.Max(0f, currentX - contentLeft), rowHeight, state));
+                    SetContentSize(row.RowBox, rowWidth, rowHeight);
+                    LayoutBoxOps.PositionSubtree(row.RowBox, contentLeft, currentY, CreateChildState(rowWidth, rowHeight, state));
                 }
 
                 currentY += rowHeight;
@@ -108,6 +111,72 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 UpdateGroupBounds(group);
             }
+        }
+
+        private static float SumColumnWidths(float[] columnWidths, int start, int count)
+        {
+            float sum = 0f;
+            int end = Math.Min(columnWidths.Length, start + count);
+            for (int i = Math.Max(0, start); i < end; i++)
+            {
+                sum += columnWidths[i];
+            }
+            return sum;
+        }
+
+        private static float SumRowHeights(float[] rowHeights, int start, int count)
+        {
+            float sum = 0f;
+            int end = Math.Min(rowHeights.Length, start + count);
+            for (int i = Math.Max(0, start); i < end; i++)
+            {
+                sum += rowHeights[i];
+            }
+            return sum;
+        }
+
+        private static List<TableGridRow> BuildSlotGrid(List<TableRowModel> rows)
+        {
+            // Occupancy[(rowIdx, colIdx)] = true if a previously-placed cell still
+            // occupies that slot (via rowspan).
+            var occupied = new HashSet<(int row, int col)>();
+            var grid = new List<TableGridRow>();
+            for (int r = 0; r < rows.Count; r++)
+            {
+                var slots = new List<TableSlot>();
+                int col = 0;
+                foreach (var cell in rows[r].Cells)
+                {
+                    int colspan = Math.Max(1, GetSpanAttribute(cell, "colspan"));
+                    int rowspan = Math.Max(1, GetSpanAttribute(cell, "rowspan"));
+
+                    // Skip columns already claimed by a previous row's rowspan.
+                    while (occupied.Contains((r, col))) col++;
+
+                    slots.Add(new TableSlot(cell, col, colspan, rowspan));
+                    for (int rr = r; rr < r + rowspan; rr++)
+                    {
+                        for (int cc = col; cc < col + colspan; cc++)
+                        {
+                            occupied.Add((rr, cc));
+                        }
+                    }
+                    col += colspan;
+                }
+                grid.Add(new TableGridRow(rows[r].RowBox, slots));
+            }
+            return grid;
+        }
+
+        private static int GetSpanAttribute(LayoutBox cell, string attribute)
+        {
+            if (cell?.SourceNode is not FenBrowser.Core.Dom.V2.Element element)
+            {
+                return 1;
+            }
+            string raw = element.GetAttribute(attribute);
+            if (string.IsNullOrWhiteSpace(raw)) return 1;
+            return int.TryParse(raw.Trim(), out int value) && value >= 1 ? value : 1;
         }
 
         private void LayoutRowGroup(LayoutBox groupBox, LayoutState state)
@@ -146,35 +215,82 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             SetContentSize(rowBox, Math.Max(0f, currentX - rowBox.Geometry.ContentBox.Left), rowHeight);
         }
 
-        private float[] MeasureColumnWidths(List<TableRowModel> rows, LayoutState state)
+        private float[] MeasureColumnWidths(List<TableGridRow> grid, LayoutState state)
         {
-            int columnCount = rows.Count == 0 ? 0 : rows.Max(r => r.Cells.Count);
+            int columnCount = grid.Count == 0
+                ? 0
+                : grid.Max(r => r.Slots.Count == 0 ? 0 : r.Slots.Max(s => s.ColumnIndex + s.ColSpan));
             var widths = new float[columnCount];
 
-            foreach (var row in rows)
+            // First pass: non-spanning cells set their column width directly.
+            foreach (var row in grid)
             {
-                for (int i = 0; i < row.Cells.Count; i++)
+                foreach (var slot in row.Slots)
                 {
-                    var cell = row.Cells[i];
-                    float preferredWidth = MeasurePreferredWidth(cell, state);
-                    widths[i] = Math.Max(widths[i], preferredWidth);
+                    if (slot.ColSpan != 1) continue;
+                    float preferredWidth = MeasurePreferredWidth(slot.Cell, state);
+                    widths[slot.ColumnIndex] = Math.Max(widths[slot.ColumnIndex], preferredWidth);
+                }
+            }
+
+            // Second pass: spanning cells distribute additional width to their
+            // spanned columns proportionally if existing widths don't add up.
+            foreach (var row in grid)
+            {
+                foreach (var slot in row.Slots)
+                {
+                    if (slot.ColSpan <= 1) continue;
+                    float preferred = MeasurePreferredWidth(slot.Cell, state);
+                    float existing = SumColumnWidths(widths, slot.ColumnIndex, slot.ColSpan);
+                    if (preferred > existing && slot.ColSpan > 0)
+                    {
+                        float extra = (preferred - existing) / slot.ColSpan;
+                        for (int i = slot.ColumnIndex; i < slot.ColumnIndex + slot.ColSpan && i < widths.Length; i++)
+                        {
+                            widths[i] += extra;
+                        }
+                    }
                 }
             }
 
             return widths;
         }
 
-        private float MeasureRowHeight(TableRowModel row, float[] columnWidths, LayoutState state)
+        private float[] MeasureRowHeights(List<TableGridRow> grid, float[] columnWidths, LayoutState state)
         {
-            float rowHeight = 0f;
-            for (int i = 0; i < row.Cells.Count; i++)
+            var heights = new float[grid.Count];
+            // First pass: single-row cells.
+            for (int r = 0; r < grid.Count; r++)
             {
-                float cellWidth = i < columnWidths.Length ? columnWidths[i] : 0f;
-                LayoutCell(row.Cells[i], cellWidth, float.NaN, state);
-                rowHeight = Math.Max(rowHeight, row.Cells[i].Geometry.MarginBox.Height);
+                foreach (var slot in grid[r].Slots)
+                {
+                    if (slot.RowSpan != 1) continue;
+                    float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
+                    LayoutCell(slot.Cell, cellWidth, float.NaN, state);
+                    heights[r] = Math.Max(heights[r], slot.Cell.Geometry.MarginBox.Height);
+                }
             }
-
-            return rowHeight;
+            // Second pass: rowspanning cells must fit across their spanned rows.
+            for (int r = 0; r < grid.Count; r++)
+            {
+                foreach (var slot in grid[r].Slots)
+                {
+                    if (slot.RowSpan <= 1) continue;
+                    float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
+                    LayoutCell(slot.Cell, cellWidth, float.NaN, state);
+                    float needed = slot.Cell.Geometry.MarginBox.Height;
+                    float existing = SumRowHeights(heights, r, slot.RowSpan);
+                    if (needed > existing && slot.RowSpan > 0)
+                    {
+                        float extra = (needed - existing) / slot.RowSpan;
+                        for (int i = r; i < r + slot.RowSpan && i < heights.Length; i++)
+                        {
+                            heights[i] += extra;
+                        }
+                    }
+                }
+            }
+            return heights;
         }
 
         private void LayoutCell(LayoutBox cell, float cellWidth, float rowHeight, LayoutState state)
@@ -393,21 +509,42 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         private static bool IsRowGroup(LayoutBox box)
         {
             string display = box?.ComputedStyle?.Display?.Trim().ToLowerInvariant();
-            return display == "table-row-group" ||
-                   display == "table-header-group" ||
-                   display == "table-footer-group";
+            if (display == "table-row-group" ||
+                display == "table-header-group" ||
+                display == "table-footer-group")
+            {
+                return true;
+            }
+            // Recognize tbody/thead/tfoot by tag name when the UA stylesheet
+            // hasn't supplied the table-row-group display value.
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
+            return tag == "TBODY" || tag == "THEAD" || tag == "TFOOT";
         }
 
         private static bool IsTableRow(LayoutBox box)
         {
-            return string.Equals(box?.ComputedStyle?.Display, "table-row", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(box?.ComputedStyle?.Display, "table-row", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
+            return tag == "TR";
         }
 
         private static bool IsTableCell(LayoutBox box)
         {
-            return string.Equals(box?.ComputedStyle?.Display, "table-cell", StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(box?.ComputedStyle?.Display, "table-cell", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
+            return tag == "TD" || tag == "TH";
         }
 
         private sealed record TableRowModel(LayoutBox RowBox, List<LayoutBox> Cells);
+
+        private sealed record TableSlot(LayoutBox Cell, int ColumnIndex, int ColSpan, int RowSpan);
+
+        private sealed record TableGridRow(LayoutBox RowBox, List<TableSlot> Slots);
     }
 }
