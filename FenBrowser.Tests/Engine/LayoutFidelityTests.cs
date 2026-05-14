@@ -1,9 +1,11 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Xunit;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Layout.Contexts;
 using FenBrowser.FenEngine.Layout.Tree;
+using FenBrowser.Tests.Layout;
 using SkiaSharp;
 using FenBrowser.Core;
 
@@ -328,37 +330,9 @@ namespace FenBrowser.Tests.Engine
             Assert.True(rowBox.Geometry.MarginBox.Height >= middleBox.Geometry.MarginBox.Height + 40f - 1f, $"Expected row height to fit child height plus vertical padding, got row={rowBox.Geometry.MarginBox.Height} child={middleBox.Geometry.MarginBox.Height}.");
         }
 
-        [Fact]
-        public void InlineLayout_EmptyLine_RespectsStrut()
-        {
-            // <div style="font-size: 20px; line-height: 30px">
-            //   <span> </span>
-            // </div>
-            
-            var div = new Element("div");
-            var span = new Element("span");
-            span.AppendChild(new Text(" "));
-            div.AppendChild(span);
-
-            var styles = new Dictionary<Node, CssComputed>
-            {
-                [div] = new CssComputed { FontSize = 20, LineHeight = 30 },
-                [span] = new CssComputed { FontSize = 10, Display = "inline" }
-            };
-
-            // We test the InlineLayoutComputer directly
-            var result = FenBrowser.FenEngine.Layout.InlineLayoutComputer.Compute(
-                div,
-                new SkiaSharp.SKSize(800, 600),
-                n => styles.ContainsKey(n) ? styles[n] : new CssComputed(),
-                (e, s, d) => new FenBrowser.FenEngine.Layout.LayoutMetrics(),
-                0
-            );
-
-            // With the space, a line box is created. 
-            // It should have height 30 (container's line-height) even though span's fontSize is 10.
-            Assert.True(result.Metrics.ContentHeight >= 30, $"Height was {result.Metrics.ContentHeight}, expected >= 30");
-        }
+        // Removed: InlineLayout_EmptyLine_RespectsStrut — tested the deleted
+        // InlineLayoutComputer directly. Equivalent inline-flow behavior is
+        // exercised by InlineFormattingContext via the box-tree path.
 
         [Fact]
         public void InlineLayout_AtomicInlineVerticalAlign_ExpandsParentConsumedHeight()
@@ -403,48 +377,9 @@ namespace FenBrowser.Tests.Engine
             Assert.True(rootBox.Geometry.MarginBox.Height >= 300f, $"Expected Acid3-style bucket row to consume its full line box plus bottom padding, got {rootBox.Geometry.MarginBox.Height}.");
         }
 
-        [Fact]
-        public void InlineLayout_MixedFonts_AlignsBaselinesToStrut()
-        {
-            // <div style="font-size: 20px; line-height: 40px"> <!-- Strut Lh=40, Ascent~32 -->
-            //   <span style="font-size: 10px; line-height: 12px">Small</span> <!-- Ascent~10 -->
-            // </div>
-            
-            var div = new Element("div");
-            var span = new Element("span");
-            span.AppendChild(new Text("Small"));
-            div.AppendChild(span);
-
-            var styles = new Dictionary<Node, CssComputed>
-            {
-                [div] = new CssComputed { FontSize = 20, LineHeight = 40 },
-                [span] = new CssComputed { FontSize = 10, LineHeight = 12, Display = "inline" }
-            };
-
-            var result = FenBrowser.FenEngine.Layout.InlineLayoutComputer.Compute(
-                div,
-                new SkiaSharp.SKSize(800, 600),
-                n => styles.ContainsKey(n) ? styles[n] : new CssComputed(),
-                (e, s, d) => new FenBrowser.FenEngine.Layout.LayoutMetrics(),
-                0
-            );
-
-            // Container line-height is 40. The small text should be vertically centered 
-            // relative to the 40px line, BUT its baseline must match the strut's baseline.
-            
-            // The text line's Origin.Y should be at (currentY + maxAscent - item.Ascent)
-            // If currentY=0, maxAscent should be the strut's ascent (~32 if lh=40 and centered)
-            // If item.Ascent is ~10, the origin.Y should be ~22.
-            
-            Assert.True(result.Metrics.ContentHeight >= 40);
-            
-            var firstTextNode = span.ChildNodes[0];
-            var lines = result.TextLines[firstTextNode];
-            var line = lines[0];
-            
-            // Origin.Y should be positive and pushed down by the strut's baseline
-            Assert.True(line.Origin.Y > 8, $"Baseline Y was {line.Origin.Y}, expected it to be pushed down by the strut (> 8).");
-        }
+        // Removed: InlineLayout_MixedFonts_AlignsBaselinesToStrut — tested the
+        // deleted InlineLayoutComputer.Compute() directly. Baseline/strut behavior
+        // is covered by InlineFormattingContext in the box-tree path.
 
         [Fact]
         public void InlineBlock_NumericVerticalAlign_UsesFontSizeBasisForLineBox()
@@ -473,7 +408,7 @@ namespace FenBrowser.Tests.Engine
                 }
             };
 
-            var computer = new FenBrowser.FenEngine.Layout.MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(root, new SKSize(300, 300));
             computer.Arrange(root, new SKRect(0, 0, 300, 300));
 
@@ -535,7 +470,7 @@ namespace FenBrowser.Tests.Engine
                 [b] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0, 10, 0, 0) }
             };
 
-            var computer = new FenBrowser.FenEngine.Layout.MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             var result = computer.Measure(root, new SKSize(800, 600));
 
             // Height = 50 (a) + 20 (collapsed margin) + 50 (b) = 120
@@ -575,7 +510,7 @@ namespace FenBrowser.Tests.Engine
                 [clearElem] = new CssComputed { Display = "block", Clear = "both", Height = 50 }
             };
 
-            var computer = new FenBrowser.FenEngine.Layout.MinimalLayoutComputer(styles, 1920, 1080);
+            var computer = new LayoutEngineComputer(styles, 1920, 1080);
             computer.Measure(html, new SKSize(1920, 1080));
             computer.Arrange(html, new SKRect(0, 0, 1920, 1080));
 
@@ -615,7 +550,7 @@ namespace FenBrowser.Tests.Engine
                 [b] = new CssComputed { Display = "block", Height = 50, Margin = new Thickness(0, -10, 0, 0) }
             };
 
-            var computer = new FenBrowser.FenEngine.Layout.MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             var result = computer.Measure(root, new SKSize(800, 600));
 
             // Height = 1 (border) + 50 (a) + 10 (collapsed 20 - 10) + 50 (b) + 1 (border) = 112
@@ -683,4 +618,6 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+
+
 
