@@ -365,7 +365,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float remainingSpace = containerMainSize - totalMainSize;
 
             // Handle Flex-Shrink (when items overflow the container)
-            if (remainingSpace < 0 && totalWeightedShrink > 0)
+            // Per CSS Flexbox §9.7: in multi-line containers (flex-wrap != nowrap)
+            // overflowing items wrap to a new line instead of shrinking. Skip shrink here
+            // so the wrap pass below can break them into lines.
+            if (remainingSpace < 0 && totalWeightedShrink > 0 && !isWrap)
             {
                 float overflow = -remainingSpace;
                 foreach (var item in items)
@@ -803,21 +806,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                         if (isRow)
                         {
-                            LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, newContentCross);
+                            float preservedWidth = item.Geometry.ContentBox.Width;
+                            LayoutBoxOps.ComputeBoxModelFromContent(item, preservedWidth, newContentCross);
                             var reState = state.Clone();
                             reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, newContentCross);
-                            reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                            reState.ContainingBlockWidth = preservedWidth;
                             reState.ContainingBlockHeight = newContentCross;
                             FormattingContext.Resolve(item).Layout(item, reState);
+                            // Re-layout above may shrink the box back to its intrinsic content
+                            // height when the item has no explicit height. Re-apply the
+                            // stretched cross-axis size so align-items:stretch is honored.
+                            if (item.Geometry.ContentBox.Height < newContentCross - 0.5f)
+                            {
+                                LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, newContentCross);
+                            }
                         }
                         else
                         {
-                            LayoutBoxOps.ComputeBoxModelFromContent(item, newContentCross, item.Geometry.ContentBox.Height);
+                            float preservedHeight = item.Geometry.ContentBox.Height;
+                            LayoutBoxOps.ComputeBoxModelFromContent(item, newContentCross, preservedHeight);
                             var reState = state.Clone();
-                            reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
+                            reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, preservedHeight);
                             reState.ContainingBlockWidth = newContentCross;
-                            reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
+                            reState.ContainingBlockHeight = preservedHeight;
                             FormattingContext.Resolve(item).Layout(item, reState);
+                            if (item.Geometry.ContentBox.Width < newContentCross - 0.5f)
+                            {
+                                LayoutBoxOps.ComputeBoxModelFromContent(item, newContentCross, item.Geometry.ContentBox.Height);
+                            }
                         }
                     }
                 }
@@ -1078,9 +1094,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     resolvedDefiniteWidth = true;
                 }
             }
-            if (isBorderBox && resolvedDefiniteWidth)
+            if (resolvedDefiniteWidth)
             {
-                width = Math.Max(0f, width - horizontalChrome);
+                // Already resolved from an explicit width/width-percent. Just apply
+                // border-box adjustment if applicable; do NOT overwrite with the
+                // available-space fallback below.
+                if (isBorderBox)
+                {
+                    width = Math.Max(0f, width - horizontalChrome);
+                }
             }
             else if (widthUnconstrained)
             {
