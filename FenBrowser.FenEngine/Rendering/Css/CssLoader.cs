@@ -3227,6 +3227,18 @@ private static double? ExtractPx(string text, string prop)
                                     CultureInfo.InvariantCulture,
                                     $"{parentCss.FontSize.Value:0.##}px {inheritedFamily}");
                             }
+                            else if (string.Equals(kv.Key, "font-size", StringComparison.OrdinalIgnoreCase) &&
+                                     parentCss != null &&
+                                     parentCss.FontSize.HasValue)
+                            {
+                                // Same rule for the long-hand: inherit must propagate the
+                                // parent's COMPUTED font-size (px), not the literal value
+                                // (e.g. "2em") which would re-resolve against the child's
+                                // own parent and compound.
+                                val = string.Create(
+                                    CultureInfo.InvariantCulture,
+                                    $"{parentCss.FontSize.Value:0.##}px");
+                            }
                             // Use parent's computed value
                             else if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
                                 val = parentVal;
