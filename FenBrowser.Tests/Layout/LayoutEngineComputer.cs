@@ -82,7 +82,9 @@ namespace FenBrowser.Tests.Layout
             }
 
             float contentWidth = box.ContentBox.Width;
-            float contentHeight = box.ContentBox.Height;
+            // Tests expect ContentHeight to represent the box's total laid-out vertical
+            // extent (margin box), matching what MinimalLayoutComputer previously returned.
+            float contentHeight = box.MarginBox.Height;
             return new LayoutMetrics
             {
                 ContentHeight = contentHeight,
