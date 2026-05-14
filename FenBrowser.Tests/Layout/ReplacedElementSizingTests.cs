@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using FenBrowser.Core.Css;
@@ -78,7 +78,7 @@ namespace FenBrowser.Tests.Layout
                 [canvas] = new CssComputed { Display = "inline" }
             };
 
-            var computer = new MinimalLayoutComputer(styles, 1024, 768);
+            var computer = new LayoutEngineComputer(styles, 1024, 768);
             var metrics = computer.Measure(canvas, new SKSize(1024, 768));
 
             Assert.Equal(300f, metrics.MaxChildWidth);
@@ -96,7 +96,7 @@ namespace FenBrowser.Tests.Layout
                 [svg] = new CssComputed { Display = "inline" }
             };
 
-            var computer = new MinimalLayoutComputer(styles, 1024, 768);
+            var computer = new LayoutEngineComputer(styles, 1024, 768);
             var metrics = computer.Measure(svg, new SKSize(1024, 768));
 
             Assert.Equal(640f, metrics.MaxChildWidth);
@@ -154,7 +154,7 @@ namespace FenBrowser.Tests.Layout
                 }
             };
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Arrange(container, new SKRect(0, 0, 200, 80));
             var svgBox = computer.GetBox(svg);
 
@@ -227,7 +227,7 @@ namespace FenBrowser.Tests.Layout
                     [image] = new CssComputed { Display = "inline" }
                 };
 
-                var computer = new MinimalLayoutComputer(styles, 1024, 768, "https://example.test/");
+                var computer = new LayoutEngineComputer(styles, 1024, 768, "https://example.test/");
                 var metrics = computer.Measure(image, new SKSize(1024, 768));
 
                 Assert.Equal(80f, metrics.MaxChildWidth);
@@ -258,3 +258,5 @@ namespace FenBrowser.Tests.Layout
         }
     }
 }
+
+

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -6,6 +6,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Css;
@@ -71,7 +72,7 @@ namespace FenBrowser.Tests.Engine
             var (doc, styles) = await ComputeStylesAsync();
             var body = doc.Descendants().OfType<Element>().First(e => string.Equals(e.TagName, "BODY", StringComparison.OrdinalIgnoreCase));
 
-            var computer = new MinimalLayoutComputer(styles, 1024, 700, "https://www.whatismybrowser.com/");
+            var computer = new LayoutEngineComputer(styles, 1024, 700, "https://www.whatismybrowser.com/");
             computer.Measure(body, new SKSize(1024, 700));
             computer.Arrange(body, new SKRect(0, 0, 1024, 700));
 
@@ -366,7 +367,7 @@ namespace FenBrowser.Tests.Engine
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://www.whatismybrowser.com/"), null, viewportWidth: 1024, viewportHeight: 700);
             var body = doc.Descendants().OfType<Element>().First(e => string.Equals(e.TagName, "BODY", StringComparison.OrdinalIgnoreCase));
 
-            var computer = new MinimalLayoutComputer(styles, 1024, 700, "https://www.whatismybrowser.com/");
+            var computer = new LayoutEngineComputer(styles, 1024, 700, "https://www.whatismybrowser.com/");
             computer.Measure(body, new SKSize(1024, 700));
             computer.Arrange(body, new SKRect(0, 0, 1024, 700));
 
@@ -502,3 +503,6 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+
+
+

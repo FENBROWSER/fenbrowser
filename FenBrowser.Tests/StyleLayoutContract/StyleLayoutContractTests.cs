@@ -1,6 +1,7 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using System;
 using System.Collections.Generic;
@@ -171,7 +172,7 @@ div { color: black; }
 
             Assert.Equal("none", computed[hidden].Map["display"]);
             
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -234,7 +235,7 @@ div { color: black; }
 
             Assert.Equal("50%", computed[child].Map["width"]);
             
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -264,7 +265,7 @@ div { color: black; }
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
             
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -322,7 +323,7 @@ div { color: black; }
             Assert.Equal("2em", computed[child].Map["width"]);
             Assert.InRange(computed[child].Width ?? 0d, 49.999d, 50.001d);
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -351,7 +352,7 @@ div { color: black; }
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local/"), _ => Task.FromResult<string>(null));
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -383,7 +384,7 @@ div { color: black; }
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -418,7 +419,7 @@ div { color: black; }
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -454,7 +455,7 @@ div { color: black; }
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -511,7 +512,7 @@ div { color: black; }
             var scroller = doc.GetElementById("scroller");
             var content = doc.GetElementById("content");
 
-            var layoutComputer = new MinimalLayoutComputer(computed, 800, 600);
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
             layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
             layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
 
@@ -558,3 +559,6 @@ div { color: black; }
         }
     }
 }
+
+
+

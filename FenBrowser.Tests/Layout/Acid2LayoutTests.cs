@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
@@ -17,7 +17,7 @@ namespace FenBrowser.Tests.Layout
     public class Acid2LayoutTests
     {
         // Helper to run layout on a small tree
-        private (MinimalLayoutComputer computer, BoxModel box) LayoutElement(Element root, CssComputed style)
+        private (LayoutEngineComputer computer, BoxModel box) LayoutElement(Element root, CssComputed style)
         {
             var styles = new Dictionary<Node, CssComputed> { { root, style } };
             // Ensure implicit body/html like structure if needed, or just root
@@ -27,7 +27,7 @@ namespace FenBrowser.Tests.Layout
             var doc = new Document();
             doc.AppendChild(root);
             
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -67,7 +67,7 @@ namespace FenBrowser.Tests.Layout
             absStyle.BackgroundColor = SKColors.Red;
             styles[absChild] = absStyle;
             
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -106,7 +106,7 @@ namespace FenBrowser.Tests.Layout
             absStyle.Margin = new FenBrowser.Core.Thickness(-10, -10, 0, 0); // Left -10, Top -10
             styles[absChild] = absStyle;
             
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -163,7 +163,7 @@ namespace FenBrowser.Tests.Layout
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 1920, viewportHeight: 1080);
 
-            var computer = new MinimalLayoutComputer(styles, 1920, 1080);
+            var computer = new LayoutEngineComputer(styles, 1920, 1080);
             computer.Measure(doc, new SKSize(1920, 1080));
             computer.Arrange(doc, new SKRect(0, 0, 1920, 1080));
 
@@ -256,7 +256,7 @@ namespace FenBrowser.Tests.Layout
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 800, viewportHeight: 600);
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -349,7 +349,7 @@ namespace FenBrowser.Tests.Layout
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 800, viewportHeight: 600);
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -472,7 +472,7 @@ namespace FenBrowser.Tests.Layout
                 }
             };
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
@@ -930,3 +930,5 @@ namespace FenBrowser.Tests.Layout
         }
     }
 }
+
+

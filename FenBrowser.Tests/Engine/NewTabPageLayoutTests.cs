@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -6,6 +6,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Css;
 using SkiaSharp;
@@ -29,7 +30,7 @@ namespace FenBrowser.Tests.Engine
             var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
             var body = doc.Descendants().OfType<Element>().First(e => string.Equals(e.TagName, "BODY", StringComparison.OrdinalIgnoreCase));
 
-            var computer = new MinimalLayoutComputer(styles, viewportWidth, viewportHeight, baseUri.AbsoluteUri);
+            var computer = new LayoutEngineComputer(styles, viewportWidth, viewportHeight, baseUri.AbsoluteUri);
             computer.Measure(body, new SKSize(viewportWidth, viewportHeight));
             computer.Arrange(body, new SKRect(0, 0, viewportWidth, viewportHeight));
 
@@ -195,12 +196,11 @@ namespace FenBrowser.Tests.Engine
             var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth, viewportHeight);
             var searchBox = ById(doc, "url-bar");
 
-            var computer = new MinimalLayoutComputer(styles, viewportWidth, viewportHeight, baseUri.AbsoluteUri);
+            var computer = new LayoutEngineComputer(styles, viewportWidth, viewportHeight, baseUri.AbsoluteUri);
             computer.Measure(body, new SKSize(viewportWidth, viewportHeight));
             computer.Arrange(body, new SKRect(0, 0, viewportWidth, viewportHeight));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = boxesField!.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             Assert.NotNull(boxes);
 
             var tree = NewPaintTreeBuilder.Build(body, new System.Collections.Generic.Dictionary<Node, BoxModel>(boxes!), styles, viewportWidth, viewportHeight, null);
@@ -862,7 +862,7 @@ namespace FenBrowser.Tests.Engine
                     .Contains(className, StringComparer.Ordinal));
         }
 
-        private static BoxModel AssertBox(MinimalLayoutComputer computer, Element element)
+        private static BoxModel AssertBox(LayoutEngineComputer computer, Element element)
         {
             var box = computer.GetBox(element);
             Assert.NotNull(box);
@@ -930,3 +930,7 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+
+
+
+

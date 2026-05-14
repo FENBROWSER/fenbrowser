@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
@@ -10,9 +10,9 @@ namespace FenBrowser.Tests.Layout
 {
     public class FlexLayoutTests
     {
-        private MinimalLayoutComputer CreateComputer(Element root, Dictionary<Node, CssComputed> styles)
+        private LayoutEngineComputer CreateComputer(Element root, Dictionary<Node, CssComputed> styles)
         {
-            return new MinimalLayoutComputer(styles, 800, 600);
+            return new LayoutEngineComputer(styles, 800, 600);
         }
 
         private Dictionary<Node, CssComputed> CreateStyles(Element container, CssComputed containerStyle)
@@ -519,3 +519,5 @@ namespace FenBrowser.Tests.Layout
         }
     }
 }
+
+

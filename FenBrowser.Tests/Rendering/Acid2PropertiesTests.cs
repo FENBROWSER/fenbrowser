@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Backends;
 using FenBrowser.FenEngine.Rendering.Painting;
@@ -16,17 +17,16 @@ namespace FenBrowser.Tests.Rendering
 {
     public class Acid2PropertiesTests
     {
-        private (MinimalLayoutComputer computer, Dictionary<Node, BoxModel> boxes, ImmutablePaintTree tree) RunPipeline(Element root, Dictionary<Node, CssComputed> styles)
+        private (LayoutEngineComputer computer, Dictionary<Node, BoxModel> boxes, ImmutablePaintTree tree) RunPipeline(Element root, Dictionary<Node, CssComputed> styles)
         {
             var doc = new Document();
             doc.AppendChild(root);
             
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
             
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             
             var boxDict = new Dictionary<Node, BoxModel>(boxes);
             
@@ -410,12 +410,11 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 400, viewportHeight: 300);
 
-            var computer = new MinimalLayoutComputer(styles, 400, 300);
+            var computer = new LayoutEngineComputer(styles, 400, 300);
             computer.Measure(doc, new SKSize(400, 300));
             computer.Arrange(doc, new SKRect(0, 0, 400, 300));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", BindingFlags.NonPublic | BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 400, 300, null);
             var paintNodes = FlattenTree(tree.Roots);
 
@@ -492,12 +491,11 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 500, viewportHeight: 400);
 
-            var computer = new MinimalLayoutComputer(styles, 500, 400);
+            var computer = new LayoutEngineComputer(styles, 500, 400);
             computer.Measure(doc, new SKSize(500, 400));
             computer.Arrange(doc, new SKRect(0, 0, 500, 400));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", BindingFlags.NonPublic | BindingFlags.Instance);
-            var boxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 500, 400, null);
             var paintNodes = FlattenTree(tree.Roots);
 
@@ -550,11 +548,10 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 200, viewportHeight: 200);
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var computer = new MinimalLayoutComputer(styles, 200, 200);
+            var computer = new LayoutEngineComputer(styles, 200, 200);
             computer.Measure(doc, new SKSize(200, 200));
             computer.Arrange(doc, new SKRect(0, 0, 200, 200));
-            var boxes = (System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 200, 200, null);
 
             var border = FlattenTree(tree.Roots).OfType<BorderPaintNode>().FirstOrDefault(n => (n.SourceNode as Element)?.Id == "target");
@@ -873,12 +870,11 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 400, viewportHeight: 300);
 
-            var computer = new MinimalLayoutComputer(styles, 400, 300);
+            var computer = new LayoutEngineComputer(styles, 400, 300);
             computer.Measure(doc, new SKSize(400, 300));
             computer.Arrange(doc, new SKRect(0, 0, 400, 300));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", BindingFlags.NonPublic | BindingFlags.Instance);
-            var boxes = (System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var boxMap = new Dictionary<Node, BoxModel>(boxes);
             var tree = NewPaintTreeBuilder.Build(doc, boxMap, styles, 400, 300, null);
             var nodes = FlattenTree(tree.Roots);
@@ -915,12 +911,11 @@ namespace FenBrowser.Tests.Rendering
 
             var doc = new Document();
             doc.AppendChild(root);
-            var computer = new MinimalLayoutComputer(styles, 200, 200);
+            var computer = new LayoutEngineComputer(styles, 200, 200);
             computer.Measure(doc, new SKSize(200, 200));
             computer.Arrange(doc, new SKRect(0, 0, 200, 200));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", BindingFlags.NonPublic | BindingFlags.Instance);
-            var boxes = (System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
 
             var scrollManager = new ScrollManager();
             scrollManager.SetScrollPosition(null, 0, 1888);
@@ -963,12 +958,11 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.DocumentElement;
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://acid2.acidtests.org/"), null, viewportWidth: 500, viewportHeight: 200);
 
-            var computer = new MinimalLayoutComputer(styles, 500, 200);
+            var computer = new LayoutEngineComputer(styles, 500, 200);
             computer.Measure(doc, new SKSize(500, 200));
             computer.Arrange(doc, new SKRect(0, 0, 500, 200));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", BindingFlags.NonPublic | BindingFlags.Instance);
-            var boxes = (System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 500, 200, null);
             var paintNodes = FlattenTree(tree.Roots);
 
@@ -1038,3 +1032,7 @@ namespace FenBrowser.Tests.Rendering
         }
     }
 }
+
+
+
+

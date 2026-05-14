@@ -1,10 +1,11 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using System;
@@ -59,12 +60,11 @@ namespace FenBrowser.Tests.Rendering
             var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
             var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = (ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
 
             var textNode = Flatten(tree.Roots)
@@ -83,12 +83,11 @@ namespace FenBrowser.Tests.Rendering
             var doc = new Document();
             doc.AppendChild(root);
 
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             computer.Measure(doc, new SKSize(800, 600));
             computer.Arrange(doc, new SKRect(0, 0, 800, 600));
 
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var boxes = (ConcurrentDictionary<Node, BoxModel>)boxesField.GetValue(computer);
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
 
             return NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
         }
@@ -114,3 +113,7 @@ namespace FenBrowser.Tests.Rendering
         }
     }
 }
+
+
+
+

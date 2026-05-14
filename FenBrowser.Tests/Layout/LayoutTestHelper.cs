@@ -9,9 +9,30 @@ namespace FenBrowser.Tests.Layout
 {
     public static class LayoutTestHelper
     {
-        public static MinimalLayoutComputer CreateComputer(Element root, Dictionary<Node, CssComputed> styles, float width = 800, float height = 600)
+        public static LayoutEngineComputer CreateComputer(Element root, Dictionary<Node, CssComputed> styles, float width = 800, float height = 600)
         {
-            return new MinimalLayoutComputer(styles, width, height);
+            return new LayoutEngineComputer(styles, width, height);
+        }
+
+        /// <summary>
+        /// Creates a LayoutEngine using the production box-tree pipeline.
+        /// Tests should prefer this over CreateComputer so they exercise the
+        /// same code path as SkiaDomRenderer.
+        /// </summary>
+        public static LayoutEngine CreateEngine(Element root, Dictionary<Node, CssComputed> styles, float width = 800, float height = 600)
+        {
+            return new LayoutEngine(styles, width, height);
+        }
+
+        /// <summary>
+        /// Convenience: builds a LayoutEngine and runs ComputeLayout, returning the
+        /// resulting box dictionary keyed by Node.
+        /// </summary>
+        public static IReadOnlyDictionary<Node, BoxModel> LayoutTree(Element root, Dictionary<Node, CssComputed> styles, float width = 800, float height = 600)
+        {
+            var engine = new LayoutEngine(styles, width, height);
+            engine.ComputeLayout(root, width, height);
+            return engine.AllBoxes;
         }
 
         public static Dictionary<Node, CssComputed> CreateStyles(Element container, CssComputed containerStyle)

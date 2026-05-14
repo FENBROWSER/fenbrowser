@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using Xunit;
@@ -377,7 +378,7 @@ namespace FenBrowser.Tests.Engine
             var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
             var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
 
-            var computer = new MinimalLayoutComputer(computed, 400, 300, "https://test.local/");
+            var computer = new LayoutEngineComputer(computed, 400, 300, "https://test.local/");
             computer.Arrange(body, new SKRect(0, 0, 400, 300));
             var layout = computer.GetBox(box);
 
@@ -474,3 +475,6 @@ namespace FenBrowser.Tests.Engine
         }
     }
 }
+
+
+

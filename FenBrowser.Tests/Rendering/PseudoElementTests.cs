@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.Tests.Layout;
 using SkiaSharp;
 using Xunit;
 
@@ -41,7 +42,7 @@ namespace FenBrowser.Tests.Rendering
             styles[div] = divStyle;
 
             // 3. Run Layout
-            var computer = new MinimalLayoutComputer(styles, 800, 600);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
             var viewport = new SKSize(800, 600);
             
             computer.Measure(doc, viewport);
@@ -62,10 +63,7 @@ namespace FenBrowser.Tests.Rendering
             Assert.Equal("Generated", textNode.Data); // Should be trimmed
 
             // Did it generate a BoxModel?
-            // Use reflection to access private _boxes
-            var boxesField = typeof(MinimalLayoutComputer).GetField("_boxes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            Assert.NotNull(boxesField);
-            var resultBoxes = boxesField.GetValue(computer) as System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>;
+            var resultBoxes = new System.Collections.Concurrent.ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
             Assert.NotNull(resultBoxes);
 
             Assert.True(resultBoxes.ContainsKey(pseudo), "PseudoElement should have a layout box");
@@ -86,3 +84,7 @@ namespace FenBrowser.Tests.Rendering
         }
     }
 }
+
+
+
+

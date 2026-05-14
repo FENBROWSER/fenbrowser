@@ -1,4 +1,4 @@
-using Xunit;
+﻿using Xunit;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Css;
@@ -160,7 +160,7 @@ namespace FenBrowser.Tests.Layout
              ApplyStyles(body);
 
              // 3. Layout Measure
-             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             var layout = new LayoutEngineComputer(styles, 800, 600);
              layout.Measure(body, new SKSize(800, 600));
 
              // 4. Arrange
@@ -231,7 +231,7 @@ namespace FenBrowser.Tests.Layout
              ApplyStyles(body);
 
              // 3. Layout
-             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             var layout = new LayoutEngineComputer(styles, 800, 600);
              layout.Measure(body, new SKSize(800, 600));
              layout.Arrange(body, new SKRect(0, 0, 800, 600));
 
@@ -310,7 +310,7 @@ namespace FenBrowser.Tests.Layout
              }
              ApplyStyles(body);
 
-             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             var layout = new LayoutEngineComputer(styles, 800, 600);
              layout.Measure(body, new SKSize(800, 600));
              layout.Arrange(body, new SKRect(0, 0, 800, 600));
 
@@ -370,7 +370,7 @@ namespace FenBrowser.Tests.Layout
              // Explicit cell height on a rowspan cell must force enough row-height budget across its span.
              styles[spanCell].Height = 120;
 
-             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             var layout = new LayoutEngineComputer(styles, 800, 600);
              layout.Measure(body, new SKSize(800, 600));
              layout.Arrange(body, new SKRect(0, 0, 800, 600));
 
@@ -423,7 +423,7 @@ namespace FenBrowser.Tests.Layout
              }
              ApplyStyles(bodyRoot);
 
-             var layout = new MinimalLayoutComputer(styles, 800, 600);
+             var layout = new LayoutEngineComputer(styles, 800, 600);
              layout.Measure(bodyRoot, new SKSize(800, 600));
              layout.Arrange(bodyRoot, new SKRect(0, 0, 800, 600));
 
@@ -440,3 +440,5 @@ namespace FenBrowser.Tests.Layout
         }
     }
 }
+
+

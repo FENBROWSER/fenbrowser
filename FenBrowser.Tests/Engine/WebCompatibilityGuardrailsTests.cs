@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Xunit;
 
 namespace FenBrowser.Tests.Engine
@@ -11,15 +12,17 @@ namespace FenBrowser.Tests.Engine
         {
             string root = FindRepositoryRoot();
             string cssLoaderPath = Path.Combine(root, "FenBrowser.FenEngine", "Rendering", "Css", "CssLoader.cs");
-            string layoutPath = Path.Combine(root, "FenBrowser.FenEngine", "Layout", "MinimalLayoutComputer.cs");
+            string contextsDir = Path.Combine(root, "FenBrowser.FenEngine", "Layout", "Contexts");
             string uaStylePath = Path.Combine(root, "FenBrowser.FenEngine", "Rendering", "UserAgent", "UAStyleProvider.cs");
 
             Assert.True(File.Exists(cssLoaderPath), $"Missing file: {cssLoaderPath}");
-            Assert.True(File.Exists(layoutPath), $"Missing file: {layoutPath}");
+            Assert.True(Directory.Exists(contextsDir), $"Missing directory: {contextsDir}");
             Assert.True(File.Exists(uaStylePath), $"Missing file: {uaStylePath}");
 
             string cssLoader = File.ReadAllText(cssLoaderPath);
-            string layout = File.ReadAllText(layoutPath);
+            string layout = string.Concat(
+                Directory.GetFiles(contextsDir, "*.cs", SearchOption.TopDirectoryOnly)
+                    .Select(File.ReadAllText));
             string uaStyle = File.ReadAllText(uaStylePath);
 
             string[] forbidden =
