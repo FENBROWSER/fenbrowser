@@ -429,7 +429,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (ShouldRelayoutAtomicInline(item))
                     {
                         var itemState = state.Clone();
-                        float itemW = Math.Max(0f, item.Geometry.ContentBox.Width);
+                        // Add slop to absorb sub-pixel rounding between the first
+                        // probe's whole-string MeasureString and the per-word
+                        // measurements during re-layout — without it short labels
+                        // spuriously wrap to two lines because per-word widths
+                        // can sum to a hair more than the cached probe width.
+                        float itemW = MathF.Ceiling(Math.Max(0f, item.Geometry.ContentBox.Width)) + 2f;
                         if (!float.IsFinite(itemW) || itemW <= 0f)
                         {
                             itemW = Math.Max(0f, item.Geometry.BorderBox.Width);
@@ -551,12 +556,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             foreach (var line in lines) maxLineWidth = Math.Max(maxLineWidth, line.Width);
             
             // SHRINK-TO-FIT: only unconstrained probes should adopt measured line width.
-            // In finite layout, block/inline containers must keep their resolved content width
+            // In finite layout, block containers must keep their resolved content width
             // and let long inline content overflow/wrap instead of widening the container.
+            // Inline-level atomic boxes (inline-block / inline-flex / inline-grid /
+            // inline-table) are always shrink-to-fit per CSS, even when re-laid out
+            // with a finite available width — they must size to their intrinsic content.
             float finalContentWidth = box.Geometry.ContentBox.Width;
             if (box.ComputedStyle != null && !box.ComputedStyle.Width.HasValue)
             {
-                if (float.IsInfinity(state.AvailableSize.Width))
+                string display = box.ComputedStyle.Display?.ToLowerInvariant() ?? string.Empty;
+                bool isInlineAtomic = display == "inline-block" || display == "inline-flex" ||
+                                      display == "inline-grid" || display == "inline-table";
+                if (float.IsInfinity(state.AvailableSize.Width) || isInlineAtomic)
                 {
                     finalContentWidth = maxLineWidth;
                 }
@@ -684,6 +695,27 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (text.Length == 0)
                 {
                     return SKSize.Empty;
+                }
+
+                // Match word-flow's per-word measurement so the aggregated parent
+                // width agrees with what a re-layout pass will produce.
+                if (text.IndexOf(' ') >= 0 &&
+                    !UsesNoWrapWhiteSpace(textBox.ComputedStyle ?? child.ComputedStyle))
+                {
+                    float totalWidth = 0f;
+                    float maxHeight = 0f;
+                    int startIdx = 0;
+                    while (startIdx < text.Length)
+                    {
+                        int nextSpace = text.IndexOf(' ', startIdx);
+                        int endIdx = nextSpace == -1 ? text.Length : nextSpace + 1;
+                        string word = text.Substring(startIdx, endIdx - startIdx);
+                        var wordSize = MeasureString(word, textBox.ComputedStyle);
+                        totalWidth += wordSize.Width;
+                        maxHeight = Math.Max(maxHeight, wordSize.Height);
+                        startIdx = endIdx;
+                    }
+                    return new SKSize(totalWidth, maxHeight);
                 }
 
                 return MeasureString(text, textBox.ComputedStyle);
