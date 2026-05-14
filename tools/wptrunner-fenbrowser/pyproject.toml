@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wptrunner-fenbrowser"
+version = "0.1.0"
+description = "FenBrowser product plugin for upstream WPT wptrunner"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "FenBrowser" }
+]
+
+[project.entry-points."wptrunner.products"]
+fenbrowser = "wptrunner_fenbrowser.product:get_product"
+
+[tool.setuptools.packages.find]
+where = ["src"]

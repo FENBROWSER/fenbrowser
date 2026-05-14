@@ -26,7 +26,10 @@ This volume details the infrastructure used to extend the browser and verify its
 ### 1.3 External WPT Execution Wrapper (2026-05-11)
 
 - `FenBrowser.Tooling wpt` is the repo-owned wrapper for upstream WPT execution.
-- It does not host or fork WPT tests. It invokes the upstream checkout with the `fenbrowser` product adapter and FenBrowser WebDriver launcher.
+- It does not host or fork WPT tests. It invokes the upstream checkout with the `fenbrowser` product and FenBrowser WebDriver launcher.
+- `tools/wptrunner-fenbrowser` owns the FenBrowser product adapter as a WPT custom-product plugin registered through the documented `wptrunner.products` entry point. This keeps FenBrowser-specific integration outside WPT core unless upstream maintainers explicitly request built-in product support.
+- Before running `FenBrowser.Tooling wpt`, install the plugin into the Python environment used by the target WPT checkout, for example:
+  - `C:\Users\udayk\Videos\wpt\_venv3\Scripts\python.exe -m pip install -e C:\Users\udayk\Videos\fenbrowser-test\tools\wptrunner-fenbrowser`
 - Every run writes a deterministic bundle under `Results/`:
   - `wpt.raw.json`
   - `wpt.report.json`

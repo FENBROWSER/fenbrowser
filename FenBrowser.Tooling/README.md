@@ -137,6 +137,15 @@ Defaults:
 - WebDriver launcher: `scripts\wpt-webdriver-launcher.cmd`
 - Output: timestamped `Results\wpt_*`
 
+Prerequisite:
+- Install the FenBrowser WPT product plugin into the Python environment used by the upstream WPT checkout:
+
+```powershell
+C:\Users\udayk\Videos\wpt\_venv3\Scripts\python.exe -m pip install -e C:\Users\udayk\Videos\fenbrowser-test\tools\wptrunner-fenbrowser
+```
+
+The plugin uses WPT's documented `wptrunner.products` entry point. It does not patch WPT core.
+
 Main options:
 - `--root <path>`: upstream WPT checkout.
 - `--binary <path>`: FenBrowser Host executable.
