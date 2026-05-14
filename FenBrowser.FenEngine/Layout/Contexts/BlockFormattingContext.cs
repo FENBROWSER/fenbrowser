@@ -109,7 +109,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         textChild.Geometry.Border = new Thickness();
                         textChild.Geometry.Margin = new Thickness();
                         textChild.Geometry.Lines = new List<ComputedTextLine>();
-                        SyncBoxes(textChild.Geometry);
+                        LayoutBoxOps.SyncBoxes(textChild.Geometry);
                         continue;
                     }
                 }
@@ -511,7 +511,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     blockBox.Geometry.ContentBox.Bottom
                 );
                 
-                SyncBoxes(blockBox.Geometry);
+                LayoutBoxOps.SyncBoxes(blockBox.Geometry);
 
                 if (maxWidth > 0f &&
                     float.IsFinite(previousWidth) &&
@@ -694,7 +694,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             
             // Re-sync outer boxes
             // (Geometry logic usually centralized)
-            SyncBoxes(blockBox.Geometry);
+            LayoutBoxOps.SyncBoxes(blockBox.Geometry);
 
             // Layout Out of Flow
             foreach (var oof in outOfFlow)
@@ -1112,40 +1112,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             box.Geometry.Border = border;
             box.Geometry.Margin = new Thickness(marginLeft, margin.Top, marginRight, margin.Bottom);
 
-            SyncBoxes(box.Geometry);
-        }
-        
-        private void SyncBoxes(BoxModel geometry)
-        {
-            // Re-construct layers based on ContentBox and Thickness
-            // Assume ContentBox is at local (0,0) or correct offset?
-            // Actually, we usually position relative to "Border Box Origin" or "Margin Box Origin".
-            // Let's standardise on Border Box Top-Left being (0,0) for local layout?
-            // Or Content Box Top-Left?
-            
-            // Let's say ContentBox is set.
-            var cb = geometry.ContentBox;
-            var p = geometry.Padding;
-            var b = geometry.Border;
-            var m = geometry.Margin;
-            
-            geometry.PaddingBox = new SKRect(
-                cb.Left - (float)p.Left,
-                cb.Top - (float)p.Top,
-                cb.Right + (float)p.Right,
-                cb.Bottom + (float)p.Bottom);
-                
-            geometry.BorderBox = new SKRect(
-                geometry.PaddingBox.Left - (float)b.Left,
-                geometry.PaddingBox.Top - (float)b.Top,
-                geometry.PaddingBox.Right + (float)b.Right,
-                geometry.PaddingBox.Bottom + (float)b.Bottom);
-                
-            geometry.MarginBox = new SKRect(
-                geometry.BorderBox.Left - (float)m.Left,
-                geometry.BorderBox.Top - (float)m.Top,
-                geometry.BorderBox.Right + (float)m.Right,
-                geometry.BorderBox.Bottom + (float)m.Bottom);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
         }
 
         private void ShiftBox(BoxModel geometry, float dx, float dy)

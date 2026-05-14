@@ -274,7 +274,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             InitializeBox(group);
             group.Geometry.ContentBox = new SKRect(left, top, right, bottom);
-            SyncBoxes(group.Geometry);
+            LayoutBoxOps.SyncBoxes(group.Geometry);
         }
 
         private static void StretchBorderHeight(LayoutBox cell, float borderHeight)
@@ -306,7 +306,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float top = (float)(style.Margin.Top + style.BorderThickness.Top + style.Padding.Top);
             box.Geometry.ContentBox = new SKRect(left, top, left, top);
             box.Geometry.Lines = null;
-            SyncBoxes(box.Geometry);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
         }
 
         private static void SetContentSize(LayoutBox box, float width, float height)
@@ -314,33 +314,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
             box.Geometry.ContentBox = new SKRect(left, top, left + Math.Max(0f, width), top + Math.Max(0f, height));
-            SyncBoxes(box.Geometry);
-        }
-
-        private static void SyncBoxes(BoxModel geometry)
-        {
-            var cb = geometry.ContentBox;
-            var p = geometry.Padding;
-            var b = geometry.Border;
-            var m = geometry.Margin;
-
-            geometry.PaddingBox = new SKRect(
-                cb.Left - (float)p.Left,
-                cb.Top - (float)p.Top,
-                cb.Right + (float)p.Right,
-                cb.Bottom + (float)p.Bottom);
-
-            geometry.BorderBox = new SKRect(
-                geometry.PaddingBox.Left - (float)b.Left,
-                geometry.PaddingBox.Top - (float)b.Top,
-                geometry.PaddingBox.Right + (float)b.Right,
-                geometry.PaddingBox.Bottom + (float)b.Bottom);
-
-            geometry.MarginBox = new SKRect(
-                geometry.BorderBox.Left - (float)m.Left,
-                geometry.BorderBox.Top - (float)m.Top,
-                geometry.BorderBox.Right + (float)m.Right,
-                geometry.BorderBox.Bottom + (float)m.Bottom);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
         }
 
         private static LayoutState CreateChildState(float width, float height, LayoutState parentState)

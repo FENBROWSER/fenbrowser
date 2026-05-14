@@ -281,7 +281,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     child.Geometry.Padding = pad;
                     child.Geometry.Border = brd;
                     child.Geometry.Margin = mar;
-                    SyncBoxes(child.Geometry);
+                    LayoutBoxOps.SyncBoxes(child.Geometry);
 
                     currentLine.Items.Add(child);
                     currentLine.Width = curX + childSize.Width;
@@ -375,7 +375,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 textBox.Geometry.Padding = new Thickness();
                 textBox.Geometry.Border = new Thickness();
                 textBox.Geometry.Margin = new Thickness();
-                SyncBoxes(textBox.Geometry);
+                LayoutBoxOps.SyncBoxes(textBox.Geometry);
 
                 // Position the TextLayoutBox relative to parent's content area
                 // (children are positioned relative to parent content box, not border box)
@@ -582,7 +582,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 box.Geometry.Descent = lines[0].Descent;
             }
             
-            SyncBoxes(box.Geometry);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
         }
 
         private bool TryLayoutReplacedInlineBox(LayoutBox box, LayoutState state)
@@ -624,7 +624,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             box.Geometry.Padding = box.ComputedStyle?.Padding ?? new Thickness();
             box.Geometry.Border = box.ComputedStyle?.BorderThickness ?? new Thickness();
             box.Geometry.Margin = box.ComputedStyle?.Margin ?? new Thickness();
-            SyncBoxes(box.Geometry);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
             return true;
         }
 
@@ -668,7 +668,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             textBox.Geometry.Ascent = textBox.Geometry.Baseline;
             textBox.Geometry.Descent = Math.Max(0f, contentHeight - textBox.Geometry.Baseline);
 
-            SyncBoxes(textBox.Geometry);
+            LayoutBoxOps.SyncBoxes(textBox.Geometry);
         }
 
         private SKSize MeasureInlineChild(LayoutBox child, LayoutState state)
@@ -1368,7 +1368,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             textBox.Geometry.Baseline = 0f;
             textBox.Geometry.Ascent = 0f;
             textBox.Geometry.Descent = 0f;
-            SyncBoxes(textBox.Geometry);
+            LayoutBoxOps.SyncBoxes(textBox.Geometry);
         }
 
         private static float ResolveInlineItemBaseline(LayoutBox item, float fallbackHeight)
@@ -1591,6 +1591,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state.ViewportHeight);
             }
 
+            // box-sizing: border-box — the specified width includes padding+border,
+            // so subtract them to get the content width.
+            if (box.ComputedStyle != null &&
+                string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) &&
+                (box.ComputedStyle.Width.HasValue || box.ComputedStyle.WidthPercent.HasValue ||
+                 !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression)))
+            {
+                float horizontalChrome = (float)(p.Left + p.Right + b.Left + b.Right);
+                finalW = Math.Max(0f, finalW - horizontalChrome);
+            }
+
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
             box.Geometry.ContentBox = new SKRect(left, top, left + finalW, top);
@@ -1599,34 +1610,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             box.Geometry.Border = b;
             box.Geometry.Margin = m;
             
-            SyncBoxes(box.Geometry);
+            LayoutBoxOps.SyncBoxes(box.Geometry);
         }
         
-        private void SyncBoxes(BoxModel geometry)
-        {
-             var cb = geometry.ContentBox;
-            var p = geometry.Padding;
-            var b = geometry.Border;
-            var m = geometry.Margin;
-            
-            geometry.PaddingBox = new SKRect(
-                cb.Left - (float)p.Left,
-                cb.Top - (float)p.Top,
-                cb.Right + (float)p.Right,
-                cb.Bottom + (float)p.Bottom);
-                
-            geometry.BorderBox = new SKRect(
-                geometry.PaddingBox.Left - (float)b.Left,
-                geometry.PaddingBox.Top - (float)b.Top,
-                geometry.PaddingBox.Right + (float)b.Right,
-                geometry.PaddingBox.Bottom + (float)b.Bottom);
-                
-            geometry.MarginBox = new SKRect(
-                geometry.BorderBox.Left - (float)m.Left,
-                geometry.BorderBox.Top - (float)m.Top,
-                geometry.BorderBox.Right + (float)m.Right,
-                geometry.BorderBox.Bottom + (float)m.Bottom);
-        }
     }
 }
 

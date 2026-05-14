@@ -14,37 +14,40 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
     {
         public static void ComputeBoxModelFromContent(LayoutBox box, float contentW, float contentH)
         {
-            var p = box.Geometry.Padding;
-            var b = box.Geometry.Border;
-            var m = box.Geometry.Margin;
-            
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
-            float right = left + contentW;
-            float bottom = top + contentH;
+            box.Geometry.ContentBox = new SKRect(left, top, left + contentW, top + contentH);
+            SyncBoxes(box.Geometry);
+        }
 
-            box.Geometry.ContentBox = new SKRect(left, top, right, bottom);
-            
-            box.Geometry.PaddingBox = new SKRect(
-                left - (float)p.Left,
-                top - (float)p.Top,
-                right + (float)p.Right,
-                bottom + (float)p.Bottom
-            );
-            
-            box.Geometry.BorderBox = new SKRect(
-                left - (float)(p.Left + b.Left),
-                top - (float)(p.Top + b.Top),
-                right + (float)(p.Right + b.Right),
-                bottom + (float)(p.Bottom + b.Bottom)
-            );
-            
-            box.Geometry.MarginBox = new SKRect(
-                left - (float)(p.Left + b.Left + m.Left),
-                top - (float)(p.Top + b.Top + m.Top),
-                right + (float)(p.Right + b.Right + m.Right),
-                bottom + (float)(p.Bottom + b.Bottom + m.Bottom)
-            );
+        /// <summary>
+        /// Recomputes PaddingBox, BorderBox, and MarginBox from the current ContentBox
+        /// plus the Padding/Border/Margin thickness values stored on the geometry.
+        /// </summary>
+        public static void SyncBoxes(BoxModel geometry)
+        {
+            var cb = geometry.ContentBox;
+            var p = geometry.Padding;
+            var b = geometry.Border;
+            var m = geometry.Margin;
+
+            geometry.PaddingBox = new SKRect(
+                cb.Left - (float)p.Left,
+                cb.Top - (float)p.Top,
+                cb.Right + (float)p.Right,
+                cb.Bottom + (float)p.Bottom);
+
+            geometry.BorderBox = new SKRect(
+                geometry.PaddingBox.Left - (float)b.Left,
+                geometry.PaddingBox.Top - (float)b.Top,
+                geometry.PaddingBox.Right + (float)b.Right,
+                geometry.PaddingBox.Bottom + (float)b.Bottom);
+
+            geometry.MarginBox = new SKRect(
+                geometry.BorderBox.Left - (float)m.Left,
+                geometry.BorderBox.Top - (float)m.Top,
+                geometry.BorderBox.Right + (float)m.Right,
+                geometry.BorderBox.Bottom + (float)m.Bottom);
         }
 
         public static void SetPosition(LayoutBox box, float x, float y)
