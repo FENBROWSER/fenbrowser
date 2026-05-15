@@ -42,6 +42,24 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly RetainedTileRasterizer _retainedTileRasterizer;
         private GRContext _gpuRasterContext;
 
+        // Guards all reads/writes of renderer state that the raster pipeline mutates
+        // (_boxes, _lastStyles, _lastLayout, _lastPaintTree, _lastCompositedLayers,
+        // _lastDamageRegions, viewport fields). The renderer is touched from multiple
+        // threads in production:
+        //   - the engine/render thread, which calls Render/RenderFrame (writer)
+        //   - the UI/input thread, which calls CreateRenderContext / GetElementBox /
+        //     HitTest from mouse and keyboard dispatch (readers)
+        //   - the script thread, which calls GetElementBox via getBoundingClientRect
+        // BrowserIntegration's _rendererLock covers most call sites but cannot reach
+        // BrowserApi.DispatchInputEvent (which lives in FenBrowser.FenEngine and does
+        // not know about Host's lock). Moving the lock inside the renderer makes every
+        // entry point safe regardless of who calls it. .NET monitors are re-entrant,
+        // so writer paths that legitimately invoke read helpers do not self-deadlock.
+        // The lock is held only for the structural-mutation windows in writes and the
+        // snapshot-copy windows in reads, so the UI thread blocks for microseconds
+        // at most per input event, well below the 16 ms frame budget.
+        internal readonly object _stateLock = new object();
+
         private IReadOnlyDictionary<Node, CssComputed> _lastStyles;
         private LayoutResult _lastLayout;
         private ImmutablePaintTree _lastPaintTree;
@@ -114,9 +132,16 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public BoxModel GetElementBox(Node node)
     {
-        if (node != null && _boxes.TryGetValue(node, out var box))
-            return box;
-        return null;
+        if (node == null) return null;
+        // Lock against concurrent _boxes mutation inside Render(). Dictionary
+        // is not safe for concurrent read+write — TryGetValue against a
+        // partially-rebuilt table can return a stale BoxModel whose internal
+        // SKPicture/layer surfaces have been disposed, and dereferencing those
+        // later in Skia is the source of the native AV.
+        lock (_stateLock)
+        {
+            return _boxes.TryGetValue(node, out var box) ? box : null;
+        }
     }
 
     /// <summary>
@@ -210,13 +235,31 @@ namespace FenBrowser.FenEngine.Rendering
             bool emitVerificationReport = true)
         {
             if (root == null || canvas == null) return;
-            
+
             // Re-entrancy Guard
             if (Interlocked.Exchange(ref _renderGate, 1) == 1)
             {
                 // EngineLogCompat.Warn("Skipping re-entrant Render call.");
                 return;
             }
+
+            // Take the state lock for the duration of the render. Concurrent reader
+            // paths — CreateRenderContext, GetElementBox, HitTest — also acquire
+            // this lock and would otherwise observe half-rebuilt _boxes / paint-tree
+            // state, dereferencing disposed Skia handles inside native code (AV).
+            // .NET monitors are re-entrant, so any reader path Render() calls into
+            // (callbacks, OnLayoutUpdated → IRenderFramePipeline observers, etc.)
+            // re-enters the same monitor without self-deadlocking.
+            //
+            // Use the (object, ref bool) overload so that if any subsequent line
+            // between here and the try{} below throws (an OOM during stopwatch
+            // allocation, a delegate-assignment exception, etc.) we still release
+            // the lock instead of permanently wedging every reader thread. This
+            // is the .NET-recommended pattern for monitor acquisition.
+            bool stateLockTaken = false;
+            try
+            {
+                Monitor.Enter(_stateLock, ref stateLockTaken);
 
             CssAnimationEngine.ScrollStateResolver = el =>
             {
@@ -830,6 +873,14 @@ namespace FenBrowser.FenEngine.Rendering
             finally
             {
                 Volatile.Write(ref _renderGate, 0);
+            }
+            }
+            finally
+            {
+                if (stateLockTaken)
+                {
+                    Monitor.Exit(_stateLock);
+                }
             }
         }
 
@@ -1726,40 +1777,40 @@ namespace FenBrowser.FenEngine.Rendering
         public bool HitTest(float x, float y, out HitTestResult result)
         {
             result = HitTestResult.None;
-            if (_lastPaintTree == null || _lastPaintTree.Roots == null) return false;
-
-            // Delegate to canonical HitTester
-            var ctx = new FenBrowser.FenEngine.Rendering.Core.RenderContext 
-            { 
-                 Boxes = _boxes, 
-                 Styles = _lastStyles as Dictionary<Node, CssComputed>, 
-                 PaintTreeRoots = _lastPaintTree.Roots 
-            };
-            
-            // Use HitTester
-            // Note: HitTester.HitTest returns Element. We need full result.
-            // HitTester.HitTestRecursive returns bool and out result.
-            // We should use that if possible, but it takes list.
-            // Let's call HitTester.HitTestRecursive directly?
-            // HitTester is in FenBrowser.FenEngine.Rendering.Interaction namespace.
-            
-            return FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestRecursive(_lastPaintTree.Roots, x, y, out result);
+            // Capture references to the paint tree and styles under the lock so the
+            // engine thread cannot swap _lastPaintTree out from under us while
+            // HitTestRecursive walks it. Once the captured roots reference is
+            // immutable per-frame (paint trees are built fresh), the walk itself
+            // can run outside the lock.
+            ImmutablePaintTree tree;
+            lock (_stateLock)
+            {
+                tree = _lastPaintTree;
+            }
+            if (tree == null || tree.Roots == null) return false;
+            return FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestRecursive(tree.Roots, x, y, out result);
         }
 
         public RenderContext CreateRenderContext()
         {
-            var styles = _lastStyles as Dictionary<Node, CssComputed>;
-            var boxesSnapshot = new Dictionary<Node, BoxModel>(_boxes);
-            var ctx = new RenderContext
+            // Snapshot under the state lock so we don't tear references to _boxes,
+            // _lastStyles, or _lastPaintTree while the engine thread is rebuilding
+            // them inside Render(). The snapshot itself (a shallow Dictionary copy
+            // and a few field reads) is microseconds; the lock window is trivial.
+            lock (_stateLock)
             {
-                Boxes = boxesSnapshot,
-                Styles = styles,
-                PaintTreeRoots = _lastPaintTree?.Roots,
-                ViewportWidth = _viewportWidth,
-                ViewportHeight = _viewportHeight,
-                Viewport = new SKRect(0, 0, _viewportWidth, _viewportHeight)
-            };
-            return ctx;
+                var styles = _lastStyles as Dictionary<Node, CssComputed>;
+                var boxesSnapshot = new Dictionary<Node, BoxModel>(_boxes);
+                return new RenderContext
+                {
+                    Boxes = boxesSnapshot,
+                    Styles = styles,
+                    PaintTreeRoots = _lastPaintTree?.Roots,
+                    ViewportWidth = _viewportWidth,
+                    ViewportHeight = _viewportHeight,
+                    Viewport = new SKRect(0, 0, _viewportWidth, _viewportHeight)
+                };
+            }
         }
         
         // Remove HitTestRecursive and FindInteractiveAncestor as they are now in HitTester (or accessible via it)
