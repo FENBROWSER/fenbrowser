@@ -212,7 +212,41 @@ namespace FenBrowser.Core.Network
 
             EngineLogCompat.Debug($"[ResourcePrefetcher] Queued {hint}: {url}", LogCategory.Network);
 
+            // PreloadScanner calls this directly during HTML parse and never
+            // touches PrefetchFromDomAsync, so without this kick the queue
+            // would just accumulate forever. EnsureProcessing is idempotent
+            // and uses an atomic flag so we don't spawn workers per call.
+            EnsureProcessing();
+
             await Task.CompletedTask;
+        }
+
+        private int _processingFlag;
+
+        private void EnsureProcessing()
+        {
+            if (_disposed) return;
+            if (System.Threading.Interlocked.CompareExchange(ref _processingFlag, 1, 0) != 0)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await ProcessQueueAsync(_cts.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    System.Threading.Volatile.Write(ref _processingFlag, 0);
+                    // If new items raced in after we drained, kick again.
+                    if (!_disposed && !_queue.IsEmpty)
+                    {
+                        EnsureProcessing();
+                    }
+                }
+            });
         }
 
         /// <summary>

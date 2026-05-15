@@ -102,6 +102,16 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly object _renderStateLock = new();
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
+
+        /// <summary>
+        /// Speculative prefetcher driven by the HTML PreloadScanner. When set,
+        /// every parse will fan out <link rel="stylesheet">, <script src="...">,
+        /// and <img src="..."> fetches into the ResourceManager cache in
+        /// parallel with the parse itself, so by the time CssLoader /
+        /// ScriptFetcher reach for those resources they hit warm cache instead
+        /// of going over the wire serially.
+        /// </summary>
+        public FenBrowser.Core.Network.ResourcePrefetcher Prefetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
 
         private CspPolicy _activePolicy;
@@ -443,64 +453,7 @@ namespace FenBrowser.FenEngine.Rendering
                 "</body></html>";
         }
 
-        private static bool ShouldPreferFallbackDom(string html, Uri baseUri)
-        {
-            if (string.IsNullOrWhiteSpace(html))
-            {
-                return false;
-            }
-
-            if (IsGoogleHost(baseUri))
-            {
-                return false;
-            }
-
-            if (html.IndexOf("<noscript", StringComparison.OrdinalIgnoreCase) < 0 ||
-                html.IndexOf("http-equiv=\"refresh\"", StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                return false;
-            }
-
-            var matches = System.Text.RegularExpressions.Regex.Matches(
-                html,
-                "<script\\b[^>]*>(.*?)</script>",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-
-            var totalScriptChars = 0;
-            foreach (System.Text.RegularExpressions.Match match in matches)
-            {
-                if (!match.Success)
-                {
-                    continue;
-                }
-
-                totalScriptChars += match.Groups[1].Length;
-                if (totalScriptChars >= 20000)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static string StripScriptsForFallbackDom(string html)
-        {
-            if (string.IsNullOrWhiteSpace(html))
-            {
-                return html ?? string.Empty;
-            }
-
-            return System.Text.RegularExpressions.Regex.Replace(
-                html,
-                "<script\\b[^>]*>.*?</script>",
-                string.Empty,
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-        }
-
-        private static string RemoveInlineDisplayNone(string inlineStyle)
+private static string RemoveInlineDisplayNone(string inlineStyle)
         {
             if (string.IsNullOrWhiteSpace(inlineStyle))
             {
@@ -817,61 +770,7 @@ namespace FenBrowser.FenEngine.Rendering
             return removed;
         }
 
-        // Some pages expose a usable fallback DOM but trap limited engines in long-running
-        // inline bootstrap scripts. Prefer the fallback path when the document advertises
-        // a noscript/meta-refresh recovery flow and ships a very large inline script payload.
-        private static bool IsJsHeavyAppShell(Node domRoot, Uri baseUri)
-        {
-            if (domRoot == null)
-            {
-                return false;
-            }
-
-            if (IsGoogleHost(baseUri))
-            {
-                return false;
-            }
-
-            bool hasNoscriptRefresh = false;
-            int inlineScriptChars = 0;
-
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-                if (string.Equals(element.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (element.Descendants().OfType<Element>().Any(child =>
-                        string.Equals(child.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(child.GetAttribute("http-equiv"), "refresh", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        hasNoscriptRefresh = true;
-                    }
-
-                    continue;
-                }
-
-                if (!string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase) ||
-                    element.HasAttribute("src"))
-                {
-                    continue;
-                }
-
-                var scriptText = element.Text;
-                if (string.IsNullOrWhiteSpace(scriptText))
-                {
-                    continue;
-                }
-
-                inlineScriptChars += scriptText.Length;
-                if (hasNoscriptRefresh && inlineScriptChars >= 20000)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        public void Dispose()
+public void Dispose()
         {
             try
             {
@@ -1761,7 +1660,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     BaseUri = baseUri,
                     ParseCheckpointTokenInterval = 512,
-                    InterleavedTokenBatchSize = interleavedBatchSize
+                    InterleavedTokenBatchSize = interleavedBatchSize,
+                    // PreloadScanner only runs when Prefetcher is non-null; without
+                    // this wiring the scanner was dead code and every subresource
+                    // got fetched sequentially as the tree builder produced it.
+                    Prefetcher = Prefetcher
                 };
                 AttachParseDocumentCheckpointCallback(parseOptions, parseCheckpointState);
 
@@ -1790,7 +1693,8 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 BaseUri = baseUri,
                                 ParseCheckpointTokenInterval = 512,
-                                InterleavedTokenBatchSize = 0
+                                InterleavedTokenBatchSize = 0,
+                                Prefetcher = Prefetcher
                             };
                             AttachParseDocumentCheckpointCallback(fallbackOptions, parseCheckpointState);
                             parseResult = await Task.Run(() =>
@@ -2500,14 +2404,7 @@ namespace FenBrowser.FenEngine.Rendering
                 EngineLogCompat.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
                 MarkStyleSnapshotUnstable();
 
-                var preferFallbackDom = ShouldPreferFallbackDom(html, baseUri);
-                if (preferFallbackDom)
-                {
-                    html = StripScriptsForFallbackDom(html);
-                    EngineLogCompat.Warn($"[SAFE-MODE] Stripped script payloads before parse for fallback-friendly page {baseUri}", LogCategory.Rendering);
-                }
-                
-                const int MaxHtmlSize = 50 * 1024 * 1024; 
+                const int MaxHtmlSize = 50 * 1024 * 1024;
                 if (!string.IsNullOrEmpty(html) && html.Length > MaxHtmlSize)
                 {
                     EngineLogCompat.Warn($"[RenderAsync] HTML too large: {html.Length} bytes, truncating to {MaxHtmlSize}", LogCategory.Rendering);
@@ -2535,8 +2432,7 @@ namespace FenBrowser.FenEngine.Rendering
                 interleavedBatchCount = Math.Max(0, parseResult?.InterleavedBatchCount ?? 0);
                 interleavedFallbackUsed = parseResult?.InterleavedFallbackUsed ?? false;
 
-                bool shouldNormalizeNoJsFallback = !preferFallbackDom;
-                if (shouldNormalizeNoJsFallback)
+                const bool shouldNormalizeNoJsFallback = true;
                 {
                     var normalizeRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
                     var normalizedNoJsClassCount = NormalizeNoJsFallbackClasses(normalizeRoot);
@@ -2583,17 +2479,6 @@ namespace FenBrowser.FenEngine.Rendering
 
                 bool allowJs = EnableJavaScript;
                 if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
-
-                if (preferFallbackDom)
-                {
-                    allowJs = false;
-                }
-
-                if (allowJs && IsJsHeavyAppShell(dom, baseUri))
-                {
-                    EngineLogCompat.Debug($"[SAFE-MODE] Skipping JS for heavy app-shell page {baseUri}", LogCategory.Rendering);
-                    allowJs = false;
-                }
 
                 bool deferStableSnapshotUntilPostScript = allowJs;
                 if (deferStableSnapshotUntilPostScript)

@@ -1100,10 +1100,27 @@ namespace FenBrowser.Core
 
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
             LastTextResponseUri = null;
-            
-            // ... (Cache logic omitted for brevity in detailed fetch for now, or we can duplicate/refactor. 
-            // For this task, let's focus on the network part to get errors right. 
-            // Ideally we refactor FetchTextAsync to use this, but to minimize risk I'll implement the network logic here.)
+
+            // Sharded memory lookup — populated by FetchTextAsync and by the
+            // PreloadScanner-fed prefetcher. Without this, the same CSS/JS
+            // URL goes over the wire every time something different in the
+            // engine asks for it (FetchCssAsync, FetchTextDetailedAsync,
+            // FetchTextAsync each took their own request), and the
+            // speculative preload fetch was wasted because nothing else
+            // consulted the cache it warmed.
+            var cacheKey = url.ToString();
+            var cachePartition = SafePartition(referer?.Host);
+            if (_textCache.TryGet(cachePartition, cacheKey, out var cachedDetailed))
+            {
+                LastTextResponseUri = url;
+                return new FetchResult
+                {
+                    Status = FetchStatus.Success,
+                    Content = cachedDetailed.Body,
+                    FinalUri = url,
+                    ContentType = cachedDetailed.ContentType
+                };
+            }
 
             var refererOriginal = referer;
             Uri previousRequest = null;
@@ -1433,6 +1450,24 @@ namespace FenBrowser.Core
                         FailureReason = FetchFailureReasonCode.XFrameBlocked,
                         IsRetryable = false,
                     };
+                }
+
+                // Populate the same sharded cache FetchTextAsync uses, so the
+                // first request through this detailed path warms the cache for
+                // every later request (FetchCssAsync, scripts, preload, ...).
+                // Skip top-level documents so the navigated page itself isn't
+                // pinned in memory across navigations.
+                if (!IsTopLevelDocumentRequest(secFetchDest))
+                {
+                    try
+                    {
+                        _textCache.Put(cachePartition, cacheKey,
+                            new TextEntry { Body = text ?? string.Empty, ContentType = effectiveMime ?? string.Empty });
+                    }
+                    catch (Exception cacheEx)
+                    {
+                        EngineLogCompat.Debug($"[Network] Text cache write failed for {finalUri}: {cacheEx.Message}", LogCategory.Network);
+                    }
                 }
 
                 return new FetchResult {
