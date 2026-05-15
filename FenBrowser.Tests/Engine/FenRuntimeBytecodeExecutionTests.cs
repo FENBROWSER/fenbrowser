@@ -126,11 +126,24 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
             Assert.Equal(0, rt.CompiledScriptCacheHitCount);
             Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+            Assert.Equal("compile", rt.LastScriptExecutionMode);
+            Assert.False(rt.LastScriptCacheHit);
+            Assert.Equal(url, rt.LastScriptSourceUrl);
+            Assert.True(rt.LastScriptBytecodeInstructionCount > 0);
+            Assert.True(rt.LastScriptParseMilliseconds >= 0);
+            Assert.True(rt.LastScriptCompileMilliseconds >= 0);
+            Assert.True(rt.LastScriptExecuteMilliseconds >= 0);
 
             rt.ExecuteSimple(script, url);
             Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
             Assert.Equal(1, rt.CompiledScriptCacheHitCount);
             Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+            Assert.Equal("cache-hit", rt.LastScriptExecutionMode);
+            Assert.True(rt.LastScriptCacheHit);
+            Assert.Equal(0, rt.LastScriptParseMilliseconds);
+            Assert.Equal(0, rt.LastScriptCompileMilliseconds);
+            Assert.True(rt.LastScriptBytecodeInstructionCount > 0);
+            Assert.True(rt.LastScriptExecuteMilliseconds >= 0);
             Assert.Equal(2, ((FenValue)rt.GetGlobal("cacheProbe")).AsNumber());
         }
 
@@ -157,6 +170,10 @@ namespace FenBrowser.Tests.Engine
 
             Assert.True(script.InstructionCount > 0);
             Assert.Equal("https://example.test/precompiled.js", script.SourceUrl);
+            Assert.Equal("precompile", rt.LastScriptExecutionMode);
+            Assert.Equal(script.InstructionCount, rt.LastScriptBytecodeInstructionCount);
+            Assert.True(rt.LastScriptParseMilliseconds >= 0);
+            Assert.True(rt.LastScriptCompileMilliseconds >= 0);
 
             rt.ExecutePrecompiled(script);
             rt.ExecutePrecompiled(script);
@@ -165,6 +182,12 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(0, rt.CompiledScriptCacheEntryCount);
             Assert.Equal(0, rt.CompiledScriptCacheHitCount);
             Assert.Equal(0, rt.CompiledScriptCacheMissCount);
+            Assert.Equal("precompiled", rt.LastScriptExecutionMode);
+            Assert.False(rt.LastScriptCacheHit);
+            Assert.Equal(0, rt.LastScriptParseMilliseconds);
+            Assert.Equal(0, rt.LastScriptCompileMilliseconds);
+            Assert.Equal(script.InstructionCount, rt.LastScriptBytecodeInstructionCount);
+            Assert.True(rt.LastScriptExecuteMilliseconds >= 0);
         }
 
         [Fact]

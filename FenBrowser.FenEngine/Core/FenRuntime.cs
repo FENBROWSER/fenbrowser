@@ -19115,6 +19115,24 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         public int CompiledScriptCacheEntryCount => _compiledScriptCache.Count;
         public long CompiledScriptCacheHitCount { get; private set; }
         public long CompiledScriptCacheMissCount { get; private set; }
+        public string LastScriptSourceUrl { get; private set; } = "script";
+        public string LastScriptExecutionMode { get; private set; } = "none";
+        public long LastScriptParseMilliseconds { get; private set; }
+        public long LastScriptCompileMilliseconds { get; private set; }
+        public long LastScriptExecuteMilliseconds { get; private set; }
+        public int LastScriptBytecodeInstructionCount { get; private set; }
+        public bool LastScriptCacheHit { get; private set; }
+
+        private void ResetScriptMetrics(string sourceUrl, string executionMode)
+        {
+            LastScriptSourceUrl = string.IsNullOrWhiteSpace(sourceUrl) ? "script" : sourceUrl;
+            LastScriptExecutionMode = executionMode ?? "none";
+            LastScriptParseMilliseconds = 0;
+            LastScriptCompileMilliseconds = 0;
+            LastScriptExecuteMilliseconds = 0;
+            LastScriptBytecodeInstructionCount = 0;
+            LastScriptCacheHit = false;
+        }
 
         private static bool StartsWithUseStrictDirective(string source)
         {
@@ -19220,7 +19238,9 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             var sourceUrl = string.IsNullOrWhiteSpace(url) ? "script" : url;
             var initialStrictMode = StartsWithUseStrictDirective(sourceCode) ||
                                     (inheritStrictFromContext && (_context?.StrictMode ?? false));
+            ResetScriptMetrics(sourceUrl, "precompile");
 
+            var parseStopwatch = Stopwatch.StartNew();
             var lexer = new Lexer(sourceCode);
             var parser = new Parser(
                 lexer,
@@ -19228,6 +19248,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 initialStrictMode: initialStrictMode,
                 allowRecovery: false);
             var program = parser.ParseProgram();
+            LastScriptParseMilliseconds = parseStopwatch.ElapsedMilliseconds;
 
             if (parser.Errors.Count > 0)
             {
@@ -19245,7 +19266,10 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             {
                 var isEval = string.Equals(sourceUrl, "eval.js", StringComparison.Ordinal);
                 var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
+                var compileStopwatch = Stopwatch.StartNew();
                 var codeBlock = compiler.Compile(program);
+                LastScriptCompileMilliseconds = compileStopwatch.ElapsedMilliseconds;
+                LastScriptBytecodeInstructionCount = codeBlock?.Instructions?.Length ?? 0;
                 return new PrecompiledScript(
                     sourceCode,
                     sourceUrl,
@@ -19273,6 +19297,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
             try
             {
+                ResetScriptMetrics(script.SourceUrl, "precompiled");
                 using var realmScope = EnterRealmActivationScope();
                 bool previousStrictMode = _context?.StrictMode ?? false;
 
@@ -19349,6 +19374,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             bool traceLargeScript,
             Stopwatch executionStopwatch)
         {
+            var executeStopwatch = Stopwatch.StartNew();
             try
             {
                 var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
@@ -19365,18 +19391,26 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         LogCategory.JavaScript);
                 }
 
+                LastScriptExecuteMilliseconds = executeStopwatch.ElapsedMilliseconds;
+                LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
                 return bytecodeResult;
             }
             catch (OperationCanceledException)
             {
+                LastScriptExecuteMilliseconds = executeStopwatch.ElapsedMilliseconds;
+                LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
                 throw;
             }
             catch (FenResourceError)
             {
+                LastScriptExecuteMilliseconds = executeStopwatch.ElapsedMilliseconds;
+                LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
                 throw;
             }
             catch (Exception vmEx)
             {
+                LastScriptExecuteMilliseconds = executeStopwatch.ElapsedMilliseconds;
+                LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
                 EngineLogCompat.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
                 if (TryExtractThrownValue(vmEx, out var thrownValue))
                 {
@@ -19405,6 +19439,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             try
             {
                 var sourceCode = code ?? string.Empty;
+                ResetScriptMetrics(url, "compile");
                 bool traceLargeScript = sourceCode.Length >= 512 * 1024;
                 var executionStopwatch = traceLargeScript ? Stopwatch.StartNew() : null;
 
@@ -19448,6 +19483,8 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     if (canUseCompiledCache &&
                         TryGetCompiledScript(sourceCode, url, initialStrictMode, out var cachedEntry))
                     {
+                        LastScriptExecutionMode = "cache-hit";
+                        LastScriptCacheHit = true;
                         DevToolsCore.Instance.RegisterSource(url, code);
                         if (IsGlobalScriptExecution())
                         {
@@ -19458,6 +19495,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         goto execute_compiled_block;
                     }
 
+                    var parseStopwatch = Stopwatch.StartNew();
                     var lexer = new Lexer(sourceCode);
                     var parser = new Parser(
                         lexer,
@@ -19465,6 +19503,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         initialStrictMode: initialStrictMode,
                         allowRecovery: false);
                     var program = parser.ParseProgram();
+                    LastScriptParseMilliseconds = parseStopwatch.ElapsedMilliseconds;
 
                     if (traceLargeScript)
                     {
@@ -19505,7 +19544,10 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     try
                     {
                         var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
+                        var compileStopwatch = Stopwatch.StartNew();
                         compiledBlock = compiler.Compile(program);
+                        LastScriptCompileMilliseconds = compileStopwatch.ElapsedMilliseconds;
+                        LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
                         if (traceLargeScript)
                         {
                             EngineLogCompat.Warn(
