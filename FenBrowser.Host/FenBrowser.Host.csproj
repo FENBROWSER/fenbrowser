@@ -62,4 +62,27 @@
     <Exec Command="if exist &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot; call &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot;" IgnoreExitCode="true" />
   </Target>
 
+  <!--
+    Raise the main-thread stack reserve in the produced PE header to 16 MB.
+    The .NET 8 main thread inherits its stack size from the PE header's
+    SizeOfStackReserve field (default 1 MB on x64 Windows). Heavy SPAs
+    (React/Vue/Angular) recursing through paint/layout/event chains on the
+    UI message-pump thread routinely blow that, producing silent-exit
+    StackOverflowExceptions that WER cannot capture cleanly. Worker threads
+    (engine, compositor) get their stack via `new Thread(stackSize)` in
+    code; this post-build editbin step is the only way to bump the main
+    thread short of restructuring Program.Main() into a worker-thread shim.
+    `vswhere`-located editbin.exe is invoked silently; failure is non-fatal
+    (the build still succeeds; we just keep the 1 MB default).
+  -->
+  <Target Name="BumpMainThreadStack" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <PropertyGroup>
+      <ExePath>$(TargetDir)$(AssemblyName).exe</ExePath>
+    </PropertyGroup>
+    <Exec
+      Command="for /f &quot;tokens=*&quot; %25%25i in ('&quot;%25ProgramFiles(x86)%25\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -find VC\Tools\MSVC\*\bin\Hostx64\x64\editbin.exe ^| findstr /v /i preview') do (&quot;%25%25i&quot; /STACK:16777216 &quot;$(ExePath)&quot; &gt;nul 2&gt;&amp;1 &amp;&amp; goto :done) %26 :done"
+      IgnoreExitCode="true"
+      Condition="Exists('$(ExePath)')" />
+  </Target>
+
 </Project>

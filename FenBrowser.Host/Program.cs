@@ -67,7 +67,63 @@ namespace FenBrowser.Host
             return StartupMode.Browser;
         }
 
+        // Sentinel so the relaunch shim does not recurse if a hosting environment
+        // already gave us a fat-enough stack.
+        private const string LargeStackEnvVar = "FENBROWSER_LARGE_STACK_HOSTED";
+        private const int LargeStackBytes = 16 * 1024 * 1024;
+
         public static async Task Main(string[] args)
+        {
+            // The .NET main thread inherits its stack from the PE header
+            // SizeOfStackReserve, which is 1 MB by default on x64 Windows.
+            // Modern SPA JS frameworks (React/Vue/Angular) recurse through
+            // paint/layout/event chains on this thread and blow the 1 MB cap,
+            // producing silent-exit StackOverflowExceptions that don't even
+            // raise a managed handler. To eliminate that whole class of failure
+            // regardless of launcher (VS F5, `dotnet run`, direct .exe, editbin
+            // patched or not), re-enter Main on a worker thread with an explicit
+            // 16 MB stack. Keep the original main thread blocked on the worker
+            // so the process lifetime, console handlers, and CTRL-C semantics
+            // continue to be owned by it.
+            if (Environment.GetEnvironmentVariable(LargeStackEnvVar) != "1")
+            {
+                Environment.SetEnvironmentVariable(LargeStackEnvVar, "1");
+                int exitCode = 0;
+                Exception capturedException = null;
+                var worker = new Thread(
+                    () =>
+                    {
+                        try
+                        {
+                            MainCore(args).GetAwaiter().GetResult();
+                        }
+                        catch (Exception ex)
+                        {
+                            capturedException = ex;
+                            exitCode = 1;
+                        }
+                    },
+                    LargeStackBytes)
+                {
+                    Name = "FenBrowser-Main",
+                    IsBackground = false
+                };
+                worker.Start();
+                worker.Join();
+                if (capturedException != null)
+                {
+                    // Surface the underlying error the same way an unhandled
+                    // exception on the original main thread would have.
+                    throw capturedException;
+                }
+                Environment.ExitCode = exitCode;
+                return;
+            }
+
+            await MainCore(args).ConfigureAwait(false);
+        }
+
+        private static async Task MainCore(string[] args)
         {
             // Enable High-DPI Awareness (Per-Monitor V2)
             if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
