@@ -383,50 +383,66 @@ namespace FenBrowser.FenEngine.Layout
             return result;
         }
         
+        // Hit-testing runs on every mouse move on the UI thread — the thread
+        // with the *smallest* stack budget (main message-pump thread, default
+        // 1 MB on x64 Windows). A recursive walk through a real-app DOM
+        // (React/Vue can produce 100+-deep layout trees) was a stack-overflow
+        // waiting to happen, and StackOverflow on the UI thread vanishes the
+        // process with no chance of a managed handler. Iterative walk with an
+        // explicit stack; semantics preserved (deepest matching descendant
+        // wins, children of boxless wrapper nodes are still searched).
         private void HitTestRecursive(float x, float y, Node node, ref Node deepestHit)
         {
-            // Get box for this node
-            BoxModel box = null;
-            
-            // Try computer first (most boxes are stored there)
-            if (_computer != null)
+            if (node == null) return;
+
+            var stack = new System.Collections.Generic.Stack<Node>();
+            stack.Push(node);
+
+            while (stack.Count > 0)
             {
-                box = _computer.GetBox(node);
-            }
-            
-            // Fallback to context
-            if (box == null)
-            {
-                box = _context.GetBox(node);
-            }
-            
-            if (box != null)
-            {
-                // Check if point is inside this node's border box
-                var rect = box.BorderBox;
-                if (x >= rect.Left && x <= rect.Right && y >= rect.Top && y <= rect.Bottom)
+                var current = stack.Pop();
+
+                BoxModel box = _computer?.GetBox(current);
+                if (box == null) box = _context.GetBox(current);
+
+                bool descendIntoChildren;
+                if (box != null)
                 {
-                    // This node contains the point - it's a candidate
-                    deepestHit = node;
-                    
-                    // Continue searching children for a deeper hit
-                    if (node.ChildNodes != null)
+                    var rect = box.BorderBox;
+                    bool inside = x >= rect.Left && x <= rect.Right && y >= rect.Top && y <= rect.Bottom;
+                    if (inside)
                     {
-                        foreach (var child in node.ChildNodes)
-                        {
-                            HitTestRecursive(x, y, child, ref deepestHit);
-                        }
+                        deepestHit = current;
+                        descendIntoChildren = true;
+                    }
+                    else
+                    {
+                        // Boxed but point is outside its border-box — no descendant
+                        // can match either (children paint inside parent), so we
+                        // can short-circuit. This matches the recursive version,
+                        // which only recursed when 'inside' was true for a boxed
+                        // node.
+                        descendIntoChildren = false;
                     }
                 }
-            }
-            else
-            {
-                // No box for this node - still check children (might be a wrapper)
-                if (node.ChildNodes != null)
+                else
                 {
-                    foreach (var child in node.ChildNodes)
+                    // No box: this is a wrapper / non-laid-out node. Descend so
+                    // the recursive version's "still check children" branch is
+                    // preserved.
+                    descendIntoChildren = true;
+                }
+
+                if (descendIntoChildren && current.ChildNodes != null)
+                {
+                    // Push in reverse so the original iteration order is
+                    // preserved (last sibling wins on equal-depth hits, matching
+                    // the previous foreach behaviour).
+                    var children = current.ChildNodes;
+                    for (int i = children.Length - 1; i >= 0; i--)
                     {
-                        HitTestRecursive(x, y, child, ref deepestHit);
+                        var child = children[i];
+                        if (child != null) stack.Push(child);
                     }
                 }
             }

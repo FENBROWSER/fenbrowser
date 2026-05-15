@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
@@ -149,33 +150,59 @@ namespace FenBrowser.FenEngine.Core
         private static bool HasPaintDirty(Node node)
             => node != null && (node.PaintDirty || node.ChildPaintDirty);
 
+        // DOM walks were recursive and bounded only by the .NET stack. On
+        // SPA-heavy pages (React-rendered apps generate deeply nested element
+        // trees — x.com's main timeline reliably reaches 100+ levels with the
+        // virtualized list inside #react-root) the recursion either spilled
+        // into StackOverflow or came close enough that any added host->JS
+        // re-entry depth on top tipped it over. These run every frame, so the
+        // failure mode is not "rare deep page": it is "every frame on a real
+        // app site". Convert to iterative with an explicit Stack<Node>.
         private static void ClearDirtyRecursive(Node node, InvalidationKind kind, FenBrowser.Core.Deadlines.FrameDeadline deadline)
         {
             if (node == null) return;
-            deadline?.Check();
 
-            node.ClearDirty(kind);
+            var stack = new Stack<Node>();
+            stack.Push(node);
 
-            if (node is ContainerNode container)
+            while (stack.Count > 0)
             {
-                for (var child = container.FirstChild; child != null; child = child.NextSibling)
-                    ClearDirtyRecursive(child, kind, deadline);
+                deadline?.Check();
+                var current = stack.Pop();
+                current.ClearDirty(kind);
+
+                if (current is ContainerNode container)
+                {
+                    for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                    {
+                        stack.Push(child);
+                    }
+                }
             }
         }
 
         private static int CountDirtyNodes(Node node)
         {
-            if (node == null)
-            {
-                return 0;
-            }
+            if (node == null) return 0;
 
-            var count = (node.StyleDirty || node.LayoutDirty || node.PaintDirty) ? 1 : 0;
-            if (node is ContainerNode container)
+            int count = 0;
+            var stack = new Stack<Node>();
+            stack.Push(node);
+
+            while (stack.Count > 0)
             {
-                for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                var current = stack.Pop();
+                if (current.StyleDirty || current.LayoutDirty || current.PaintDirty)
                 {
-                    count += CountDirtyNodes(child);
+                    count++;
+                }
+
+                if (current is ContainerNode container)
+                {
+                    for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                    {
+                        stack.Push(child);
+                    }
                 }
             }
 

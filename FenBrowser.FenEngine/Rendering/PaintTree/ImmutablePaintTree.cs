@@ -103,12 +103,25 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         private void DiffRecursive(
-            IReadOnlyList<PaintNodeBase> current, 
+            IReadOnlyList<PaintNodeBase> current,
             IReadOnlyList<PaintNodeBase> other,
             List<PaintNodeBase> added,
             List<PaintNodeBase> removed,
             List<NodeChange> modified)
         {
+            // Paint trees on real apps (React, virtualized lists, deep flex/grid
+            // shells) routinely descend 100+ levels. Diff runs every frame, so a
+            // managed StackOverflow here takes the process down with no recovery
+            // path. Match the existing depth-limit pattern used by
+            // PaintTreeBuilder.BuildRecursive (limit 256) and the new builder
+            // (limit 128 + EnsureSufficientExecutionStack). Using
+            // EnsureSufficientExecutionStack so we degrade gracefully — past the
+            // safe margin, we abandon the diff for this subtree and treat its
+            // children as unchanged (a one-frame visual stall is preferable to
+            // a process crash).
+            try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
+            catch (InsufficientExecutionStackException) { return; }
+
             // Keyed Matching: Use SourceNode + GetType() as a stable key.
             // This allows us to detect moved nodes and stable updates even if order changes slightly.
             var otherNodesByKey = new Dictionary<string, PaintNodeBase>();
