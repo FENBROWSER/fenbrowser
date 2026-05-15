@@ -161,6 +161,31 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_CompiledScriptCache_EvictsLeastRecentlyUsedEntryAtLimit()
+        {
+            var rt = CreateRuntime();
+
+            for (var i = 0; i < rt.CompiledScriptCacheLimit + 1; i++)
+            {
+                rt.ExecuteSimple(
+                    $"globalThis.cacheEvictProbe{i} = {i};",
+                    $"https://example.test/cache-evict-{i}.js");
+            }
+
+            Assert.Equal(rt.CompiledScriptCacheLimit, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(rt.CompiledScriptCacheLimit + 1, rt.CompiledScriptCacheMissCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+
+            rt.ExecuteSimple(
+                "globalThis.cacheEvictProbe0 = 0;",
+                "https://example.test/cache-evict-0.js");
+
+            Assert.Equal(rt.CompiledScriptCacheLimit, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(rt.CompiledScriptCacheLimit + 2, rt.CompiledScriptCacheMissCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+        }
+
+        [Fact]
         public void PrecompileScript_ExecutePrecompiled_ReusesBytecodeWithoutScriptCache()
         {
             var rt = CreateRuntime();

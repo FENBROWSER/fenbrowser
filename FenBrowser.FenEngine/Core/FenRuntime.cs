@@ -19113,6 +19113,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         }
 
         public int CompiledScriptCacheEntryCount => _compiledScriptCache.Count;
+        public int CompiledScriptCacheLimit => MaxCompiledScriptCacheEntries;
         public long CompiledScriptCacheHitCount { get; private set; }
         public long CompiledScriptCacheMissCount { get; private set; }
         public string LastScriptSourceUrl { get; private set; } = "script";
