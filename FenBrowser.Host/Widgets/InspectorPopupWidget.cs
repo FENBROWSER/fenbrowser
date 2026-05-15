@@ -15,7 +15,20 @@ namespace FenBrowser.Host.Widgets
         private SKPaint _textPaint;
         private SKPaint _titlePaint;
         private SKPaint _borderPaint;
-        
+        // Per-paint cached resources for the property/value rows. Previously these
+        // (plus their typefaces) were allocated inside the Paint() foreach loop
+        // and never disposed — every frame leaked 2×N SKPaint + 2×N SKTypeface
+        // native handles for N rows, which on a 60fps inspector overlay with
+        // 12 rows is ~1500 leaked Skia objects per second and the kind of slow
+        // burn that a senior renderer engineer would catch in code review.
+        // Cache once and dispose with the widget.
+        private SKPaint _hintPaint;
+        private SKPaint _propNamePaint;
+        private SKPaint _propValuePaint;
+        private SKTypeface _consolasRegular;
+        private SKTypeface _consolasBold;
+        private SKTypeface _segoeUi;
+
         public event Action CloseRequested;
         
         private const float PADDING = 12f;
@@ -63,22 +76,53 @@ namespace FenBrowser.Host.Widgets
                 StrokeWidth = 1
             };
             
+            // Typefaces are expensive to construct (each call to FromFamilyName
+            // walks the system font registry). Cache them on the widget so paint
+            // becomes a pure draw-call sequence, never a font-loading sequence.
+            _consolasBold    = SKTypeface.FromFamilyName("Consolas", SKFontStyle.Bold);
+            _consolasRegular = SKTypeface.FromFamilyName("Consolas");
+            _segoeUi         = SKTypeface.FromFamilyName("Segoe UI");
+
             _titlePaint = new SKPaint
             {
                 Color = SKColor.Parse("#569CD6"),
                 IsAntialias = true,
                 TextSize = 14,
-                Typeface = SKTypeface.FromFamilyName("Consolas", SKFontStyle.Bold)
+                Typeface = _consolasBold
             };
-            
+
             _textPaint = new SKPaint
             {
                 Color = SKColor.Parse("#D4D4D4"),
                 IsAntialias = true,
                 TextSize = 12,
-                Typeface = SKTypeface.FromFamilyName("Consolas")
+                Typeface = _consolasRegular
             };
-            
+
+            _hintPaint = new SKPaint
+            {
+                Color = SKColor.Parse("#808080"),
+                IsAntialias = true,
+                TextSize = 10,
+                Typeface = _segoeUi
+            };
+
+            _propNamePaint = new SKPaint
+            {
+                Color = SKColor.Parse("#9CDCFE"),
+                IsAntialias = true,
+                TextSize = 12,
+                Typeface = _consolasRegular
+            };
+
+            _propValuePaint = new SKPaint
+            {
+                Color = SKColor.Parse("#CE9178"),
+                IsAntialias = true,
+                TextSize = 12,
+                Typeface = _consolasRegular
+            };
+
             // Calculate height based on lines
             float height = PADDING * 2 + 30 + (_lines.Length * LINE_HEIGHT);
             this.Width = WIDTH;
@@ -120,14 +164,7 @@ namespace FenBrowser.Host.Widgets
             float textY = Y + PADDING + 14;
             canvas.DrawText("Element Inspector", X + PADDING, textY, _titlePaint);
             
-            // Close button hint
-            var hintPaint = new SKPaint
-            {
-                Color = SKColor.Parse("#808080"),
-                TextSize = 10,
-                Typeface = SKTypeface.FromFamilyName("Segoe UI")
-            };
-            canvas.DrawText("(click to close)", X + Width - 80, textY, hintPaint);
+            canvas.DrawText("(click to close)", X + Width - 80, textY, _hintPaint);
             
             // Separator line
             textY += 10;
@@ -143,25 +180,10 @@ namespace FenBrowser.Host.Widgets
                     if (line.Contains(": "))
                     {
                         var parts = line.Split(new[] { ": " }, 2, StringSplitOptions.None);
-                        var propPaint = new SKPaint
-                        {
-                            Color = SKColor.Parse("#9CDCFE"),
-                            IsAntialias = true,
-                            TextSize = 12,
-                            Typeface = SKTypeface.FromFamilyName("Consolas")
-                        };
-                        var valuePaint = new SKPaint
-                        {
-                            Color = SKColor.Parse("#CE9178"),
-                            IsAntialias = true,
-                            TextSize = 12,
-                            Typeface = SKTypeface.FromFamilyName("Consolas")
-                        };
-                        
-                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, propPaint);
-                        float propWidth = propPaint.MeasureText(parts[0] + ": ");
+                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, _propNamePaint);
+                        float propWidth = _propNamePaint.MeasureText(parts[0] + ": ");
                         if (parts.Length > 1)
-                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, valuePaint);
+                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, _propValuePaint);
                     }
                     else
                     {

@@ -283,22 +283,59 @@ public class AddressBarWidget : Widget
     {
         if (!_isTextLayoutDirty && _textBlock != null) return;
 
-        _textBlock = new TextBlock();
-        _textBlock.MaxWidth = float.PositiveInfinity;
-
         _textStyle.FontSize = FontSize;
         _textStyle.TextColor = TextColor ?? ThemeManager.Current.Text;
-
         _placeholderStyle.FontSize = FontSize;
         _placeholderStyle.TextColor = PlaceholderColor ?? ThemeManager.Current.TextMuted;
 
         string display = string.IsNullOrEmpty(_text) && !IsFocused ? Placeholder : _text;
         var style = string.IsNullOrEmpty(_text) && !IsFocused ? _placeholderStyle : _textStyle;
 
-        _textBlock.AddText(display, style);
-        _textBlock.Layout();
-
+        _textBlock = BuildTextBlockSafe(display, style);
         _isTextLayoutDirty = false;
+    }
+
+    // RichTextKit's BuildFontRuns()/Layout() can throw — most commonly
+    // ArgumentOutOfRangeException or InvalidOperationException("font run count 0")
+    // when its font mapper cannot resolve the requested family for some codepoint
+    // (Segoe UI not registered, ANGLE/SkiaSharp font cache cold, partial-CJK URL
+    // characters in a paste, etc.). The address bar runs every frame on the UI
+    // thread, so a bubble-up here takes down the entire host process. The engine
+    // constitution in CLAUDE.md is explicit about this: "Wrap risky dependencies
+    // (RichTextKit, Svg.Skia) behind interfaces. All new hot-path code must
+    // survive the dependency dying." Until that adapter exists on this widget,
+    // catch broadly and degrade to an empty block so the rest of the chrome and
+    // the page itself keep rendering.
+    private TextBlock BuildTextBlockSafe(string display, Style style)
+    {
+        var block = new TextBlock();
+        block.MaxWidth = float.PositiveInfinity;
+        try
+        {
+            block.AddText(display ?? string.Empty, style);
+            block.Layout();
+            return block;
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.FenLogger.Warn(
+                $"[AddressBarWidget] RichTextKit Layout failed (text len={display?.Length ?? 0}): {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.Rendering);
+        }
+        // Layout failed mid-add — discard and return an empty laid-out block so
+        // every downstream getter (MeasuredHeight, GetCaretInfo, HitTest, Paint)
+        // has consistent zero-text geometry instead of NRE'ing on a half-built one.
+        var fallback = new TextBlock();
+        fallback.MaxWidth = float.PositiveInfinity;
+        try
+        {
+            fallback.Layout();
+        }
+        catch
+        {
+            // RichTextKit cannot even lay out an empty block — accept zero state.
+        }
+        return fallback;
     }
 
 
