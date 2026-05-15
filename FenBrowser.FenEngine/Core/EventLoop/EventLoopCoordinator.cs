@@ -327,6 +327,10 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             }
         }
 
+        // HTML §8.1.4.3 "Update the rendering" step sequence (simplified):
+        //   resize/scroll/MQL steps -> ResizeObserver broadcast -> animation events ->
+        //   animation frame callbacks -> update intersection observations -> paint.
+        // Observers therefore run BEFORE animation frames, and animation frames run BEFORE paint.
         public void ProcessRenderingUpdate(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             var now = Environment.TickCount64;
@@ -334,6 +338,25 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             if (!hasRenderingOpportunity)
             {
                 return;
+            }
+
+            if (_observerCallback != null)
+            {
+                EngineContext.Current.BeginPhase(EnginePhase.Observers);
+                try
+                {
+                    _observerCallback.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
+                }
+                finally
+                {
+                    EngineContext.Current.EndPhase();
+                }
+
+                PerformMicrotaskCheckpoint(deadline);
             }
 
             ProcessAnimationFrames(deadline);
@@ -358,25 +381,6 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 }
             }
 
-            if (_observerCallback != null)
-            {
-                EngineContext.Current.BeginPhase(EnginePhase.Observers);
-                try
-                {
-                    _observerCallback.Invoke();
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
-                }
-                finally
-                {
-                    EngineContext.Current.EndPhase();
-                }
-
-                PerformMicrotaskCheckpoint(deadline);
-            }
-
             EnsureIdlePhase();
         }
 
@@ -396,17 +400,8 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
             while (callbacks.Count > 0)
             {
-                EngineContext.Current.BeginPhase(EnginePhase.Animation);
-                try
-                {
-                }
-                finally
-                {
-                    EngineContext.Current.EndPhase();
-                }
-
                 var callback = callbacks.Dequeue();
-                EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
+                EngineContext.Current.BeginPhase(EnginePhase.Animation);
                 try
                 {
                     callback.Invoke();
