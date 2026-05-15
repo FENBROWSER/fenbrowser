@@ -6571,50 +6571,83 @@ namespace FenBrowser.FenEngine.Core
             return name;
         }
 
-        private bool AstContains(object node, Func<AstNode, bool> predicate, bool skipNestedFunctions = false)
+        // Cache of (Type -> filtered, readable property accessors). The reflection
+        // cost of GetProperties + GetIndexParameters + GetValue dominated AST walking
+        // (called from early-error validation on every function and class body) and
+        // it allocated a new PropertyInfo[] on every node. Build once per AST node
+        // type per process.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, PropertyInfo[]> _astChildPropertyCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<Type, PropertyInfo[]>();
+
+        private static PropertyInfo[] GetAstChildProperties(Type t)
         {
-            if (node == null)
+            return _astChildPropertyCache.GetOrAdd(t, type =>
             {
-                return false;
-            }
+                var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                var filtered = new List<PropertyInfo>(props.Length);
+                for (int i = 0; i < props.Length; i++)
+                {
+                    var p = props[i];
+                    if (p.GetIndexParameters().Length > 0) continue;
+                    if (p.Name == "Token") continue;
+                    if (!p.CanRead) continue;
+                    filtered.Add(p);
+                }
+                return filtered.ToArray();
+            });
+        }
 
-            if (node is AstNode astNode)
+        // AstContains and VisitAstNodes walk the AST via reflection. For deeply
+        // nested ASTs (large minified bundles like x.com's React vendor module
+        // produce trees thousands of nodes deep) the previous recursive
+        // implementations overflowed the .NET stack — managed recursion has no
+        // bound the way our bytecode VM's heap-allocated _callFrames does, and
+        // there is no way to catch a StackOverflowException once it has fired.
+        //
+        // Both are now iterative with an explicit Stack<object> work queue.
+        // Predicate matching short-circuits the AstContains walk; VisitAstNodes
+        // runs the visitor in pre-order (parent before children), matching the
+        // semantics of the previous recursive implementation. skipNestedFunctions
+        // and the Token-property exclusion are preserved.
+
+        private bool AstContains(object root, Func<AstNode, bool> predicate, bool skipNestedFunctions = false)
+        {
+            if (root == null) return false;
+
+            var stack = new Stack<object>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
             {
-                if (predicate(astNode))
-                {
-                    return true;
-                }
+                var node = stack.Pop();
+                if (node == null) continue;
 
-                if (skipNestedFunctions &&
-                    (astNode is FunctionLiteral || astNode is ClassExpression || astNode is ClassStatement))
+                if (node is AstNode astNode)
                 {
-                    return false;
-                }
+                    if (predicate(astNode)) return true;
 
-                foreach (var property in astNode.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    if (property.GetIndexParameters().Length > 0 ||
-                        property.Name == "Token")
+                    if (skipNestedFunctions &&
+                        (astNode is FunctionLiteral || astNode is ClassExpression || astNode is ClassStatement))
                     {
                         continue;
                     }
 
-                    if (AstContains(property.GetValue(astNode), predicate, skipNestedFunctions))
+                    var props = GetAstChildProperties(astNode.GetType());
+                    for (int i = 0; i < props.Length; i++)
                     {
-                        return true;
+                        object childValue;
+                        try { childValue = props[i].GetValue(astNode); }
+                        catch { continue; }
+                        if (childValue != null) stack.Push(childValue);
                     }
+                    continue;
                 }
 
-                return false;
-            }
-
-            if (node is IEnumerable enumerable && node is not string)
-            {
-                foreach (var item in enumerable)
+                if (node is IEnumerable enumerable && node is not string)
                 {
-                    if (AstContains(item, predicate, skipNestedFunctions))
+                    foreach (var item in enumerable)
                     {
-                        return true;
+                        if (item != null) stack.Push(item);
                     }
                 }
             }
@@ -6622,42 +6655,59 @@ namespace FenBrowser.FenEngine.Core
             return false;
         }
 
-        private void VisitAstNodes(object node, Action<AstNode> visitor, bool skipNestedFunctions)
+        private void VisitAstNodes(object root, Action<AstNode> visitor, bool skipNestedFunctions)
         {
-            if (node == null)
+            if (root == null) return;
+
+            // To preserve the recursive pre-order traversal (parent visited
+            // before its children, leftmost child first), we push children in
+            // reverse so the leftmost ends up on top of the stack.
+            var stack = new Stack<object>();
+            stack.Push(root);
+            var childBuffer = new List<object>(8);
+
+            while (stack.Count > 0)
             {
-                return;
-            }
+                var node = stack.Pop();
+                if (node == null) continue;
 
-            if (node is AstNode astNode)
-            {
-                visitor(astNode);
-
-                if (skipNestedFunctions &&
-                    (astNode is FunctionLiteral || astNode is ClassExpression || astNode is ClassStatement))
+                if (node is AstNode astNode)
                 {
-                    return;
-                }
+                    visitor(astNode);
 
-                foreach (var property in astNode.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    if (property.GetIndexParameters().Length > 0 ||
-                        property.Name == "Token")
+                    if (skipNestedFunctions &&
+                        (astNode is FunctionLiteral || astNode is ClassExpression || astNode is ClassStatement))
                     {
                         continue;
                     }
 
-                    VisitAstNodes(property.GetValue(astNode), visitor, skipNestedFunctions);
+                    childBuffer.Clear();
+                    var props = GetAstChildProperties(astNode.GetType());
+                    for (int i = 0; i < props.Length; i++)
+                    {
+                        object childValue;
+                        try { childValue = props[i].GetValue(astNode); }
+                        catch { continue; }
+                        if (childValue != null) childBuffer.Add(childValue);
+                    }
+                    for (int i = childBuffer.Count - 1; i >= 0; i--)
+                    {
+                        stack.Push(childBuffer[i]);
+                    }
+                    continue;
                 }
 
-                return;
-            }
-
-            if (node is IEnumerable enumerable && node is not string)
-            {
-                foreach (var item in enumerable)
+                if (node is IEnumerable enumerable && node is not string)
                 {
-                    VisitAstNodes(item, visitor, skipNestedFunctions);
+                    childBuffer.Clear();
+                    foreach (var item in enumerable)
+                    {
+                        if (item != null) childBuffer.Add(item);
+                    }
+                    for (int i = childBuffer.Count - 1; i >= 0; i--)
+                    {
+                        stack.Push(childBuffer[i]);
+                    }
                 }
             }
         }
