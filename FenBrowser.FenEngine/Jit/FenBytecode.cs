@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 namespace FenBrowser.FenEngine.Jit
 {
+    [Obsolete("Experimental JIT bytecode is quarantined; use FenBrowser.FenEngine.Core.Bytecode for runtime execution.", false)]
     public enum OpCode
     {
         // Stack manipulation
@@ -58,6 +59,7 @@ namespace FenBrowser.FenEngine.Jit
         ExitCatch
     }
 
+    [Obsolete("Experimental JIT bytecode is quarantined; use FenBrowser.FenEngine.Core.Bytecode for runtime execution.", false)]
     public struct Instruction
     {
         public OpCode OpCode;
@@ -74,6 +76,7 @@ namespace FenBrowser.FenEngine.Jit
         public override string ToString() => Operand != null ? $"{OpCode} {Operand}" : OpCode.ToString();
     }
 
+    [Obsolete("Experimental JIT bytecode is quarantined; use FenBrowser.FenEngine.Core.Bytecode for runtime execution.", false)]
     public class BytecodeUnit
     {
         public string Name { get; set; }

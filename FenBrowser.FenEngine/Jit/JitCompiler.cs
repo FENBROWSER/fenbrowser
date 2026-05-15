@@ -7,8 +7,10 @@ using FenBrowser.FenEngine.Core.Interfaces;
 
 namespace FenBrowser.FenEngine.Jit
 {
+    [Obsolete("Experimental JIT is quarantined and not wired into FenRuntime; the bytecode VM is authoritative.", false)]
     public delegate FenValue FenJittedDelegate(FenValue[] args, FenEnvironment env, IExecutionContext context);
 
+    [Obsolete("Experimental JIT is quarantined and not wired into FenRuntime; the bytecode VM is authoritative.", false)]
     public class JitCompiler
     {
         private static readonly MethodInfo JitCallMethod = typeof(JitRuntime).GetMethod("Call");

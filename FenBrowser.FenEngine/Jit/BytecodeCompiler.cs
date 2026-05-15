@@ -5,6 +5,7 @@ using FenBrowser.FenEngine.Core;
 
 namespace FenBrowser.FenEngine.Jit
 {
+    [Obsolete("Experimental JIT compiler is quarantined and not wired into FenRuntime; use Core.Bytecode.Compiler.BytecodeCompiler.", false)]
     public class BytecodeCompiler
     {
         private List<Instruction> _instructions = new List<Instruction>();

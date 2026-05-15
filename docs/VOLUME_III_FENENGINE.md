@@ -639,6 +639,8 @@ The high-level controller used by the UI.
 - `Core/Bytecode/VM/VirtualMachine.cs`
   - AST-backed call/construct fallback helpers were removed from call/construct opcodes.
   - call/construct on AST-backed functions now fail with explicit bytecode-only errors.
+- `Jit/*`
+  - legacy experimental JIT types are explicitly marked obsolete/quarantined and are not part of the authoritative `FenRuntime` execution path.
 - `DevTools/DevToolsCore.cs`
   - console/debug expression evaluation now compiles and executes via bytecode VM against paused/global scope.
 

@@ -4,6 +4,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 
 namespace FenBrowser.FenEngine.Jit
 {
+    [Obsolete("Experimental JIT is quarantined and not wired into FenRuntime; the bytecode VM is authoritative.", false)]
     public static class JitRuntime
     {
         private static Func<FenValue, FenValue, FenValue[], IExecutionContext, FenValue> _callBridge;
