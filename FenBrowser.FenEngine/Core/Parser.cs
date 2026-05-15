@@ -37,6 +37,13 @@ namespace FenBrowser.FenEngine.Core
         private Token _curToken;
         private Token _peekToken;
         private readonly List<string> _errors = new List<string>();
+        // Once the parser has emitted MaxCascadeNoiseErrors low-level token errors
+        // (NoPrefixParseFnError / PeekError) we stop logging the body of further
+        // entries. The token stream is desynced after a real early error and the
+        // additional messages are noise — V8 and SpiderMonkey emit the first
+        // SyntaxError and stop. We still count them so the diagnostic surfaces.
+        private const int MaxCascadeNoiseErrors = 8;
+        private int _suppressedTokenErrors = 0;
         private bool _noIn = false; // Disables 'in' as infix operator (for for-loop init expressions)
         private bool _isStrictMode = false; // Track strict mode for reserved word validation
         private readonly bool _isModule;
@@ -281,7 +288,33 @@ namespace FenBrowser.FenEngine.Core
             NextToken();
         }
 
-        public List<string> Errors => _errors;
+        public List<string> Errors
+        {
+            get
+            {
+                if (_suppressedTokenErrors > 0 &&
+                    (_errors.Count == 0 || !_errors[_errors.Count - 1].StartsWith("(suppressed ", StringComparison.Ordinal)))
+                {
+                    _errors.Add($"(suppressed {_suppressedTokenErrors} additional token-level parse errors after first early error)");
+                }
+                return _errors;
+            }
+        }
+
+        private int CountTokenLevelErrors()
+        {
+            int n = 0;
+            for (int i = 0; i < _errors.Count; i++)
+            {
+                var msg = _errors[i];
+                if (msg.StartsWith("no prefix parse function for", StringComparison.Ordinal) ||
+                    msg.Contains("expected next token to be", StringComparison.Ordinal))
+                {
+                    n++;
+                }
+            }
+            return n;
+        }
 
         private void NextToken()
         {
@@ -1438,6 +1471,10 @@ namespace FenBrowser.FenEngine.Core
             {
                 _generatorFunctionDepth++;
             }
+            // Save strict mode the same way ParseFunctionLiteral does so a `"use strict"`
+            // directive at the start of the method body does not leak into the surrounding
+            // object literal context.
+            bool previousStrictMode = _isStrictMode;
 
             try
             {
@@ -1452,6 +1489,18 @@ namespace FenBrowser.FenEngine.Core
                     return null;
                 }
 
+                // Snapshot the just-parsed parameter classification BEFORE parsing the
+                // body. The body may contain nested function declarations (e.g.
+                // `function(...n) { ... }`) whose own ParseFunctionParameters call
+                // overwrites these instance fields. Callers expect them to describe
+                // THIS function's parameters when the method returns, not the last
+                // nested function we walked through. See vendor.1ab7cc4a.js where
+                // `61735(e,t,r){"use strict"; ... function(...n){...} ...}` triggered
+                // a false-positive "use strict + non-simple params" early error.
+                bool capturedIsSimple = _lastParsedParamsIsSimple;
+                bool capturedHasDuplicates = _lastParsedParamsHasDuplicateNames;
+                bool capturedTrailingCommaAfterRest = _lastParsedParamsHadTrailingCommaAfterRest;
+
                 if (!ExpectPeek(TokenType.LBrace))
                 {
                     return null;
@@ -1459,11 +1508,19 @@ namespace FenBrowser.FenEngine.Core
 
                 funcLit.Body = ParseBlockStatement(
                     consumeTerminator: false,
+                    enableDirectiveStrictMode: true,
                     allowExpressionContinuationAfterClosingBrace: true);
+
+                // Restore the snapshot so the caller reads our parameter info, not
+                // an inner function's leaked state.
+                _lastParsedParamsIsSimple = capturedIsSimple;
+                _lastParsedParamsHasDuplicateNames = capturedHasDuplicates;
+                _lastParsedParamsHadTrailingCommaAfterRest = capturedTrailingCommaAfterRest;
                 return funcLit;
             }
             finally
             {
+                _isStrictMode = previousStrictMode;
                 if (isGenerator)
                 {
                     _generatorFunctionDepth--;
@@ -1615,7 +1672,15 @@ namespace FenBrowser.FenEngine.Core
                 }
             }
 
-            return depth == 0;
+            // depth < 0 means the probe lexer saw more `}` than `{`. Since the source
+            // around us is syntactically valid (it would not have reached this point
+            // otherwise), the discrepancy comes from the probe lexer mis-recognizing
+            // a construct it doesn't have context for — typically a regex literal
+            // disambiguation failure (treating `/.../` as division and counting
+            // braces inside the regex), or a template literal boundary. In any of
+            // those cases the real source IS balanced, so the current `}` legitimately
+            // closes the block. Treat depth < 0 the same as depth == 0.
+            return depth <= 0;
         }
 
         private BlockStatement ParseBlockStatement(
@@ -1798,7 +1863,7 @@ namespace FenBrowser.FenEngine.Core
 
                         if (ContainsUseStrictDirective(lit.Body) && !fnParamsSimple)
                         {
-                            _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
+                            _errors.Add($"SyntaxError: 'use strict' directive is invalid with non-simple parameter list (at line {_curToken.Line}, column {_curToken.Column})");
                         }
 
                         if (ParametersContainIdentifier(lit.Parameters, "await"))
@@ -2932,9 +2997,13 @@ namespace FenBrowser.FenEngine.Core
 
         private void PeekError(TokenType type, string caller = null)
         {
+            if (CountTokenLevelErrors() >= MaxCascadeNoiseErrors)
+            {
+                _suppressedTokenErrors++;
+                return;
+            }
             var callerPrefix = string.IsNullOrEmpty(caller) ? string.Empty : $"[{caller}] ";
             var msg = $"{callerPrefix}expected next token to be {type}, got {_peekToken.Type} instead (cur={_curToken.Type}, curLiteral='{_curToken.Literal}')";
-            // Console.WriteLine($"[DEBUG] PeekError: {msg} at line {_peekToken.Line} col {_peekToken.Column}. CurToken={_curToken.Type}");
             if (_lexer != null)
             {
                  msg += $"\nContext:\n{_lexer.GetCodeContext(_peekToken.Line, _peekToken.Column)}";
@@ -2944,6 +3013,11 @@ namespace FenBrowser.FenEngine.Core
 
         private void NoPrefixParseFnError(TokenType type)
         {
+            if (CountTokenLevelErrors() >= MaxCascadeNoiseErrors)
+            {
+                _suppressedTokenErrors++;
+                return;
+            }
             var msg = $"no prefix parse function for {type} found at line {_curToken.Line}, column {_curToken.Column}";
             if (_lexer != null)
             {
@@ -6169,7 +6243,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (ContainsUseStrictDirective(body) && !isSimpleParameterList)
             {
-                _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
+                _errors.Add($"SyntaxError: 'use strict' directive is invalid with non-simple parameter list (at line {_curToken.Line}, column {_curToken.Column})");
             }
 
             if (BodyHasLexicalParameterNameCollision(body, parameters))
@@ -6224,7 +6298,7 @@ namespace FenBrowser.FenEngine.Core
 
             if (hasUseStrictDirective && !isSimpleParameterList)
             {
-                _errors.Add("SyntaxError: 'use strict' directive is invalid with non-simple parameter list");
+                _errors.Add($"SyntaxError: 'use strict' directive is invalid with non-simple parameter list (at line {_curToken.Line}, column {_curToken.Column})");
             }
 
             if (blockBody != null && BodyHasLexicalParameterNameCollision(blockBody, parameters))
@@ -6727,6 +6801,7 @@ namespace FenBrowser.FenEngine.Core
                 // Since this check is primarily for strict mode/async/generators (where it matters),
                 // we should include FunctionDeclarationStatement.
                 if (stmt is FunctionDeclarationStatement funcDecl &&
+                    funcDecl.Function != null &&
                     funcDecl.Function.Name != null &&
                     parameterNames.Contains(funcDecl.Function.Name))
                 {

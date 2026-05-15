@@ -1543,6 +1543,184 @@ const obj = {
             AssertNoErrors(parser);
         }
 
+        // Full x.com React vendor bundle. All early-error and brace-balancing bugs
+        // hit by this bundle are fixed; this test guards against future regressions.
+        [Fact]
+        public void Parse_XVendor_1ab7cc4a_NoErrors()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "test_assets", "vendor.1ab7cc4a.js");
+            if (!File.Exists(path))
+            {
+                return;
+            }
+            var input = File.ReadAllText(path);
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
+        // Spec coverage for ES2015 §14.1.2 / §14.2.1: "use strict" directive
+        // is an early error only when the function has a non-simple parameter list
+        // (default value, rest parameter, or destructuring pattern). Minified
+        // bundles routinely emit `function(e,t,n){"use strict"; ...}` and arrow
+        // IIFEs `(()=>{"use strict"; ...})()`, both of which must parse cleanly.
+
+        [Fact]
+        public void Parse_RegularFunction_UseStrict_SimpleParams_NoError()
+        {
+            var parser = CreateParser("var f = function(e,t,n){\"use strict\"; return e+t+n;};");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ArrowIife_UseStrict_NoParams_NoError()
+        {
+            var parser = CreateParser("(()=>{\"use strict\";var e={};})();");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ArrowIife_UseStrict_SimpleParams_NoError()
+        {
+            var parser = CreateParser("((e,t)=>{\"use strict\";return e+t;})(1,2);");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_BangFunctionIife_UseStrict_SimpleParams_NoError()
+        {
+            // The canonical Webpack/UMD bundle prelude.
+            var parser = CreateParser("!function(e,t){\"use strict\";var n=42;}(window, document);");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        // NOTE: Spec gap. ES2015 §14.1.2 says the "use strict" + non-simple-params
+        // early error applies to regular FunctionExpressions and FunctionDeclarations
+        // too, but our parser only enforces it for async functions, arrow functions,
+        // and method definitions (Parser.cs:1799, 6225, 6212). Tracking separately —
+        // not the x.com vendor.js blocker.
+        [Fact(Skip = "Tracking spec gap separately — not the vendor.js blocker.")]
+        public void Parse_FunctionExpression_UseStrict_DefaultParam_ShouldError()
+        {
+            var parser = CreateParser("var f = function(a=1){\"use strict\"; return a;};");
+            parser.ParseProgram();
+            Assert.Contains(parser.Errors, e => e.Contains("non-simple parameter list", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Parse_NumericKeyMethodShorthand_UseStrict_SimpleParams_NoError()
+        {
+            // The exact Webpack module-table pattern from x.com's vendor bundle.
+            var parser = CreateParser("var m = { 61735(e,t,r){\"use strict\"; var n=1;} };");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_StringKeyMethodShorthand_UseStrict_SimpleParams_NoError()
+        {
+            var parser = CreateParser("var m = { \"foo\"(e,t,r){\"use strict\"; var n=1;} };");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_IdentifierKeyMethodShorthand_UseStrict_SimpleParams_NoError()
+        {
+            var parser = CreateParser("var m = { foo(e,t,r){\"use strict\"; var n=1;} };");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_WebpackModuleShorthand_WithArrowBodyAndShorthandProperty_NoError()
+        {
+            // Faithful slice of the x.com vendor pattern: numeric-keyed method shorthand,
+            // body uses "use strict", arrow assigning to `i`, object-literal arrow-property `A:()=>i`,
+            // followed by another shorthand entry.
+            var input = "var m = { " +
+                "61735(e,t,r){\"use strict\";r.d(t,{A:()=>i});var n=r(658940),a=r.n(n);let i=(e,t,r)=>a()(e,t,r);}, " +
+                "61736(e,t,r){\"use strict\"; return e;} };";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_LetInsideMethod_UseStrict_NoError()
+        {
+            // Minimal: method shorthand with "use strict" then a `let` arrow assignment.
+            var parser = CreateParser("var m = { foo(e,t,r){\"use strict\"; let i=(e,t,r)=>e;} };");
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+
+        // Whole-module regression: the react-dom-server-legacy bundle (Webpack module 846198)
+        // exercised the `IsCurrentTokenClosingCurrentBlock` probe under-counting `{` tokens
+        // (due to context-free regex/template disambiguation in the probe lexer). Before
+        // the fix, this body parsed cleanly as a regular function declaration but failed
+        // when wrapped in object-method-shorthand. Now both contexts parse cleanly.
+        [Fact]
+        public void Parse_ReactDomServer_Module_AsRegularFunction_NoErrors()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "test_assets", "failing_module.js");
+            if (!File.Exists(path)) return;
+            var src = File.ReadAllText(path);
+            int bodyStart = src.IndexOf('{') + 1;
+            int bodyEnd = src.LastIndexOf('}');
+            var body = src.Substring(bodyStart, bodyEnd - bodyStart);
+            var parser = CreateParser("function m(e,t,r){" + body + "}");
+            parser.ParseProgram();
+            Assert.True(parser.Errors.Count == 0,
+                $"{parser.Errors.Count} errors; first: {(parser.Errors.Count > 0 ? parser.Errors[0] : "")}");
+        }
+
+        [Fact]
+        public void Parse_ReactDomServer_Module_AsMethodShorthand_NoErrors()
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "test_assets", "failing_module.js");
+            if (!File.Exists(path)) return;
+            var src = File.ReadAllText(path);
+            int bodyStart = src.IndexOf('{') + 1;
+            int bodyEnd = src.LastIndexOf('}');
+            var body = src.Substring(bodyStart, bodyEnd - bodyStart);
+            var parser = CreateParser("var m={foo(e,t,r){" + body + "}};");
+            parser.ParseProgram();
+            Assert.True(parser.Errors.Count == 0,
+                $"{parser.Errors.Count} errors; first: {(parser.Errors.Count > 0 ? parser.Errors[0] : "")}");
+        }
+
+        [Fact]
+        public void Parse_Bisect_VendorWindow_FindsBug()
+        {
+            // Slice ~200 chars from vendor.1ab7cc4a.js around the first error.
+            // This is the literal substring extracted by `awk 'NR==1{print substr($0, 7100, 350)}'`.
+            // Wrapping in `var m = { ... };` to make it a syntactically valid object literal.
+            var slice =
+                "let n=e=>{let t,r;return function(...n){return t?r:(t=!0,r=e.apply(this,n))}};" +
+                "(Object.getOwnPropertyDescriptor(n,\"name\")||{}).writable||Object.defineProperty(n,\"name\",{value:\"default\",configurable:!0})";
+            var prevModule = "61734(e,t,r){\"use strict\";r.d(t,{A:()=>n});" + slice + "}";
+            var nextModule = "61735(e,t,r){\"use strict\";r.d(t,{A:()=>i});var n=r(658940),a=r.n(n);let i=(e,t,r)=>a()(e,t,r);}";
+            var input = "var m = { " + prevModule + ", " + nextModule + " };";
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+            AssertNoErrors(parser);
+        }
+
+        [Fact]
+        public void Parse_ArrowFunction_UseStrict_RestParam_ShouldError()
+        {
+            var parser = CreateParser("var f = (...args) => {\"use strict\"; return args;};");
+            parser.ParseProgram();
+            Assert.Contains(parser.Errors, e => e.Contains("non-simple parameter list", StringComparison.OrdinalIgnoreCase));
+        }
+
         [Fact]
         public void Parse_XVendor_AssignmentToIifeIndexedResult_NoErrors()
         {
