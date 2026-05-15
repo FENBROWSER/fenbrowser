@@ -253,7 +253,24 @@ namespace FenBrowser.FenEngine.Core
             }
 
             var marker = _properties[proxyIndex].Value;
-            return marker.HasValue && marker.Value.ToBoolean();
+            if (!marker.HasValue || !marker.Value.ToBoolean())
+            {
+                return false;
+            }
+
+            // ECMA-262 §10.5: when a Proxy has been revoked, every internal method
+            // observes the revoked state and throws a TypeError.
+            if (_shape.TryGetPropertyOffset("__isRevoked__", out var revokedIdx))
+            {
+                var revokedSlot = _properties[revokedIdx].Value;
+                if (revokedSlot.HasValue && revokedSlot.Value.ToBoolean())
+                {
+                    throw new FenBrowser.FenEngine.Errors.FenTypeError(
+                        "Cannot perform internal method on a proxy that has been revoked");
+                }
+            }
+
+            return true;
         }
 
         private bool HasActiveProxyMarker()

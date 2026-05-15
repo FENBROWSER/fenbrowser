@@ -15177,9 +15177,15 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
 
                         var revoke = new FenFunction("revoke", (rArgs, rThis) =>
                         {
-                            p.Set("__isRevoked__", FenValue.FromBoolean(true));
-                            p.Set("__target__", FenValue.Null);
-                            p.Set("__handler__", FenValue.Null);
+                            // ECMA-262 §10.5: setting [[ProxyTarget]] and [[ProxyHandler]]
+                            // to null marks the proxy as revoked. We bypass the proxy dispatch
+                            // (SetDirect, not Set) so the flag actually lands on the proxy
+                            // object instead of being forwarded to the target's set trap.
+                            p.SetDirect("__isRevoked__", FenValue.FromBoolean(true));
+                            p.SetDirect("__proxyTarget__", FenValue.Null);
+                            p.SetDirect("__target__", FenValue.Null);
+                            p.SetDirect("__proxyHandler__", FenValue.Null);
+                            p.SetDirect("__handler__", FenValue.Null);
                             return FenValue.Undefined;
                         });
 
