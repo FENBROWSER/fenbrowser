@@ -4189,7 +4189,10 @@ namespace FenBrowser.FenEngine.Scripting
                                                 "js_debug.log",
                                                 $"[ScriptRunError] Info={srcInfo}; Error={scriptFenValue}; Preview={diagnosticPreview}\n");
                                             EngineLogCompat.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
-                                            // WHATWG HTML 4.12.1.1: script execution error fires error on element
+                                            // WHATWG HTML 4.12.1.1: script execution error fires error on element.
+                                            // Reset the budget first so a slow compile/parse does not deny the
+                                            // page's fallback handler (e.g. Twitter's #ScriptLoadFailure UI).
+                                            ResetExecutionBudgetForHostBookkeeping();
                                             DispatchEvent(el, "error");
                                         }
                                         else
@@ -4212,6 +4215,10 @@ namespace FenBrowser.FenEngine.Scripting
                                             "js_debug.log",
                                             $"[StaticScriptError] Info={srcInfo}; Error={ex.GetBaseException().Message}; Preview={diagnosticPreview}\n");
                                         EngineLogCompat.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
+                                        // Reset before firing the error event so post-parse work
+                                        // (onerror handlers, fallback UI hooks) is not denied by
+                                        // a budget already drained by the parser.
+                                        ResetExecutionBudgetForHostBookkeeping();
                                         // WHATWG HTML 4.12.1.1: uncaught error fires error on element
                                         DispatchEvent(el, "error");
                                     }
