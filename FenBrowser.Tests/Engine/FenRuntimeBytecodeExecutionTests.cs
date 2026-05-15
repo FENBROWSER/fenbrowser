@@ -306,8 +306,38 @@ namespace FenBrowser.Tests.Engine
         {
             var rt = CreateRuntime();
 
-            Assert.Throws<FenSyntaxError>(() =>
+            var error = Assert.Throws<FenSyntaxError>(() =>
                 rt.PrecompileScript("var = ;", "https://example.test/bad.js"));
+
+            Assert.True(rt.LastScriptExecutionFailed);
+            Assert.Contains("Expected identifier", rt.LastScriptErrorMessage);
+            Assert.Contains("Expected identifier", error.Message);
+            Assert.Equal("precompile", rt.LastScriptExecutionMode);
+            Assert.Equal("https://example.test/bad.js", rt.LastScriptSourceUrl);
+            Assert.True(rt.LastScriptParseMilliseconds >= 0);
+            Assert.Equal(0, rt.LastScriptCompileMilliseconds);
+            Assert.Equal(0, rt.LastScriptExecuteMilliseconds);
+            Assert.Equal(0, rt.LastScriptBytecodeInstructionCount);
+        }
+
+        [Fact]
+        public void ExecuteSimple_InvalidSource_RecordsFailureMetrics()
+        {
+            var rt = CreateRuntime();
+
+            var result = (FenValue)rt.ExecuteSimple(
+                "var = ;",
+                "https://example.test/invalid-execute.js");
+
+            Assert.Contains("Expected identifier", result.AsString());
+            Assert.True(rt.LastScriptExecutionFailed);
+            Assert.Contains("Expected identifier", rt.LastScriptErrorMessage);
+            Assert.Equal("compile", rt.LastScriptExecutionMode);
+            Assert.Equal("https://example.test/invalid-execute.js", rt.LastScriptSourceUrl);
+            Assert.True(rt.LastScriptParseMilliseconds >= 0);
+            Assert.Equal(0, rt.LastScriptCompileMilliseconds);
+            Assert.Equal(0, rt.LastScriptExecuteMilliseconds);
+            Assert.Equal(0, rt.LastScriptBytecodeInstructionCount);
         }
 
         [Fact]

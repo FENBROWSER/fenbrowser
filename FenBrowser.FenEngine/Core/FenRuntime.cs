@@ -19131,6 +19131,8 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         public long LastScriptExecuteMilliseconds { get; private set; }
         public int LastScriptBytecodeInstructionCount { get; private set; }
         public bool LastScriptCacheHit { get; private set; }
+        public bool LastScriptExecutionFailed { get; private set; }
+        public string LastScriptErrorMessage { get; private set; } = string.Empty;
 
         private void ResetScriptMetrics(string sourceUrl, string executionMode)
         {
@@ -19141,6 +19143,14 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             LastScriptExecuteMilliseconds = 0;
             LastScriptBytecodeInstructionCount = 0;
             LastScriptCacheHit = false;
+            LastScriptExecutionFailed = false;
+            LastScriptErrorMessage = string.Empty;
+        }
+
+        private void RecordScriptFailure(Exception exception)
+        {
+            LastScriptExecutionFailed = true;
+            LastScriptErrorMessage = exception?.Message ?? string.Empty;
         }
 
         public void ClearCompiledScriptCache(bool resetStatistics = false)
@@ -19274,7 +19284,9 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
             if (parser.Errors.Count > 0)
             {
-                throw new FenSyntaxError(string.Join("\n", parser.Errors));
+                var syntaxError = new FenSyntaxError(string.Join("\n", parser.Errors));
+                RecordScriptFailure(syntaxError);
+                throw syntaxError;
             }
 
             string[] varNames = Array.Empty<string>();
@@ -19305,6 +19317,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
             catch (Exception compileEx)
             {
+                RecordScriptFailure(compileEx);
                 EngineLogCompat.Debug($"[FenRuntime] Compile error in {sourceUrl}: {compileEx.Message}", LogCategory.JavaScript);
                 throw new FenSyntaxError($"SyntaxError: {compileEx.Message}");
             }
@@ -19371,6 +19384,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
             catch (Exception ex)
             {
+                RecordScriptFailure(ex);
                 EngineLogCompat.Debug($"[FenRuntime] Runtime error in {script.SourceUrl}: {ex.Message}", LogCategory.JavaScript);
                 if (TryExtractThrownValue(ex, out var thrownValue))
                 {
@@ -19435,6 +19449,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             {
                 LastScriptExecuteMilliseconds = executeStopwatch.ElapsedMilliseconds;
                 LastScriptBytecodeInstructionCount = compiledBlock?.Instructions?.Length ?? 0;
+                RecordScriptFailure(vmEx);
                 EngineLogCompat.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
                 if (TryExtractThrownValue(vmEx, out var thrownValue))
                 {
@@ -19611,6 +19626,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
             catch (Exception ex)
             {
+                RecordScriptFailure(ex);
                 EngineLogCompat.Debug($"[FenRuntime] Runtime error in {url}: {ex.Message}", LogCategory.JavaScript);
                 if (TryExtractThrownValue(ex, out var thrownValue))
                 {

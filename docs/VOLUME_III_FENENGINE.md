@@ -626,7 +626,7 @@ The high-level controller used by the UI.
   - `ExecuteSimple(...)` now enforces bytecode-only execution.
   - `PrecompileScript(...)` / `ExecutePrecompiled(...)` expose an explicit parse+compile boundary for hosts and tests that need reusable bytecode without routing through the compiled-script cache.
   - `ExecuteSimple(...)` keeps a bounded same-source compiled-script cache for cache-safe global scripts; top-level lexical declaration scripts remain uncached so declaration validation stays execution-local.
-  - `LastScript*` metrics expose the most recent source URL, execution mode, parse/compile/execute timings, bytecode instruction count, and cache-hit status for focused diagnostics without scraping runtime logs.
+  - `LastScript*` metrics expose the most recent source URL, execution mode, parse/compile/execute timings, bytecode instruction count, cache-hit status, and failure/error text for focused diagnostics without scraping runtime logs.
   - compile-unsupported scripts now return explicit bytecode-only errors (no AST interpreter fallback).
   - prototype hardening script execution routes through bytecode path.
 - `Core/FenFunction.cs`
