@@ -116,6 +116,38 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_CompiledScriptCache_ReusesSameSourceAndUrl()
+        {
+            var rt = CreateRuntime();
+            const string script = "globalThis.cacheProbe = (globalThis.cacheProbe || 0) + 1;";
+            const string url = "https://example.test/cache-probe.js";
+
+            rt.ExecuteSimple(script, url);
+            Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+
+            rt.ExecuteSimple(script, url);
+            Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(1, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+            Assert.Equal(2, ((FenValue)rt.GetGlobal("cacheProbe")).AsNumber());
+        }
+
+        [Fact]
+        public void ExecuteSimple_CompiledScriptCache_DoesNotCacheTopLevelLexicalDeclarations()
+        {
+            var rt = CreateRuntime();
+            const string script = "class cachedLexicalBinding {}";
+            const string url = "https://example.test/cache-lexical.js";
+
+            rt.ExecuteSimple(script, url);
+
+            Assert.Equal(0, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+        }
+
+        [Fact]
         public void ExecuteSimple_ForOfConstClosure_CapturesIterationBinding()
         {
             var rt = CreateRuntime();

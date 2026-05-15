@@ -69,6 +69,12 @@ namespace FenBrowser.FenEngine.Core
         private readonly Dictionary<string, List<BroadcastChannelEndpoint>> _broadcastChannels =
             new Dictionary<string, List<BroadcastChannelEndpoint>>(StringComparer.Ordinal);
         private readonly object _broadcastChannelLock = new object();
+        private const int MaxCompiledScriptCacheEntries = 64;
+        private const int MaxCompiledScriptCacheSourceLength = 2 * 1024 * 1024;
+        private readonly Dictionary<CompiledScriptCacheKey, LinkedListNode<CompiledScriptCacheEntry>> _compiledScriptCache =
+            new Dictionary<CompiledScriptCacheKey, LinkedListNode<CompiledScriptCacheEntry>>();
+        private readonly LinkedList<CompiledScriptCacheEntry> _compiledScriptLru =
+            new LinkedList<CompiledScriptCacheEntry>();
 
         private readonly Dictionary<int, CancellationTokenSource> _activeTimers =
             new Dictionary<int, CancellationTokenSource>();
@@ -146,6 +152,54 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             public int Index { get; set; }
             public int ByteOffset { get; set; }
             public bool IsBigInt { get; set; }
+        }
+
+        private sealed class CompiledScriptCacheEntry
+        {
+            public CompiledScriptCacheKey Key { get; set; }
+            public Bytecode.CodeBlock CodeBlock { get; set; }
+            public string[] VarNames { get; set; }
+            public string[] LexicalNames { get; set; }
+        }
+
+        private sealed class CompiledScriptCacheKey : IEquatable<CompiledScriptCacheKey>
+        {
+            private readonly string _code;
+            private readonly string _url;
+            private readonly bool _initialStrictMode;
+            private readonly int _hashCode;
+
+            public CompiledScriptCacheKey(string code, string url, bool initialStrictMode)
+            {
+                _code = code ?? string.Empty;
+                _url = url ?? string.Empty;
+                _initialStrictMode = initialStrictMode;
+                unchecked
+                {
+                    _hashCode = 17;
+                    _hashCode = (_hashCode * 31) + _code.GetHashCode();
+                    _hashCode = (_hashCode * 31) + _url.GetHashCode();
+                    _hashCode = (_hashCode * 31) + _initialStrictMode.GetHashCode();
+                }
+            }
+
+            public bool Equals(CompiledScriptCacheKey other)
+            {
+                return other != null &&
+                       _initialStrictMode == other._initialStrictMode &&
+                       string.Equals(_code, other._code, StringComparison.Ordinal) &&
+                       string.Equals(_url, other._url, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return Equals(obj as CompiledScriptCacheKey);
+            }
+
+            public override int GetHashCode()
+            {
+                return _hashCode;
+            }
         }
 
         private sealed class MediaQueryListRegistration
@@ -19027,6 +19081,77 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
         }
 
+        public int CompiledScriptCacheEntryCount => _compiledScriptCache.Count;
+        public long CompiledScriptCacheHitCount { get; private set; }
+        public long CompiledScriptCacheMissCount { get; private set; }
+
+        private static bool IsCompiledScriptCacheCandidate(string code, string url, bool allowReturn)
+        {
+            return !allowReturn &&
+                   !string.Equals(url, "eval.js", StringComparison.Ordinal) &&
+                   code != null &&
+                   code.Length <= MaxCompiledScriptCacheSourceLength;
+        }
+
+        private bool TryGetCompiledScript(
+            string code,
+            string url,
+            bool initialStrictMode,
+            out CompiledScriptCacheEntry entry)
+        {
+            var key = new CompiledScriptCacheKey(code, url, initialStrictMode);
+            if (_compiledScriptCache.TryGetValue(key, out var node))
+            {
+                _compiledScriptLru.Remove(node);
+                _compiledScriptLru.AddFirst(node);
+                CompiledScriptCacheHitCount++;
+                entry = node.Value;
+                return true;
+            }
+
+            CompiledScriptCacheMissCount++;
+            entry = null;
+            return false;
+        }
+
+        private void RememberCompiledScript(
+            string code,
+            string url,
+            bool initialStrictMode,
+            Bytecode.CodeBlock codeBlock,
+            string[] varNames,
+            string[] lexicalNames)
+        {
+            var key = new CompiledScriptCacheKey(code, url, initialStrictMode);
+            if (_compiledScriptCache.ContainsKey(key))
+            {
+                return;
+            }
+
+            var entry = new CompiledScriptCacheEntry
+            {
+                Key = key,
+                CodeBlock = codeBlock,
+                VarNames = varNames ?? Array.Empty<string>(),
+                LexicalNames = lexicalNames ?? Array.Empty<string>()
+            };
+            var node = new LinkedListNode<CompiledScriptCacheEntry>(entry);
+            _compiledScriptLru.AddFirst(node);
+            _compiledScriptCache[key] = node;
+
+            while (_compiledScriptCache.Count > MaxCompiledScriptCacheEntries)
+            {
+                var last = _compiledScriptLru.Last;
+                if (last == null)
+                {
+                    break;
+                }
+
+                _compiledScriptLru.RemoveLast();
+                _compiledScriptCache.Remove(last.Value.Key);
+            }
+        }
+
         /// <summary>
         /// Execute JavaScript code using the FenEngine parser with bytecode-only execution.
         /// </summary>
@@ -19039,7 +19164,8 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         {
             try
             {
-                bool traceLargeScript = !string.IsNullOrEmpty(code) && code.Length >= 512 * 1024;
+                var sourceCode = code ?? string.Empty;
+                bool traceLargeScript = sourceCode.Length >= 512 * 1024;
                 var executionStopwatch = traceLargeScript ? Stopwatch.StartNew() : null;
 
                 using var realmScope = EnterRealmActivationScope();
@@ -19081,7 +19207,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     ec.Reset();
                 }
 
-                if (_context != null && StartsWithUseStrictDirective(code))
+                if (_context != null && StartsWithUseStrictDirective(sourceCode))
                 {
                     _context.StrictMode = true;
                 }
@@ -19104,37 +19230,67 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
                 try
                 {
-                    var lexer = new Lexer(code);
+                    var initialStrictMode = inheritStrictFromContext && (_context?.StrictMode ?? false);
+                    var canUseCompiledCache = IsCompiledScriptCacheCandidate(sourceCode, url, allowReturn);
+                    FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock;
+
+                    if (canUseCompiledCache &&
+                        TryGetCompiledScript(sourceCode, url, initialStrictMode, out var cachedEntry))
+                    {
+                        DevToolsCore.Instance.RegisterSource(url, code);
+                        if (IsGlobalScriptExecution())
+                        {
+                            ValidateGlobalScriptDeclarations(cachedEntry.VarNames, cachedEntry.LexicalNames);
+                        }
+
+                        compiledBlock = cachedEntry.CodeBlock;
+                        goto execute_compiled_block;
+                    }
+
+                    var lexer = new Lexer(sourceCode);
                     var parser = new Parser(
                         lexer,
                         allowReturnOutsideFunction: allowReturn,
-                        initialStrictMode: inheritStrictFromContext && (_context?.StrictMode ?? false),
+                        initialStrictMode: initialStrictMode,
                         allowRecovery: false);
                     var program = parser.ParseProgram();
 
                     if (traceLargeScript)
                     {
                         EngineLogCompat.Warn(
-                            $"[FenRuntime] Large script parsed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms length={code.Length}",
+                            $"[FenRuntime] Large script parsed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms length={sourceCode.Length}",
                             LogCategory.JavaScript);
                     }
 
                     if (parser.Errors.Count > 0)
                     {
                         var errMsg = string.Join("\n", parser.Errors);
+                        // Parsing a large bundle (e.g. Twitter's 670 KB vendor.js) can take
+                        // a significant fraction of the execution budget. Reset the timer
+                        // so post-error host work (firing the `error` event on the script
+                        // element, dispatching console events) is not denied by a budget
+                        // already drained by the parser. This matches V8/SpiderMonkey,
+                        // which keep parse-time and execution-time budgets separate.
+                        if (_context is ExecutionContext resetCtx) resetCtx.Reset();
                         throw new FenSyntaxError(errMsg);
                     }
 
+                    // Parser succeeded — give the VM a fresh execution budget so parser
+                    // work does not count against the script's run-time limit.
+                    if (_context is ExecutionContext postParseCtx) postParseCtx.Reset();
+
+                    string[] varNames = Array.Empty<string>();
+                    string[] lexicalNames = Array.Empty<string>();
                     if (program is Program parsedProgram && IsGlobalScriptExecution())
                     {
-                        ValidateGlobalScriptDeclarations(parsedProgram);
+                        BuildGlobalScriptDeclarationSnapshot(parsedProgram, out varNames, out lexicalNames);
+                        ValidateGlobalScriptDeclarations(varNames, lexicalNames);
                     }
 
                     DevToolsCore.Instance.RegisterSource(url, code);
 
                     // Bytecode execution ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â compile and run directly.
                     bool isEval = url == "eval.js";
-                    FenBrowser.FenEngine.Core.Bytecode.CodeBlock compiledBlock;
                     try
                     {
                         var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
@@ -19145,6 +19301,11 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                                 $"[FenRuntime] Large script compiled url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms instructions={compiledBlock?.Instructions?.Length ?? 0}",
                                 LogCategory.JavaScript);
                         }
+
+                        if (canUseCompiledCache && lexicalNames.Length == 0)
+                        {
+                            RememberCompiledScript(sourceCode, url, initialStrictMode, compiledBlock, varNames, lexicalNames);
+                        }
                     }
                     catch (Exception compileEx)
                     {
@@ -19152,6 +19313,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         throw new FenSyntaxError($"SyntaxError: {compileEx.Message}");
                     }
 
+                execute_compiled_block:
                     try
                     {
                         var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
@@ -19336,13 +19498,28 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 return;
             }
 
-            var varNames = new HashSet<string>(StringComparer.Ordinal);
-            var lexicalNames = new HashSet<string>(StringComparer.Ordinal);
-            CollectTopLevelDeclarationNames(program, varNames, lexicalNames);
+            BuildGlobalScriptDeclarationSnapshot(program, out var varNames, out var lexicalNames);
+            ValidateGlobalScriptDeclarations(varNames, lexicalNames);
+        }
 
-            foreach (var lexicalName in lexicalNames)
+        private void BuildGlobalScriptDeclarationSnapshot(
+            Program program,
+            out string[] varNames,
+            out string[] lexicalNames)
+        {
+            var collectedVarNames = new HashSet<string>(StringComparer.Ordinal);
+            var collectedLexicalNames = new HashSet<string>(StringComparer.Ordinal);
+            CollectTopLevelDeclarationNames(program, collectedVarNames, collectedLexicalNames);
+            varNames = collectedVarNames.ToArray();
+            lexicalNames = collectedLexicalNames.ToArray();
+        }
+
+        private void ValidateGlobalScriptDeclarations(string[] varNames, string[] lexicalNames)
+        {
+            var varNameSet = new HashSet<string>(varNames ?? Array.Empty<string>(), StringComparer.Ordinal);
+            foreach (var lexicalName in lexicalNames ?? Array.Empty<string>())
             {
-                if (varNames.Contains(lexicalName))
+                if (varNameSet.Contains(lexicalName))
                 {
                     throw new FenSyntaxError($"SyntaxError: Identifier '{lexicalName}' has already been declared");
                 }
