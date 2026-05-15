@@ -54,7 +54,13 @@ public sealed class CompositorThread : IDisposable
         _compositor = compositor ?? throw new ArgumentNullException(nameof(compositor));
         _targetFrameInterval = ComputeFrameInterval(maxFramesPerSecond);
         _compositorWorkSubmitter = compositorWorkSubmitter ?? new GpuCompositorWorkSubmitter();
-        _thread = new Thread(ThreadMain)
+        // 16 MB stack — matches the engine thread. Paint-tree walking on heavy
+        // SPAs (React/Vue/Angular) descends through deep composited-layer chains
+        // and the default 1 MB stack is the documented cause of silent process
+        // exits on x.com / youtube.com / similar. See BrowserIntegration's
+        // EngineThreadStackBytes comment for the same reasoning.
+        const int CompositorStackBytes = 16 * 1024 * 1024;
+        _thread = new Thread(ThreadMain, CompositorStackBytes)
         {
             IsBackground = true,
             Name = "FenHost-Compositor"
