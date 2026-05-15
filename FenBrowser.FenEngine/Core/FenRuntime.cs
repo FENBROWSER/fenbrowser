@@ -227,6 +227,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             public bool AllowReturn { get; }
             public bool InitialStrictMode { get; }
             public int InstructionCount => CodeBlock.Instructions?.Length ?? 0;
+            public int TopLevelVarDeclarationCount => VarNames.Length;
+            public int TopLevelLexicalDeclarationCount => LexicalNames.Length;
 
             internal Bytecode.CodeBlock CodeBlock { get; }
             internal string[] VarNames { get; }

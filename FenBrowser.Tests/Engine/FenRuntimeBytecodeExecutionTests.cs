@@ -249,6 +249,24 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecutePrecompiled_RevalidatesTopLevelLexicalDeclarationsEachExecution()
+        {
+            var rt = CreateRuntime();
+            var script = rt.PrecompileScript(
+                "let precompiledLexicalProbe = 1;",
+                "https://example.test/precompiled-lexical.js");
+
+            Assert.Equal(0, script.TopLevelVarDeclarationCount);
+            Assert.Equal(1, script.TopLevelLexicalDeclarationCount);
+
+            var first = (FenValue)rt.ExecutePrecompiled(script);
+            var second = (FenValue)rt.ExecutePrecompiled(script);
+
+            Assert.False(first.IsError, first.AsString());
+            Assert.Contains("already been declared", second.AsString());
+        }
+
+        [Fact]
         public void PrecompileScript_InvalidSource_ThrowsSyntaxErrorBeforeExecution()
         {
             var rt = CreateRuntime();
