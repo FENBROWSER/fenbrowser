@@ -624,6 +624,8 @@ The high-level controller used by the UI.
 
 - `Core/FenRuntime.cs`
   - `ExecuteSimple(...)` now enforces bytecode-only execution.
+  - `PrecompileScript(...)` / `ExecutePrecompiled(...)` expose an explicit parse+compile boundary for hosts and tests that need reusable bytecode without routing through the compiled-script cache.
+  - `ExecuteSimple(...)` keeps a bounded same-source compiled-script cache for cache-safe global scripts; top-level lexical declaration scripts remain uncached so declaration validation stays execution-local.
   - compile-unsupported scripts now return explicit bytecode-only errors (no AST interpreter fallback).
   - prototype hardening script execution routes through bytecode path.
 - `Core/FenFunction.cs`

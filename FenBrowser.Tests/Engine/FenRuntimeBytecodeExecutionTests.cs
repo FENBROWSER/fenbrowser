@@ -148,6 +148,35 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PrecompileScript_ExecutePrecompiled_ReusesBytecodeWithoutScriptCache()
+        {
+            var rt = CreateRuntime();
+            var script = rt.PrecompileScript(
+                "globalThis.precompiledProbe = (globalThis.precompiledProbe || 0) + 1;",
+                "https://example.test/precompiled.js");
+
+            Assert.True(script.InstructionCount > 0);
+            Assert.Equal("https://example.test/precompiled.js", script.SourceUrl);
+
+            rt.ExecutePrecompiled(script);
+            rt.ExecutePrecompiled(script);
+
+            Assert.Equal(2, ((FenValue)rt.GetGlobal("precompiledProbe")).AsNumber());
+            Assert.Equal(0, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(0, rt.CompiledScriptCacheMissCount);
+        }
+
+        [Fact]
+        public void PrecompileScript_InvalidSource_ThrowsSyntaxErrorBeforeExecution()
+        {
+            var rt = CreateRuntime();
+
+            Assert.Throws<FenSyntaxError>(() =>
+                rt.PrecompileScript("var = ;", "https://example.test/bad.js"));
+        }
+
+        [Fact]
         public void ExecuteSimple_ForOfConstClosure_CapturesIterationBinding()
         {
             var rt = CreateRuntime();

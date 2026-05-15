@@ -202,6 +202,37 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             }
         }
 
+        public sealed class PrecompiledScript
+        {
+            internal PrecompiledScript(
+                string source,
+                string sourceUrl,
+                bool allowReturn,
+                bool initialStrictMode,
+                Bytecode.CodeBlock codeBlock,
+                string[] varNames,
+                string[] lexicalNames)
+            {
+                Source = source ?? string.Empty;
+                SourceUrl = string.IsNullOrWhiteSpace(sourceUrl) ? "script" : sourceUrl;
+                AllowReturn = allowReturn;
+                InitialStrictMode = initialStrictMode;
+                CodeBlock = codeBlock ?? throw new ArgumentNullException(nameof(codeBlock));
+                VarNames = varNames ?? Array.Empty<string>();
+                LexicalNames = lexicalNames ?? Array.Empty<string>();
+            }
+
+            public string Source { get; }
+            public string SourceUrl { get; }
+            public bool AllowReturn { get; }
+            public bool InitialStrictMode { get; }
+            public int InstructionCount => CodeBlock.Instructions?.Length ?? 0;
+
+            internal Bytecode.CodeBlock CodeBlock { get; }
+            internal string[] VarNames { get; }
+            internal string[] LexicalNames { get; }
+        }
+
         private sealed class MediaQueryListRegistration
         {
             public string Query { get; set; }
@@ -19085,6 +19116,33 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         public long CompiledScriptCacheHitCount { get; private set; }
         public long CompiledScriptCacheMissCount { get; private set; }
 
+        private static bool StartsWithUseStrictDirective(string source)
+        {
+            if (string.IsNullOrEmpty(source)) return false;
+
+            int i = 0;
+            while (i < source.Length && char.IsWhiteSpace(source[i])) i++;
+            if (i + 12 > source.Length) return false;
+
+            char quote = source[i];
+            if (quote != '"' && quote != '\'') return false;
+            i++;
+
+            const string strictText = "use strict";
+            for (int j = 0; j < strictText.Length; j++)
+            {
+                if (i + j >= source.Length || source[i + j] != strictText[j]) return false;
+            }
+
+            i += strictText.Length;
+
+            if (i >= source.Length || source[i] != quote) return false;
+            i++;
+
+            while (i < source.Length && char.IsWhiteSpace(source[i])) i++;
+            return i < source.Length && source[i] == ';';
+        }
+
         private static bool IsCompiledScriptCacheCandidate(string code, string url, bool allowReturn)
         {
             return !allowReturn &&
@@ -19152,6 +19210,188 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             }
         }
 
+        public PrecompiledScript PrecompileScript(
+            string code,
+            string url = "script",
+            bool allowReturn = false,
+            bool inheritStrictFromContext = true)
+        {
+            var sourceCode = code ?? string.Empty;
+            var sourceUrl = string.IsNullOrWhiteSpace(url) ? "script" : url;
+            var initialStrictMode = StartsWithUseStrictDirective(sourceCode) ||
+                                    (inheritStrictFromContext && (_context?.StrictMode ?? false));
+
+            var lexer = new Lexer(sourceCode);
+            var parser = new Parser(
+                lexer,
+                allowReturnOutsideFunction: allowReturn,
+                initialStrictMode: initialStrictMode,
+                allowRecovery: false);
+            var program = parser.ParseProgram();
+
+            if (parser.Errors.Count > 0)
+            {
+                throw new FenSyntaxError(string.Join("\n", parser.Errors));
+            }
+
+            string[] varNames = Array.Empty<string>();
+            string[] lexicalNames = Array.Empty<string>();
+            if (program is Program parsedProgram)
+            {
+                BuildGlobalScriptDeclarationSnapshot(parsedProgram, out varNames, out lexicalNames);
+            }
+
+            try
+            {
+                var isEval = string.Equals(sourceUrl, "eval.js", StringComparison.Ordinal);
+                var compiler = new FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler(isEval);
+                var codeBlock = compiler.Compile(program);
+                return new PrecompiledScript(
+                    sourceCode,
+                    sourceUrl,
+                    allowReturn,
+                    initialStrictMode,
+                    codeBlock,
+                    varNames,
+                    lexicalNames);
+            }
+            catch (Exception compileEx)
+            {
+                EngineLogCompat.Debug($"[FenRuntime] Compile error in {sourceUrl}: {compileEx.Message}", LogCategory.JavaScript);
+                throw new FenSyntaxError($"SyntaxError: {compileEx.Message}");
+            }
+        }
+
+        public IValue ExecutePrecompiled(
+            PrecompiledScript script,
+            System.Threading.CancellationToken cancellationToken = default)
+        {
+            if (script == null)
+            {
+                throw new ArgumentNullException(nameof(script));
+            }
+
+            try
+            {
+                using var realmScope = EnterRealmActivationScope();
+                bool previousStrictMode = _context?.StrictMode ?? false;
+
+                if (_context is ExecutionContext ec)
+                {
+                    ec.Reset();
+                }
+
+                if (_context != null)
+                {
+                    _context.StrictMode = script.InitialStrictMode;
+                    if (Uri.TryCreate(script.SourceUrl, UriKind.Absolute, out var absoluteExecutionUrl))
+                    {
+                        _context.CurrentUrl = absoluteExecutionUrl.AbsoluteUri;
+                    }
+                    else if (string.IsNullOrWhiteSpace(_context.CurrentUrl) && _context is ExecutionContext executionContext)
+                    {
+                        _context.CurrentUrl = executionContext.DocumentUrl?.AbsoluteUri ?? _context.CurrentUrl;
+                    }
+                }
+
+                try
+                {
+                    if (IsGlobalScriptExecution())
+                    {
+                        ValidateGlobalScriptDeclarations(script.VarNames, script.LexicalNames);
+                    }
+
+                    DevToolsCore.Instance.RegisterSource(script.SourceUrl, script.Source);
+                    return ExecuteBytecodeBlock(script.CodeBlock, script.SourceUrl, cancellationToken, false, null);
+                }
+                finally
+                {
+                    if (_context != null)
+                    {
+                        _context.StrictMode = previousStrictMode;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (FenResourceError)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[FenRuntime] Runtime error in {script.SourceUrl}: {ex.Message}", LogCategory.JavaScript);
+                if (TryExtractThrownValue(ex, out var thrownValue))
+                {
+                    return FenValue.FromThrow(thrownValue);
+                }
+
+                if (ex is FenBrowser.Core.Dom.V2.DomException domException)
+                {
+                    return FenValue.FromThrow(CreateThrownDomExceptionValue(domException));
+                }
+
+                if (ex is FenSyntaxError || ex is FenTypeError || ex is FenReferenceError || ex is FenRangeError)
+                {
+                    return FenValue.FromError(ex.Message);
+                }
+
+                return FenValue.FromError($"{ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private IValue ExecuteBytecodeBlock(
+            Bytecode.CodeBlock compiledBlock,
+            string url,
+            System.Threading.CancellationToken cancellationToken,
+            bool traceLargeScript,
+            Stopwatch executionStopwatch)
+        {
+            try
+            {
+                var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
+                var limits = (_context as ExecutionContext)?.Limits;
+                var bytecodeResult = limits != null
+                    ? vm.Execute(compiledBlock, _globalEnv, cancellationToken, limits)
+                    : cancellationToken.CanBeCanceled
+                        ? vm.Execute(compiledBlock, _globalEnv, cancellationToken)
+                        : vm.Execute(compiledBlock, _globalEnv);
+                if (traceLargeScript)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FenRuntime] Large script executed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms",
+                        LogCategory.JavaScript);
+                }
+
+                return bytecodeResult;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (FenResourceError)
+            {
+                throw;
+            }
+            catch (Exception vmEx)
+            {
+                EngineLogCompat.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
+                if (TryExtractThrownValue(vmEx, out var thrownValue))
+                {
+                    return FenValue.FromThrow(thrownValue);
+                }
+
+                if (vmEx is FenBrowser.Core.Dom.V2.DomException domVmException)
+                {
+                    return FenValue.FromThrow(CreateThrownDomExceptionValue(domVmException));
+                }
+
+                throw new FenTypeError($"TypeError: {vmEx.GetType().Name}: {vmEx.Message}");
+            }
+        }
+
         /// <summary>
         /// Execute JavaScript code using the FenEngine parser with bytecode-only execution.
         /// </summary>
@@ -19171,35 +19411,6 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 using var realmScope = EnterRealmActivationScope();
 
                 bool previousStrictMode = _context?.StrictMode ?? false;
-
-                // Fast-path strict directive detection so runtime execution honors leading
-                // `"use strict"` / `'use strict'` even when parser directive detection drifts.
-                static bool StartsWithUseStrictDirective(string source)
-                {
-                    if (string.IsNullOrEmpty(source)) return false;
-
-                    int i = 0;
-                    while (i < source.Length && char.IsWhiteSpace(source[i])) i++;
-                    if (i + 12 > source.Length) return false;
-
-                    char quote = source[i];
-                    if (quote != '"' && quote != '\'') return false;
-                    i++;
-
-                    const string strictText = "use strict";
-                    for (int j = 0; j < strictText.Length; j++)
-                    {
-                        if (i + j >= source.Length || source[i + j] != strictText[j]) return false;
-                    }
-
-                    i += strictText.Length;
-
-                    if (i >= source.Length || source[i] != quote) return false;
-                    i++;
-
-                    while (i < source.Length && char.IsWhiteSpace(source[i])) i++;
-                    return i < source.Length && source[i] == ';';
-                }
 
                 // Reset execution timer for each new script execution
                 if (_context is ExecutionContext ec)
@@ -19314,46 +19525,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     }
 
                 execute_compiled_block:
-                    try
-                    {
-                        var vm = new FenBrowser.FenEngine.Core.Bytecode.VM.VirtualMachine();
-                        var limits = (_context as ExecutionContext)?.Limits;
-                        var bytecodeResult = limits != null
-                            ? vm.Execute(compiledBlock, _globalEnv, cancellationToken, limits)
-                            : cancellationToken.CanBeCanceled
-                                ? vm.Execute(compiledBlock, _globalEnv, cancellationToken)
-                                : vm.Execute(compiledBlock, _globalEnv);
-                        if (traceLargeScript)
-                        {
-                            EngineLogCompat.Warn(
-                                $"[FenRuntime] Large script executed url={url} elapsed={executionStopwatch!.ElapsedMilliseconds}ms",
-                                LogCategory.JavaScript);
-                        }
-                        return bytecodeResult;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw; // Let cancellation propagate cleanly to the test runner
-                    }
-                    catch (FenResourceError)
-                    {
-                        throw; // Let resource limit errors propagate (instruction count / memory cap exceeded)
-                    }
-                    catch (Exception vmEx)
-                    {
-                        EngineLogCompat.Debug($"[FenRuntime] Bytecode runtime error in {url}: {vmEx.Message}", LogCategory.JavaScript);
-                        if (TryExtractThrownValue(vmEx, out var thrownValue))
-                        {
-                            return FenValue.FromThrow(thrownValue);
-                        }
-
-                        if (vmEx is FenBrowser.Core.Dom.V2.DomException domVmException)
-                        {
-                            return FenValue.FromThrow(CreateThrownDomExceptionValue(domVmException));
-                        }
-
-                        throw new FenTypeError($"TypeError: {vmEx.GetType().Name}: {vmEx.Message}");
-                    }
+                    return ExecuteBytecodeBlock(compiledBlock, url, cancellationToken, traceLargeScript, executionStopwatch);
                 }
                 finally
                 {
