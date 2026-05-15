@@ -1085,13 +1085,33 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
 
         private FenValue ExecuteDirectEval(FenValue sourceValue, CallFrame frame, int directEvalFlags)
         {
+            var activeRuntime = FenRuntime.GetActiveRuntime();
+
+            // ECMA-262 §19.2.1.1 PerformEval: a CallExpression of the form `eval(...)`
+            // is a *direct* eval only when the call-site Identifier `eval` resolves to
+            // the global %eval% intrinsic. If the user shadowed `eval` in any enclosing
+            // scope, the parser still emitted OpCode.DirectEval (it can't know what the
+            // name will resolve to at runtime), so the runtime must verify and fall back
+            // to indirect-call semantics — just invoke the resolved function with the
+            // source value, leaving the caller's lexical scope untouched.
+            if (activeRuntime != null && frame?.Environment != null)
+            {
+                var resolvedEval = frame.Environment.Get("eval");
+                var globalEval = (FenValue)activeRuntime.GetGlobal("eval");
+                if (resolvedEval.IsFunction &&
+                    !ReferenceEquals(resolvedEval.AsFunction(), globalEval.AsFunction()))
+                {
+                    return resolvedEval.AsFunction()
+                        .Invoke(new[] { sourceValue }, null, FenValue.Undefined);
+                }
+            }
+
             if (!sourceValue.IsString)
             {
                 return sourceValue;
             }
 
             var code = sourceValue.AsString() ?? string.Empty;
-            var activeRuntime = FenRuntime.GetActiveRuntime();
             var activeContext = activeRuntime?.Context;
 
             if (activeContext != null && !activeContext.Permissions.Check(FenBrowser.FenEngine.Security.JsPermissions.Eval))
