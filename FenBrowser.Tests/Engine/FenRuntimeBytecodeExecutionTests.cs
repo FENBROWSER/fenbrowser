@@ -267,6 +267,41 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void PrecompileScript_CapturesStrictModeSourceAndExecuteRestoresAmbientStrictMode()
+        {
+            var rt = CreateRuntime();
+            rt.Context.StrictMode = true;
+
+            var inherited = rt.PrecompileScript(
+                "globalThis.precompiledStrictInherited = 1;",
+                "https://example.test/precompiled-strict-inherited.js");
+            var isolated = rt.PrecompileScript(
+                "globalThis.precompiledStrictIsolated = 1;",
+                "https://example.test/precompiled-strict-isolated.js",
+                inheritStrictFromContext: false);
+
+            Assert.True(inherited.InitialStrictMode);
+            Assert.True(inherited.InheritedAmbientStrictMode);
+            Assert.False(inherited.HasUseStrictDirective);
+            Assert.False(isolated.InitialStrictMode);
+            Assert.False(isolated.InheritedAmbientStrictMode);
+            Assert.False(isolated.HasUseStrictDirective);
+
+            rt.ExecutePrecompiled(isolated);
+
+            Assert.True(rt.Context.StrictMode);
+
+            rt.Context.StrictMode = false;
+            var directive = rt.PrecompileScript(
+                "\"use strict\"; globalThis.precompiledStrictDirective = 1;",
+                "https://example.test/precompiled-strict-directive.js");
+
+            Assert.True(directive.InitialStrictMode);
+            Assert.True(directive.HasUseStrictDirective);
+            Assert.False(directive.InheritedAmbientStrictMode);
+        }
+
+        [Fact]
         public void PrecompileScript_InvalidSource_ThrowsSyntaxErrorBeforeExecution()
         {
             var rt = CreateRuntime();

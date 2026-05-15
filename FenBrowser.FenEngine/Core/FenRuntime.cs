@@ -209,6 +209,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 string sourceUrl,
                 bool allowReturn,
                 bool initialStrictMode,
+                bool hasUseStrictDirective,
+                bool inheritedAmbientStrictMode,
                 Bytecode.CodeBlock codeBlock,
                 string[] varNames,
                 string[] lexicalNames)
@@ -217,6 +219,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 SourceUrl = string.IsNullOrWhiteSpace(sourceUrl) ? "script" : sourceUrl;
                 AllowReturn = allowReturn;
                 InitialStrictMode = initialStrictMode;
+                HasUseStrictDirective = hasUseStrictDirective;
+                InheritedAmbientStrictMode = inheritedAmbientStrictMode;
                 CodeBlock = codeBlock ?? throw new ArgumentNullException(nameof(codeBlock));
                 VarNames = varNames ?? Array.Empty<string>();
                 LexicalNames = lexicalNames ?? Array.Empty<string>();
@@ -226,6 +230,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             public string SourceUrl { get; }
             public bool AllowReturn { get; }
             public bool InitialStrictMode { get; }
+            public bool HasUseStrictDirective { get; }
+            public bool InheritedAmbientStrictMode { get; }
             public int InstructionCount => CodeBlock.Instructions?.Length ?? 0;
             public int TopLevelVarDeclarationCount => VarNames.Length;
             public int TopLevelLexicalDeclarationCount => LexicalNames.Length;
@@ -19251,8 +19257,9 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         {
             var sourceCode = code ?? string.Empty;
             var sourceUrl = string.IsNullOrWhiteSpace(url) ? "script" : url;
-            var initialStrictMode = StartsWithUseStrictDirective(sourceCode) ||
-                                    (inheritStrictFromContext && (_context?.StrictMode ?? false));
+            var hasUseStrictDirective = StartsWithUseStrictDirective(sourceCode);
+            var inheritedAmbientStrictMode = inheritStrictFromContext && (_context?.StrictMode ?? false);
+            var initialStrictMode = hasUseStrictDirective || inheritedAmbientStrictMode;
             ResetScriptMetrics(sourceUrl, "precompile");
 
             var parseStopwatch = Stopwatch.StartNew();
@@ -19290,6 +19297,8 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     sourceUrl,
                     allowReturn,
                     initialStrictMode,
+                    hasUseStrictDirective,
+                    inheritedAmbientStrictMode,
                     codeBlock,
                     varNames,
                     lexicalNames);
