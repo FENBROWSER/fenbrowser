@@ -215,10 +215,26 @@ namespace FenBrowser.Host
         private void InitializeSkia()
         {
             var glInterface = GRGlInterface.Create();
-            if (glInterface == null) throw new Exception("Failed to create GRGlInterface");
+            // Use specific exception types so process-isolation crash handlers
+            // and Application.Run wrappers can distinguish GPU-init failure
+            // (which is recoverable by falling back to CPU raster) from generic
+            // engine failure (which is not). Raw `throw new Exception(...)` is a
+            // CA1031 anti-pattern; any catch(Exception) above us currently has
+            // to guess at the cause from message text.
+            if (glInterface == null)
+                throw new InvalidOperationException(
+                    "GPU initialization failed: GRGlInterface.Create() returned null. " +
+                    "This usually means the OpenGL ES driver is missing or the loader " +
+                    "could not be resolved. Verify Silk.NET.OpenGLES.ANGLE.Native is " +
+                    "deployed alongside the host binary.");
 
             _grContext = GRContext.CreateGl(glInterface);
-            if (_grContext == null) throw new Exception("Failed to create GRContext");
+            if (_grContext == null)
+                throw new InvalidOperationException(
+                    "GPU initialization failed: GRContext.CreateGl returned null. " +
+                    "The GL context exists but Skia could not bind to it. Often a " +
+                    "driver/context-version mismatch — check the OpenGL ES 3.0 " +
+                    "context flags in WindowManager.Create.");
 
             SyncDimensions();
             CreateRenderTarget();
