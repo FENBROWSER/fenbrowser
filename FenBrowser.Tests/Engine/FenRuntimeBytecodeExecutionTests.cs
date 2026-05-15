@@ -186,6 +186,39 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_CompiledScriptCache_ClearDropsEntriesAndCanResetStatistics()
+        {
+            var rt = CreateRuntime();
+            const string script = "globalThis.cacheClearProbe = (globalThis.cacheClearProbe || 0) + 1;";
+            const string url = "https://example.test/cache-clear.js";
+
+            rt.ExecuteSimple(script, url);
+            rt.ExecuteSimple(script, url);
+
+            Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(1, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+
+            rt.ClearCompiledScriptCache();
+
+            Assert.Equal(0, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(1, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(1, rt.CompiledScriptCacheMissCount);
+
+            rt.ExecuteSimple(script, url);
+
+            Assert.Equal(1, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(1, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(2, rt.CompiledScriptCacheMissCount);
+
+            rt.ClearCompiledScriptCache(resetStatistics: true);
+
+            Assert.Equal(0, rt.CompiledScriptCacheEntryCount);
+            Assert.Equal(0, rt.CompiledScriptCacheHitCount);
+            Assert.Equal(0, rt.CompiledScriptCacheMissCount);
+        }
+
+        [Fact]
         public void PrecompileScript_ExecutePrecompiled_ReusesBytecodeWithoutScriptCache()
         {
             var rt = CreateRuntime();

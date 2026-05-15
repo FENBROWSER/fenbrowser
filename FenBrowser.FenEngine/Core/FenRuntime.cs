@@ -19135,6 +19135,18 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             LastScriptCacheHit = false;
         }
 
+        public void ClearCompiledScriptCache(bool resetStatistics = false)
+        {
+            _compiledScriptCache.Clear();
+            _compiledScriptLru.Clear();
+
+            if (resetStatistics)
+            {
+                CompiledScriptCacheHitCount = 0;
+                CompiledScriptCacheMissCount = 0;
+            }
+        }
+
         private static bool StartsWithUseStrictDirective(string source)
         {
             if (string.IsNullOrEmpty(source)) return false;
