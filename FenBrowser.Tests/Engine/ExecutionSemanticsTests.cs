@@ -261,7 +261,7 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public void ObserverCallbacks_FireAfterLayout()
+        public void ObserverCallbacks_FireBeforeRender()
         {
             var order = new List<string>();
             var coordinator = EventLoopCoordinator.Instance;
@@ -277,8 +277,11 @@ namespace FenBrowser.Tests.Engine
 
             coordinator.ProcessNextTask();
 
-            // Order: Task → Render → Observer
-            Assert.Equal(new[] { "Task", "Render", "Observer" }, order);
+            // HTML §8.1.4.3 "Update the rendering" order:
+            // resize/scroll → ResizeObserver → animation events → rAF →
+            // IntersectionObserver → paint. Observer callbacks therefore run
+            // BEFORE the render (paint) step, not after.
+            Assert.Equal(new[] { "Task", "Observer", "Render" }, order);
         }
 
         [Fact]

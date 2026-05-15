@@ -1786,9 +1786,42 @@ namespace FenBrowser.FenEngine.Core
 
         public virtual void SetPrototype(IObject prototype)
         {
-            // ECMA-262 §9.1.2.1: OrdinarySetPrototypeOf — if non-extensible and prototype changes, throw TypeError.
+            // ECMA-262 §10.1.2.1 OrdinarySetPrototypeOf — if non-extensible and prototype
+            // changes, throw TypeError.
             if (!_extensible && !ReferenceEquals(_prototype, prototype))
                 throw new FenTypeError("TypeError: #<Object> is not extensible");
+
+            // ECMA-262 §10.1.2.1 step 8: walk the proposed prototype chain and reject if
+            // it would close a cycle. This guards against the SetPrototype path that
+            // Object.setPrototypeOf's first registration uses directly; TrySetPrototype
+            // already does the same walk, but defending in depth here means no caller
+            // can install a self-referential chain.
+            if (prototype != null && !ReferenceEquals(_prototype, prototype))
+            {
+                var p = prototype;
+                while (p != null)
+                {
+                    if (ReferenceEquals(p, this))
+                    {
+                        throw new FenTypeError(
+                            "TypeError: Cyclic __proto__ value");
+                    }
+
+                    if (p is FenObject fenP)
+                    {
+                        if (fenP.HasActiveProxyMarker())
+                        {
+                            break;
+                        }
+
+                        p = fenP._prototype;
+                        continue;
+                    }
+
+                    p = p.GetPrototype();
+                }
+            }
+
             _prototype = prototype;
             System.Threading.Interlocked.Increment(ref s_inheritedSetterTopologyEpoch);
         }
