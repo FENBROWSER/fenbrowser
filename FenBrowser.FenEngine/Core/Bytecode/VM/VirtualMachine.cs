@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using FenBrowser.FenEngine.Configuration;
 using FenBrowser.FenEngine.Core;
@@ -1929,7 +1930,7 @@ run_loop_restart:
                                 if (constant.IsObject && constant.AsObject() is FenObject constantObject &&
                                     constantObject.InternalClass == "RegExp")
                                 {
-                                    EnsureRegExpPrototype(constantObject, frame);
+                                    constant = CloneRegExpLiteralConstant(constantObject, frame);
                                 }
 
                                 _stack[_sp++] = constant;
@@ -4300,6 +4301,33 @@ run_loop_restart:
             {
                 regexObj.SetPrototype(proto);
             }
+        }
+
+        /// <summary>
+        /// RegExp literals are mutable because exec() updates lastIndex. The compiler stores
+        /// the parsed regex as a CodeBlock constant, so each literal evaluation must receive
+        /// a fresh object before compiled blocks can be safely reused.
+        /// </summary>
+        private FenValue CloneRegExpLiteralConstant(FenObject template, CallFrame frame)
+        {
+            var clone = new FenObject
+            {
+                InternalClass = "RegExp",
+                NativeObject = template.NativeObject as Regex
+            };
+
+            clone.Set("source", template.Get("source"));
+            clone.Set("flags", template.Get("flags"));
+            clone.Set("global", template.Get("global"));
+            clone.Set("ignoreCase", template.Get("ignoreCase"));
+            clone.Set("multiline", template.Get("multiline"));
+            clone.Set("dotAll", template.Get("dotAll"));
+            clone.Set("unicode", template.Get("unicode"));
+            clone.Set("sticky", template.Get("sticky"));
+            clone.Set("lastIndex", FenValue.FromNumber(0));
+
+            EnsureRegExpPrototype(clone, frame);
+            return FenValue.FromObject(clone);
         }
 
         /// <summary>

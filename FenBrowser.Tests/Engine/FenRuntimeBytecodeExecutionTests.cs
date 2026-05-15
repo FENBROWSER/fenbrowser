@@ -92,6 +92,30 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void ExecuteSimple_RegExpLiteral_ReevaluatesWithFreshMutableState()
+        {
+            var rt = CreateRuntime();
+            rt.ExecuteSimple(@"
+                var before = [];
+                var after = [];
+                for (var i = 0; i < 2; i++) {
+                    var re = /a/g;
+                    before[i] = re.lastIndex;
+                    re.exec('a');
+                    after[i] = re.lastIndex;
+                }
+            ");
+
+            var before = ((FenValue)rt.GetGlobal("before")).AsObject();
+            var after = ((FenValue)rt.GetGlobal("after")).AsObject();
+
+            Assert.Equal(0, before.Get("0").AsNumber());
+            Assert.Equal(0, before.Get("1").AsNumber());
+            Assert.Equal(1, after.Get("0").AsNumber());
+            Assert.Equal(1, after.Get("1").AsNumber());
+        }
+
+        [Fact]
         public void ExecuteSimple_ForOfConstClosure_CapturesIterationBinding()
         {
             var rt = CreateRuntime();
