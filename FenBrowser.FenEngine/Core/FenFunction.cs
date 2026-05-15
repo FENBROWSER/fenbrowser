@@ -219,7 +219,42 @@ namespace FenBrowser.FenEngine.Core
             return result;
         }
 
+        // Re-entry depth across host→JS hops on this thread. The bytecode VM tracks
+        // its own pure-JS call depth in _callFrames[] (heap-allocated, bounded), but
+        // every time HOST code calls back into JS (DOM events, MutationObserver
+        // callbacks, Promise resolution, custom-element lifecycle, accessor traps,
+        // Proxy traps, etc.) we add a real .NET frame here that the JS frame stack
+        // can't see. Without this counter the .NET stack is the only bound, and
+        // large apps like React/Vue easily blow it (it's ~16 MB on the engine
+        // thread; one hop costs hundreds of bytes through inlined helpers).
+        //
+        // The cap converts the .NET StackOverflowException — which is fatal and
+        // unrecoverable — into a `RangeError: Maximum call stack size exceeded`
+        // that any catch on the way up can handle. 800 leaves comfortable headroom
+        // under a 16 MB stack and is well above what V8/SpiderMonkey allow before
+        // they throw the same error.
+        [ThreadStatic] private static int _hostReentryDepth;
+        private const int MaxHostReentryDepth = 800;
+
         public FenValue Invoke(FenValue[] args, IExecutionContext context, FenValue? thisArg = null)
+        {
+            if (++_hostReentryDepth > MaxHostReentryDepth)
+            {
+                _hostReentryDepth--;
+                throw new Errors.FenResourceError(
+                    $"RangeError: Maximum call stack size exceeded ({MaxHostReentryDepth} host→JS re-entries)");
+            }
+            try
+            {
+                return InvokeCore(args, context, thisArg);
+            }
+            finally
+            {
+                _hostReentryDepth--;
+            }
+        }
+
+        private FenValue InvokeCore(FenValue[] args, IExecutionContext context, FenValue? thisArg = null)
         {
             var effectiveArgs = args ?? Array.Empty<FenValue>();
 
