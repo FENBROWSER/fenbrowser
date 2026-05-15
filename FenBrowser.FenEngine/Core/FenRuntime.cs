@@ -1550,6 +1550,35 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
             return null;
         }
 
+        private Realm _rootRealm;
+
+        /// <summary>
+        /// ECMA-262 §9.3 — the runtime's root Realm. Today FenEngine runs all
+        /// scripts inside a single realm; the Realm record is the seam that
+        /// future iframe/Worker isolation will hang off without having to
+        /// touch the 21 000-line FenRuntime file.
+        /// </summary>
+        public Realm RootRealm
+        {
+            get
+            {
+                if (_rootRealm == null)
+                {
+                    _rootRealm = new Realm();
+                }
+
+                // Keep the realm view live: the underlying singletons get
+                // replaced during initialization, so re-bind on every read
+                // rather than caching stale references.
+                _rootRealm.ObjectPrototype = _realmObjectPrototype;
+                _rootRealm.FunctionPrototype = _realmFunctionPrototype;
+                _rootRealm.ArrayPrototype = _realmArrayPrototype;
+                _rootRealm.GlobalObject = _windowObject;
+                _rootRealm.GlobalEnv = _globalEnv;
+                return _rootRealm;
+            }
+        }
+
         private void CaptureRealmIntrinsics()
         {
             _realmObjectPrototype = ResolveIntrinsicPrototypeFromGlobal("Object") ?? FenObject.DefaultPrototype;
