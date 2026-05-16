@@ -7160,7 +7160,6 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                     var rawObj = args[0].AsObject();
                     if (rawObj == null) return FenValue.Undefined;
                     var prop = ToPropertyKeyString(args[1]);
-
                     PropertyDescriptor? desc = null;
                     if (rawObj is FenObject fenObj)
                     {

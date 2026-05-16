@@ -403,6 +403,38 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 }
             }
 
+            public override PropertyDescriptor? GetOwnPropertyDescriptor(string key)
+            {
+                if (string.Equals(key, "length", StringComparison.Ordinal))
+                {
+                    return new PropertyDescriptor
+                    {
+                        Value = FenValue.FromNumber(_length),
+                        Writable = true,
+                        Enumerable = false,
+                        Configurable = false
+                    };
+                }
+
+                if (TryParseArrayIndex(key, out int index))
+                {
+                    if (TryGetElement(index, out var value))
+                    {
+                        return new PropertyDescriptor
+                        {
+                            Value = value,
+                            Writable = true,
+                            Enumerable = true,
+                            Configurable = true
+                        };
+                    }
+
+                    return null;
+                }
+
+                return base.GetOwnPropertyDescriptor(key);
+            }
+
             private void EnsureCapacity(int size)
             {
                 if (size <= _elements.Length)
@@ -931,11 +963,35 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ThrowJsError(string errorType, string message)
         {
-            if (errorType == "TypeError" && message.Contains("is not a function"))
+            // Append the recent-property-access trail for any error class where the
+            // failing access target matters: "not a function" calls AND
+            // null/undefined property access (LoadProp/StoreProp/DeleteProp etc.).
+            // Without the trail, errors like `LoadProp 'call' on undefined` give us
+            // zero hint about WHICH variable was undefined.
+            if (errorType == "TypeError" &&
+                (message.Contains("is not a function") ||
+                 message.Contains(" on undefined") ||
+                 message.Contains(" on null")))
             {
                 var orderedProps = new string[10];
                 for (int i = 0; i < 10; i++) orderedProps[i] = _lastAccessedProps[(int)((_lastAccessedPropIdx - 10 + i) % 10 + 10) % 10];
-                message += $" [Recent prop accesses (oldest to newest): {string.Join(", ", orderedProps)}]";
+                var trail = string.Join(" → ", orderedProps.Where(p => !string.IsNullOrEmpty(p)));
+                if (message.Contains("is not a function"))
+                {
+                    var lastProp = orderedProps[orderedProps.Length - 1];
+                    if (!string.IsNullOrEmpty(lastProp))
+                    {
+                        message = $"'{lastProp}' is not a function ({message}) [trace: {trail}]";
+                    }
+                    else
+                    {
+                        message += $" [trace: {trail}]";
+                    }
+                }
+                else
+                {
+                    message += $" [trace: {trail}]";
+                }
             }
 
             FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText("js_debug.log", $"[VM_Throw] {errorType}: {message}\n");
@@ -1567,7 +1623,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                     break;
                 }
 
-                if (env.FastStore != null && parentSlot >= 0 && parentSlot < env.FastStore.Length)
+                if (!string.IsNullOrEmpty(varName) &&
+                    env.TryGetFastSlotIndex(varName, out var slotIndex) &&
+                    slotIndex == parentSlot &&
+                    env.FastStore != null &&
+                    parentSlot >= 0 &&
+                    parentSlot < env.FastStore.Length)
                 {
                     return env.GetFast(parentSlot);
                 }
@@ -3061,7 +3122,8 @@ run_loop_restart:
                                     else
                                     {
                                         _lastAccessedProps[_lastAccessedPropIdx++ % 10] = key;
-                                        _stack[_sp++] = objectRef.Get(key);
+                                        var value = objectRef.Get(key);
+                                        _stack[_sp++] = value;
                                     }
                                 }
                                 else if (obj.IsString)
