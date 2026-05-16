@@ -522,6 +522,19 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 navigator.Set("deviceMemory", FenValue.FromNumber(surface.DeviceMemory));
                 navigator.Set("doNotTrack", FenValue.FromString(surface.DoNotTrack));
                 navigator.Set("userAgentData", FenValue.FromObject(BuildUserAgentDataObject(surface)));
+                navigator.Set("maxTouchPoints", FenValue.FromNumber(0));
+                navigator.Set("standalone", FenValue.FromBoolean(false));
+
+                // Feature-detected APIs that real-world bundles (x.com, etc.) reach
+                // into directly without guards. We return functional stubs so
+                // `navigator.X.method()` either no-ops, returns a rejected Promise,
+                // or returns reasonable defaults — never throws `LoadProp on undefined`.
+                if (!navigator.Has("serviceWorker")) navigator.Set("serviceWorker", FenValue.FromObject(BuildServiceWorkerStub()));
+                if (!navigator.Has("clipboard")) navigator.Set("clipboard", FenValue.FromObject(BuildClipboardStub()));
+                if (!navigator.Has("connection")) navigator.Set("connection", FenValue.FromObject(BuildConnectionStub()));
+                if (!navigator.Has("storage")) navigator.Set("storage", FenValue.FromObject(BuildStorageManagerStub()));
+                if (!navigator.Has("scheduling")) navigator.Set("scheduling", FenValue.FromObject(BuildSchedulingStub()));
+                if (!navigator.Has("permissions")) navigator.Set("permissions", FenValue.FromObject(BuildPermissionsStub()));
             }
 
             var screenValue = GetGlobal("screen");
@@ -1151,6 +1164,140 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                     }
                 }
             }
+        }
+
+        // ---- Minimal navigator API stubs ----
+        // These exist so feature-detected APIs return *something* useful instead of
+        // undefined. Returning a stub object means `navigator.serviceWorker.register(...)`
+        // resolves/rejects instead of throwing `LoadProp on undefined`, which lets
+        // bundles that don't guard their access keep running rather than aborting the
+        // page. Stubs use rejected Promises where semantically appropriate so callers
+        // observe failure cleanly (not silent success).
+
+        private FenObject BuildServiceWorkerStub()
+        {
+            // Returning a rejected Promise from register()/ready triggers
+            // unhandled-rejection chains in SPAs that `await` these calls without
+            // a catch (React's render cycle bails). Real browsers under
+            // SW-unsupported contexts leave `navigator.serviceWorker` undefined.
+            // We can't do that here (some bundles dereference it directly without
+            // guards), so we instead return a Promise that *resolves* with a
+            // valid-looking fake registration. The fake doesn't actually run any
+            // worker scripts but lets the page continue past the registration step.
+            var sw = new FenObject();
+            var fakeReg = BuildFakeServiceWorkerRegistration();
+            sw.Set("controller", FenValue.Null);
+            sw.Set("ready", FenValue.FromObject(ResolvedThenable.Resolved(
+                FenValue.FromObject(fakeReg), _context)));
+            sw.Set("register", FenValue.FromFunction(new FenFunction("register",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(
+                    FenValue.FromObject(fakeReg), _context)))));
+            sw.Set("getRegistration", FenValue.FromFunction(new FenFunction("getRegistration",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, _context)))));
+            sw.Set("getRegistrations", FenValue.FromFunction(new FenFunction("getRegistrations",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(
+                    FenValue.FromObject(CreateArray(System.Array.Empty<string>())), _context)))));
+            sw.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) => FenValue.Undefined)));
+            sw.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) => FenValue.Undefined)));
+            sw.Set("startMessages", FenValue.FromFunction(new FenFunction("startMessages", (args, thisVal) => FenValue.Undefined)));
+            return sw;
+        }
+
+        private FenObject BuildFakeServiceWorkerRegistration()
+        {
+            var reg = new FenObject();
+            reg.Set("active", FenValue.Null);
+            reg.Set("waiting", FenValue.Null);
+            reg.Set("installing", FenValue.Null);
+            reg.Set("scope", FenValue.FromString("/"));
+            reg.Set("updateViaCache", FenValue.FromString("imports"));
+            reg.Set("update", FenValue.FromFunction(new FenFunction("update",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Undefined, _context)))));
+            reg.Set("unregister", FenValue.FromFunction(new FenFunction("unregister",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(true), _context)))));
+            reg.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) => FenValue.Undefined)));
+            reg.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) => FenValue.Undefined)));
+            // pushManager — common access path; return stub that always rejects subscribe
+            var push = new FenObject();
+            push.Set("getSubscription", FenValue.FromFunction(new FenFunction("getSubscription",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.Null, _context)))));
+            push.Set("permissionState", FenValue.FromFunction(new FenFunction("permissionState",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromString("prompt"), _context)))));
+            push.Set("subscribe", FenValue.FromFunction(new FenFunction("subscribe",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Rejected("NotSupportedError: PushManager unavailable", _context)))));
+            reg.Set("pushManager", FenValue.FromObject(push));
+            return reg;
+        }
+
+        private FenObject BuildClipboardStub()
+        {
+            var cb = new FenObject();
+            FenValue RejectNoPermission(string op) =>
+                FenValue.FromObject(ResolvedThenable.Rejected(
+                    $"NotAllowedError: {op} requires user gesture",
+                    _context));
+            cb.Set("readText", FenValue.FromFunction(new FenFunction("readText", (args, thisVal) => RejectNoPermission("readText"))));
+            cb.Set("writeText", FenValue.FromFunction(new FenFunction("writeText", (args, thisVal) => RejectNoPermission("writeText"))));
+            cb.Set("read", FenValue.FromFunction(new FenFunction("read", (args, thisVal) => RejectNoPermission("read"))));
+            cb.Set("write", FenValue.FromFunction(new FenFunction("write", (args, thisVal) => RejectNoPermission("write"))));
+            return cb;
+        }
+
+        private FenObject BuildConnectionStub()
+        {
+            // NetworkInformation API stub. Default: 4g, no save-data.
+            var c = new FenObject();
+            c.Set("effectiveType", FenValue.FromString("4g"));
+            c.Set("type", FenValue.FromString("unknown"));
+            c.Set("downlink", FenValue.FromNumber(10));
+            c.Set("downlinkMax", FenValue.FromNumber(double.PositiveInfinity));
+            c.Set("rtt", FenValue.FromNumber(50));
+            c.Set("saveData", FenValue.FromBoolean(false));
+            c.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (args, thisVal) => FenValue.Undefined)));
+            c.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (args, thisVal) => FenValue.Undefined)));
+            c.Set("dispatchEvent", FenValue.FromFunction(new FenFunction("dispatchEvent", (args, thisVal) => FenValue.FromBoolean(true))));
+            return c;
+        }
+
+        private FenObject BuildStorageManagerStub()
+        {
+            var sm = new FenObject();
+            sm.Set("persisted", FenValue.FromFunction(new FenFunction("persisted",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), _context)))));
+            sm.Set("persist", FenValue.FromFunction(new FenFunction("persist",
+                (args, thisVal) => FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromBoolean(false), _context)))));
+            sm.Set("estimate", FenValue.FromFunction(new FenFunction("estimate", (args, thisVal) =>
+            {
+                var est = new FenObject();
+                est.Set("quota", FenValue.FromNumber(0));
+                est.Set("usage", FenValue.FromNumber(0));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(est), _context));
+            })));
+            return sm;
+        }
+
+        private FenObject BuildSchedulingStub()
+        {
+            // Chrome's `navigator.scheduling.isInputPending(...)` — return false always.
+            var s = new FenObject();
+            s.Set("isInputPending", FenValue.FromFunction(new FenFunction("isInputPending",
+                (args, thisVal) => FenValue.FromBoolean(false))));
+            return s;
+        }
+
+        private FenObject BuildPermissionsStub()
+        {
+            var p = new FenObject();
+            p.Set("query", FenValue.FromFunction(new FenFunction("query", (args, thisVal) =>
+            {
+                var status = new FenObject();
+                status.Set("state", FenValue.FromString("prompt"));
+                status.Set("onchange", FenValue.Null);
+                status.Set("addEventListener", FenValue.FromFunction(new FenFunction("addEventListener", (a, t) => FenValue.Undefined)));
+                status.Set("removeEventListener", FenValue.FromFunction(new FenFunction("removeEventListener", (a, t) => FenValue.Undefined)));
+                return FenValue.FromObject(ResolvedThenable.Resolved(FenValue.FromObject(status), _context));
+            })));
+            return p;
         }
 
         private FenObject BuildUserAgentDataObject(BrowserSurfaceProfile surface)
@@ -2140,6 +2287,24 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                         return FromPropertyDescriptor(desc.Value);
                     }
 
+                    // Some exotic/runtime-backed objects can currently surface enumerable own keys
+                    // through Keys() while lacking a concrete descriptor slot. Keep the runtime
+                    // fail-open for webpack-style descriptor probes by synthesizing a standard
+                    // data descriptor from the current own value when the key is reported as own.
+                    var propKey = ToPropertyKeyString(args[1]);
+                    var ownKeys = obj?.Keys(_context);
+                    if (ownKeys != null && ownKeys.Contains(propKey, StringComparer.Ordinal))
+                    {
+                        var synthesized = new PropertyDescriptor
+                        {
+                            Value = obj.Get(propKey, _context),
+                            Writable = true,
+                            Enumerable = true,
+                            Configurable = true
+                        };
+                        return FromPropertyDescriptor(synthesized);
+                    }
+
                     return FenValue.Undefined;
                 })));
 
@@ -2537,13 +2702,19 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 if (arr == null) return FenValue.FromObject(FenObject.CreateArray());
                 var callback = args.Length > 0 ? args[0].AsFunction() : null;
                 if (callback == null) throw new FenTypeError("TypeError: callback is not a function");
+                var callbackThis = args.Length > 1 ? args[1] : FenValue.Undefined;
                 var len = (int)arr.Get("length").ToNumber();
                 var result = FenObject.CreateArray();
                 for (int i = 0; i < len; i++)
                 {
+                    if (!arr.Has(i.ToString(), _context))
+                    {
+                        continue;
+                    }
+
                     var elem = arr.Get(i.ToString());
                     var mapped = callback.Invoke(new[] { elem, FenValue.FromNumber(i), FenValue.FromObject(arr) },
-                        _context);
+                        _context, callbackThis);
                     result.Set(i.ToString(), mapped);
                 }
 
@@ -5522,6 +5693,13 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 document.Set("documentElement", FenValue.Null);
             }
 
+            // Page Visibility API + readyState defaults — x.com and most SPAs read
+            // these during bootstrap, often without guards. We treat the page as
+            // always visible and ready to interact.
+            if (!document.Has("visibilityState")) document.Set("visibilityState", FenValue.FromString("visible"));
+            if (!document.Has("hidden")) document.Set("hidden", FenValue.FromBoolean(false));
+            if (!document.Has("readyState")) document.Set("readyState", FenValue.FromString("complete"));
+
             SetGlobal("document", FenValue.FromObject(document));
 
             // console object
@@ -5591,6 +5769,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                     EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
 
+                try { FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordConsole("error", msg, null); } catch { }
+
                 return FenValue.Undefined;
             })));
             console.Set("warn", FenValue.FromFunction(new FenFunction("warn", (FenValue[] args, FenValue thisVal) =>
@@ -5617,6 +5797,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 {
                     EngineLogCompat.Warn($"[FenRuntime] Failed writing top-level runtime diagnostics: {logEx.Message}", LogCategory.JavaScript);
                 }
+
+                try { FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordConsole("warn", msg, null); } catch { }
 
                 return FenValue.Undefined;
             })));
@@ -6989,7 +7171,24 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                         desc = rawObj.GetOwnPropertyDescriptor(prop);
                     }
 
-                    if (desc == null) return FenValue.Undefined;
+                    if (desc == null)
+                    {
+                        var ownKeys = rawObj.Keys(_context);
+                        if (ownKeys != null && ownKeys.Contains(prop, StringComparer.Ordinal))
+                        {
+                            desc = new PropertyDescriptor
+                            {
+                                Value = rawObj.Get(prop, _context),
+                                Writable = true,
+                                Enumerable = true,
+                                Configurable = true
+                            };
+                        }
+                        else
+                        {
+                            return FenValue.Undefined;
+                        }
+                    }
                     var result = new FenObject();
                     if (desc.Value.IsAccessor)
                     {

@@ -274,5 +274,54 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(0.0, runtime.GetGlobal("__andValue").ToNumber());
             Assert.Equal(2.0, runtime.GetGlobal("__andHits").ToNumber());
         }
+
+        [Fact]
+        public void FunctionOwnPropertyDescriptor_AfterObjectKeys_IsPresent()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                function gate() {}
+                gate.j = function() { return 1; };
+                var key = Object.keys(gate)[0];
+                var desc = Object.getOwnPropertyDescriptor(gate, key);
+                globalThis.__fnDescExists = !!desc;
+                globalThis.__fnDescWritableType = typeof desc.writable;
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__fnDescExists").ToBoolean());
+            Assert.Equal("boolean", runtime.GetGlobal("__fnDescWritableType").ToString());
+        }
+
+        [Fact]
+        public void ArrayMap_SkipsSparseHoles_AndRespectsThisArg()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var calls = 0;
+                var arr = [];
+                arr.length = 3;
+                arr[1] = 10;
+                var ctx = { mult: 2 };
+                var out = arr.map(function(v, i) {
+                  calls++;
+                  return v * this.mult + i;
+                }, ctx);
+                globalThis.__mapCalls = calls;
+                globalThis.__mapLen = out.length;
+                globalThis.__mapHas0 = (0 in out);
+                globalThis.__mapHas1 = (1 in out);
+                globalThis.__mapHas2 = (2 in out);
+                globalThis.__mapV1 = out[1];
+            ");
+
+            Assert.Equal(1.0, runtime.GetGlobal("__mapCalls").ToNumber());
+            Assert.Equal(3.0, runtime.GetGlobal("__mapLen").ToNumber());
+            Assert.Equal(false, runtime.GetGlobal("__mapHas0").ToBoolean());
+            Assert.Equal(true, runtime.GetGlobal("__mapHas1").ToBoolean());
+            Assert.Equal(false, runtime.GetGlobal("__mapHas2").ToBoolean());
+            Assert.Equal(21.0, runtime.GetGlobal("__mapV1").ToNumber());
+        }
     }
 }
