@@ -2096,6 +2096,56 @@ run_loop_restart:
                                     ThrowTypeError("Right-hand side of 'instanceof' is not an object");
                                 }
 
+                                // ECMA-262 §7.3.21 InstanceofOperator step 2-3:
+                                // Let instOfHandler be GetMethod(target, @@hasInstance).
+                                // If instOfHandler is not undefined, return
+                                //   ToBoolean(Call(instOfHandler, target, « V »)).
+                                // This makes class { static [Symbol.hasInstance]() { … } }
+                                // actually work and lets built-ins like Function
+                                // override instanceof semantics correctly.
+                                //
+                                // Property-key normalisation in this VM currently stores
+                                // user-level Symbol-keyed assignments under the string
+                                // form "[Symbol.hasInstance]" rather than routing them
+                                // through FenObject.SetSymbol. We therefore look up both
+                                // representations so engine-installed (SetSymbol) and
+                                // user-installed (StoreProp) handlers both fire.
+                                if (right.AsObject() is FenObject hasInstanceHost)
+                                {
+                                    // User-installed override (via M[Symbol.hasInstance] = fn)
+                                    // lands as a string-keyed property; the engine-installed
+                                    // Function.prototype[@@hasInstance] lands in _symbolProperties.
+                                    // Spec lookup is "own first, then chain", so the user's
+                                    // override must beat the inherited default - we check the
+                                    // string-key own path first and only fall through to
+                                    // GetSymbol when nothing is installed.
+                                    var handlerValue = hasInstanceHost.Get("[Symbol.hasInstance]");
+                                    if (!handlerValue.IsFunction)
+                                    {
+                                        handlerValue = hasInstanceHost.GetSymbol(Types.JsSymbol.HasInstance);
+                                    }
+                                    if (handlerValue.IsFunction)
+                                    {
+                                        var handlerFn = handlerValue.AsFunction();
+                                        FenValue handlerResult;
+                                        try
+                                        {
+                                            handlerResult = handlerFn.Invoke(new[] { left }, null, right);
+                                        }
+                                        catch (Errors.FenError)
+                                        {
+                                            throw;
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            ThrowTypeError("@@hasInstance handler threw: " + ex.Message);
+                                            handlerResult = FenValue.FromBoolean(false);
+                                        }
+                                        _stack[_sp++] = FenValue.FromBoolean(handlerResult.ToBoolean());
+                                        break;
+                                    }
+                                }
+
                                 if (!right.IsFunction)
                                 {
                                     ThrowTypeError("Right-hand side of 'instanceof' is not callable");
