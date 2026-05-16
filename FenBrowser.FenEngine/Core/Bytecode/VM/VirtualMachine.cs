@@ -1274,6 +1274,53 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return false; // Unreachable, but satisfies compiler
         }
 
+        // ECMA-262 §7.1.6 ToInt32 / §7.1.7 ToUint32.
+        //
+        //   1. number = ToNumber(arg)
+        //   2. If number is NaN, ±0, ±Infinity → return 0.
+        //   3. int = sign(number) * floor(abs(number))
+        //   4. int32bit = int modulo 2^32
+        //   5. For ToInt32: if int32bit ≥ 2^31, return int32bit - 2^32, else int32bit.
+        //
+        // The previous implementation used `(int)ToNumber()`, which has
+        // implementation-defined behaviour in C# when the double is outside
+        // the int range - so `(2 ** 32 + 5) | 0` and `(NaN) | 0` returned
+        // garbage instead of the spec-mandated 5 and 0. Both pop up in real
+        // code: bundlers use `x | 0` to truncate, and integer arithmetic at
+        // the 32-bit boundary is common.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static int ToInt32(double number)
+        {
+            if (double.IsNaN(number) || double.IsInfinity(number) || number == 0.0)
+            {
+                return 0;
+            }
+
+            // Step 3 + 4: sign(n) * floor(|n|), then modulo 2^32.
+            const double twoPow32 = 4294967296.0;
+            double posInt = number >= 0 ? Math.Floor(number) : Math.Ceiling(number);
+            double int32bit = posInt - twoPow32 * Math.Floor(posInt / twoPow32);
+            if (int32bit >= 2147483648.0) // 2^31
+            {
+                int32bit -= twoPow32;
+            }
+            return (int)int32bit;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static uint ToUint32(double number)
+        {
+            if (double.IsNaN(number) || double.IsInfinity(number) || number == 0.0)
+            {
+                return 0u;
+            }
+
+            const double twoPow32 = 4294967296.0;
+            double posInt = number >= 0 ? Math.Floor(number) : Math.Ceiling(number);
+            double int32bit = posInt - twoPow32 * Math.Floor(posInt / twoPow32);
+            return (uint)int32bit;
+        }
+
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private static string PropertyKey(in FenValue value)
         {
@@ -2192,43 +2239,43 @@ run_loop_restart:
                             }
                             case OpCode.BitwiseAnd:
                             {
-                                var right = (int)_stack[--_sp].ToNumber();
-                                var left = (int)_stack[--_sp].ToNumber();
+                                var right = ToInt32(_stack[--_sp].ToNumber());
+                                var left = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left & right);
                                 break;
                             }
                             case OpCode.BitwiseOr:
                             {
-                                var right = (int)_stack[--_sp].ToNumber();
-                                var left = (int)_stack[--_sp].ToNumber();
+                                var right = ToInt32(_stack[--_sp].ToNumber());
+                                var left = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left | right);
                                 break;
                             }
                             case OpCode.BitwiseXor:
                             {
-                                var right = (int)_stack[--_sp].ToNumber();
-                                var left = (int)_stack[--_sp].ToNumber();
+                                var right = ToInt32(_stack[--_sp].ToNumber());
+                                var left = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left ^ right);
                                 break;
                             }
                             case OpCode.LeftShift:
                             {
-                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
-                                var left = (int)_stack[--_sp].ToNumber();
+                                var right = (int)(ToUint32(_stack[--_sp].ToNumber()) & 0x1F);
+                                var left = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left << right);
                                 break;
                             }
                             case OpCode.RightShift:
                             {
-                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
-                                var left = (int)_stack[--_sp].ToNumber();
+                                var right = (int)(ToUint32(_stack[--_sp].ToNumber()) & 0x1F);
+                                var left = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left >> right);
                                 break;
                             }
                             case OpCode.UnsignedRightShift:
                             {
-                                var right = (int)_stack[--_sp].ToNumber() & 0x1F;
-                                var left = (uint)_stack[--_sp].ToNumber();
+                                var right = (int)(ToUint32(_stack[--_sp].ToNumber()) & 0x1F);
+                                var left = ToUint32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(left >> right);
                                 break;
                             }
@@ -3359,7 +3406,7 @@ run_loop_restart:
                             }
                             case OpCode.BitwiseNot:
                             {
-                                var val = (int)_stack[--_sp].ToNumber();
+                                var val = ToInt32(_stack[--_sp].ToNumber());
                                 _stack[_sp++] = FenValue.FromNumber(~val);
                                 break;
                             }
