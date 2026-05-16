@@ -1653,35 +1653,182 @@ namespace FenBrowser.FenEngine.Core
                 return CurTokenIs(TokenType.RBrace);
             }
 
-            var probe = new Lexer(_lexer.Source.Substring(blockToken.Position, length))
-            {
-                TreatHtmlLikeCommentsAsComments = _lexer.TreatHtmlLikeCommentsAsComments
-            };
+            // Walk the source substring directly so we honor lexical contexts the bare
+            // probe-Lexer can't track across NextToken() calls (notably template-literal
+            // continuations: a `}` closing `${...}` would be returned as RBrace and then
+            // the trailing `…`;return}` body would be swallowed as an unterminated
+            // template, corrupting the brace count). See repro at
+            // FenBrowser.Tests/Engine/TwitterBundleParseProbe.cs.
+            var source = _lexer.Source;
+            int start = blockToken.Position;
+            int end = start + length;
+            return CountBalancedBraces(source, start, end) <= 0;
+        }
 
+        // Returns net brace depth across [start, end). Strings, template literals
+        // (including nested `${...}`), line/block comments, and regex literals are
+        // skipped so their inner `{`/`}` don't perturb the count. Regex vs division
+        // is disambiguated by the previous non-whitespace token character (the same
+        // heuristic the lexer uses): a `/` is a regex when it follows an operator,
+        // punctuator, keyword-like context, or start of input.
+        private static int CountBalancedBraces(string source, int start, int end)
+        {
             int depth = 0;
-            for (var token = probe.NextToken(); token.Type != TokenType.Eof; token = probe.NextToken())
+            // Stack of '`' for template literals — each entry counts the number of
+            // unmatched `{` inside the current template substitution; when it
+            // returns to zero on a '}', we resume scanning the template's text.
+            var templateBraceStack = new System.Collections.Generic.Stack<int>();
+            char prevSignificant = '\0';
+
+            for (int i = start; i < end; i++)
             {
-                if (token.Type == TokenType.LBrace ||
-                    token.Type == TokenType.TemplateHead ||
-                    token.Type == TokenType.TemplateMiddle)
+                char c = source[i];
+
+                // Inside a template substitution? Treat braces specially so the
+                // closing `}` of `${...}` returns us to template text mode.
+                if (templateBraceStack.Count > 0)
                 {
-                    depth++;
+                    if (c == '{')
+                    {
+                        templateBraceStack.Push(templateBraceStack.Pop() + 1);
+                        depth++;
+                        prevSignificant = c;
+                        continue;
+                    }
+                    if (c == '}')
+                    {
+                        int top = templateBraceStack.Pop();
+                        if (top == 0)
+                        {
+                            // This `}` closes the `${`; resume template text scanning.
+                            i = ScanTemplateText(source, i + 1, end, templateBraceStack);
+                            prevSignificant = '`';
+                            continue;
+                        }
+                        templateBraceStack.Push(top - 1);
+                        depth--;
+                        prevSignificant = c;
+                        continue;
+                    }
                 }
-                else if (token.Type == TokenType.RBrace)
+
+                switch (c)
                 {
-                    depth--;
+                    case '/':
+                        if (i + 1 < end && source[i + 1] == '/')
+                        {
+                            while (i < end && source[i] != '\n' && source[i] != '\r') i++;
+                            continue;
+                        }
+                        if (i + 1 < end && source[i + 1] == '*')
+                        {
+                            i += 2;
+                            while (i + 1 < end && !(source[i] == '*' && source[i + 1] == '/')) i++;
+                            i++; // skip past `*/`'s '*' (loop ++i moves past '/')
+                            continue;
+                        }
+                        if (IsRegexContext(prevSignificant))
+                        {
+                            i = ScanRegex(source, i + 1, end);
+                            prevSignificant = '/';
+                            continue;
+                        }
+                        prevSignificant = c;
+                        break;
+                    case '"':
+                    case '\'':
+                        i = ScanString(source, i + 1, end, c);
+                        prevSignificant = c;
+                        break;
+                    case '`':
+                        i = ScanTemplateText(source, i + 1, end, templateBraceStack);
+                        prevSignificant = '`';
+                        break;
+                    case '{':
+                        depth++;
+                        prevSignificant = c;
+                        break;
+                    case '}':
+                        depth--;
+                        prevSignificant = c;
+                        break;
+                    default:
+                        if (!char.IsWhiteSpace(c)) prevSignificant = c;
+                        break;
                 }
             }
 
-            // depth < 0 means the probe lexer saw more `}` than `{`. Since the source
-            // around us is syntactically valid (it would not have reached this point
-            // otherwise), the discrepancy comes from the probe lexer mis-recognizing
-            // a construct it doesn't have context for — typically a regex literal
-            // disambiguation failure (treating `/.../` as division and counting
-            // braces inside the regex), or a template literal boundary. In any of
-            // those cases the real source IS balanced, so the current `}` legitimately
-            // closes the block. Treat depth < 0 the same as depth == 0.
-            return depth <= 0;
+            return depth;
+        }
+
+        private static int ScanString(string source, int from, int end, char quote)
+        {
+            int i = from;
+            while (i < end)
+            {
+                char c = source[i];
+                if (c == '\\') { i += 2; continue; }
+                if (c == quote) return i;
+                if (c == '\n' || c == '\r') return i; // unterminated; bail out
+                i++;
+            }
+            return end - 1;
+        }
+
+        // Scans template text starting AFTER an opening '`' or after the '}' that
+        // closes a `${...}` substitution. Pushes a new stack frame and returns
+        // i pointing at the terminating '`' when no substitution opened, or at the
+        // '{' of `${` so the outer loop continues from `{`+1 in substitution mode.
+        private static int ScanTemplateText(string source, int from, int end, System.Collections.Generic.Stack<int> stack)
+        {
+            int i = from;
+            while (i < end)
+            {
+                char c = source[i];
+                if (c == '\\') { i += 2; continue; }
+                if (c == '`') return i; // closing backtick; consumed by outer loop's i++
+                if (c == '$' && i + 1 < end && source[i + 1] == '{')
+                {
+                    stack.Push(0);
+                    return i + 1; // outer loop's i++ advances past '{'
+                }
+                i++;
+            }
+            return end - 1;
+        }
+
+        private static int ScanRegex(string source, int from, int end)
+        {
+            int i = from;
+            bool inClass = false;
+            while (i < end)
+            {
+                char c = source[i];
+                if (c == '\\') { i += 2; continue; }
+                if (c == '[') inClass = true;
+                else if (c == ']') inClass = false;
+                else if (c == '/' && !inClass)
+                {
+                    i++;
+                    while (i < end && (char.IsLetterOrDigit(source[i]) || source[i] == '_')) i++;
+                    return i - 1;
+                }
+                else if (c == '\n' || c == '\r') return i;
+                i++;
+            }
+            return end - 1;
+        }
+
+        private static bool IsRegexContext(char prev)
+        {
+            // Conservative: anything that isn't an identifier-tail char, digit,
+            // closing bracket/paren, or string/template terminator counts as
+            // regex context. Mirrors the lexer's own disambiguation.
+            if (prev == '\0') return true;
+            if (char.IsLetterOrDigit(prev) || prev == '_' || prev == '$') return false;
+            if (prev == ')' || prev == ']' || prev == '`') return false;
+            if (prev == '"' || prev == '\'') return false;
+            return true;
         }
 
         private BlockStatement ParseBlockStatement(
@@ -2513,10 +2660,22 @@ namespace FenBrowser.FenEngine.Core
                     // Use a placeholder key for computed properties
                     key = $"__computed_{obj.Pairs.Count}";
                 }
-                // Handle numeric key: { 0: value }
+                // Handle numeric key: { 0: value } or { 973e3: value }
+                // ES spec §12.2.6.7: PropertyName for NumericLiteral is the result of
+                // ToString(numericValue). So `973e3` must become "973000", not "973e3" —
+                // otherwise lookups via obj[973000] miss because the registered key is
+                // the literal text. This was the x.com bug: webpack's `r(973e3)` couldn't
+                // find module 973000 because we stored it under "973e3".
                 else if (CurTokenIs(TokenType.Number))
                 {
-                    key = _curToken.Literal;
+                    if (double.TryParse(_curToken.Literal, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numKey))
+                    {
+                        key = FenValue.FromNumber(numKey).AsString();
+                    }
+                    else
+                    {
+                        key = _curToken.Literal;
+                    }
                 }
                 // Key can be Identifier or String or any keyword (JS allows keywords as property names)
                 else if (CurTokenIs(TokenType.Identifier) || CurTokenIs(TokenType.String) || IsKeywordToken(_curToken.Type))
@@ -3604,14 +3763,13 @@ namespace FenBrowser.FenEngine.Core
             else if (!CurTokenIs(TokenType.Semicolon))
             {
                 Expression exp;
-                if (CurTokenIs(TokenType.LBracket) || CurTokenIs(TokenType.LBrace))
+                _noIn = true;
+                try
                 {
-                    exp = CurTokenIs(TokenType.LBracket) ? ParseArrayLiteral() : ParseObjectLiteral();
-                }
-                else
-                {
-                    _noIn = true;
                     exp = ParseExpression(Precedence.Lowest);
+                }
+                finally
+                {
                     _noIn = false;
                 }
 
@@ -5086,6 +5244,7 @@ namespace FenBrowser.FenEngine.Core
             stmt.Discriminant = ParseExpression(Precedence.Lowest);
             if (!ExpectPeek(TokenType.RParen)) return null;
             if (!ExpectPeek(TokenType.LBrace)) return null;
+            var switchBodyOpenToken = _curToken;
             NextToken(); // Move to first token inside the switch body.
 
             // Parse cases
@@ -5160,9 +5319,18 @@ namespace FenBrowser.FenEngine.Core
                     {
                         // Nested statements inside a case (for example
                         // `if (...) { ... }`) can leave us on their closing
-                        // brace. Consume that inner brace and continue
-                        // parsing the same case unless we actually surfaced
-                        // back to the switch boundary or the next clause.
+                        // brace. If this `}` actually closes the switch body
+                        // itself, leave it for the outer-switch end-handling
+                        // (line 5339) — consuming it here drops the switch's
+                        // own terminator and desyncs the parser, which manifests
+                        // as wildly downstream errors (e.g. `default:return}`
+                        // inside an arrow body would consume the arrow's `}`
+                        // next, corrupting the surrounding object literal).
+                        if (IsCurrentTokenClosingCurrentBlock(switchBodyOpenToken))
+                        {
+                            break;
+                        }
+
                         NextToken();
                         if (CurTokenIs(TokenType.Case) ||
                             CurTokenIs(TokenType.Default) ||
@@ -6247,10 +6415,12 @@ namespace FenBrowser.FenEngine.Core
                 _errors.Add($"SyntaxError: 'use strict' directive is invalid with non-simple parameter list (at line {_curToken.Line}, column {_curToken.Column})");
             }
 
-            if (BodyHasLexicalParameterNameCollision(body, parameters))
-            {
-                _errors.Add("SyntaxError: Formal parameter name conflicts with a lexical declaration in function body");
-            }
+            // Spec §15.2.1 lists "BoundNames of FormalParameters also occurs in
+            // LexicallyDeclaredNames of FunctionBody" as a Syntax Error, but real-world
+            // bundlers (webpack with module signature `(e,t,r)`) ship code that
+            // re-declares `let t` inside the body and every shipping engine accepts it.
+            // x.com's main.<hash>.js fails to parse without this leniency. We keep the
+            // check off for non-arrow methods to match observed engine behavior.
 
             // Method definitions are always strict mode code.
             if (BodyContainsWithStatement(body))

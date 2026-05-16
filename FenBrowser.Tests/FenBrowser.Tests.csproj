@@ -22,6 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="TestData\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
     <ProjectReference Include="..\FenBrowser.Conformance\FenBrowser.Conformance.csproj" />

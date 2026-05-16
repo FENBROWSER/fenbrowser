@@ -978,6 +978,20 @@ const obj = {
             AssertNoErrors(parser);
         }
 
+        [Theory]
+        [InlineData("for ([] == (0 == ![]); d instanceof Object; 0) {}")]
+        [InlineData("for (a = 1; a < 10; a++) {}")]
+        [InlineData("for (foo(); bar(); baz()) {}")]
+        [InlineData("for (; i < 10; i++) {}")]
+        [InlineData("for (;;){}")]
+        public void Parse_ForStatementExpressionForms_NoErrors(string input)
+        {
+            var parser = CreateParser(input);
+            parser.ParseProgram();
+
+            AssertNoErrors(parser);
+        }
+
         [Fact]
         public void Parse_XVendor_ReactHelper_TryFinally_WithNestedIfElseAndDoWhile_NoErrors()
         {

@@ -122,5 +122,32 @@ namespace FenBrowser.Tests.Engine
             var result = _runtime.ExecuteSimple("`${(function(){ return 'ok'; })()}`");
             Assert.Equal("ok", result.ToString());
         }
+
+        [Fact]
+        public void TemplateLiteral_MinimumTwitterBundleForms_ShouldExecute()
+        {
+            var result = _runtime.ExecuteSimple(@"
+                var name = 'world';
+                var family = 'Inter';
+                var url = 'url(font.woff2)';
+                var a = `hello`;
+                var b = `hello ${name}`;
+                var css = function(strings, cssFamily, cssUrl) {
+                    return strings[0] + cssFamily + strings[1] + cssUrl + strings[2];
+                };
+                var c = css`
+  font-family: ${family};
+  src: ${url};
+`;
+                var tag = function(strings, first, second) {
+                    return strings.length + ':' + first + ':' + second;
+                };
+                tag`${a}${b}` + ':' + c;
+            ");
+
+            Assert.Contains("3:hello:hello world:", result.ToString());
+            Assert.Contains("font-family: Inter;", result.ToString());
+            Assert.Contains("src: url(font.woff2);", result.ToString());
+        }
     }
 }
