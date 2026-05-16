@@ -198,5 +198,47 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(7.0, runtime.GetGlobal("__methodCollisionSentinel").ToNumber());
             Assert.Equal(11.0, runtime.GetGlobal("__methodCollisionResult").ToNumber());
         }
+
+        [Fact]
+        public void NullishCoalescing_UsesStrictNullishSemantics()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                globalThis.__n0 = (undefined ?? 'fallback');
+                globalThis.__n1 = (null ?? 'fallback');
+                globalThis.__n2 = (0 ?? 'fallback');
+                globalThis.__n3 = (false ?? 'fallback');
+                globalThis.__n4 = ('' ?? 'fallback');
+            ");
+
+            Assert.Equal("fallback", runtime.GetGlobal("__n0").ToString());
+            Assert.Equal("fallback", runtime.GetGlobal("__n1").ToString());
+            Assert.Equal(0.0, runtime.GetGlobal("__n2").ToNumber());
+            Assert.Equal(false, runtime.GetGlobal("__n3").ToBoolean());
+            Assert.Equal(string.Empty, runtime.GetGlobal("__n4").ToString());
+        }
+
+        [Fact]
+        public void NullishAssignment_AssignsOnlyWhenLeftIsNullish()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var a = undefined;
+                var b = null;
+                var c = 0;
+                a ??= 5;
+                b ??= 6;
+                c ??= 7;
+                globalThis.__na = a;
+                globalThis.__nb = b;
+                globalThis.__nc = c;
+            ");
+
+            Assert.Equal(5.0, runtime.GetGlobal("__na").ToNumber());
+            Assert.Equal(6.0, runtime.GetGlobal("__nb").ToNumber());
+            Assert.Equal(0.0, runtime.GetGlobal("__nc").ToNumber());
+        }
     }
 }
