@@ -89,5 +89,38 @@ namespace FenBrowser.Tests.Engine
             ");
             Assert.Equal("ok", result.ToString());
         }
+
+        [Fact]
+        public void TaggedTemplate_MultilineCssWithMultipleExpressions()
+        {
+            var result = _runtime.ExecuteSimple(@"
+                var css = function(strings, family, src) {
+                    return strings[0] + family + strings[1] + src + strings[2];
+                };
+                var e = { family: 'Inter' };
+                var t = 'url(font.woff2)';
+                css`
+  font-family: ${e.family};
+  src: ${t};
+`;
+            ");
+
+            Assert.Contains("font-family: Inter;", result.ToString());
+            Assert.Contains("src: url(font.woff2);", result.ToString());
+        }
+
+        [Fact]
+        public void TemplateExpression_EndingWithObjectLiteralBrace_UsesFollowingBraceAsTemplateClose()
+        {
+            var result = _runtime.ExecuteSimple("`${{family:'Inter'}.family}`");
+            Assert.Equal("Inter", result.ToString());
+        }
+
+        [Fact]
+        public void TemplateExpression_EndingWithFunctionBlockBrace_UsesFollowingBraceAsTemplateClose()
+        {
+            var result = _runtime.ExecuteSimple("`${(function(){ return 'ok'; })()}`");
+            Assert.Equal("ok", result.ToString());
+        }
     }
 }

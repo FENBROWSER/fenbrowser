@@ -1064,7 +1064,8 @@ namespace FenBrowser.FenEngine.Core
                 // But in template context, this brace is actually the start of Middle or Tail.
                 // We must coordinate with Lexer to reinterpret/consume it correctly.
                 
-                if (CurTokenIs(TokenType.RBrace))
+                if (CurTokenIs(TokenType.RBrace) &&
+                    !(PeekTokenIs(TokenType.RBrace) && ExpressionMayLeaveTrailingInnerBrace(expression)))
                 {
                     // Some nested parsers can legitimately leave us already sitting on the
                     // template expression closer. In that case, ignore the stale peek token
