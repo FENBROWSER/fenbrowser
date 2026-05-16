@@ -123,5 +123,80 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(1.0, runtime.GetGlobal("__gateKeysLength").ToNumber());
             Assert.Equal(true, runtime.GetGlobal("__gateEvery").ToBoolean());
         }
+
+        [Fact]
+        public void DescriptorProbe_AfterObjectKeys_DoesNotReturnUndefinedForOwnKey()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var gate = {};
+                gate.j = function() { return true; };
+                var key = Object.keys(gate)[0];
+                var descriptor = Object.getOwnPropertyDescriptor(gate, key);
+                globalThis.__descriptorExists = !!descriptor;
+                globalThis.__descriptorWritableType = typeof descriptor.writable;
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__descriptorExists").ToBoolean());
+            Assert.Equal("boolean", runtime.GetGlobal("__descriptorWritableType").ToString());
+        }
+
+        [Fact]
+        public void DescriptorOrEmptyObject_WritableRead_DoesNotThrow()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                globalThis.__descriptorOrOk = false;
+                globalThis.__descriptorOrType = 'unset';
+                try {
+                    var maybe = Object.getOwnPropertyDescriptor(function demo(){}, 'missing');
+                    var writable = (maybe || {}).writable;
+                    globalThis.__descriptorOrType = typeof writable;
+                    globalThis.__descriptorOrOk = true;
+                } catch (e) {
+                    globalThis.__descriptorOrOk = false;
+                    globalThis.__descriptorOrType = String(e && e.message || e);
+                }
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__descriptorOrOk").ToBoolean());
+            Assert.Equal("undefined", runtime.GetGlobal("__descriptorOrType").ToString());
+        }
+
+        [Fact]
+        public void SyntheticTempNameCollision_DoesNotClobberUserBinding()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var __fenbc_object_literal_0 = 41;
+                var out = (__fenbc_object_literal_0 || {}).writable;
+                globalThis.__collisionBinding = __fenbc_object_literal_0;
+                globalThis.__collisionType = typeof out;
+            ");
+
+            Assert.Equal(41.0, runtime.GetGlobal("__collisionBinding").ToNumber());
+            Assert.Equal("undefined", runtime.GetGlobal("__collisionType").ToString());
+        }
+
+        [Fact]
+        public void SyntheticMethodTempNameCollision_DoesNotBreakObjectLiteralConstruction()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var __fenbc_object_method_0 = 7;
+                var box = {
+                  run: function() { return 11; }
+                };
+                globalThis.__methodCollisionSentinel = __fenbc_object_method_0;
+                globalThis.__methodCollisionResult = box.run();
+            ");
+
+            Assert.Equal(7.0, runtime.GetGlobal("__methodCollisionSentinel").ToNumber());
+            Assert.Equal(11.0, runtime.GetGlobal("__methodCollisionResult").ToNumber());
+        }
     }
 }
