@@ -659,6 +659,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is OptionalChainExpression optionalChainExpr)
             {
+                if (optionalChainExpr.IsCall)
+                {
+                    EmitOptionalCall(optionalChainExpr);
+                    return;
+                }
+
                 // Evaluate base and short-circuit to undefined if null/undefined.
                 Visit(optionalChainExpr.Object);
 
@@ -672,34 +678,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Emit(OpCode.StrictEqual);
                 int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
 
-                if (optionalChainExpr.IsCall)
-                {
-                    // Optional call should return undefined for non-functions.
-                    Emit(OpCode.Dup);
-                    Emit(OpCode.Typeof);
-                    int functionTypeConst = AddConstant(FenValue.FromString("function"));
-                    Emit(OpCode.LoadConst);
-                    EmitInt32(functionTypeConst);
-                    Emit(OpCode.StrictEqual);
-                    int jumpNotCallable = EmitJump(OpCode.JumpIfFalse);
-
-                    foreach (var arg in optionalChainExpr.Arguments)
-                    {
-                        Visit(arg);
-                    }
-                    Emit(OpCode.Call);
-                    EmitInt32(optionalChainExpr.Arguments.Count);
-                    int jumpEndCall = EmitJump(OpCode.Jump);
-
-                    int notCallableTarget = _instructions.Count;
-                    PatchJumpTo(jumpNotCallable, notCallableTarget);
-                    Emit(OpCode.Pop);
-                    Emit(OpCode.LoadUndefined);
-
-                    int endCallTarget = _instructions.Count;
-                    PatchJumpTo(jumpEndCall, endCallTarget);
-                }
-                else if (optionalChainExpr.IsComputed)
+                if (optionalChainExpr.IsComputed)
                 {
                     if (optionalChainExpr.Property == null)
                     {
@@ -1847,6 +1826,65 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
             Emit(OpCode.Call);
             EmitInt32((taggedTemplateExpr.Expressions?.Count ?? 0) + 1);
+        }
+
+        private void EmitOptionalCall(OptionalChainExpression optionalChainExpr)
+        {
+            bool isMethodCall = false;
+            if (optionalChainExpr.Object is MemberExpression memberCallTarget)
+            {
+                isMethodCall = true;
+                Visit(memberCallTarget.Object);
+                Emit(OpCode.Dup);
+                int keyIdx = AddConstant(FenValue.FromString(memberCallTarget.Property));
+                Emit(OpCode.LoadConst);
+                EmitInt32(keyIdx);
+                Emit(OpCode.LoadProp);
+            }
+            else if (optionalChainExpr.Object is IndexExpression indexCallTarget)
+            {
+                isMethodCall = true;
+                Visit(indexCallTarget.Left);
+                Emit(OpCode.Dup);
+                Visit(indexCallTarget.Index);
+                Emit(OpCode.LoadProp);
+            }
+            else
+            {
+                Visit(optionalChainExpr.Object);
+            }
+
+            Emit(OpCode.Dup);
+            Emit(OpCode.LoadNull);
+            Emit(OpCode.Equal);
+            int jumpNullish = EmitJump(OpCode.JumpIfTrue);
+
+            Emit(OpCode.Dup);
+            Emit(OpCode.LoadUndefined);
+            Emit(OpCode.StrictEqual);
+            int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+
+            foreach (var arg in optionalChainExpr.Arguments)
+            {
+                Visit(arg);
+            }
+
+            Emit(isMethodCall ? OpCode.CallMethod : OpCode.Call);
+            EmitInt32(optionalChainExpr.Arguments.Count);
+            int jumpEnd = EmitJump(OpCode.Jump);
+
+            int nullishTarget = _instructions.Count;
+            PatchJumpTo(jumpNullish, nullishTarget);
+            PatchJumpTo(jumpUndefined, nullishTarget);
+            Emit(OpCode.Pop);
+            if (isMethodCall)
+            {
+                Emit(OpCode.Pop);
+            }
+            Emit(OpCode.LoadUndefined);
+
+            int endTarget = _instructions.Count;
+            PatchJumpTo(jumpEnd, endTarget);
         }
 
         private void EmitStringArrayWithRaw(List<string> strings)

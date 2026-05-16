@@ -138,6 +138,88 @@ namespace FenBrowser.FenEngine.Core
             }
         }
 
+        public IEnumerable<string> GetDiagnosticBindingNames(int maxCount = 32)
+        {
+            int count = 0;
+            foreach (var name in _store.Keys)
+            {
+                if (count++ >= maxCount)
+                {
+                    yield break;
+                }
+
+                yield return name;
+            }
+
+            foreach (var name in _tdz)
+            {
+                if (count++ >= maxCount)
+                {
+                    yield break;
+                }
+
+                yield return name + "<tdz>";
+            }
+
+            if (_importBindings != null)
+            {
+                foreach (var name in _importBindings.Keys)
+                {
+                    if (count++ >= maxCount)
+                    {
+                        yield break;
+                    }
+
+                    yield return name + "<import>";
+                }
+            }
+        }
+
+        public string GetDiagnosticEnvironmentType()
+        {
+            if (_isWithEnvironment)
+            {
+                return "with";
+            }
+
+            if (_isLexicalScope)
+            {
+                return "lexical";
+            }
+
+            return IsGlobalEnvironment ? "global" : "function";
+        }
+
+        public string GetDiagnosticLocalBindingState(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return "missing";
+            }
+
+            if (_isWithEnvironment && HasWithBinding(name))
+            {
+                return "with";
+            }
+
+            if (_store.ContainsKey(name))
+            {
+                return "stored";
+            }
+
+            if (_tdz.Contains(name))
+            {
+                return "tdz";
+            }
+
+            if (_importBindings != null && _importBindings.ContainsKey(name))
+            {
+                return "import";
+            }
+
+            return "missing";
+        }
+
         public bool TryGetLocal(string name, out FenValue value)
         {
             if (_isWithEnvironment)

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using FenBrowser.FenEngine.Configuration;
@@ -1590,7 +1591,73 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
                 return frame.Environment.Get(varName);
             }
 
+            LogMissingVariableResolution(frame, varName);
             throw new FenReferenceError($"ReferenceError: {varName} is not defined");
+        }
+
+        private static void LogMissingVariableResolution(CallFrame frame, string varName)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.Append("[VM_ResolveMissing] name=");
+                sb.Append(varName ?? string.Empty);
+
+                bool declaredLocalSlot = false;
+                if (frame?.Block?.LocalSlotNames != null)
+                {
+                    for (int i = 0; i < frame.Block.LocalSlotNames.Count; i++)
+                    {
+                        if (string.Equals(frame.Block.LocalSlotNames[i], varName, StringComparison.Ordinal))
+                        {
+                            declaredLocalSlot = true;
+                            break;
+                        }
+                    }
+                }
+
+                sb.Append(" compiledLocalSlot=");
+                sb.Append(declaredLocalSlot ? "yes" : "no");
+
+                int depth = 0;
+                var visited = new HashSet<FenEnvironment>();
+                for (var env = frame?.Environment; env != null; env = env.Outer)
+                {
+                    if (!visited.Add(env))
+                    {
+                        sb.Append(" scopeCycle=yes");
+                        break;
+                    }
+
+                    sb.Append(" | depth=");
+                    sb.Append(depth++);
+                    sb.Append(" type=");
+                    sb.Append(env.GetDiagnosticEnvironmentType());
+                    sb.Append(" localState=");
+                    sb.Append(env.GetDiagnosticLocalBindingState(varName));
+                    sb.Append(" bindings=[");
+
+                    bool first = true;
+                    foreach (var bindingName in env.GetDiagnosticBindingNames())
+                    {
+                        if (!first)
+                        {
+                            sb.Append(',');
+                        }
+
+                        sb.Append(bindingName);
+                        first = false;
+                    }
+
+                    sb.Append(']');
+                }
+
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText("js_debug.log", sb.Append('\n').ToString());
+            }
+            catch
+            {
+                // Missing-binding diagnostics must never change runtime semantics.
+            }
         }
 
         private static bool TryResolveGlobalObjectProperty(CallFrame frame, string varName, out FenValue value)

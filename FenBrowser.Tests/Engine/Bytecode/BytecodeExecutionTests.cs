@@ -804,8 +804,51 @@ namespace FenBrowser.Tests.Engine.Bytecode
         [Fact]
         public void Bytecode_OptionalChain_OptionalCall_ShouldWork()
         {
-            var result = Evaluate("var fn = function(x) { return x + 1; }; var a = fn?.(41); var b = 3?.(); typeof b + ':' + a;");
+            var result = Evaluate("var fn = function(x) { return x + 1; }; var a = fn?.(41); var missing = undefined; var b = missing?.(); typeof b + ':' + a;");
             Assert.Equal("undefined:42", result.AsString());
+        }
+
+        [Fact]
+        public void Bytecode_OptionalChain_NonCallableCall_ShouldThrowTypeError()
+        {
+            var ex = Assert.Throws<Exception>(() => Evaluate("var value = 3; value?.();"));
+            Assert.Contains("TypeError", ex.Message);
+            Assert.Contains("is not a function", ex.Message);
+        }
+
+        [Fact]
+        public void Bytecode_OptionalChain_MemberCall_PreservesThisBinding()
+        {
+            var result = Evaluate("var obj = { x: 7, get: function() { return this.x; } }; obj.get?.();");
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_CommaDetachedMemberCall_DoesNotPreserveThisBinding()
+        {
+            var result = Evaluate("var x = 1; var obj = { x: 7, get: function() { return this.x; } }; (0, obj.get)();");
+            Assert.True(result.IsUndefined);
+        }
+
+        [Fact]
+        public void Bytecode_MissingVariableResolution_LogsScopeDiagnostics()
+        {
+            var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
+            var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+
+            var ex = Assert.Throws<Exception>(() => Evaluate("function outer() { var declared = 1; return missingBinding; } outer();"));
+            Assert.Contains("missingBinding", ex.Message);
+
+            var contents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+            var appended = previousContents.Length > 0 && previousContents.Length < contents.Length
+                ? contents.Substring(previousContents.Length)
+                : contents;
+
+            Assert.Contains("[VM_ResolveMissing] name=missingBinding", appended);
+            Assert.Contains("depth=0", appended);
+            Assert.Contains("type=function", appended);
+            Assert.Contains("bindings=[", appended);
+            Assert.Contains("declared", appended);
         }
 
         [Fact]
