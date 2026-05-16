@@ -34,6 +34,22 @@ namespace FenBrowser.FenEngine.Core.Bytecode
             SourceLineMap = new Dictionary<int, int>();
         }
 
+        /// <summary>
+        /// Property load/store inline caches, keyed by instruction offset. Owned directly
+        /// (no ConditionalWeakTable) to save one hash lookup per LoadProp/StoreProp dispatch.
+        /// Allocated lazily on first miss.
+        /// </summary>
+        internal object LoadPropertyInlineCacheStorage;
+        internal object StorePropertyInlineCacheStorage;
+
+        /// <summary>
+        /// Variable inline cache, keyed by instruction offset of a LoadVar opcode. Stores the
+        /// resolved binding environment + slot so subsequent calls skip the full env-chain walk
+        /// performed by ResolveVariable. Validity is checked by env-identity walk against the
+        /// current frame; mismatches fall through to the slow path (polymorphic closure context).
+        /// </summary>
+        internal object LoadVarInlineCacheStorage;
+
         public string GetLocalSlotName(int slotIndex)
         {
             if ((uint)slotIndex >= (uint)LocalSlotCount)

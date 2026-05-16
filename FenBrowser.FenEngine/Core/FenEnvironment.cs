@@ -108,6 +108,16 @@ namespace FenBrowser.FenEngine.Core
                     return binding.Namespace.Get(binding.ExportName);
                 }
 
+                // Fast-slot is authoritative for slot-managed locals: StoreLocal no longer mirrors
+                // to _store on each assignment, so consult FastStore before the dictionary.
+                if (env._fastSlotByName != null &&
+                    env._fastSlotByName.TryGetValue(name, out var slotIndex) &&
+                    env.FastStore != null &&
+                    (uint)slotIndex < (uint)env.FastStore.Length)
+                {
+                    return env.FastStore[slotIndex];
+                }
+
                 if (env._store.TryGetValue(name, out var value))
                 {
                     return value;
@@ -243,6 +253,17 @@ namespace FenBrowser.FenEngine.Core
             if (_importBindings != null && _importBindings.TryGetValue(name, out var binding))
             {
                 value = binding.Namespace.Get(binding.ExportName);
+                return true;
+            }
+
+            // Fast-slot is authoritative for slot-managed locals: StoreLocal no longer mirrors
+            // to _store on each assignment. Slot existence implies binding existence.
+            if (_fastSlotByName != null &&
+                _fastSlotByName.TryGetValue(name, out var slotIndex) &&
+                FastStore != null &&
+                (uint)slotIndex < (uint)FastStore.Length)
+            {
+                value = FastStore[slotIndex];
                 return true;
             }
 

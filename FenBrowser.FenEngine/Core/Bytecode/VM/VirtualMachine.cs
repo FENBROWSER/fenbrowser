@@ -911,6 +911,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         private long _totalInstructionCount;
         private Security.IResourceLimits _limits;
 
+        // IC instrumentation (diagnostic — set via env FEN_VM_IC_STATS=1)
+        internal static long s_icLoadHits;
+        internal static long s_icLoadMisses;
+        internal static long s_superIncCount;
+        internal static long s_superLessCount;
+
         public VirtualMachine()
         {
         }
@@ -1459,13 +1465,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Dictionary<int, PolymorphicInlineCache> GetLoadPropertyInlineCache(CodeBlock block)
         {
-            return s_loadPropertyInlineCaches.GetOrCreateValue(block);
+            // Direct field on CodeBlock — one cmovne/branch instead of a ConditionalWeakTable hash lookup.
+            var cache = (Dictionary<int, PolymorphicInlineCache>)block.LoadPropertyInlineCacheStorage;
+            if (cache == null)
+            {
+                cache = new Dictionary<int, PolymorphicInlineCache>();
+                block.LoadPropertyInlineCacheStorage = cache;
+            }
+            return cache;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Dictionary<int, PolymorphicInlineCache> GetStorePropertyInlineCache(CodeBlock block)
         {
-            return s_storePropertyInlineCaches.GetOrCreateValue(block);
+            var cache = (Dictionary<int, PolymorphicInlineCache>)block.StorePropertyInlineCacheStorage;
+            if (cache == null)
+            {
+                cache = new Dictionary<int, PolymorphicInlineCache>();
+                block.StorePropertyInlineCacheStorage = cache;
+            }
+            return cache;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2094,6 +2113,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         {
             var longRunTrace = IsLongRunTraceEnabled() ? Stopwatch.StartNew() : null;
             long nextLongRunTraceMs = LongRunTraceIntervalMs;
+            // Hot-path locals: counters live in a register for the whole dispatch loop,
+            // synced back to fields only on rare events (cancel-check, frame change).
+            int dispatchCount = 0;
 
 run_loop_restart:
             try
@@ -2104,12 +2126,15 @@ run_loop_restart:
                     var frame = _callFrames[_frameCount - 1];
                     var instructions = frame.Block.Instructions;
                     var constants = frame.Block.Constants;
-                    
+
                     while (frame.IP < instructions.Length)
                     {
-                        // Cooperative cancellation + resource limit check (amortized: once per CANCEL_CHECK_INTERVAL instructions)
-                        if (++_instructionsSinceCancelCheck >= CANCEL_CHECK_INTERVAL)
+                        // Cooperative cancellation + resource limit + long-run trace check.
+                        // Amortized: every CANCEL_CHECK_INTERVAL (4096) instructions. The per-op
+                        // cost is one local increment + compare + predicted-not-taken branch.
+                        if (++dispatchCount >= CANCEL_CHECK_INTERVAL)
                         {
+                            dispatchCount = 0;
                             _instructionsSinceCancelCheck = 0;
                             if (_cancellationToken.IsCancellationRequested)
                                 throw new OperationCanceledException(_cancellationToken);
@@ -2126,19 +2151,21 @@ run_loop_restart:
                                     throw new Errors.FenResourceError(
                                         $"Error: Script exceeded memory limit ({_limits.MaxTotalMemory / (1024 * 1024)}MB). Allocated: {allocatedBytes / (1024 * 1024)}MB.");
                             }
+
+                            // Long-run trace folded into the cancel interval — was a per-op
+                            // null-check + branch before; now runs at most once per 4096 ops.
+                            if (longRunTrace != null &&
+                                longRunTrace.ElapsedMilliseconds >= nextLongRunTraceMs)
+                            {
+                                nextLongRunTraceMs += LongRunTraceIntervalMs;
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    $"[VM-LONGRUN] elapsed={longRunTrace.ElapsedMilliseconds}ms ip={frame.IP}/{instructions.Length} frames={_frameCount} sp={_sp} pendingTasks={EventLoopCoordinator.Instance.TaskCount} pendingMicrotasks={EventLoopCoordinator.Instance.MicrotaskCount}",
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            }
                         }
 
                         OpCode op = (OpCode)instructions[frame.IP++];
                         int instructionOffset = frame.IP - 1;
-
-                        if (longRunTrace != null &&
-                            longRunTrace.ElapsedMilliseconds >= nextLongRunTraceMs)
-                        {
-                            nextLongRunTraceMs += LongRunTraceIntervalMs;
-                            FenBrowser.Core.EngineLogCompat.Warn(
-                                $"[VM-LONGRUN] elapsed={longRunTrace.ElapsedMilliseconds}ms ip={instructionOffset}/{instructions.Length} op={op} frames={_frameCount} sp={_sp} pendingTasks={EventLoopCoordinator.Instance.TaskCount} pendingMicrotasks={EventLoopCoordinator.Instance.MicrotaskCount}",
-                                FenBrowser.Core.Logging.LogCategory.JavaScript);
-                        }
 
                         switch (op)
                         {
@@ -2171,7 +2198,17 @@ run_loop_restart:
                             {
                                 var right = _stack[--_sp];
                                 var left = _stack[--_sp];
-                                _stack[_sp++] = ExecuteAdd(left, right);
+                                // Fast path: both operands are numbers. Skips ExecuteAdd's full
+                                // ToPrimitive/string-concat/BigInt/Symbol dispatch (10+ branches).
+                                if (left.Type == Interfaces.ValueType.Number &&
+                                    right.Type == Interfaces.ValueType.Number)
+                                {
+                                    _stack[_sp++] = FenValue.FromNumber(left._numberValue + right._numberValue);
+                                }
+                                else
+                                {
+                                    _stack[_sp++] = ExecuteAdd(left, right);
+                                }
                                 break;
                             }
                             case OpCode.Subtract:
@@ -2608,20 +2645,152 @@ run_loop_restart:
                             }
                             case OpCode.StoreLocal:
                             {
+                                // Fast path: slot-managed locals only update FastStore. The dictionary
+                                // mirror (formerly done via frame.Environment.Set(name, value)) is dead
+                                // weight because slot-aware readers (LoadLocal/Get/TryGetLocal/ResolveCapturedLocal)
+                                // already consult FastStore. Declaration semantics are still established
+                                // once by StoreLocalDeclaration, so the dictionary holds the binding marker.
                                 int localSlot = ReadInt32(instructions, ref frame);
                                 var value = _stack[--_sp];
                                 frame.Environment.SetFast(localSlot, value);
-                                string localName = frame.Block.GetLocalSlotName(localSlot);
-                                if (!string.IsNullOrEmpty(localName))
+                                _stack[_sp++] = value;
+                                break;
+                            }
+                            case OpCode.IncrementLocalByConst:
+                            {
+                                s_superIncCount++;
+                                // Superinstruction: local[slot] = local[slot] + constants[c]; push result.
+                                // Replaces LoadLocal + LoadConst + Add + StoreLocal (4 dispatches → 1).
+                                // Hot path: both number values use direct double add; falls back to ExecuteAdd otherwise.
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                int constIndex = ReadInt32(instructions, ref frame);
+                                var current = frame.Environment.GetFast(localSlot);
+                                var addend = constants[constIndex];
+                                FenValue result;
+                                if (current.Type == Interfaces.ValueType.Number &&
+                                    addend.Type == Interfaces.ValueType.Number)
                                 {
-                                    frame.Environment.Set(localName, value);
+                                    result = FenValue.FromNumber(current._numberValue + addend._numberValue);
+                                }
+                                else
+                                {
+                                    result = ExecuteAdd(current, addend);
+                                }
+                                frame.Environment.SetFast(localSlot, result);
+                                _stack[_sp++] = result; // Match StoreLocal's "leave value on stack" semantic
+                                break;
+                            }
+                            case OpCode.LocalSubtractByConst:
+                            {
+                                // Superinstruction: push local[slot] - constants[c].
+                                // Replaces LoadLocal + LoadConst + Subtract (3 dispatches → 1).
+                                int subSlot = ReadInt32(instructions, ref frame);
+                                int subConstIdx = ReadInt32(instructions, ref frame);
+                                var subLeft = frame.Environment.GetFast(subSlot);
+                                var subRight = constants[subConstIdx];
+                                double subL = subLeft.Type == Interfaces.ValueType.Number
+                                    ? subLeft._numberValue : subLeft.ToNumber();
+                                double subR = subRight.Type == Interfaces.ValueType.Number
+                                    ? subRight._numberValue : subRight.ToNumber();
+                                _stack[_sp++] = FenValue.FromNumber(subL - subR);
+                                break;
+                            }
+                            case OpCode.LocalLessThanConst:
+                            {
+                                s_superLessCount++;
+                                // Superinstruction: push (local[slot] < constants[c]) as boolean.
+                                // Replaces LoadLocal + LoadConst + LessThan (3 dispatches → 1).
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                int constIndex = ReadInt32(instructions, ref frame);
+                                var left = frame.Environment.GetFast(localSlot);
+                                var right = constants[constIndex];
+                                bool less;
+                                if (left.Type == Interfaces.ValueType.Number &&
+                                    right.Type == Interfaces.ValueType.Number)
+                                {
+                                    less = left._numberValue < right._numberValue;
+                                }
+                                else
+                                {
+                                    // Fall back to ToNumber semantics; full abstract relational comparison
+                                    // is only needed for string/bigint operands which are uncommon in loops.
+                                    less = left.ToNumber() < right.ToNumber();
+                                }
+                                _stack[_sp++] = FenValue.FromBoolean(less);
+                                break;
+                            }
+                            case OpCode.IncrementVarByConst:
+                            {
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                int constIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var current = ResolveVariable(frame, varName);
+                                if (current.Type == JsValueType.Error)
+                                {
+                                    throw new FenInternalError(current.ToString());
+                                }
+
+                                var addend = constants[constIndex];
+                                FenValue result;
+                                if (current.Type == Interfaces.ValueType.Number &&
+                                    addend.Type == Interfaces.ValueType.Number)
+                                {
+                                    result = FenValue.FromNumber(current._numberValue + addend._numberValue);
+                                }
+                                else
+                                {
+                                    result = ExecuteAdd(current, addend);
+                                }
+
+                                bool strictAssignment = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                bool hasResolvedBinding = frame.Environment.ResolveBindingEnvironment(varName) != null;
+                                if (!strictAssignment && !hasResolvedBinding && TryAssignUndeclaredToGlobal(frame, varName, result))
+                                {
                                     if (CanUseBindingCache(frame))
                                     {
-                                        frame.CacheBindingEnvironment(localName, frame.Environment);
+                                        frame.RemoveCachedBindingEnvironment(varName);
+                                    }
+                                }
+                                else
+                                {
+                                    var updateResult = frame.Environment.Update(varName, result, strictAssignment);
+                                    if (updateResult.Type == JsValueType.Error)
+                                    {
+                                        throw new FenInternalError(updateResult.ToString());
+                                    }
+                                    if (CanUseBindingCache(frame))
+                                    {
+                                        frame.RemoveCachedBindingEnvironment(varName);
                                     }
                                 }
 
-                                _stack[_sp++] = value;
+                                _stack[_sp++] = result;
+                                break;
+                            }
+                            case OpCode.VarLessThanConst:
+                            {
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                int constIndex = ReadInt32(instructions, ref frame);
+                                string varName = GetStringConstant(frame.Block, constants, nameIndex);
+                                var left = ResolveVariable(frame, varName);
+                                if (left.Type == JsValueType.Error)
+                                {
+                                    throw new FenInternalError(left.ToString());
+                                }
+
+                                var right = constants[constIndex];
+                                bool less;
+                                if (left.Type == Interfaces.ValueType.Number &&
+                                    right.Type == Interfaces.ValueType.Number)
+                                {
+                                    less = left._numberValue < right._numberValue;
+                                }
+                                else
+                                {
+                                    less = left.ToNumber() < right.ToNumber();
+                                }
+
+                                _stack[_sp++] = FenValue.FromBoolean(less);
                                 break;
                             }
                             case OpCode.Dup:
@@ -2728,7 +2897,14 @@ run_loop_restart:
                                         BindSuperReference(func, newEnv, thisValue);
                                         BindSuperConstructorIfPresent(func, newEnv);
                                     }
-                                    BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    if (CanUseSimplePositionalBinding(func))
+                                    {
+                                        BindSimplePositionalArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
+                                    else
+                                    {
+                                        BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
 
                                     _sp = argStart - 1; // Pop callee + args
 
@@ -2845,7 +3021,14 @@ run_loop_restart:
                                         BindSuperReference(func, newEnv, thisVal);
                                         BindSuperConstructorIfPresent(func, newEnv);
                                     }
-                                    BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    if (CanUseSimplePositionalBinding(func))
+                                    {
+                                        BindSimplePositionalArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
+                                    else
+                                    {
+                                        BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
 
                                     _sp = argStart - 2; // Pop receiver + callee + args
 
@@ -3070,7 +3253,7 @@ run_loop_restart:
                                 _stack[_sp++] = FenValue.FromObject(obj);
                                 break;
                             }
-                case OpCode.LoadProp:
+                            case OpCode.LoadProp:
                 {
                     var prop = _stack[--_sp];
                     var obj = _stack[--_sp];
@@ -3096,15 +3279,21 @@ run_loop_restart:
                                             EnsureRegExpPrototype(fenObj, frame);
                                         }
 
+                                        // Hot path: short-circuit the DomEvent guard with a single
+                                        // type check before doing any string comparisons. For 99% of
+                                        // objects (not DomEvent) we now skip 6 per-op string Equals.
+                                        bool mustUseDynamicEventGetter = false;
+                                        if (fenObj is FenBrowser.FenEngine.DOM.DomEvent)
+                                        {
+                                            mustUseDynamicEventGetter =
+                                                string.Equals(key, "eventPhase", StringComparison.Ordinal) ||
+                                                string.Equals(key, "currentTarget", StringComparison.Ordinal) ||
+                                                string.Equals(key, "defaultPrevented", StringComparison.Ordinal) ||
+                                                string.Equals(key, "returnValue", StringComparison.Ordinal) ||
+                                                string.Equals(key, "cancelBubble", StringComparison.Ordinal) ||
+                                                string.Equals(key, "isTrusted", StringComparison.Ordinal);
+                                        }
                                         var cache = GetLoadPropertyInlineCache(frame.Block);
-                                        bool mustUseDynamicEventGetter =
-                                            fenObj is FenBrowser.FenEngine.DOM.DomEvent &&
-                                            (string.Equals(key, "eventPhase", StringComparison.Ordinal) ||
-                                             string.Equals(key, "currentTarget", StringComparison.Ordinal) ||
-                                             string.Equals(key, "defaultPrevented", StringComparison.Ordinal) ||
-                                             string.Equals(key, "returnValue", StringComparison.Ordinal) ||
-                                             string.Equals(key, "cancelBubble", StringComparison.Ordinal) ||
-                                             string.Equals(key, "isTrusted", StringComparison.Ordinal));
                                         if (!mustUseDynamicEventGetter &&
                                             TryLoadPropertyInlineCache(cache, instructionOffset, fenObj, key, out var cachedValue))
                                         {
@@ -3178,6 +3367,14 @@ run_loop_restart:
                                     _stack[_sp++] = FenValue.Undefined;
                                 }
                                 break;
+                            }
+                            case OpCode.LoadPropLocalConst:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                int constIndex = ReadInt32(instructions, ref frame);
+                                _stack[_sp++] = frame.Environment.GetFast(localSlot);
+                                _stack[_sp++] = constants[constIndex];
+                                goto case OpCode.LoadProp;
                             }
                             case OpCode.StoreProp:
                             {
@@ -3281,6 +3478,12 @@ run_loop_restart:
                                 }
                                 _stack[_sp++] = value;
                                 break;
+                            }
+                            case OpCode.StorePropLocal:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                _stack[_sp++] = frame.Environment.GetFast(localSlot);
+                                goto case OpCode.StoreProp;
                             }
                             case OpCode.ArrayAppend:
                             {
@@ -4044,6 +4247,30 @@ run_loop_restart:
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool CanUseSimplePositionalBinding(FenFunction func)
+        {
+            if (func == null || func.IsArrowFunction || func.NeedsArgumentsObject || func.Parameters == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < func.Parameters.Count; i++)
+            {
+                var parameter = func.Parameters[i];
+                if (parameter == null ||
+                    parameter.IsRest ||
+                    parameter.DefaultValue != null ||
+                    parameter.DestructuringPattern != null ||
+                    string.IsNullOrEmpty(parameter.Value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private static void SetFunctionBinding(FenFunction func, FenEnvironment env, string name, FenValue value)
         {
             env.Set(name, value);
@@ -4202,6 +4429,27 @@ run_loop_restart:
 
                     SetFunctionBinding(func, env, parameter.Value, FenValue.FromObject(restArray));
                     break;
+                }
+
+                var argValue = i < argCount ? _stack[firstArgStackIndex + i] : FenValue.Undefined;
+                SetFunctionBinding(func, env, parameter.Value, argValue);
+            }
+        }
+
+        private void BindSimplePositionalArgumentsFromStack(FenFunction func, FenEnvironment env, int argCount, int firstArgStackIndex)
+        {
+            if (func == null || env == null || func.Parameters == null)
+            {
+                return;
+            }
+
+            InitializeFunctionFastStore(func, env);
+            for (int i = 0; i < func.Parameters.Count; i++)
+            {
+                var parameter = func.Parameters[i];
+                if (parameter == null || string.IsNullOrEmpty(parameter.Value))
+                {
+                    continue;
                 }
 
                 var argValue = i < argCount ? _stack[firstArgStackIndex + i] : FenValue.Undefined;

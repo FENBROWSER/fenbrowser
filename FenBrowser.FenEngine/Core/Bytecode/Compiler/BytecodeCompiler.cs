@@ -516,7 +516,42 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is InfixExpression binExpr)
             {
-                if (TryEmitLinearInfixExpression(binExpr))
+                // Superinstruction peephole: localSlotVar < numericLiteral → LocalLessThanConst.
+                // Done BEFORE the linear-flattening handler so the fused opcode wins on hot for-loop bounds.
+                if (binExpr.Operator == "<" &&
+                    binExpr.Left is Identifier ltLeftIdent &&
+                    TryGetLocalSlot(ltLeftIdent.Value, out int ltSlotIdx) &&
+                    IsNumericLiteralExpression(binExpr.Right))
+                {
+                    int ltConstIdx2 = AddConstant(FenValue.FromNumber(GetNumericLiteralValue(binExpr.Right)));
+                    Emit(OpCode.LocalLessThanConst);
+                    EmitInt32(ltSlotIdx);
+                    EmitInt32(ltConstIdx2);
+                }
+                // Superinstruction peephole: script/global var < numericLiteral -> VarLessThanConst.
+                else if (binExpr.Operator == "<" &&
+                    binExpr.Left is Identifier varLtIdent &&
+                    IsNumericLiteralExpression(binExpr.Right))
+                {
+                    int varNameIdx = AddConstant(FenValue.FromString(varLtIdent.Value));
+                    int varLtConstIdx = AddConstant(FenValue.FromNumber(GetNumericLiteralValue(binExpr.Right)));
+                    Emit(OpCode.VarLessThanConst);
+                    EmitInt32(varNameIdx);
+                    EmitInt32(varLtConstIdx);
+                }
+                // Superinstruction peephole: localSlotVar - numericLiteral → LocalSubtractByConst.
+                // Hot path for recursion patterns like fib(n-1), fib(n-2).
+                else if (binExpr.Operator == "-" &&
+                    binExpr.Left is Identifier subLeftIdent &&
+                    TryGetLocalSlot(subLeftIdent.Value, out int subSlotIdx) &&
+                    IsNumericLiteralExpression(binExpr.Right))
+                {
+                    int subConstIdx2 = AddConstant(FenValue.FromNumber(GetNumericLiteralValue(binExpr.Right)));
+                    Emit(OpCode.LocalSubtractByConst);
+                    EmitInt32(subSlotIdx);
+                    EmitInt32(subConstIdx2);
+                }
+                else if (TryEmitLinearInfixExpression(binExpr))
                 {
                 }
                 else if ((binExpr.Operator == "++" || binExpr.Operator == "--") && binExpr.Right == null)
@@ -738,11 +773,23 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 if (!TryEmitLinearPropertyLoadChain(memberExpr))
                 {
-                    Visit(memberExpr.Object);
                     int idx = AddConstant(FenValue.FromString(memberExpr.Property));
-                    Emit(OpCode.LoadConst);
-                    EmitInt32(idx);
-                    Emit(OpCode.LoadProp);
+                    if (memberExpr.Object is Identifier baseIdentifier &&
+                        TryGetLocalSlot(baseIdentifier.Value, out int baseLocalSlot))
+                    {
+                        // Superinstruction peephole: localObj.staticProp -> LoadPropLocalConst
+                        // (fuses LoadLocal + LoadConst + LoadProp into one dispatch).
+                        Emit(OpCode.LoadPropLocalConst);
+                        EmitInt32(baseLocalSlot);
+                        EmitInt32(idx);
+                    }
+                    else
+                    {
+                        Visit(memberExpr.Object);
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(idx);
+                        Emit(OpCode.LoadProp);
+                    }
                 }
             }
             else if (node is IndexExpression indexExpr)
@@ -830,8 +877,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 var inferredName = GetInferredAssignmentName(assign.Left);
                 if (assign.Left is Identifier idNode)
                 {
-                    VisitFunctionWithInferredName(assign.Right, inferredName);
-                    EmitUpdateVarByName(idNode.Value);
+                    // Superinstruction peephole: x = x + literalNumber where x is a local slot
+                    // → emit IncrementLocalByConst (collapses LoadLocal+LoadConst+Add+StoreLocal → 1 op).
+                    if (TryEmitIncrementLocalByConst(idNode, assign.Right))
+                    {
+                        // already emitted
+                    }
+                    else if (TryEmitIncrementVarByConst(idNode, assign.Right))
+                    {
+                        // already emitted
+                    }
+                    else
+                    {
+                        VisitFunctionWithInferredName(assign.Right, inferredName);
+                        EmitUpdateVarByName(idNode.Value);
+                    }
                 }
                 else if (assign.Left is MemberExpression assignMember)
                 {
@@ -839,8 +899,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     int idx = AddConstant(FenValue.FromString(assignMember.Property));
                     Emit(OpCode.LoadConst);
                     EmitInt32(idx);
-                    VisitFunctionWithInferredName(assign.Right, inferredName);
-                    Emit(OpCode.StoreProp);
+                    if (assign.Right is Identifier rhsIdentifier && TryGetLocalSlot(rhsIdentifier.Value, out int rhsLocalSlot))
+                    {
+                        // Superinstruction peephole: obj.prop = localVar
+                        // -> StorePropLocal (reuses StoreProp semantics while fusing value-load dispatch).
+                        Emit(OpCode.StorePropLocal);
+                        EmitInt32(rhsLocalSlot);
+                    }
+                    else
+                    {
+                        VisitFunctionWithInferredName(assign.Right, inferredName);
+                        Emit(OpCode.StoreProp);
+                    }
                 }
                 else if (assign.Left is IndexExpression assignIndex)
                 {
@@ -3911,6 +3981,96 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             EmitInt32(idx);
         }
 
+        /// <summary>
+        /// Peephole: emit OpCode.IncrementLocalByConst when an assignment matches the pattern
+        /// <c>x = x + numericLiteral</c> (or <c>x = numericLiteral + x</c>) with x bound to a local slot.
+        /// Returns true on emit (caller skips its default emission path).
+        /// Falls back to runtime ExecuteAdd if the local turns out non-numeric — semantics preserved.
+        /// </summary>
+        private bool TryEmitIncrementLocalByConst(Identifier target, Expression rhs)
+        {
+            if (!(rhs is InfixExpression infix) || infix.Operator != "+")
+            {
+                return false;
+            }
+
+            if (!TryGetLocalSlot(target.Value, out int slot))
+            {
+                return false;
+            }
+
+            // Resolve which operand is the literal vs the matching identifier reference.
+            Expression literalSide = null;
+            if (infix.Left is Identifier li && li.Value == target.Value &&
+                IsNumericLiteralExpression(infix.Right))
+            {
+                literalSide = infix.Right;
+            }
+            else if (infix.Right is Identifier ri && ri.Value == target.Value &&
+                     IsNumericLiteralExpression(infix.Left))
+            {
+                literalSide = infix.Left;
+            }
+            else
+            {
+                return false;
+            }
+
+            double literalValue = GetNumericLiteralValue(literalSide);
+            int constIdx = AddConstant(FenValue.FromNumber(literalValue));
+            Emit(OpCode.IncrementLocalByConst);
+            EmitInt32(slot);
+            EmitInt32(constIdx);
+            return true;
+        }
+
+        private bool TryEmitIncrementVarByConst(Identifier target, Expression rhs)
+        {
+            if (!(rhs is InfixExpression infix) || infix.Operator != "+")
+            {
+                return false;
+            }
+
+            // Local slots should stay on the local superinstruction path.
+            if (TryGetLocalSlot(target.Value, out _))
+            {
+                return false;
+            }
+
+            Expression literalSide = null;
+            if (infix.Left is Identifier li && li.Value == target.Value &&
+                IsNumericLiteralExpression(infix.Right))
+            {
+                literalSide = infix.Right;
+            }
+            else if (infix.Right is Identifier ri && ri.Value == target.Value &&
+                     IsNumericLiteralExpression(infix.Left))
+            {
+                literalSide = infix.Left;
+            }
+            else
+            {
+                return false;
+            }
+
+            int nameIdx = AddConstant(FenValue.FromString(target.Value));
+            int constIdx = AddConstant(FenValue.FromNumber(GetNumericLiteralValue(literalSide)));
+            Emit(OpCode.IncrementVarByConst);
+            EmitInt32(nameIdx);
+            EmitInt32(constIdx);
+            return true;
+        }
+
+        private static bool IsNumericLiteralExpression(Expression e)
+            => e is IntegerLiteral || e is DoubleLiteral;
+
+        private static double GetNumericLiteralValue(Expression e)
+        {
+            if (e is IntegerLiteral il) return il.Value;
+            if (e is DoubleLiteral dl) return dl.Value;
+            return 0;
+        }
+
         private bool TryGetLocalSlot(string variableName, out int slotIndex)
         {
             slotIndex = -1;
@@ -5526,7 +5686,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             for (int i = 0; i <= instructions.Length - 5; i++)
             {
                 byte opcode = instructions[i];
-                if (opcode != (byte)OpCode.LoadLocal && opcode != (byte)OpCode.StoreLocal)
+                if (opcode != (byte)OpCode.LoadLocal &&
+                    opcode != (byte)OpCode.StoreLocal &&
+                    opcode != (byte)OpCode.StorePropLocal &&
+                    opcode != (byte)OpCode.IncrementLocalByConst &&
+                    opcode != (byte)OpCode.LocalSubtractByConst &&
+                    opcode != (byte)OpCode.LocalLessThanConst)
                 {
                     continue;
                 }

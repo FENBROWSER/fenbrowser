@@ -117,6 +117,32 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         DirectEval = 0x7E,
         SetFunctionHomeObject = 0x7F,
 
+        // 0x90 - 0x9F: Superinstructions (fused common patterns)
+        // Operands: localSlot (int32), constIndex (int32). Effect: local[slot] = local[slot] + constants[constIndex]
+        // (number fast-path; falls back to generic Add when types disagree). Saves 3 dispatches per use.
+        IncrementLocalByConst = 0x90,
+        // Operands: localSlot (int32), constIndex (int32). Pushes local[slot] < constants[constIndex] as boolean.
+        LocalLessThanConst = 0x91,
+        // Operands: localSlot (int32), constIndex (int32). Pushes local[slot] - constants[constIndex] as number.
+        // Hot path for fib's n-1, n-2 and similar. Saves 2 dispatches per use.
+        LocalSubtractByConst = 0x92,
+        // Operands: localSlot (int32). Pushes local[slot] onto stack. Same effect as LoadLocal, but
+        // emitted directly when AST shows a bare-local in a context that doesn't need slot remapping.
+        // (Reserved — not yet used by the compiler; placeholder for future fusion patterns.)
+        LoadLocalReturn = 0x93,
+        // Operands: localSlot (int32). Expects [object, propertyKey] on stack, loads local[slot] as
+        // value and performs the same write semantics as StoreProp. Saves one LoadLocal dispatch.
+        StorePropLocal = 0x94,
+        // Operands: localSlot (int32), constIndex (int32 as string property key constant). Pushes
+        // local[slot][constKey] with identical semantics to LoadProp by reusing the LoadProp path.
+        LoadPropLocalConst = 0x95,
+        // Operands: nameConstIndex (int32), constIndex (int32). Effect: var[name] = var[name] + const.
+        // Global/script-scope counterpart to IncrementLocalByConst.
+        IncrementVarByConst = 0x96,
+        // Operands: nameConstIndex (int32), constIndex (int32). Pushes var[name] < const as boolean.
+        // Global/script-scope counterpart to LocalLessThanConst.
+        VarLessThanConst = 0x97,
+
         // 0xFF: End of program
         Halt = 0xFF
     }

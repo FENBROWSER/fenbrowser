@@ -23,8 +23,16 @@ namespace FenBrowser.FenEngine.Scripting
         // Keep balanced profile correctness-first for modern pages that rely on large bootstrap bundles.
         public bool DeferOversizedExternalPageScripts { get; init; } = false;
         public int OversizedExternalPageScriptBytes { get; init; } = 256 * 1024;
-        public TimeSpan MaxExecutionTime { get; init; } = TimeSpan.FromSeconds(15);
-        public long MaxInstructionCount { get; init; } = 100_000_000;
+        // Soft DoS guard, not a performance budget. Real bundles (x.com's vendor
+        // bundle is 670KB minified, Google xjs is similar) take >60s on our
+        // interpreter — V8 finishes in <1s. We need a cap that allows full
+        // bootstrap on a slow tree-walking interpreter rather than killing it
+        // mid-execution. 300s is generous but matches real-world worst case
+        // (we've measured vendor.js needing ~90s on the bytecode VM).
+        public TimeSpan MaxExecutionTime { get; init; } = TimeSpan.FromSeconds(300);
+        // Companion DoS guard on retired bytecode instructions. Match the time cap:
+        // bundles that take 300s on our interpreter retire ~5B instructions.
+        public long MaxInstructionCount { get; init; } = 5_000_000_000;
 
         /// <summary>
         /// Engine-wide options for rendering, CSS, security, and resource loading.
