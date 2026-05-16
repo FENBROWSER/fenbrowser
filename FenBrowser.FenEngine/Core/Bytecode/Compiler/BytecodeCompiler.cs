@@ -30,6 +30,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
         private readonly HashSet<string> _localBindings = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _declaredBindingNames = new HashSet<string>(StringComparer.Ordinal);
         private readonly bool _forceStrictRoot;
         private bool _currentCompileIsStrict;
         private AstNode _compileRoot;
@@ -98,6 +99,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _labelContexts.Clear();
             _syntheticNameCounter = 0;
             _localBindings.Clear();
+            _declaredBindingNames.Clear();
             _localSlotByName.Clear();
             _localSlotNames.Clear();
             _topLevelHoistedFunctions.Clear();
@@ -1950,6 +1952,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitObjectLiteral(ObjectLiteral objLit)
         {
+            if (objLit.Pairs == null || objLit.Pairs.Count == 0)
+            {
+                Emit(OpCode.MakeObject);
+                EmitInt32(0);
+                return;
+            }
+
             string objectVariable = NextSyntheticName("object_literal");
             Emit(OpCode.MakeObject);
             EmitInt32(0);
@@ -4235,6 +4244,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            _declaredBindingNames.Add(variableName);
             bool added = _enableLocalSlots && _localBindings.Add(variableName);
             LogCompilerDeclare(declarationKind, variableName, added);
         }
@@ -4344,7 +4354,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private string NextSyntheticName(string prefix)
         {
             string safePrefix = string.IsNullOrEmpty(prefix) ? "tmp" : prefix;
-            string name = "__fenbc_" + safePrefix + "_" + _syntheticNameCounter++;
+            string name;
+            do
+            {
+                name = "__fenbc_" + safePrefix + "_" + _syntheticNameCounter++;
+            }
+            while (_declaredBindingNames.Contains(name));
+
             AddLocalBinding(name, "synthetic");
             return name;
         }
