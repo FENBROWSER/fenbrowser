@@ -323,5 +323,81 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(false, runtime.GetGlobal("__mapHas2").ToBoolean());
             Assert.Equal(21.0, runtime.GetGlobal("__mapV1").ToNumber());
         }
+
+        [Fact]
+        public void MinifiedDescriptorWritableFallback_DoesNotThrow()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var ok = false;
+                var err = '';
+                var em = function(e, t) { return { metadataCreate: e, featureSwitches: t }; };
+                try {
+                  (Object.getOwnPropertyDescriptor(em, 'name') || {}).writable ||
+                    Object.defineProperty(em, 'name', { value: 'default', configurable: true });
+                  ok = true;
+                } catch (ex) {
+                  ok = false;
+                  err = String(ex && (ex.message || ex));
+                }
+                globalThis.__minDescOk = ok;
+                globalThis.__minDescErr = err;
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__minDescOk").ToBoolean());
+            Assert.Equal(string.Empty, runtime.GetGlobal("__minDescErr").ToString());
+        }
+
+        [Fact]
+        public void VendorArrowNameDescriptorPattern_DoesNotThrow()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                globalThis.__vendorPatternOk = false;
+                globalThis.__vendorPatternName = '';
+                globalThis.__vendorPatternErr = '';
+                try {
+                    let n = (e, t) => {
+                        let r = [];
+                        e.forEach((x, i) => {
+                            let y = t(x, i, e);
+                            if (y) r.push(y);
+                        });
+                        return r;
+                    };
+                    (Object.getOwnPropertyDescriptor(n, 'name') || {}).writable ||
+                        Object.defineProperty(n, 'name', { value: 'default', configurable: true });
+                    globalThis.__vendorPatternName = n.name;
+                    globalThis.__vendorPatternOk = true;
+                } catch (ex) {
+                    globalThis.__vendorPatternOk = false;
+                    globalThis.__vendorPatternErr = String(ex && (ex.message || ex));
+                }
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__vendorPatternOk").ToBoolean());
+            Assert.Equal("default", runtime.GetGlobal("__vendorPatternName").ToString());
+            Assert.Equal(string.Empty, runtime.GetGlobal("__vendorPatternErr").ToString());
+        }
+
+        [Fact]
+        public void ArrayLengthOwnDescriptor_ExposesWritableFlag()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var arr = [];
+                var d = Object.getOwnPropertyDescriptor(arr, 'length');
+                globalThis.__arrLenDescExists = !!d;
+                globalThis.__arrLenWritableType = typeof d.writable;
+                globalThis.__arrLenWritable = !!d.writable;
+            ");
+
+            Assert.Equal(true, runtime.GetGlobal("__arrLenDescExists").ToBoolean());
+            Assert.Equal("boolean", runtime.GetGlobal("__arrLenWritableType").ToString());
+            Assert.Equal(true, runtime.GetGlobal("__arrLenWritable").ToBoolean());
+        }
     }
 }

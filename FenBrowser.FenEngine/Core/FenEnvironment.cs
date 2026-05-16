@@ -309,6 +309,14 @@ namespace FenBrowser.FenEngine.Core
             return FenValue.Undefined;
         }
 
+        public bool TryGetFastSlotIndex(string name, out int slotIndex)
+        {
+            slotIndex = -1;
+            return !string.IsNullOrEmpty(name) &&
+                   _fastSlotByName != null &&
+                   _fastSlotByName.TryGetValue(name, out slotIndex);
+        }
+
         public void SetFast(int index, FenValue value)
         {
             if (FastStore == null) InitializeFastStore(index + 1);
@@ -381,6 +389,17 @@ namespace FenBrowser.FenEngine.Core
                 {
                     env._store[name] = value;
                     env.SyncFastSlot(name, value);
+                    env.SyncLiveModuleExport(name, value);
+                    return value;
+                }
+
+                // Captured/local bindings may be represented in fast-slot metadata
+                // even when the dictionary store has drifted. Treat that as a valid
+                // resolved binding and synchronize both representations.
+                if (env.TryGetFastSlotIndex(name, out var slotIndex))
+                {
+                    env.SetFast(slotIndex, value);
+                    env._store[name] = value;
                     env.SyncLiveModuleExport(name, value);
                     return value;
                 }
