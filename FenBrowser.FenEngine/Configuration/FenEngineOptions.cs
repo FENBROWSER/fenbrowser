@@ -169,9 +169,15 @@ namespace FenBrowser.FenEngine.Configuration
         {
             return new FenEngineOptions
             {
-                // Production: strict security, high performance
-                VmLenientPropertyAccess = false,
-                VmLogLenientAccessWarnings = false,
+                // Production: strict security, high performance.
+                // Lenient property access turned ON for real-world compatibility:
+                // bundles routinely access `.foo` on values they assume to be
+                // truthy but in our environment may be null/undefined (missing
+                // chunk modules, partial polyfills, etc.). Throwing a TypeError
+                // here cascades into a blank page; returning undefined lets the
+                // surrounding `|| {}` / `?.` guards do their job.
+                VmLenientPropertyAccess = true,
+                VmLogLenientAccessWarnings = true,
                 AllowRelativeUrls = true,
                 AutoResolveRelativeUrls = true,
                 BlockPrivateNetworkAccess = true,

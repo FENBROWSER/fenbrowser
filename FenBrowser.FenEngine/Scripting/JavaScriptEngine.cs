@@ -224,6 +224,16 @@ namespace FenBrowser.FenEngine.Scripting
                 {
                     EngineLogCompat.Warn($"[JavaScriptEngine] Failed to dispatch global unhandledrejection event: {ex.Message}", LogCategory.JavaScript);
                 }
+
+                // Also record to js_diagnostics.log so silent React Promise failures
+                // (e.g. unawaited fetch rejections that stall the loading state)
+                // become visible.
+                try
+                {
+                    FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordException(
+                        reason, "unhandledrejection", _ctx?.BaseUri?.AbsoluteUri);
+                }
+                catch { /* diagnostics must never break execution */ }
             };
 
             TryLogDebug("[JavaScriptEngine] InitRuntime: Creating FenRuntime...");
@@ -3968,13 +3978,31 @@ namespace FenBrowser.FenEngine.Scripting
                     // Inject global error handler
                     try
                     {
-                        var errorHandler = "window.onerror = function(msg, url, line, col, error) { console.error('GLOBAL JS ERROR: ' + msg + ' at ' + url + ':' + line + ':' + col); if (error && error.stack) console.error(error.stack); };";
+                        var errorHandler = @"
+window.onerror = function(msg, url, line, col, error) {
+  console.error('GLOBAL JS ERROR: ' + msg + ' at ' + url + ':' + line + ':' + col);
+  if (error && error.stack) console.error(error.stack);
+};
+window.onunhandledrejection = function(ev) {
+  var reason = ev && ev.reason;
+  try {
+    if (reason && reason.stack) {
+      console.error('GLOBAL UNHANDLED REJECTION: ' + reason.stack);
+    } else {
+      console.error('GLOBAL UNHANDLED REJECTION: ' + String(reason));
+    }
+  } catch (e) {
+    console.error('GLOBAL UNHANDLED REJECTION: <unprintable>');
+  }
+};
+";
                         _fenRuntime.ExecuteSimple(errorHandler, "debug-handler");
                     }
                     catch (Exception ex) { DiagnosticPaths.AppendRootText("js_debug.log", $"[SetupError] {ex}\n"); }
 
                     int scriptIndex = 0;
                     SetCurrentScriptValue(FenValue.Null);
+                    var deferredExternalScripts = new List<(Element el, string code, string src, string srcInfo, string integrity)>();
                     var scriptTraversalRoot = _domRoot;
                     if (scriptTraversalRoot == null)
                     {
@@ -3984,257 +4012,204 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         foreach (var s in scriptTraversalRoot.SelfAndDescendants())
                         {
-                            if (s is Element el)
+                            if (s is not Element el)
                             {
-                                string tagName = el.TagName?.ToLowerInvariant() ?? "";
-                                if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptFound] Found script tag.\n");
-                                    scriptIndex++;
-                                    string code = null;
-                                    string srcInfo = "inline";
+                                continue;
+                            }
 
-                                // Attribute checks
-                                string type = el.GetAttribute("type")?.ToLowerInvariant() ?? "";
-                                string src = el.GetAttribute("src");
-                                string nonce = el.GetAttribute("nonce");
-                                string integrity = el.GetAttribute("integrity"); // SRI
-                                bool isModule = type == "module";
-                            
-                                // Filter invalid types
-                                if (!string.IsNullOrEmpty(type) && 
-                                    type != "text/javascript" && 
-                                    type != "application/javascript" && 
-                                    type != "module")
+                            string tagName = el.TagName?.ToLowerInvariant() ?? "";
+                            if (!string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            DiagnosticPaths.AppendRootText("js_debug.log", "[ScriptFound] Found script tag.\n");
+                            scriptIndex++;
+                            string code = null;
+                            string srcInfo = "inline";
+
+                            // Attribute checks
+                            string type = el.GetAttribute("type")?.ToLowerInvariant() ?? "";
+                            string src = el.GetAttribute("src");
+                            string nonce = el.GetAttribute("nonce");
+                            string integrity = el.GetAttribute("integrity"); // SRI
+                            bool isModule = type == "module";
+
+                            // Filter invalid types
+                            if (!string.IsNullOrEmpty(type)
+                                && type != "text/javascript"
+                                && type != "application/javascript"
+                                && type != "module")
+                            {
+                                continue;
+                            }
+
+                            if (el.HasAttribute("nomodule"))
+                            {
+                                continue;
+                            }
+
+                            // CSP Check (Enhanced with Nonce)
+                            if (SubresourceAllowed != null)
+                            {
+                                Uri checkUri = null;
+                                if (!string.IsNullOrEmpty(src) && baseUri != null)
                                 {
-                                    continue;
+                                    Uri.TryCreate(baseUri, src, out checkUri);
                                 }
-                                
-                                if (el.HasAttribute("nomodule")) continue;
 
-                                // CSP Check (Enhanced with Nonce)
-                                if (SubresourceAllowed != null) 
+                                if (NonceAllowed != null)
                                 {
-                                    Uri checkUri = null;
-                                    if (!string.IsNullOrEmpty(src) && baseUri != null) Uri.TryCreate(baseUri, src, out checkUri);
-                                    
-                                    if (NonceAllowed != null)
+                                    bool isAllowed = NonceAllowed(nonce);
+                                    if (string.IsNullOrEmpty(src))
                                     {
-                                        bool isAllowed = NonceAllowed(nonce);
-
-                                        if (string.IsNullOrEmpty(src))
+                                        if (!isAllowed)
                                         {
-                                             // Inline Script: Check nonce
-                                             if (!isAllowed) continue;
-                                        }
-                                        else
-                                        {
-                                            // External Script: If nonce check PASSED, we allow it immediately.
-                                            // If failed or missing, we fall back to URL whitelist.
-                                            if (!isAllowed || string.IsNullOrEmpty(nonce)) 
-                                            {
-                                                // Fallback to URL check
-                                                 if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
-                                                 {
-                                                     continue;
-                                                 }
-                                            }
+                                            continue;
                                         }
                                     }
-                                    else
+                                    else if (!isAllowed || string.IsNullOrEmpty(nonce))
                                     {
-                                        // URL Check (External Only) if NonceAllowed not available
-                                        if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script")) 
+                                        if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script"))
                                         {
                                             continue;
                                         }
                                     }
                                 }
-
-                                // 1. External Script
-                                if (!string.IsNullOrEmpty(src)) 
-                                {
-                                    if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src")) continue;
-
-                                    if (baseUri != null)
-                                    {
-                                        try 
-                                        {
-                                            var scriptUri = new Uri(baseUri, src);
-                                            srcInfo = scriptUri.ToString();
-                                            
-                                            if (isModule)
-                                            {
-                                                try
-                                                {
-                                                    await PrefetchModuleGraphAsync(
-                                                        moduleLoader,
-                                                        scriptUri,
-                                                        baseUri,
-                                                        new HashSet<string>(StringComparer.Ordinal))
-                                                        .ConfigureAwait(false);
-                                                    moduleLoader.LoadModule(scriptUri.AbsoluteUri);
-                                                }
-                                                catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
-                        }
-                                                continue;
-                                            }
-
-                                            if (ExternalScriptFetcher != null)
-                                            {
-                                                code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
-                                            }
-                                            else
-                                            {
-                                                code = await FetchAsync(scriptUri, baseUri).ConfigureAwait(false);
-                                            }
-                                        }
-                                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
-                            // WHATWG HTML 4.12.1.1: network fetch error fires error on element
-                            DispatchEvent(el, "error");
-                        }
-                                    }
-                                }
-                                // 2. Inline Script
                                 else
                                 {
-                                    if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script")) continue;
-                                    code = CollectScriptText(s);
-                                    
-                                    if (isModule && !string.IsNullOrWhiteSpace(code))
+                                    if (!string.IsNullOrEmpty(src) && checkUri != null && !SubresourceAllowed(checkUri, "script"))
                                     {
-                                        try
-                                        {
-                                            var inlineModulePath = BuildInlineModulePseudoPath(baseUri);
-                                            foreach (var specifier in ExtractModuleSpecifiers(code))
-                                            {
-                                                string resolved;
-                                                try
-                                                {
-                                                    resolved = moduleLoader.Resolve(specifier, inlineModulePath);
-                                                }
-                                                catch
-                                                {
-                                                    continue;
-                                                }
-
-                                                if (!Uri.TryCreate(resolved, UriKind.Absolute, out var dependencyUri))
-                                                {
-                                                    continue;
-                                                }
-
-                                                await PrefetchModuleGraphAsync(
-                                                    moduleLoader,
-                                                    dependencyUri,
-                                                    new Uri(inlineModulePath),
-                                                    new HashSet<string>(StringComparer.Ordinal))
-                                                    .ConfigureAwait(false);
-                                            }
-
-                                            moduleLoader.LoadModuleSrc(code, inlineModulePath);
-                                        }
-                                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[JavaScriptEngine] fetch().then async bridge failed: {ex.Message}", LogCategory.JavaScript);
-                        }
-                                        continue; 
+                                        continue;
                                     }
                                 }
-                                
-                                if (!string.IsNullOrWhiteSpace(code))
+                            }
+
+                            // 1. External Script
+                            if (!string.IsNullOrEmpty(src))
+                            {
+                                if (!SandboxAllows(SandboxFeature.ExternalScripts, "script src"))
                                 {
-                                    if (!string.IsNullOrEmpty(src) &&
-                                        RuntimeProfile.DeferOversizedExternalPageScripts &&
-                                        RuntimeProfile.OversizedExternalPageScriptBytes > 0 &&
-                                        code.Length >= RuntimeProfile.OversizedExternalPageScriptBytes)
-                                    {
-                                        EngineLogCompat.Warn(
-                                            $"[JS-EXEC] Deferred oversized external script during initial load: source={srcInfo} length={code.Length}",
-                                            LogCategory.JsExecution);
-                                        DiagnosticPaths.AppendRootText(
-                                            "js_debug.log",
-                                            $"[ScriptDeferred] Oversized external page script deferred: Length={code.Length}, Info={srcInfo}\n");
-                                        DispatchEvent(el, "load");
-                                        continue;
-                                    }
-                                    // SRI check ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â external scripts with an integrity attr must match before execution
-                                    if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
-                                    {
-                                        DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
-                                        EngineLogCompat.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
-                                        // WHATWG HTML 4.12.1.1: SRI mismatch fires error event
-                                        DispatchEvent(el, "error");
-                                        continue;
-                                    }
-                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
-                                    ResetExecutionBudgetForHostBookkeeping();
-                                    var previousCurrentScript = GetCurrentScriptValue();
-                                    SetCurrentScriptElement(el);
+                                    continue;
+                                }
+
+                                if (baseUri != null)
+                                {
                                     try
                                     {
-                                        var scriptExecution = ExecuteRuntimeScript(
-                                            code,
-                                            JavaScriptExecutionKind.PageScript,
-                                            srcInfo);
-                                        var scriptFenValue = scriptExecution.Value;
-                                        if (scriptExecution.Exception != null ||
-                                            (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
+                                        var scriptUri = new Uri(baseUri, src);
+                                        srcInfo = scriptUri.ToString();
+
+                                        if (isModule)
                                         {
-                                            var diagnosticPreview = BuildScriptDiagnosticPreview(code);
-                                            DiagnosticPaths.AppendRootText(
-                                                "js_debug.log",
-                                                $"[ScriptRunError] Info={srcInfo}; Error={scriptFenValue}; Preview={diagnosticPreview}\n");
-                                            EngineLogCompat.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
-                                            // WHATWG HTML 4.12.1.1: script execution error fires error on element.
-                                            // Reset the budget first so a slow compile/parse does not deny the
-                                            // page's fallback handler (e.g. Twitter's #ScriptLoadFailure UI).
-                                            ResetExecutionBudgetForHostBookkeeping();
-                                            DispatchEvent(el, "error");
+                                            try
+                                            {
+                                                await PrefetchModuleGraphAsync(
+                                                    moduleLoader,
+                                                    scriptUri,
+                                                    baseUri,
+                                                    new HashSet<string>(StringComparer.Ordinal))
+                                                    .ConfigureAwait(false);
+                                                moduleLoader.LoadModule(scriptUri.AbsoluteUri);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                EngineLogCompat.Warn($"[JavaScriptEngine] module script prefetch/load failed: {ex.Message}", LogCategory.JavaScript);
+                                            }
+                                            continue;
+                                        }
+
+                                        if (ExternalScriptFetcher != null)
+                                        {
+                                            code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
                                         }
                                         else
                                         {
-                                            // WHATWG HTML 4.12.1.1: successful execution fires load event
-                                            DispatchEvent(el, "load");
-                                        }
-
-                                        if (!string.IsNullOrEmpty(srcInfo) &&
-                                            (srcInfo.IndexOf("/vendor.", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                             srcInfo.IndexOf("/main.", StringComparison.OrdinalIgnoreCase) >= 0))
-                                        {
-                                            LogXBootstrapState($"after-script:{srcInfo}", baseUri);
+                                            code = await FetchAsync(scriptUri, baseUri).ConfigureAwait(false);
                                         }
                                     }
                                     catch (Exception ex)
                                     {
-                                        var diagnosticPreview = BuildScriptDiagnosticPreview(code);
-                                        DiagnosticPaths.AppendRootText(
-                                            "js_debug.log",
-                                            $"[StaticScriptError] Info={srcInfo}; Error={ex.GetBaseException().Message}; Preview={diagnosticPreview}\n");
-                                        EngineLogCompat.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
-                                        // Reset before firing the error event so post-parse work
-                                        // (onerror handlers, fallback UI hooks) is not denied by
-                                        // a budget already drained by the parser.
-                                        ResetExecutionBudgetForHostBookkeeping();
-                                        // WHATWG HTML 4.12.1.1: uncaught error fires error on element
+                                        EngineLogCompat.Warn($"[JavaScriptEngine] external script fetch failed: {ex.Message}", LogCategory.JavaScript);
+                                        // WHATWG HTML 4.12.1.1: network fetch error fires error on element
                                         DispatchEvent(el, "error");
                                     }
-                                    finally
-                                    {
-                                        SetCurrentScriptValue(previousCurrentScript.IsUndefined ? FenValue.Null : previousCurrentScript);
-                                    }
                                 }
-                                else
+                            }
+                            // 2. Inline Script
+                            else
+                            {
+                                if (!SandboxAllows(SandboxFeature.InlineScripts, "inline script"))
                                 {
-                                    DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n");
+                                    continue;
                                 }
+
+                                code = CollectScriptText(s);
+                                if (isModule && !string.IsNullOrWhiteSpace(code))
+                                {
+                                    try
+                                    {
+                                        var inlineModulePath = BuildInlineModulePseudoPath(baseUri);
+                                        foreach (var specifier in ExtractModuleSpecifiers(code))
+                                        {
+                                            string resolved;
+                                            try
+                                            {
+                                                resolved = moduleLoader.Resolve(specifier, inlineModulePath);
+                                            }
+                                            catch
+                                            {
+                                                continue;
+                                            }
+
+                                            if (!Uri.TryCreate(resolved, UriKind.Absolute, out var dependencyUri))
+                                            {
+                                                continue;
+                                            }
+
+                                            await PrefetchModuleGraphAsync(
+                                                moduleLoader,
+                                                dependencyUri,
+                                                new Uri(inlineModulePath),
+                                                new HashSet<string>(StringComparer.Ordinal))
+                                                .ConfigureAwait(false);
+                                        }
+
+                                        moduleLoader.LoadModuleSrc(code, inlineModulePath);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        EngineLogCompat.Warn($"[JavaScriptEngine] inline module prefetch/load failed: {ex.Message}", LogCategory.JavaScript);
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(code))
+                            {
+                                if (!isModule && !string.IsNullOrEmpty(src) && el.HasAttribute("defer"))
+                                {
+                                    deferredExternalScripts.Add((el, code, src, srcInfo, integrity));
+                                    continue;
+                                }
+
+                                ExecuteFetchedPageScript(el, code, src, srcInfo, integrity, baseUri);
+                            }
+                            else
+                            {
+                                DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptSkip] Code empty or skipped. Type={type}, Src={src}\n");
                             }
                         }
                     }
-                    
+                    foreach (var deferredScript in deferredExternalScripts)
+                    {
+                        ExecuteFetchedPageScript(
+                            deferredScript.el,
+                            deferredScript.code,
+                            deferredScript.src,
+                            deferredScript.srcInfo,
+                            deferredScript.integrity,
+                            baseUri);
                     }
 
                     EngineLogCompat.Debug("[JavaScriptEngine] Inline script execution complete", LogCategory.JavaScript);
@@ -4345,6 +4320,92 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             return preview.Substring(0, maxChars) + "...";
+        }
+
+        private void ExecuteFetchedPageScript(
+            Element el,
+            string code,
+            string src,
+            string srcInfo,
+            string integrity,
+            Uri baseUri)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(src) &&
+                RuntimeProfile.DeferOversizedExternalPageScripts &&
+                RuntimeProfile.OversizedExternalPageScriptBytes > 0 &&
+                code.Length >= RuntimeProfile.OversizedExternalPageScriptBytes)
+            {
+                EngineLogCompat.Warn(
+                    $"[JS-EXEC] Deferred oversized external script during initial load: source={srcInfo} length={code.Length}",
+                    LogCategory.JsExecution);
+                DiagnosticPaths.AppendRootText(
+                    "js_debug.log",
+                    $"[ScriptDeferred] Oversized external page script deferred: Length={code.Length}, Info={srcInfo}\n");
+                DispatchEvent(el, "load");
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(src) && !VerifySriIntegrity(code, integrity))
+            {
+                DiagnosticPaths.AppendRootText("js_debug.log", $"[SRI] Blocked script (hash mismatch): {srcInfo}\n");
+                EngineLogCompat.Warn($"[SRI] Blocked external script due to integrity mismatch: {srcInfo}", LogCategory.JavaScript);
+                DispatchEvent(el, "error");
+                return;
+            }
+
+            DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
+            ResetExecutionBudgetForHostBookkeeping();
+            var previousCurrentScript = GetCurrentScriptValue();
+            SetCurrentScriptElement(el);
+            try
+            {
+                var scriptExecution = ExecuteRuntimeScript(
+                    code,
+                    JavaScriptExecutionKind.PageScript,
+                    srcInfo);
+                var scriptFenValue = scriptExecution.Value;
+                if (scriptExecution.Exception != null ||
+                    (scriptFenValue.Type == JsValueType.Error || scriptFenValue.Type == JsValueType.Throw))
+                {
+                    var diagnosticPreview = BuildScriptDiagnosticPreview(code);
+                    DiagnosticPaths.AppendRootText(
+                        "js_debug.log",
+                        $"[ScriptRunError] Info={srcInfo}; Error={scriptFenValue}; Preview={diagnosticPreview}\n");
+                    EngineLogCompat.Warn($"[ScriptRunError] {srcInfo}: {scriptFenValue}", LogCategory.JavaScript);
+                    ResetExecutionBudgetForHostBookkeeping();
+                    DispatchEvent(el, "error");
+                }
+                else
+                {
+                    DispatchEvent(el, "load");
+                }
+
+                if (!string.IsNullOrEmpty(srcInfo) &&
+                    (srcInfo.IndexOf("/vendor.", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     srcInfo.IndexOf("/main.", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    LogXBootstrapState($"after-script:{srcInfo}", baseUri);
+                }
+            }
+            catch (Exception ex)
+            {
+                var diagnosticPreview = BuildScriptDiagnosticPreview(code);
+                DiagnosticPaths.AppendRootText(
+                    "js_debug.log",
+                    $"[StaticScriptError] Info={srcInfo}; Error={ex.GetBaseException().Message}; Preview={diagnosticPreview}\n");
+                EngineLogCompat.Warn($"[StaticScript] Exec failed: {srcInfo}: {ex.Message}", LogCategory.JavaScript);
+                ResetExecutionBudgetForHostBookkeeping();
+                DispatchEvent(el, "error");
+            }
+            finally
+            {
+                SetCurrentScriptValue(previousCurrentScript.IsUndefined ? FenValue.Null : previousCurrentScript);
+            }
         }
 
         private void LogXBootstrapState(string phase, Uri baseUri)

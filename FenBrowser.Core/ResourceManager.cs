@@ -1943,6 +1943,25 @@ namespace FenBrowser.Core
             if (!request.Headers.Contains("Sec-Fetch-Mode")) request.Headers.Add("Sec-Fetch-Mode", "cors");
             if (!request.Headers.Contains("Sec-Fetch-Site")) request.Headers.Add("Sec-Fetch-Site", "cross-site");
 
+            // Accept-* defaults. Bot-detection systems (Akamai/PerimeterX/Cloudflare)
+            // routinely flag clients that send no Accept-Language or send only Accept: */*
+            // with no quality values. These match the headers Chrome sends for fetch().
+            if (!request.Headers.Contains("Accept"))
+                request.Headers.Add("Accept", "*/*");
+            if (!request.Headers.Contains("Accept-Language"))
+                request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
+            if (!request.Headers.Contains("Accept-Encoding"))
+                request.Headers.Add("Accept-Encoding", "gzip, deflate, br");
+
+            // User-Agent Client Hints — Chrome sends these on every request to first-party
+            // hosts and after Accept-CH on third-party. Without them, Twitter's anti-bot
+            // layer treats the request as non-Chrome and 429s.
+            try { BrowserSettings.ApplyBrowserRequestHeaders(request); }
+            catch (Exception chEx)
+            {
+                EngineLogCompat.Debug($"[ResourceManager] Failed to apply browser client hints: {chEx.Message}", LogCategory.Network);
+            }
+
             try
             {
                 // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
