@@ -251,8 +251,11 @@ namespace FenBrowser.Tests.Engine
             var searchBoxLayout = renderer.GetElementBox(searchBox);
             Assert.NotNull(searchBoxLayout);
 
-            int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
-            int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
+            // Sample 5 pixels in from the top-left corner of the box's interior.
+            // The center of the search box overlaps the placeholder text — sampling
+            // there picks up anti-aliased text edges rather than the box background.
+            int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.Left) + 5;
+            int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.Top) + 5;
             Assert.InRange(sampleX, 0, viewportWidth - 1);
             Assert.InRange(sampleY, 0, viewportHeight - 1);
             var pixel = bitmap.GetPixel(sampleX, sampleY);
@@ -308,8 +311,10 @@ namespace FenBrowser.Tests.Engine
             var searchBoxLayout = renderer.GetElementBox(searchBox);
             Assert.NotNull(searchBoxLayout);
 
-            int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.MidX);
-            int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.MidY);
+            // Sample 5px in from the top-left so we hit pure background instead of
+            // anti-aliased placeholder text glyph edges at the box's geometric center.
+            int sampleX = (int)Math.Round(searchBoxLayout!.BorderBox.Left) + 5;
+            int sampleY = (int)Math.Round(searchBoxLayout.BorderBox.Top) + 5;
             var pixel = bitmap.GetPixel(sampleX, sampleY);
 
             Assert.InRange(pixel.Red, 10, 30);

@@ -39,49 +39,46 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void ProcessChildren(LayoutBox parent, StackingContext ctx)
         {
-            foreach (var child in parent.Children)
+            // Iterative DFS to avoid stack overflow on deeply nested positioned layouts.
+            var stack = new Stack<(LayoutBox box, StackingContext owner)>();
+            foreach (var c in parent.Children) stack.Push((c, ctx));
+            // Push in reverse so first child is processed first (LIFO -> reverse).
+            var ordered = new Stack<(LayoutBox box, StackingContext owner)>();
+            while (stack.Count > 0) ordered.Push(stack.Pop());
+
+            while (ordered.Count > 0)
             {
-                // Does this child establish a new Stacking Context?
-                // Rules: root, z-index != auto && positioned, opacity < 1, transform != none, etc.
+                var (child, owner) = ordered.Pop();
                 bool isPositioned = child.ComputedStyle?.Position != "static";
                 bool hasZIndex = child.ComputedStyle?.ZIndex != null;
                 bool isOpacity = child.ComputedStyle?.Opacity < 1.0f;
-                // Simplified check
-                
+
                 if ((isPositioned && hasZIndex) || isOpacity)
                 {
-                    // New Context
                     var childCtx = Build(child);
-                    if (childCtx.ZIndex < 0) ctx.NegativeZ.Add(childCtx);
-                    else ctx.PositiveZ.Add(childCtx);
+                    if (childCtx.ZIndex < 0) owner.NegativeZ.Add(childCtx);
+                    else owner.PositiveZ.Add(childCtx);
+                }
+                else if (isPositioned && !hasZIndex)
+                {
+                    // Positioned z-index:auto: create proxy context; queue its children under proxy.
+                    var proxy = new StackingContext(child) { ZIndex = 0 };
+                    owner.PositiveZ.Add(proxy);
+                    var tmp = new Stack<(LayoutBox, StackingContext)>();
+                    foreach (var gc in child.Children) tmp.Push((gc, proxy));
+                    while (tmp.Count > 0) ordered.Push(tmp.Pop());
                 }
                 else
                 {
-                    // Same Context
-                    // Classify
-                    if (isPositioned && !hasZIndex) contextuallyPositioned(child, ctx); // z-index: auto positioned
-                    else if (child.ComputedStyle?.Float != "none") ctx.FloatLevel.Add(child);
-                    else if (child is BlockBox) ctx.BlockLevel.Add(child);
-                    else ctx.InlineLevel.Add(child); // Inlines/Texts
-                    
-                    // Recurse (unless it was a new context, which processed its own subtree)
-                    ProcessChildren(child, ctx);
+                    if (child.ComputedStyle?.Float != "none") owner.FloatLevel.Add(child);
+                    else if (child is BlockBox) owner.BlockLevel.Add(child);
+                    else owner.InlineLevel.Add(child);
+
+                    var tmp = new Stack<(LayoutBox, StackingContext)>();
+                    foreach (var gc in child.Children) tmp.Push((gc, owner));
+                    while (tmp.Count > 0) ordered.Push(tmp.Pop());
                 }
             }
-        }
-        
-        private static void contextuallyPositioned(LayoutBox child, StackingContext ctx)
-        {
-             // Positioned elements with z-index: auto paint *after* floats but before positive Z?
-             // Actually, "Positioned descendants with z-index: auto" are layer 6 (Positive Z > 0 is layer 7).
-             // Layer 6 is higher than inline/float.
-             // We'll treat them as a pseudo-positive context with z=0 (but sorted by tree order).
-             // For simplicity, add to PositiveZ with z=0?
-             // Or create specific list.
-             // Let's create a proxy StackingContext with z=0.
-             var proxy = new StackingContext(child) { ZIndex = 0 };
-             ProcessChildren(child, proxy);
-             ctx.PositiveZ.Add(proxy);
         }
 
         public IEnumerable<LayoutBox> GetPaintOrder()

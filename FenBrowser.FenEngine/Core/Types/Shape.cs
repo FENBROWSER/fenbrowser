@@ -20,7 +20,7 @@ namespace FenBrowser.FenEngine.Core.Types
         // Maps a property name to its offset in the storage array.
         private readonly Dictionary<string, int> _propertyMap = new Dictionary<string, int>();
 
-        // Transition table: Shape + propertyName → child Shape.
+        // Transition table: Shape + propertyName -> child Shape.
         // WeakReference values allow the GC to collect unused child shapes.
         // ConcurrentDictionary makes TryGetValue safe to call without a lock.
         private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions
@@ -53,7 +53,7 @@ namespace FenBrowser.FenEngine.Core.Types
         /// </summary>
         public Shape TransitionTo(string propertyName)
         {
-            // Fast path: shape exists and its target is still alive (ConcurrentDictionary read — safe).
+            // Fast path: shape exists and its target is still alive (ConcurrentDictionary read � safe).
             if (_transitions.TryGetValue(propertyName, out var weakRef) &&
                 weakRef.TryGetTarget(out var existing))
                 return existing;
