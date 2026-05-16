@@ -1579,14 +1579,21 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFlattenedLogicalChain(List<AstNode> operands, OpCode shortCircuitJump)
         {
             Visit(operands[0]);
+            var shortCircuitJumps = new List<int>();
 
             for (int i = 1; i < operands.Count; i++)
             {
                 Emit(OpCode.Dup);
                 int jumpEnd = EmitJump(shortCircuitJump);
+                shortCircuitJumps.Add(jumpEnd);
                 Emit(OpCode.Pop);
                 Visit(operands[i]);
-                PatchJump(jumpEnd);
+            }
+
+            int endTarget = _instructions.Count;
+            foreach (int jumpOffset in shortCircuitJumps)
+            {
+                PatchJumpTo(jumpOffset, endTarget);
             }
         }
 

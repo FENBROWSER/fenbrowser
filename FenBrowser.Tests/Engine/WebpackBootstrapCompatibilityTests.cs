@@ -240,5 +240,39 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(6.0, runtime.GetGlobal("__nb").ToNumber());
             Assert.Equal(0.0, runtime.GetGlobal("__nc").ToNumber());
         }
+
+        [Fact]
+        public void FlattenedLogicalOr_StopsAtFirstTruthyOperand()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var hits = 0;
+                function step(v) { hits++; return v; }
+                var value = step(0) || step(5) || step(7);
+                globalThis.__orValue = value;
+                globalThis.__orHits = hits;
+            ");
+
+            Assert.Equal(5.0, runtime.GetGlobal("__orValue").ToNumber());
+            Assert.Equal(2.0, runtime.GetGlobal("__orHits").ToNumber());
+        }
+
+        [Fact]
+        public void FlattenedLogicalAnd_StopsAtFirstFalsyOperand()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var hits = 0;
+                function step(v) { hits++; return v; }
+                var value = step(1) && step(0) && step(9);
+                globalThis.__andValue = value;
+                globalThis.__andHits = hits;
+            ");
+
+            Assert.Equal(0.0, runtime.GetGlobal("__andValue").ToNumber());
+            Assert.Equal(2.0, runtime.GetGlobal("__andHits").ToNumber());
+        }
     }
 }
