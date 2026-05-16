@@ -174,6 +174,15 @@ namespace FenBrowser.FenEngine.DOM
                 case "setattribute":
                     return FenValue.FromFunction(new FenFunction("setAttribute", SetAttribute));
 
+                case "insertadjacenthtml":
+                    return FenValue.FromFunction(new FenFunction("insertAdjacentHTML", InsertAdjacentHTML));
+
+                case "insertadjacenttext":
+                    return FenValue.FromFunction(new FenFunction("insertAdjacentText", InsertAdjacentText));
+
+                case "insertadjacentelement":
+                    return FenValue.FromFunction(new FenFunction("insertAdjacentElement", InsertAdjacentElement));
+
                 case "hasattribute":
                     return FenValue.FromFunction(new FenFunction("hasAttribute", HasAttribute));
 
@@ -2922,6 +2931,174 @@ namespace FenBrowser.FenEngine.DOM
         {
             if (args.Length == 0) return FenValue.FromBoolean(false);
             return FenValue.FromBoolean(_element.HasAttribute(args[0].ToString()));
+        }
+
+        private FenValue InsertAdjacentHTML(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "insertAdjacentHTML"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length < 2) return FenValue.Undefined;
+            var position = (args[0].ToString() ?? string.Empty).Trim().ToLowerInvariant();
+            var html = args[1].ToString() ?? string.Empty;
+
+            ContainerNode parent;
+            Node referenceForBeforeBegin = null;
+            Node referenceForAfterEnd = null;
+            if (position == "beforebegin" || position == "afterend")
+            {
+                parent = _element.ParentNode as ContainerNode;
+                if (parent == null) return FenValue.Undefined;
+                if (position == "beforebegin") referenceForBeforeBegin = _element;
+                else referenceForAfterEnd = _element.NextSibling;
+            }
+            else
+            {
+                parent = _element;
+            }
+
+            Node container;
+            try
+            {
+                container = HtmlParser.ParseFragment(_element, html, options: null, out _);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[ElementWrapper] insertAdjacentHTML parse failed: {ex.Message}", LogCategory.DOM);
+                return FenValue.Undefined;
+            }
+
+            var children = container?.ChildNodes;
+            if (children == null) return FenValue.Undefined;
+
+            var added = new List<Node>();
+            switch (position)
+            {
+                case "afterbegin":
+                {
+                    var first = _element.FirstChild;
+                    for (int i = 0; i < children.Length; i++)
+                    {
+                        var clone = CloneFragmentNode(children[i]);
+                        _element.InsertBefore(clone, first);
+                        added.Add(clone);
+                    }
+                    break;
+                }
+                case "beforebegin":
+                {
+                    for (int i = 0; i < children.Length; i++)
+                    {
+                        var clone = CloneFragmentNode(children[i]);
+                        parent.InsertBefore(clone, referenceForBeforeBegin);
+                        added.Add(clone);
+                    }
+                    break;
+                }
+                case "afterend":
+                {
+                    for (int i = 0; i < children.Length; i++)
+                    {
+                        var clone = CloneFragmentNode(children[i]);
+                        parent.InsertBefore(clone, referenceForAfterEnd);
+                        added.Add(clone);
+                    }
+                    break;
+                }
+                case "beforeend":
+                default:
+                {
+                    for (int i = 0; i < children.Length; i++)
+                    {
+                        var clone = CloneFragmentNode(children[i]);
+                        _element.AppendChild(clone);
+                        added.Add(clone);
+                    }
+                    break;
+                }
+            }
+
+            _element.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            _context.RequestRender?.Invoke();
+            _context.OnMutation?.Invoke(new FenBrowser.Core.Dom.V2.MutationRecord
+            {
+                Type = FenBrowser.Core.Dom.V2.MutationRecordType.ChildList,
+                Target = parent,
+                AddedNodes = added,
+                RemovedNodes = new List<Node>()
+            });
+            return FenValue.Undefined;
+        }
+
+        private FenValue InsertAdjacentText(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "insertAdjacentText"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length < 2) return FenValue.Undefined;
+            var position = (args[0].ToString() ?? string.Empty).Trim().ToLowerInvariant();
+            var text = args[1].ToString() ?? string.Empty;
+            var doc = _element.OwnerDocument;
+            var textNode = doc != null ? doc.CreateTextNode(text) : new Text(text);
+
+            switch (position)
+            {
+                case "beforebegin":
+                    (_element.ParentNode as ContainerNode)?.InsertBefore(textNode, _element);
+                    break;
+                case "afterbegin":
+                    _element.InsertBefore(textNode, _element.FirstChild);
+                    break;
+                case "afterend":
+                    (_element.ParentNode as ContainerNode)?.InsertBefore(textNode, _element.NextSibling);
+                    break;
+                case "beforeend":
+                default:
+                    _element.AppendChild(textNode);
+                    break;
+            }
+
+            _element.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            _context.RequestRender?.Invoke();
+            return FenValue.Undefined;
+        }
+
+        private FenValue InsertAdjacentElement(FenValue[] args, FenValue thisVal)
+        {
+            if (!_context.Permissions.CheckAndLog(JsPermissions.DomWrite, "insertAdjacentElement"))
+                throw new FenSecurityError("DOM write permission required");
+
+            if (args.Length < 2) return FenValue.Null;
+            var position = (args[0].ToString() ?? string.Empty).Trim().ToLowerInvariant();
+            if (!(args[1].IsObject) || !(args[1].AsObject() is ElementWrapper other)) return FenValue.Null;
+            var target = other._element;
+            if (target == null) return FenValue.Null;
+
+            switch (position)
+            {
+                case "beforebegin":
+                    (_element.ParentNode as ContainerNode)?.InsertBefore(target, _element);
+                    break;
+                case "afterbegin":
+                    _element.InsertBefore(target, _element.FirstChild);
+                    break;
+                case "afterend":
+                    (_element.ParentNode as ContainerNode)?.InsertBefore(target, _element.NextSibling);
+                    break;
+                case "beforeend":
+                default:
+                    _element.AppendChild(target);
+                    break;
+            }
+
+            _element.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            _context.RequestRender?.Invoke();
+            return DomWrapperFactory.Wrap(target, _context);
+        }
+
+        private static Node CloneFragmentNode(Node n)
+        {
+            return n?.CloneNode(deep: true);
         }
 
         private FenValue RemoveAttribute(FenValue[] args, FenValue thisVal)

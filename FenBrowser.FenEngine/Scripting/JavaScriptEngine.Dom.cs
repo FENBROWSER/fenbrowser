@@ -928,9 +928,13 @@ namespace FenBrowser.FenEngine.Scripting
                         return FenValue.FromObject(classList);
                     case "getAttribute": return FenValue.FromFunction(new FenFunction("getAttribute", (args, _) => 
                         FenValue.FromString(args.Length > 0 ? getAttribute(args[0].ToString()) : "")));
-                    case "setAttribute": return FenValue.FromFunction(new FenFunction("setAttribute", (args, _) => { 
-                        if (args.Length >= 2) setAttribute(args[0].ToString(), args[1].ToString()); 
-                        return FenValue.Undefined; 
+                    case "setAttribute": return FenValue.FromFunction(new FenFunction("setAttribute", (args, _) => {
+                        if (args.Length >= 2) setAttribute(args[0].ToString(), args[1].ToString());
+                        return FenValue.Undefined;
+                    }));
+                    case "insertAdjacentHTML": return FenValue.FromFunction(new FenFunction("insertAdjacentHTML", (args, _) => {
+                        if (args.Length >= 2) insertAdjacentHTML(args[0].ToString(), args[1].ToString());
+                        return FenValue.Undefined;
                     }));
                     case "toggleAttribute": return FenValue.FromFunction(new FenFunction("toggleAttribute", (args, _) => {
                         if (!(_node is Element element) || args.Length == 0) return FenValue.FromBoolean(false);
