@@ -593,6 +593,27 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_NamedFunctionExpression_ShouldExposeOwnCaseSensitiveName()
+        {
+            var result = Evaluate("var jba = function JBa(n) { return n ? JBa(n - 1) + 1 : 0; }; jba(3);");
+            Assert.Equal(3, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_FunctionBindings_ShouldRemainCaseSensitive()
+        {
+            var result = Evaluate("var jba = 10; function JBa() { return 32; } JBa() + jba;");
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_BlockFunctionDeclaration_ShouldCreateFunctionBindingWhenExecuted()
+        {
+            var result = Evaluate("function outer() { if (true) { function ie() { return 42; } } return ie(); } outer();");
+            Assert.Equal(42, result.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_CallOpcode_WithAstBackedFunction_ShouldExecuteWithEagerCallableBytecode()
         {
             var env = new FenEnvironment();
@@ -836,7 +857,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
             var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
 
-            var ex = Assert.Throws<Exception>(() => Evaluate("function outer() { var declared = 1; return missingBinding; } outer();"));
+            var ex = Assert.Throws<Exception>(() => Evaluate("function outer() { var declared = 1; declared; return missingBinding; } outer();"));
             Assert.Contains("missingBinding", ex.Message);
 
             var contents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
@@ -844,6 +865,9 @@ namespace FenBrowser.Tests.Engine.Bytecode
                 ? contents.Substring(previousContents.Length)
                 : contents;
 
+            Assert.Contains("[CompilerDeclare] function=outer declare var name=declared", appended);
+            Assert.Contains("[CompilerEmitResolve] function=outer op=LoadLocal name=declared slot=", appended);
+            Assert.Contains("[CompilerEmitResolve] function=outer op=LoadVar name=missingBinding slot=none", appended);
             Assert.Contains("[VM_ResolveMissing] name=missingBinding", appended);
             Assert.Contains("depth=0", appended);
             Assert.Contains("type=function", appended);

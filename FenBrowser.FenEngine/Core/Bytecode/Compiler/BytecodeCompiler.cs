@@ -3809,11 +3809,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             if (TryGetLocalSlot(variableName, out int slotIndex))
             {
+                LogCompilerEmitResolve("LoadLocal", variableName, slotIndex);
                 Emit(OpCode.LoadLocal);
                 EmitInt32(slotIndex);
                 return;
             }
 
+            LogCompilerEmitResolve("LoadVar", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.LoadVar);
             EmitInt32(idx);
@@ -3823,11 +3825,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             if (TryGetLocalSlot(variableName, out int slotIndex))
             {
+                LogCompilerEmitResolve("StoreLocal", variableName, slotIndex);
                 Emit(OpCode.StoreLocal);
                 EmitInt32(slotIndex);
                 return;
             }
 
+            LogCompilerEmitResolve("StoreVar", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.StoreVar);
             EmitInt32(idx);
@@ -3837,11 +3841,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             if (TryGetLocalSlot(variableName, out int slotIndex))
             {
+                LogCompilerEmitResolve("StoreLocalDeclaration", variableName, slotIndex);
                 Emit(OpCode.StoreLocalDeclaration);
                 EmitInt32(slotIndex);
                 return;
             }
 
+            LogCompilerEmitResolve("StoreVarDeclaration", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.StoreVarDeclaration);
             EmitInt32(idx);
@@ -3849,6 +3855,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitDeclareTdzByName(string variableName)
         {
+            LogCompilerEmitResolve("DeclareTdz", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.DeclareTdz);
             EmitInt32(idx);
@@ -3856,6 +3863,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void EmitDeclareVarByName(string variableName)
         {
+            LogCompilerEmitResolve("DeclareVar", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.DeclareVar);
             EmitInt32(idx);
@@ -3871,11 +3879,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             // Local slots are always in the current frame's environment â€” StoreLocal is correct for assignment too.
             if (TryGetLocalSlot(variableName, out int slotIndex))
             {
+                LogCompilerEmitResolve("UpdateLocal", variableName, slotIndex);
                 Emit(OpCode.StoreLocal);
                 EmitInt32(slotIndex);
                 return;
             }
 
+            LogCompilerEmitResolve("UpdateVar", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.UpdateVar);
             EmitInt32(idx);
@@ -3902,12 +3912,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void InitializeLocalBindings(AstNode root)
         {
-            AddLocalBinding("this");
-            AddLocalBinding("arguments");
+            AddLocalBinding("this", "synthetic");
+            AddLocalBinding("arguments", "synthetic");
 
             if (_createFunctionNameBinding && !string.IsNullOrEmpty(_functionName))
             {
-                AddLocalBinding(_functionName);
+                AddLocalBinding(_functionName, "function-name");
             }
 
             if (_functionParameters != null)
@@ -3919,10 +3929,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         continue;
                     }
 
-                    AddLocalBinding(parameter.Value);
+                    AddLocalBinding(parameter.Value, "param");
                     if (parameter.DestructuringPattern != null)
                     {
-                        CollectBindingNamesFromPattern(parameter.DestructuringPattern);
+                        CollectBindingNamesFromPattern(parameter.DestructuringPattern, "param");
                     }
                 }
             }
@@ -4042,11 +4052,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     break;
                 case LetStatement letStatement:
-                    AddLocalBinding(letStatement.Name?.Value);
-                    CollectBindingNamesFromPattern(letStatement.DestructuringPattern);
+                    string declarationKind = GetDeclarationKindName(letStatement.Kind);
+                    AddLocalBinding(letStatement.Name?.Value, declarationKind);
+                    CollectBindingNamesFromPattern(letStatement.DestructuringPattern, declarationKind);
                     break;
                 case FunctionDeclarationStatement functionDeclaration:
-                    AddLocalBinding(functionDeclaration.Function?.Name);
+                    AddLocalBinding(functionDeclaration.Function?.Name, "function");
                     break;
                 case ForStatement forStatement:
                     CollectLocalBindings(forStatement.Init);
@@ -4055,16 +4066,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 case ForInStatement forInStatement:
                     if (!IsLexicalLoopBinding(forInStatement.BindingKind))
                     {
-                        AddLocalBinding(forInStatement.Variable?.Value);
-                        CollectBindingNamesFromPattern(forInStatement.DestructuringPattern);
+                        string forInKind = GetDeclarationKindName(forInStatement.BindingKind);
+                        AddLocalBinding(forInStatement.Variable?.Value, forInKind);
+                        CollectBindingNamesFromPattern(forInStatement.DestructuringPattern, forInKind);
                     }
                     CollectLocalBindings(forInStatement.Body);
                     break;
                 case ForOfStatement forOfStatement:
                     if (!IsLexicalLoopBinding(forOfStatement.BindingKind))
                     {
-                        AddLocalBinding(forOfStatement.Variable?.Value);
-                        CollectBindingNamesFromPattern(forOfStatement.DestructuringPattern);
+                        string forOfKind = GetDeclarationKindName(forOfStatement.BindingKind);
+                        AddLocalBinding(forOfStatement.Variable?.Value, forOfKind);
+                        CollectBindingNamesFromPattern(forOfStatement.DestructuringPattern, forOfKind);
                     }
                     CollectLocalBindings(forOfStatement.Body);
                     break;
@@ -4099,8 +4112,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     }
                     break;
                 case TryStatement tryStatement:
-                    AddLocalBinding(tryStatement.CatchParameter?.Value);
-                    CollectBindingNamesFromPattern(tryStatement.CatchParameter?.DestructuringPattern);
+                    AddLocalBinding(tryStatement.CatchParameter?.Value, "catch");
+                    CollectBindingNamesFromPattern(tryStatement.CatchParameter?.DestructuringPattern, "catch");
                     CollectLocalBindings(tryStatement.Block);
                     CollectLocalBindings(tryStatement.CatchBlock);
                     CollectLocalBindings(tryStatement.FinallyBlock);
@@ -4110,7 +4123,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     {
                         foreach (var specifier in importDeclaration.Specifiers)
                         {
-                            AddLocalBinding(specifier?.Local?.Value);
+                            AddLocalBinding(specifier?.Local?.Value, "import");
                         }
                     }
                     break;
@@ -4118,12 +4131,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     CollectLocalBindings(exportDeclaration.Declaration);
                     break;
                 case ClassStatement classStatement:
-                    AddLocalBinding(classStatement.Name?.Value);
+                    AddLocalBinding(classStatement.Name?.Value, "class");
                     break;
             }
         }
 
-        private void CollectBindingNamesFromPattern(Expression pattern)
+        private void CollectBindingNamesFromPattern(Expression pattern, string declarationKind = "pattern")
         {
             if (pattern == null)
             {
@@ -4133,10 +4146,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             switch (pattern)
             {
                 case Identifier identifier:
-                    AddLocalBinding(identifier.Value);
+                    AddLocalBinding(identifier.Value, declarationKind);
                     break;
                 case AssignmentExpression assignmentExpression:
-                    CollectBindingNamesFromPattern(assignmentExpression.Left);
+                    CollectBindingNamesFromPattern(assignmentExpression.Left, declarationKind);
                     break;
                 case ArrayLiteral arrayLiteral:
                     if (arrayLiteral.Elements != null)
@@ -4145,11 +4158,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         {
                             if (element is SpreadElement spreadElement)
                             {
-                                CollectBindingNamesFromPattern(spreadElement.Argument);
+                                CollectBindingNamesFromPattern(spreadElement.Argument, declarationKind);
                             }
                             else
                             {
-                                CollectBindingNamesFromPattern(element);
+                                CollectBindingNamesFromPattern(element, declarationKind);
                             }
                         }
                     }
@@ -4161,11 +4174,11 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                         {
                             if (pair.Value is SpreadElement spreadElement)
                             {
-                                CollectBindingNamesFromPattern(spreadElement.Argument);
+                                CollectBindingNamesFromPattern(spreadElement.Argument, declarationKind);
                             }
                             else
                             {
-                                CollectBindingNamesFromPattern(pair.Value);
+                                CollectBindingNamesFromPattern(pair.Value, declarationKind);
                             }
                         }
                     }
@@ -4173,14 +4186,82 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
-        private void AddLocalBinding(string variableName)
+        private void AddLocalBinding(string variableName, string declarationKind = "local")
         {
-            if (!_enableLocalSlots || string.IsNullOrEmpty(variableName))
+            if (string.IsNullOrEmpty(variableName))
             {
                 return;
             }
 
-            _localBindings.Add(variableName);
+            bool added = _enableLocalSlots && _localBindings.Add(variableName);
+            LogCompilerDeclare(declarationKind, variableName, added);
+        }
+
+        private string GetCompilerDiagnosticFunctionName()
+        {
+            return string.IsNullOrEmpty(_functionName) ? "<script>" : _functionName;
+        }
+
+        private static string GetDeclarationKindName(DeclarationKind? declarationKind)
+        {
+            switch (declarationKind)
+            {
+                case DeclarationKind.Var:
+                    return "var";
+                case DeclarationKind.Let:
+                    return "let";
+                case DeclarationKind.Const:
+                    return "const";
+                default:
+                    return "assignment";
+            }
+        }
+
+        private static string SanitizeCompilerDiagnosticValue(string value)
+        {
+            return string.IsNullOrEmpty(value)
+                ? string.Empty
+                : value.Replace("\r", "\\r").Replace("\n", "\\n");
+        }
+
+        private void LogCompilerDeclare(string declarationKind, string variableName, bool added)
+        {
+            try
+            {
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(
+                    "js_debug.log",
+                    "[CompilerDeclare] function=" + SanitizeCompilerDiagnosticValue(GetCompilerDiagnosticFunctionName()) +
+                    " declare " + SanitizeCompilerDiagnosticValue(declarationKind ?? "local") +
+                    " name=" + SanitizeCompilerDiagnosticValue(variableName) +
+                    " scopeDepth=" + _scopeDepth +
+                    " localSlots=" + (_enableLocalSlots ? "enabled" : "disabled") +
+                    " added=" + (added ? "yes" : "no") +
+                    "\n");
+            }
+            catch
+            {
+                // Compiler diagnostics must never affect bytecode generation.
+            }
+        }
+
+        private void LogCompilerEmitResolve(string op, string variableName, int? slotIndex)
+        {
+            try
+            {
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(
+                    "js_debug.log",
+                    "[CompilerEmitResolve] function=" + SanitizeCompilerDiagnosticValue(GetCompilerDiagnosticFunctionName()) +
+                    " op=" + SanitizeCompilerDiagnosticValue(op ?? string.Empty) +
+                    " name=" + SanitizeCompilerDiagnosticValue(variableName ?? string.Empty) +
+                    " slot=" + (slotIndex.HasValue ? slotIndex.Value.ToString() : "none") +
+                    " scopeDepth=" + _scopeDepth +
+                    " localSlots=" + (_enableLocalSlots ? "enabled" : "disabled") +
+                    "\n");
+            }
+            catch
+            {
+                // Compiler diagnostics must never affect bytecode generation.
+            }
         }
 
         private static string GetModuleBindingName(string source)
@@ -4197,7 +4278,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
             string safePrefix = string.IsNullOrEmpty(prefix) ? "tmp" : prefix;
             string name = "__fenbc_" + safePrefix + "_" + _syntheticNameCounter++;
-            AddLocalBinding(name);
+            AddLocalBinding(name, "synthetic");
             return name;
         }
 
