@@ -6493,6 +6493,26 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                     return false;
                 }
 
+                // ECMA-262 §7.3.25 CopyDataProperties uses CreateDataPropertyOrThrow,
+                // which is [[DefineOwnProperty]] semantics - it creates an own data
+                // property and never fires inherited setters. For arbitrary keys
+                // this is observably equivalent to a plain Set on a typical target,
+                // but for "__proto__" the difference is the whole ballgame: Set
+                // would route through FenObject's __proto__ accessor and mutate
+                // the prototype chain, which is the textbook prototype-pollution
+                // attack vector
+                //
+                //   Object.assign({}, JSON.parse('{"__proto__":{"isAdmin":true}}'))
+                //
+                // DefineOwnProperty installs "__proto__" as a shadowed own data
+                // property and leaves the target's [[Prototype]] alone, matching
+                // every real engine's behaviour and what the spec actually says.
+                if (string.Equals(key, "__proto__", StringComparison.Ordinal))
+                {
+                    target.DefineOwnProperty(key, PropertyDescriptor.DataDefault(propertyValue));
+                    return true;
+                }
+
                 target.Set(key, propertyValue, _context);
                 return true;
             }
