@@ -644,22 +644,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
             else if (node is NullishCoalescingExpression nullishExpr)
             {
-                // left ?? right
-                // Stack flow:
-                //   [left] -> [left,left] -> [left, left==null]
-                //   if false => keep original left
-                //   if true  => pop original left, evaluate right
                 Visit(nullishExpr.Left);
-                Emit(OpCode.Dup);
-                Emit(OpCode.LoadNull);
-                Emit(OpCode.Equal);
-                int jumpKeepLeft = EmitJump(OpCode.JumpIfFalse);
+                (int jumpNullish, int jumpUndefined) = EmitJumpsIfTopValueIsNullish();
+                int jumpKeepLeft = EmitJump(OpCode.Jump);
 
+                int nullishTarget = _instructions.Count;
+                PatchJumpTo(jumpNullish, nullishTarget);
+                PatchJumpTo(jumpUndefined, nullishTarget);
                 Emit(OpCode.Pop);
                 Visit(nullishExpr.Right);
                 int jumpEnd = EmitJump(OpCode.Jump);
 
-                PatchJump(jumpKeepLeft);
+                int keepLeftTarget = _instructions.Count;
+                PatchJumpTo(jumpKeepLeft, keepLeftTarget);
                 PatchJump(jumpEnd);
             }
             else if (node is OptionalChainExpression optionalChainExpr)
@@ -673,15 +670,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 // Evaluate base and short-circuit to undefined if null/undefined.
                 Visit(optionalChainExpr.Object);
 
-                Emit(OpCode.Dup);
-                Emit(OpCode.LoadNull);
-                Emit(OpCode.Equal);
-                int jumpNullish = EmitJump(OpCode.JumpIfTrue);
-
-                Emit(OpCode.Dup);
-                Emit(OpCode.LoadUndefined);
-                Emit(OpCode.StrictEqual);
-                int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+                (int jumpNullish, int jumpUndefined) = EmitJumpsIfTopValueIsNullish();
 
                 if (optionalChainExpr.IsComputed)
                 {
@@ -1860,15 +1849,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 Visit(optionalChainExpr.Object);
             }
 
-            Emit(OpCode.Dup);
-            Emit(OpCode.LoadNull);
-            Emit(OpCode.Equal);
-            int jumpNullish = EmitJump(OpCode.JumpIfTrue);
-
-            Emit(OpCode.Dup);
-            Emit(OpCode.LoadUndefined);
-            Emit(OpCode.StrictEqual);
-            int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+            (int jumpNullish, int jumpUndefined) = EmitJumpsIfTopValueIsNullish();
 
             foreach (var arg in optionalChainExpr.Arguments)
             {
@@ -2126,15 +2107,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             if (operand is OptionalChainExpression optionalChainExpr)
             {
                 Visit(optionalChainExpr.Object);
-                Emit(OpCode.Dup);
-                Emit(OpCode.LoadNull);
-                Emit(OpCode.StrictEqual);
-                int jumpNullish = EmitJump(OpCode.JumpIfTrue);
-                
-                Emit(OpCode.Dup);
-                Emit(OpCode.LoadUndefined);
-                Emit(OpCode.StrictEqual);
-                int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+                (int jumpNullish, int jumpUndefined) = EmitJumpsIfTopValueIsNullish();
 
                 if (optionalChainExpr.IsCall)
                 {
@@ -3064,10 +3037,13 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     jumpKeepLeftOffset = EmitJump(OpCode.JumpIfFalse);
                     break;
                 case "??=":
-                    Emit(OpCode.Dup);
-                    Emit(OpCode.LoadNull);
-                    Emit(OpCode.Equal);
-                    jumpKeepLeftOffset = EmitJump(OpCode.JumpIfFalse);
+                    {
+                        (int jumpNullish, int jumpUndefined) = EmitJumpsIfTopValueIsNullish();
+                        jumpKeepLeftOffset = EmitJump(OpCode.Jump);
+                        int assignTarget = _instructions.Count;
+                        PatchJumpTo(jumpNullish, assignTarget);
+                        PatchJumpTo(jumpUndefined, assignTarget);
+                    }
                     break;
                 default:
                     int msgIdx = AddConstant(FenValue.FromString($"SyntaxError: Logical assignment operator '{logicalAssignExpr.Operator}' not supported."));
@@ -3086,6 +3062,20 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             });
 
             PatchJump(jumpKeepLeftOffset);
+        }
+
+        private (int jumpNullish, int jumpUndefined) EmitJumpsIfTopValueIsNullish()
+        {
+            Emit(OpCode.Dup);
+            Emit(OpCode.LoadNull);
+            Emit(OpCode.StrictEqual);
+            int jumpNullish = EmitJump(OpCode.JumpIfTrue);
+
+            Emit(OpCode.Dup);
+            Emit(OpCode.LoadUndefined);
+            Emit(OpCode.StrictEqual);
+            int jumpUndefined = EmitJump(OpCode.JumpIfTrue);
+            return (jumpNullish, jumpUndefined);
         }
 
         private static AssignmentExpression LowerCompoundAssignment(CompoundAssignmentExpression compoundAssignExpr)
