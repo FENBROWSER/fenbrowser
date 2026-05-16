@@ -25,6 +25,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         DeclareTdz = 0x1A,
         StoreLocalDeclaration = 0x1B,
         DeclareVar = 0x1C,
+        LoadCaptured = 0x1D,
 
         // 0x20 - 0x2F: Math
         Add = 0x20,

@@ -8480,8 +8480,10 @@ Verification:
 - `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
   - Optional calls now short-circuit only for nullish callees; non-nullish non-callables flow into the normal call path and throw `TypeError` instead of returning `undefined`.
   - Optional member calls preserve the receiver for `obj.method?.()` while comma-detached calls such as `(0, obj.method)()` remain ordinary calls without the member receiver.
+  - Nested function compilation now classifies direct parent function locals as captured loads and logs them as `[CompilerEmitResolve] ... op=LoadCaptured name=<id> parentSlot=<slot>` instead of generic `LoadVar slot=none` misses.
 - `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
   - Missing variable resolution now writes `[VM_ResolveMissing]` diagnostics to `logs/js_debug.log` with scope depth, environment type, local binding state, compiled local-slot presence, and known bindings for each environment in the chain.
+  - Added `LoadCaptured` bytecode execution for direct parent local-slot reads, resolving closure upvalues through the captured environment fast store with name-based fallback.
 - `FenBrowser.FenEngine/Core/FenEnvironment.cs`
   - Added diagnostic-only binding introspection helpers used by VM missing-name logging; these do not alter runtime resolution semantics.
 - Regression coverage:

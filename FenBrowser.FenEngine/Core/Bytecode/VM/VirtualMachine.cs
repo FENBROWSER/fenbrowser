@@ -1557,6 +1557,30 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             return FenValue.Undefined; // Safe: return undefined without throwing
         }
 
+        private static FenValue ResolveCapturedLocal(CallFrame frame, int parentSlot, string varName)
+        {
+            var visited = new HashSet<FenEnvironment>();
+            for (var env = frame?.Environment?.Outer; env != null; env = env.Outer)
+            {
+                if (!visited.Add(env))
+                {
+                    break;
+                }
+
+                if (env.FastStore != null && parentSlot >= 0 && parentSlot < env.FastStore.Length)
+                {
+                    return env.GetFast(parentSlot);
+                }
+
+                if (!string.IsNullOrEmpty(varName) && env.HasLocalBinding(varName))
+                {
+                    return env.Get(varName);
+                }
+            }
+
+            return ResolveVariable(frame, varName);
+        }
+
         private static FenValue ResolveVariable(CallFrame frame, string varName)
         {
             if (CanUseBindingCache(frame) &&
@@ -2492,6 +2516,14 @@ run_loop_restart:
                                 int localSlot = ReadInt32(instructions, ref frame);
                                 var localValue = frame.Environment.GetFast(localSlot);
                                 _stack[_sp++] = localValue;
+                                break;
+                            }
+                            case OpCode.LoadCaptured:
+                            {
+                                int parentSlot = ReadInt32(instructions, ref frame);
+                                int nameIndex = ReadInt32(instructions, ref frame);
+                                string capturedName = constants[nameIndex].AsString();
+                                _stack[_sp++] = ResolveCapturedLocal(frame, parentSlot, capturedName);
                                 break;
                             }
                             case OpCode.StoreLocalDeclaration:

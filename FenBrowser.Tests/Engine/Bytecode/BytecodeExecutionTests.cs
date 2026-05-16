@@ -572,6 +572,46 @@ namespace FenBrowser.Tests.Engine.Bytecode
         }
 
         [Fact]
+        public void Bytecode_Closure_ShouldResolveCapturedVarLocal()
+        {
+            var result = Evaluate("function outer() { var JBa = 10; return function () { return JBa; }; } outer()();");
+            Assert.Equal(10, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_ClosureCapturedVarLocal_LogsCapturedParentSlot()
+        {
+            var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
+            var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+
+            var result = Evaluate("function outer() { var JBa = 10; return function () { return JBa; }; } outer()();");
+            Assert.Equal(10, result.AsNumber());
+
+            var contents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+            var appended = previousContents.Length > 0 && previousContents.Length < contents.Length
+                ? contents.Substring(previousContents.Length)
+                : contents;
+
+            Assert.Contains("[CompilerDeclare] function=outer declare var name=JBa", appended);
+            Assert.Contains("[CompilerEmitResolve] function=<anonymous-function> op=LoadCaptured name=JBa parentSlot=", appended);
+            Assert.DoesNotContain("[CompilerEmitResolve] function=<anonymous-function> op=LoadVar name=JBa slot=none", appended);
+        }
+
+        [Fact]
+        public void Bytecode_Closure_ShouldResolveCapturedFunctionExpressionLocal()
+        {
+            var result = Evaluate("function outer() { var ie = function () { return 7; }; function inner() { return ie(); } return inner(); } outer();");
+            Assert.Equal(7, result.AsNumber());
+        }
+
+        [Fact]
+        public void Bytecode_Closure_ShouldResolveVarAndBlockFunctionCapture()
+        {
+            var result = Evaluate("function outer() { var x = 1; { var y = 2; function inner() { return x + y; } } return inner(); } outer();");
+            Assert.Equal(3, result.AsNumber());
+        }
+
+        [Fact]
         public void Bytecode_FunctionExpression_ShouldCall()
         {
             var result = Evaluate("var mult = function(a, b) { return a * b; }; mult(4, 5);");

@@ -25,6 +25,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private readonly string _functionName;
         private readonly bool _createFunctionNameBinding;
         private readonly bool _isEval;
+        private readonly Func<string, int?> _parentCaptureSlotResolver;
         private readonly HashSet<FunctionDeclarationStatement> _topLevelHoistedFunctions = new HashSet<FunctionDeclarationStatement>();
         private readonly Dictionary<string, int> _localSlotByName = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly List<string> _localSlotNames = new List<string>();
@@ -55,7 +56,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         {
         }
 
-        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool createFunctionNameBinding, bool isEval = false, bool forceStrictRoot = false)
+        private BytecodeCompiler(bool enableLocalSlots, List<Identifier> functionParameters, string functionName, bool createFunctionNameBinding, bool isEval = false, bool forceStrictRoot = false, Func<string, int?> parentCaptureSlotResolver = null)
         {
             _enableLocalSlots = enableLocalSlots;
             _functionParameters = functionParameters;
@@ -63,9 +64,10 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             _createFunctionNameBinding = createFunctionNameBinding;
             _isEval = isEval;
             _forceStrictRoot = forceStrictRoot;
+            _parentCaptureSlotResolver = parentCaptureSlotResolver;
         }
 
-        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName, bool createFunctionNameBinding, bool forceStrictRoot = false)
+        private static BytecodeCompiler CreateFunctionCompiler(List<Identifier> parameters, string functionName, bool createFunctionNameBinding, bool forceStrictRoot = false, Func<string, int?> parentCaptureSlotResolver = null)
         {
             return new BytecodeCompiler(
                 enableLocalSlots: true,
@@ -73,7 +75,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 functionName: functionName,
                 createFunctionNameBinding: createFunctionNameBinding,
                 isEval: false,
-                forceStrictRoot: forceStrictRoot);
+                forceStrictRoot: forceStrictRoot,
+                parentCaptureSlotResolver: parentCaptureSlotResolver);
         }
 
         public CodeBlock Compile(AstNode root)
@@ -1019,7 +1022,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(funcLit.Parameters, "FunctionLiteral");
                 string functionName = !string.IsNullOrEmpty(funcLit.Name) ? funcLit.Name : _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName, !string.IsNullOrEmpty(funcLit.Name), funcLit.IsStrict);
+                var funcCompiler = CreateFunctionCompiler(funcLit.Parameters, functionName, !string.IsNullOrEmpty(funcLit.Name), funcLit.IsStrict, ResolveParentCaptureSlot);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcLit.Body, funcLit.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -1046,7 +1049,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 ValidateSupportedParameterList(asyncFuncExpr.Parameters, "AsyncFunctionExpression");
                 string asyncFunctionName = asyncFuncExpr.Name?.Value ?? _currentInferredName;
-                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName, asyncFuncExpr.Name != null && !string.IsNullOrEmpty(asyncFuncExpr.Name.Value), _currentCompileIsStrict);
+                var funcCompiler = CreateFunctionCompiler(asyncFuncExpr.Parameters, asyncFunctionName, asyncFuncExpr.Name != null && !string.IsNullOrEmpty(asyncFuncExpr.Name.Value), _currentCompileIsStrict, ResolveParentCaptureSlot);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(asyncFuncExpr.Body, asyncFuncExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -1074,7 +1077,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     parameters: arrowExpr.Parameters,
                     functionName: _currentInferredName,
                     createFunctionNameBinding: false,
-                    forceStrictRoot: _currentCompileIsStrict);
+                    forceStrictRoot: _currentCompileIsStrict,
+                    parentCaptureSlotResolver: ResolveParentCaptureSlot);
                 var compiledBlock = funcCompiler.Compile(BuildCallableBody(arrowExpr.Body, arrowExpr.Parameters));
                 var localMap = BuildFunctionLocalMap(compiledBlock);
 
@@ -3815,6 +3819,16 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 return;
             }
 
+            if (TryGetCapturedParentSlot(variableName, out int parentSlotIndex))
+            {
+                LogCompilerEmitCapturedResolve("LoadCaptured", variableName, parentSlotIndex);
+                int nameIdx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
+                Emit(OpCode.LoadCaptured);
+                EmitInt32(parentSlotIndex);
+                EmitInt32(nameIdx);
+                return;
+            }
+
             LogCompilerEmitResolve("LoadVar", variableName, null);
             int idx = AddConstant(FenValue.FromString(variableName ?? string.Empty));
             Emit(OpCode.LoadVar);
@@ -3907,6 +3921,34 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             slotIndex = _localSlotNames.Count;
             _localSlotByName[variableName] = slotIndex;
             _localSlotNames.Add(variableName);
+            return true;
+        }
+
+        private int? ResolveParentCaptureSlot(string variableName)
+        {
+            if (TryGetLocalSlot(variableName, out int slotIndex))
+            {
+                return slotIndex;
+            }
+
+            return null;
+        }
+
+        private bool TryGetCapturedParentSlot(string variableName, out int parentSlotIndex)
+        {
+            parentSlotIndex = -1;
+            if (string.IsNullOrEmpty(variableName) || _parentCaptureSlotResolver == null)
+            {
+                return false;
+            }
+
+            int? slotIndex = _parentCaptureSlotResolver(variableName);
+            if (!slotIndex.HasValue)
+            {
+                return false;
+            }
+
+            parentSlotIndex = slotIndex.Value;
             return true;
         }
 
@@ -4199,7 +4241,12 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private string GetCompilerDiagnosticFunctionName()
         {
-            return string.IsNullOrEmpty(_functionName) ? "<script>" : _functionName;
+            if (!string.IsNullOrEmpty(_functionName))
+            {
+                return _functionName;
+            }
+
+            return _enableLocalSlots ? "<anonymous-function>" : "<script>";
         }
 
         private static string GetDeclarationKindName(DeclarationKind? declarationKind)
@@ -4254,6 +4301,26 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     " op=" + SanitizeCompilerDiagnosticValue(op ?? string.Empty) +
                     " name=" + SanitizeCompilerDiagnosticValue(variableName ?? string.Empty) +
                     " slot=" + (slotIndex.HasValue ? slotIndex.Value.ToString() : "none") +
+                    " scopeDepth=" + _scopeDepth +
+                    " localSlots=" + (_enableLocalSlots ? "enabled" : "disabled") +
+                    "\n");
+            }
+            catch
+            {
+                // Compiler diagnostics must never affect bytecode generation.
+            }
+        }
+
+        private void LogCompilerEmitCapturedResolve(string op, string variableName, int parentSlotIndex)
+        {
+            try
+            {
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(
+                    "js_debug.log",
+                    "[CompilerEmitResolve] function=" + SanitizeCompilerDiagnosticValue(GetCompilerDiagnosticFunctionName()) +
+                    " op=" + SanitizeCompilerDiagnosticValue(op ?? string.Empty) +
+                    " name=" + SanitizeCompilerDiagnosticValue(variableName ?? string.Empty) +
+                    " parentSlot=" + parentSlotIndex +
                     " scopeDepth=" + _scopeDepth +
                     " localSlots=" + (_enableLocalSlots ? "enabled" : "disabled") +
                     "\n");
@@ -5464,7 +5531,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
         private void EmitFunctionDeclaration(FunctionDeclarationStatement funcDecl)
         {
             ValidateSupportedParameterList(funcDecl.Function.Parameters, "FunctionDeclarationStatement");
-            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name, !string.IsNullOrEmpty(funcDecl.Function.Name), funcDecl.Function.IsStrict);
+            var funcCompiler = CreateFunctionCompiler(funcDecl.Function.Parameters, funcDecl.Function.Name, !string.IsNullOrEmpty(funcDecl.Function.Name), funcDecl.Function.IsStrict, ResolveParentCaptureSlot);
             var compiledBlock = funcCompiler.Compile(BuildCallableBody(funcDecl.Function.Body, funcDecl.Function.Parameters));
             var localMap = BuildFunctionLocalMap(compiledBlock);
 
