@@ -8472,3 +8472,22 @@ Verification:
 Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Rendering.ObjectPoolCapacityTests|FullyQualifiedName~FenBrowser.Tests.Rendering.CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~FenBrowser.Tests.Rendering.RetainedTileRasterizationTests" --configuration Release --logger "console;verbosity=minimal"`: pass (`8/8`) on `2026-05-10`.
+
+## 2.313 JavaScript Template And Call Semantics Hardening (2026-05-16)
+
+- `FenBrowser.FenEngine/Core/Parser.cs`
+  - Template-literal parsing now distinguishes a `${...}` expression's own closing brace from the following template-substitution closing brace when the expression ends in an object/function/block-shaped form. This prevents multiline tagged templates in minified bundles from desynchronizing and treating CSS template text as JavaScript source.
+- `FenBrowser.FenEngine/Core/Bytecode/Compiler/BytecodeCompiler.cs`
+  - Optional calls now short-circuit only for nullish callees; non-nullish non-callables flow into the normal call path and throw `TypeError` instead of returning `undefined`.
+  - Optional member calls preserve the receiver for `obj.method?.()` while comma-detached calls such as `(0, obj.method)()` remain ordinary calls without the member receiver.
+- `FenBrowser.FenEngine/Core/Bytecode/VM/VirtualMachine.cs`
+  - Missing variable resolution now writes `[VM_ResolveMissing]` diagnostics to `logs/js_debug.log` with scope depth, environment type, local binding state, compiled local-slot presence, and known bindings for each environment in the chain.
+- `FenBrowser.FenEngine/Core/FenEnvironment.cs`
+  - Added diagnostic-only binding introspection helpers used by VM missing-name logging; these do not alter runtime resolution semantics.
+- Regression coverage:
+  - `FenBrowser.Tests/Engine/TemplateLiteralTests.cs`
+  - `FenBrowser.Tests/Engine/Bytecode/BytecodeExecutionTests.cs`
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~TemplateLiteralTests|FullyQualifiedName~BytecodeExecutionTests" --no-restore --logger "console;verbosity=minimal"`: pass (`188/188`) on `2026-05-16`.
