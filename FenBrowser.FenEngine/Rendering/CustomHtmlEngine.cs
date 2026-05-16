@@ -2164,10 +2164,16 @@ public void Dispose()
                      AlertTriggered?.Invoke(msg);
                      return defaultValue ?? string.Empty;
                  },
-                 log: (msg) => 
-                 { 
+                 log: (msg) =>
+                 {
                      EngineLogCompat.Debug($"[CustomHtmlEngine] Received log from JS Engine: {msg}", LogCategory.JavaScript);
-                     ConsoleMessage?.Invoke(msg); 
+                     try
+                     {
+                         FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordConsole(
+                             "log", msg, baseUri?.AbsoluteUri);
+                     }
+                     catch { /* diagnostics must never break a navigation */ }
+                     ConsoleMessage?.Invoke(msg);
                  },
                  scrollToElement: (el) => { }))
              {
@@ -2256,12 +2262,38 @@ public void Dispose()
              }
              catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Domain tuning failed: {ex.Message}", LogCategory.Rendering); }
 
-             if (js != null) 
+             if (js != null)
              {
                  js.FetchHandler = FetchHandler;
                  // [Compliance] Inject Window Dimensions
                 if (viewportWidth.HasValue) js.WindowWidth = viewportWidth.Value;
                 if (viewportHeight.HasValue) js.WindowHeight = viewportHeight.Value;
+
+                // Capture every uncaught script exception to logs/js_diagnostics.log.
+                // This is how we find out *why* a heavily-fenced site (x.com, etc.)
+                // bailed during boot - the engine logs are noisy and the failure
+                // line is buried; the diagnostics file is the single place to look.
+                try
+                {
+                    var ctx = js.GlobalContext;
+                    if (ctx != null)
+                    {
+                        var pageUrl = baseUri?.AbsoluteUri;
+                        ctx.OnUncaughtException = (thrown, src) =>
+                        {
+                            try
+                            {
+                                FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder
+                                    .RecordException(thrown, src, pageUrl);
+                            }
+                            catch { /* never break a navigation on a diagnostics path */ }
+                        };
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to wire JS exception recorder: {ex.Message}", LogCategory.JavaScript);
+                }
             }
 
              return js;
