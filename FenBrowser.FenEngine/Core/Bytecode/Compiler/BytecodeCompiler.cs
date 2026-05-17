@@ -4462,6 +4462,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void LogCompilerDeclare(string declarationKind, string variableName, bool added)
         {
+            if (!CompilerEmitLogEnabled) return;
             try
             {
                 FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(
@@ -4480,8 +4481,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             }
         }
 
+        // Compiler emit-resolve diagnostic logging is OFF by default. Opt in with
+        // FEN_COMPILER_EMIT_LOG=1 when investigating a binding-resolution issue,
+        // or flip CompilerEmitLogEnabled directly (used by diagnostic-log tests).
+        // Previously these helpers ran a synchronous file append per emit, which made
+        // compiling a large object literal (x.com's __INITIAL_STATE__ = ~2,500 nested
+        // literals → ~25,000 emits) take ~2.5 seconds purely in disk I/O.
+        internal static bool CompilerEmitLogEnabled =
+            string.Equals(System.Environment.GetEnvironmentVariable("FEN_COMPILER_EMIT_LOG"), "1",
+                System.StringComparison.Ordinal);
+
         private void LogCompilerEmitResolve(string op, string variableName, int? slotIndex)
         {
+            if (!CompilerEmitLogEnabled) return;
             try
             {
                 FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(
@@ -4502,6 +4514,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
 
         private void LogCompilerEmitCapturedResolve(string op, string variableName, int parentSlotIndex)
         {
+            if (!CompilerEmitLogEnabled) return;
             try
             {
                 FenBrowser.Core.Logging.DiagnosticPaths.AppendRootText(

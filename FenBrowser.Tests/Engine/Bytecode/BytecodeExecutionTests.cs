@@ -581,20 +581,30 @@ namespace FenBrowser.Tests.Engine.Bytecode
         [Fact]
         public void Bytecode_ClosureCapturedVarLocal_LogsCapturedParentSlot()
         {
-            var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
-            var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+            // Compiler emit-resolve logging is off by default for perf; enable for this test.
+            var prevToggle = FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled;
+            FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = true;
+            try
+            {
+                var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
+                var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
 
-            var result = Evaluate("function outer() { var JBa = 10; return function () { return JBa; }; } outer()();");
-            Assert.Equal(10, result.AsNumber());
+                var result = Evaluate("function outer() { var JBa = 10; return function () { return JBa; }; } outer()();");
+                Assert.Equal(10, result.AsNumber());
 
-            var contents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
-            var appended = previousContents.Length > 0 && previousContents.Length < contents.Length
-                ? contents.Substring(previousContents.Length)
-                : contents;
+                var contents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+                var appended = previousContents.Length > 0 && previousContents.Length < contents.Length
+                    ? contents.Substring(previousContents.Length)
+                    : contents;
 
-            Assert.Contains("[CompilerDeclare] function=outer declare var name=JBa", appended);
-            Assert.Contains("[CompilerEmitResolve] function=<anonymous-function> op=LoadCaptured name=JBa parentSlot=", appended);
-            Assert.DoesNotContain("[CompilerEmitResolve] function=<anonymous-function> op=LoadVar name=JBa slot=none", appended);
+                Assert.Contains("[CompilerDeclare] function=outer declare var name=JBa", appended);
+                Assert.Contains("[CompilerEmitResolve] function=<anonymous-function> op=LoadCaptured name=JBa parentSlot=", appended);
+                Assert.DoesNotContain("[CompilerEmitResolve] function=<anonymous-function> op=LoadVar name=JBa slot=none", appended);
+            }
+            finally
+            {
+                FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = prevToggle;
+            }
         }
 
         [Fact]
@@ -894,6 +904,11 @@ namespace FenBrowser.Tests.Engine.Bytecode
         [Fact]
         public void Bytecode_MissingVariableResolution_LogsScopeDiagnostics()
         {
+            // Compiler emit-resolve logging is off by default for perf; enable for this test.
+            var prevToggle = FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled;
+            FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = true;
+            try
+            {
             var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
             var previousContents = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
 
@@ -913,6 +928,11 @@ namespace FenBrowser.Tests.Engine.Bytecode
             Assert.Contains("type=function", appended);
             Assert.Contains("bindings=[", appended);
             Assert.Contains("declared", appended);
+            }
+            finally
+            {
+                FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = prevToggle;
+            }
         }
 
         [Fact]

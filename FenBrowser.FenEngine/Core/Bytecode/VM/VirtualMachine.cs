@@ -3394,7 +3394,12 @@ run_loop_restart:
                                 {
                                     var key = PropertyKey(_stack[_sp - numValues + i]);
                                     var value = _stack[_sp - numValues + i + 1];
-                                    obj.Set(key, value);
+                                    // Fast path: brand-new object literal, no proxy/setter/accessor
+                                    // possible. __proto__ keeps its prototype-setter semantics through Set.
+                                    if (key.Length == 9 && key == "__proto__")
+                                        obj.Set(key, value);
+                                    else
+                                        obj.DefineDataPropertyFast(key, value);
                                 }
                                 _sp -= numValues;
                                 _stack[_sp++] = FenValue.FromObject(obj);

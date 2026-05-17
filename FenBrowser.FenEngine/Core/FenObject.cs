@@ -552,6 +552,32 @@ namespace FenBrowser.FenEngine.Core
             SetWithReceiver(key, value, FenValue.FromObject(this), context);
         }
 
+        /// <summary>
+        /// Trusted bulk-define for fresh object literals: skips proxy traps, inherited-setter
+        /// probes, accessor invocation, and writability checks. Caller (e.g., MakeObject in the
+        /// VM) must guarantee the object is brand-new, extensible, and not user-reachable yet,
+        /// and that <paramref name="key"/> is not a reserved name like __proto__.
+        /// For x.com's 165KB __INITIAL_STATE__ literal this halves construction time on top
+        /// of the Shape-transition fix; the SetWithReceiver path has ~10 guards per call that
+        /// can't fire for a fresh literal.
+        /// </summary>
+        internal void DefineDataPropertyFast(string key, FenValue value)
+        {
+            // Duplicate-key in an object literal (legal in non-strict): just overwrite the slot.
+            if (_shape.TryGetPropertyOffset(key, out var existingIndex))
+            {
+                var existing = _properties[existingIndex];
+                existing.Value = value;
+                _properties[existingIndex] = existing;
+                return;
+            }
+
+            _shape = _shape.TransitionTo(key);
+            int newIndex = _shape.PropertyCount - 1;
+            if (newIndex >= _properties.Length) Array.Resize(ref _properties, _properties.Length * 2);
+            _properties[newIndex] = PropertyDescriptor.DataDefault(value);
+        }
+
         public virtual void Set(FenValue key, FenValue value, IExecutionContext context = null)
         {
             SetWithReceiver(key, value, FenValue.FromObject(this), context);
