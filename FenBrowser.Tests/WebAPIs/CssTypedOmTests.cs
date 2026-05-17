@@ -184,6 +184,75 @@ namespace FenBrowser.Tests.WebAPIs
         }
 
         [Fact]
+        public void ComputedStyleMap_GetAndHas_PullFromComputedStyleProvider()
+        {
+            var computedStyles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["width"] = "42px"
+            };
+
+            var context = new JsExecutionContext(new PermissionManager(JsPermissions.StandardWeb));
+            var elementPrototype = new FenObject();
+
+            CssTypedOM.InstallOnElementPrototype(
+                elementPrototype,
+                context,
+                getComputedStyle: (_, prop) => computedStyles.TryGetValue(prop, out var value) ? value : null,
+                setInlineStyle: (_, _, _) => true,
+                getInlineStyle: (_, _) => null);
+
+            var element = new FenObject();
+            element.SetPrototype(elementPrototype);
+
+            var computedStyleMap = Assert.IsAssignableFrom<FenObject>(element.Get("computedStyleMap")
+                .AsFunction()
+                .Invoke(Array.Empty<FenValue>(), context, FenValue.FromObject(element))
+                .AsObject());
+
+            var hasWidth = computedStyleMap.Get("has").AsFunction().Invoke(
+                new[] { FenValue.FromString("width") },
+                context,
+                FenValue.FromObject(computedStyleMap));
+            Assert.True(hasWidth.ToBoolean());
+
+            var width = computedStyleMap.Get("get").AsFunction().Invoke(
+                new[] { FenValue.FromString("width") },
+                context,
+                FenValue.FromObject(computedStyleMap));
+            var widthObject = Assert.IsType<FenObject>(width.AsObject());
+            Assert.Equal("CSSUnitValue", widthObject.InternalClass);
+            Assert.Equal(42d, widthObject.Get("value").ToNumber());
+            Assert.Equal("px", widthObject.Get("unit").AsString());
+        }
+
+        [Fact]
+        public void AttributeStyleMap_Getter_ReturnsStableInstancePerElement()
+        {
+            var inlineStyles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var context = new JsExecutionContext(new PermissionManager(JsPermissions.StandardWeb));
+            var elementPrototype = new FenObject();
+
+            CssTypedOM.InstallOnElementPrototype(
+                elementPrototype,
+                context,
+                getComputedStyle: (_, _) => null,
+                setInlineStyle: (_, prop, value) =>
+                {
+                    inlineStyles[prop] = value;
+                    return true;
+                },
+                getInlineStyle: (_, prop) => inlineStyles.TryGetValue(prop, out var value) ? value : null);
+
+            var element = new FenObject();
+            element.SetPrototype(elementPrototype);
+
+            var first = element.Get("attributeStyleMap").AsObject();
+            var second = element.Get("attributeStyleMap").AsObject();
+
+            Assert.Same(first, second);
+        }
+
+        [Fact]
         public void CssMathConstructorGroup_ComputesValuesAndClamp()
         {
             var group = CssTypedOM.CreateCssMathConstructorGroup();

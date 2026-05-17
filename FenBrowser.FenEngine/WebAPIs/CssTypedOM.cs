@@ -121,6 +121,22 @@ namespace FenBrowser.FenEngine.WebAPIs
                         return FenValue.FromObject(ParseCssValue(prop, rawValue));
                     }
 
+                    var getStyleFn = mapObj?.Get("__getStyle");
+                    if (getStyleFn.IsFunction)
+                    {
+                        var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
+                        if (!pulled.IsUndefined && !pulled.IsNull)
+                        {
+                            var pulledRaw = pulled.ToString();
+                            if (!string.IsNullOrEmpty(pulledRaw))
+                            {
+                                if (dict != null)
+                                    dict[prop] = pulledRaw;
+                                return FenValue.FromObject(ParseCssValue(prop, pulledRaw));
+                            }
+                        }
+                    }
+
                     return FenValue.Undefined;
                 })));
 
@@ -170,7 +186,18 @@ namespace FenBrowser.FenEngine.WebAPIs
                     var prop = hArgs[0].ToString();
                     var dict = GetStyleMapDictionary(thisVal.AsObject());
                     if (dict != null)
-                        return FenValue.FromBoolean(dict.ContainsKey(prop));
+                    {
+                        if (dict.ContainsKey(prop))
+                            return FenValue.FromBoolean(true);
+                    }
+
+                    var getStyleFn = thisVal.AsObject()?.Get("__getStyle");
+                    if (getStyleFn.IsFunction)
+                    {
+                        var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
+                        if (!pulled.IsUndefined && !pulled.IsNull && !string.IsNullOrEmpty(pulled.ToString()))
+                            return FenValue.FromBoolean(true);
+                    }
 
                     return FenValue.FromBoolean(false);
                 })));
@@ -285,13 +312,18 @@ namespace FenBrowser.FenEngine.WebAPIs
                 if (elementObj is not FenObject elementFenObject)
                     return FenValue.Null;
 
+                var existing = elementFenObject.Get("__attributeStyleMap");
+                if (existing.IsObject)
+                    return existing;
+
                 var ctor = CreateStylePropertyMapConstructor(
                     context,
                     prop => getInlineStyle?.Invoke(elementFenObject, prop),
                     (prop, value) => setInlineStyle?.Invoke(elementFenObject, prop, value),
                     isReadOnly: false);
-
-                return ctor.Invoke(Array.Empty<FenValue>(), context, FenValue.FromFunction(ctor));
+                var created = ctor.Invoke(Array.Empty<FenValue>(), context, FenValue.FromFunction(ctor));
+                elementFenObject.Set("__attributeStyleMap", created);
+                return created;
             });
 
             var getComputedStyleMap = new FenFunction("computedStyleMap", (args, thisVal) =>
