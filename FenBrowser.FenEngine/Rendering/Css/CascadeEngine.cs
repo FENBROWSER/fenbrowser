@@ -221,6 +221,47 @@ private int _domGeneration = 0;
             return true;
         }
 
+        // Fast pseudo-classification: returns true if the rule's last segment actually
+        // names a pseudo-element (either via PseudoElements or via a legacy single-colon
+        // pseudo-class). Allocation-free; bails out at the first match.
+        private static bool RuleHasAnyPseudoElement(SelectorSegment lastSeg, bool hasPe, bool hasPc)
+        {
+            if (hasPe)
+            {
+                foreach (var pe in lastSeg.PseudoElements)
+                {
+                    if (TryNormalizePseudoElementName(pe?.Name, out _)) return true;
+                }
+            }
+            if (hasPc)
+            {
+                foreach (var pc in lastSeg.PseudoClasses)
+                {
+                    if (TryNormalizeLegacyPseudoElementName(pc?.Name, out _)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool RuleMatchesPseudo(SelectorSegment lastSeg, bool hasPe, bool hasPc, string requested)
+        {
+            if (hasPe)
+            {
+                foreach (var pe in lastSeg.PseudoElements)
+                {
+                    if (TryNormalizePseudoElementName(pe?.Name, out var n) && n == requested) return true;
+                }
+            }
+            if (hasPc)
+            {
+                foreach (var pc in lastSeg.PseudoClasses)
+                {
+                    if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var n) && n == requested) return true;
+                }
+            }
+            return false;
+        }
+
         private void IndexKeySegment(SelectorSegment keySeg, CssStyleRule styleRule)
         {
             if (keySeg == null)
@@ -539,24 +580,15 @@ return computed;
                 }
             }
             
-            // 3. Check tag-specific rules
-            string tag = element.TagName?.ToUpperInvariant();
+            // 3. Check tag-specific rules (_tagIndex is OrdinalIgnoreCase)
+            string tag = element.TagName;
             if (!string.IsNullOrEmpty(tag) && _tagIndex.TryGetValue(tag, out var tagRules))
             {
-                // DEBUG: Log div cascade
-                if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
-                {
-                    FenBrowser.Core.EngineLogCompat.Info($"[CASCADE-DIV] Found {tagRules.Count} indexed rules for DIV element", LogCategory.CSS);
-                }
                 foreach (var rule in tagRules)
                 {
                     if (_processedRules.Add(rule))
                         TryMatchRule(element, rule, results, pseudoElement);
                 }
-            }
-            else if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
-            {
-                FenBrowser.Core.EngineLogCompat.Warn($"[CASCADE-DIV] NO rules found in _tagIndex for DIV! Index contains: {string.Join(", ", _tagIndex.Keys.Take(20))}", LogCategory.CSS);
             }
             
             // 4. Always check universal rules
@@ -599,47 +631,25 @@ return computed;
                 return;
             }
 
-            if (matchedChain != null)
             {
-                var lastSeg = matchedChain.Segments.LastOrDefault();
-                var pseudoNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (lastSeg != null)
-                {
-                    if (lastSeg.PseudoElements != null)
-                    {
-                        foreach (var pe in lastSeg.PseudoElements)
-                        {
-                            if (TryNormalizePseudoElementName(pe?.Name, out var normalized))
-                            {
-                                pseudoNames.Add(normalized);
-                            }
-                        }
-                    }
+                var segments = matchedChain.Segments;
+                var lastSeg = segments.Count > 0 ? segments[segments.Count - 1] : null;
+                bool hasPe = lastSeg?.PseudoElements != null && lastSeg.PseudoElements.Count > 0;
+                bool hasPc = lastSeg?.PseudoClasses != null && lastSeg.PseudoClasses.Count > 0;
 
-                    if (lastSeg.PseudoClasses != null)
-                    {
-                        foreach (var pc in lastSeg.PseudoClasses)
-                        {
-                            if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var normalized))
-                            {
-                                pseudoNames.Add(normalized);
-                            }
-                        }
-                    }
-                }
-
-                bool ruleHasPseudo = pseudoNames.Count > 0;
-                
                 if (string.IsNullOrEmpty(pseudoElement))
                 {
-                    if (ruleHasPseudo) return;
+                    // Fast path: no pseudo requested. If rule has no pseudo-element segment
+                    // and no legacy single-colon pseudo-class candidates, no allocation needed.
+                    if (!hasPe && !hasPc) { /* fall through to declarations */ }
+                    else if (RuleHasAnyPseudoElement(lastSeg, hasPe, hasPc)) return;
                 }
                 else
                 {
-                    if (!ruleHasPseudo) return;
+                    if (!hasPe && !hasPc) return;
 
                     string requestedPseudo = pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
-                    if (!pseudoNames.Contains(requestedPseudo)) return;
+                    if (!RuleMatchesPseudo(lastSeg, hasPe, hasPc, requestedPseudo)) return;
                 }
             }
 
@@ -1674,10 +1684,23 @@ return computed;
                         return;
                     }
 
+                    tokenValue = tokenValue.Trim();
+                    if (tokenValue.EndsWith(",", StringComparison.Ordinal))
+                    {
+                        tokenValue = tokenValue.Substring(0, tokenValue.Length - 1).Trim();
+                        if (tokenValue.Length == 0)
+                        {
+                            return;
+                        }
+                    }
+
                     if (tokenValue.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
                         tokenValue.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
                     {
-                        image = tokenValue;
+                        if (image == null)
+                        {
+                            image = tokenValue;
+                        }
                         return;
                     }
 
