@@ -121,18 +121,21 @@ namespace FenBrowser.FenEngine.WebAPIs
                         return FenValue.FromObject(ParseCssValue(prop, rawValue));
                     }
 
-                    var getStyleFn = mapObj?.Get("__getStyle");
-                    if (getStyleFn.IsFunction)
+                    if (mapObj != null)
                     {
-                        var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
-                        if (!pulled.IsUndefined && !pulled.IsNull)
+                        var getStyleFn = mapObj.Get("__getStyle");
+                        if (getStyleFn.IsFunction)
                         {
-                            var pulledRaw = pulled.ToString();
-                            if (!string.IsNullOrEmpty(pulledRaw))
+                            var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
+                            if (!pulled.IsUndefined && !pulled.IsNull)
                             {
-                                if (dict != null)
-                                    dict[prop] = pulledRaw;
-                                return FenValue.FromObject(ParseCssValue(prop, pulledRaw));
+                                var pulledRaw = pulled.ToString();
+                                if (!string.IsNullOrEmpty(pulledRaw))
+                                {
+                                    if (dict != null)
+                                        dict[prop] = pulledRaw;
+                                    return FenValue.FromObject(ParseCssValue(prop, pulledRaw));
+                                }
                             }
                         }
                     }
@@ -191,12 +194,16 @@ namespace FenBrowser.FenEngine.WebAPIs
                             return FenValue.FromBoolean(true);
                     }
 
-                    var getStyleFn = thisVal.AsObject()?.Get("__getStyle");
-                    if (getStyleFn.IsFunction)
+                    var thisObj = thisVal.AsObject();
+                    if (thisObj != null)
                     {
-                        var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
-                        if (!pulled.IsUndefined && !pulled.IsNull && !string.IsNullOrEmpty(pulled.ToString()))
-                            return FenValue.FromBoolean(true);
+                        var getStyleFn = thisObj.Get("__getStyle");
+                        if (getStyleFn.IsFunction)
+                        {
+                            var pulled = getStyleFn.AsFunction().Invoke(new[] { FenValue.FromString(prop) }, null);
+                            if (!pulled.IsUndefined && !pulled.IsNull && !string.IsNullOrEmpty(pulled.ToString()))
+                                return FenValue.FromBoolean(true);
+                        }
                     }
 
                     return FenValue.FromBoolean(false);
