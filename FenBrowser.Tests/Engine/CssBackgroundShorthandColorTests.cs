@@ -70,5 +70,33 @@ namespace FenBrowser.Tests.Engine
             Assert.True(style.BackgroundColor.HasValue);
             Assert.Equal(expected.Value, style.BackgroundColor.Value);
         }
+
+        [Fact]
+        public async Task BackgroundShorthand_MultiLayerUrlGradient_PreservesUrlLayer()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    .logo { background: url('/assets/new-logo-vert.png') no-repeat, linear-gradient(180deg, #000, #111); }
+  </style>
+</head>
+<body>
+  <div class='logo'>x</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+            var logo = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("logo"));
+
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://fast.com"), null);
+            var style = computed[logo];
+
+            Assert.False(string.IsNullOrWhiteSpace(style.BackgroundImage));
+            Assert.Contains("url(", style.BackgroundImage, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

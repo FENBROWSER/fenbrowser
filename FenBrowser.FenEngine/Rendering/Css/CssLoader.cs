@@ -3790,6 +3790,17 @@ private static double? ExtractPx(string text, string prop)
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(bgImage) &&
+                bgImage.Contains("gradient", StringComparison.OrdinalIgnoreCase) &&
+                bgImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                var fallbackUrlImage = ParseBackgroundImage(bgShorthandRaw);
+                if (!string.IsNullOrWhiteSpace(fallbackUrlImage))
+                {
+                    bgImage = fallbackUrlImage;
+                }
+            }
+
             var authoredBackgroundAttachment = Safe(DictGet(css.Map, "background-attachment"));
             if (string.IsNullOrWhiteSpace(css.BackgroundAttachment))
             {
@@ -3908,10 +3919,11 @@ private static double? ExtractPx(string text, string prop)
                 bool containsUrl = bgImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool containsGradient = bgImage.Contains("gradient");
                 
-                if (containsUrl && !containsGradient)
+                if (containsUrl)
                 {
-                    // Store the url() value directly for ImageLoader to process
-                    css.BackgroundImage = bgImage;
+                    // Preserve URL-backed image layers even when gradients are also present.
+                    var normalizedBgImage = ParseBackgroundImage(bgImage) ?? bgImage;
+                    css.BackgroundImage = normalizedBgImage;
                     EngineLogCompat.Debug($"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...", LogCategory.CSS);
                 }
                 else if (containsGradient)

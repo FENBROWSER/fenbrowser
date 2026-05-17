@@ -64,9 +64,9 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Background image
             if (!string.IsNullOrEmpty(style.BackgroundImage) && imagePainter != null)
             {
-                if (style.BackgroundImage.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+                string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+                if (!string.IsNullOrWhiteSpace(url))
                 {
-                    string url = style.BackgroundImage.Substring(4).TrimEnd(')', ' ', '\'', '"').TrimStart(' ', '\'', '"');
                     var bitmap = imagePainter.GetCachedImage(url);
                     if (bitmap != null)
                     {
@@ -641,6 +641,54 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             public float Spread;
             public SKColor Color = new SKColor(0, 0, 0, 64);
             public bool Inset;
+        }
+
+        private static string ExtractFirstBackgroundImageUrl(string backgroundImage)
+        {
+            if (string.IsNullOrWhiteSpace(backgroundImage))
+            {
+                return null;
+            }
+
+            int urlIndex = backgroundImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+            if (urlIndex < 0)
+            {
+                return null;
+            }
+
+            int depth = 0;
+            int end = -1;
+            for (int i = urlIndex; i < backgroundImage.Length; i++)
+            {
+                char c = backgroundImage[i];
+                if (c == '(')
+                {
+                    depth++;
+                }
+                else if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        end = i;
+                        break;
+                    }
+                }
+            }
+
+            if (end <= urlIndex)
+            {
+                return null;
+            }
+
+            int valueStart = urlIndex + 4;
+            int valueLength = end - valueStart;
+            if (valueLength <= 0)
+            {
+                return null;
+            }
+
+            return backgroundImage.Substring(valueStart, valueLength).Trim(' ', '\'', '"');
         }
     }
 }

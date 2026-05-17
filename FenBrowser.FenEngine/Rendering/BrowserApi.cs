@@ -958,6 +958,7 @@ namespace FenBrowser.FenEngine.Rendering
             // outside an explicit ambient context (e.g. background prewarms) still
             // reach this host. Last host instantiated wins, mirroring how a single
             // process hosts one active browser at a time.
+            ImageLoader.FetchBytesAsync = _imageLoaderContext.FetchBytesAsync;
             ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
             ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
 
@@ -9106,6 +9107,10 @@ pre {{
             if (ReferenceEquals(ImageLoader.RequestRepaint, _imageLoaderContext?.RequestRepaint))
             {
                 ImageLoader.RequestRepaint = null;
+            }
+            if (ReferenceEquals(ImageLoader.FetchBytesAsync, _imageLoaderContext?.FetchBytesAsync))
+            {
+                ImageLoader.FetchBytesAsync = null;
             }
             if (ReferenceEquals(ImageLoader.RequestRelayout, _imageLoaderContext?.RequestRelayout))
             {

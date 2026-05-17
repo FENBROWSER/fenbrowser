@@ -128,6 +128,32 @@ namespace FenBrowser.FenEngine.WebAPIs
             }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
         }
 
+        private void RunOnExecutionContext(Action action)
+        {
+            if (action == null)
+            {
+                return;
+            }
+
+            if (_context == null)
+            {
+                action();
+                return;
+            }
+
+            _context.ScheduleCallback(() =>
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn($"[XMLHttpRequest] Scheduled state transition failed: {ex.Message}", LogCategory.JavaScript);
+                }
+            }, 0);
+        }
+
         private void BaseStateSync()
         {
             base.Set("readyState", FenValue.FromNumber(_readyState));
@@ -391,33 +417,54 @@ namespace FenBrowser.FenEngine.WebAPIs
                         }
                     }
 
-                    _response = await fetchTask.ConfigureAwait(false);
+                    var response = await fetchTask.ConfigureAwait(false);
                     if (!IsActiveRequest(requestId, token))
                     {
+                        response?.Dispose();
                         return;
                     }
 
-                    base.Set("status", FenValue.FromNumber((int)_response.StatusCode));
-                    base.Set("statusText", FenValue.FromString(_response.ReasonPhrase ?? string.Empty));
-                    base.Set("responseURL", FenValue.FromString(_response.RequestMessage?.RequestUri?.ToString() ?? _url ?? string.Empty));
-                    SetReadyState(HEADERS_RECEIVED, scheduleCallbacks);
-
-                    byte[] bytes = await _response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    byte[] bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                     if (!IsActiveRequest(requestId, token))
                     {
+                        response?.Dispose();
                         return;
                     }
 
-                    SetReadyState(LOADING, scheduleCallbacks);
-                    ApplyResponsePayload(bytes);
-                    var totalBytes = bytes?.LongLength ?? 0;
-                    DispatchLifecycle("onprogress", scheduleCallbacks, loaded: totalBytes, total: totalBytes, lengthComputable: totalBytes > 0);
+                    Action completeAction = () =>
+                    {
+                        if (!IsActiveRequest(requestId, token, allowCancelledToken: true))
+                        {
+                            response?.Dispose();
+                            return;
+                        }
 
-                    _sendFlag = false;
-                    _uploadComplete = true;
-                    SetReadyState(DONE, scheduleCallbacks);
-                    DispatchLifecycle("onload", scheduleCallbacks);
-                    DispatchLifecycle("onloadend", scheduleCallbacks);
+                        _response = response;
+                        base.Set("status", FenValue.FromNumber((int)_response.StatusCode));
+                        base.Set("statusText", FenValue.FromString(_response.ReasonPhrase ?? string.Empty));
+                        base.Set("responseURL", FenValue.FromString(_response.RequestMessage?.RequestUri?.ToString() ?? _url ?? string.Empty));
+                        SetReadyState(HEADERS_RECEIVED, scheduleCallbacks: false);
+
+                        SetReadyState(LOADING, scheduleCallbacks: false);
+                        ApplyResponsePayload(bytes);
+                        var totalBytes = bytes?.LongLength ?? 0;
+                        DispatchLifecycle("onprogress", scheduleCallbacks: false, loaded: totalBytes, total: totalBytes, lengthComputable: totalBytes > 0);
+
+                        _sendFlag = false;
+                        _uploadComplete = true;
+                        SetReadyState(DONE, scheduleCallbacks: false);
+                        DispatchLifecycle("onload", scheduleCallbacks: false);
+                        DispatchLifecycle("onloadend", scheduleCallbacks: false);
+                    };
+
+                    if (scheduleCallbacks)
+                    {
+                        RunOnExecutionContext(completeAction);
+                    }
+                    else
+                    {
+                        completeAction();
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -603,21 +650,33 @@ namespace FenBrowser.FenEngine.WebAPIs
 
         private void HandleTerminalFailure(int requestId, string callbackName, string statusText, bool scheduleCallbacks)
         {
-            if (!IsActiveRequest(requestId, _requestCts?.Token ?? CancellationToken.None, allowCancelledToken: true))
+            Action failAction = () =>
             {
-                return;
-            }
+                if (!IsActiveRequest(requestId, _requestCts?.Token ?? CancellationToken.None, allowCancelledToken: true))
+                {
+                    return;
+                }
 
-            _sendFlag = false;
-            _response = null;
-            base.Set("status", FenValue.FromNumber(0));
-            base.Set("statusText", FenValue.FromString(statusText ?? string.Empty));
-            base.Set("responseText", FenValue.FromString(string.Empty));
-            base.Set("responseURL", FenValue.FromString(string.Empty));
-            base.Set("response", FenValue.Null);
-            SetReadyState(DONE, scheduleCallbacks);
-            DispatchLifecycle(callbackName, scheduleCallbacks);
-            DispatchLifecycle("onloadend", scheduleCallbacks);
+                _sendFlag = false;
+                _response = null;
+                base.Set("status", FenValue.FromNumber(0));
+                base.Set("statusText", FenValue.FromString(statusText ?? string.Empty));
+                base.Set("responseText", FenValue.FromString(string.Empty));
+                base.Set("responseURL", FenValue.FromString(string.Empty));
+                base.Set("response", FenValue.Null);
+                SetReadyState(DONE, scheduleCallbacks: false);
+                DispatchLifecycle(callbackName, scheduleCallbacks: false);
+                DispatchLifecycle("onloadend", scheduleCallbacks: false);
+            };
+
+            if (scheduleCallbacks)
+            {
+                RunOnExecutionContext(failAction);
+            }
+            else
+            {
+                failAction();
+            }
         }
 
         private bool IsActiveRequest(int requestId, CancellationToken token, bool allowCancelledToken = false)

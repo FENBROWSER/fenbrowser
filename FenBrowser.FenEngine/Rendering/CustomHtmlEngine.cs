@@ -1066,6 +1066,121 @@ public void Dispose()
             }
         }
 
+        private static async Task PrewarmCssBackgroundImagesAsync(
+            IReadOnlyDictionary<Node, CssComputed> computedStyles,
+            Uri baseUri,
+            Func<Uri, Task<Stream>> imageLoader)
+        {
+            if (computedStyles == null || computedStyles.Count == 0 || baseUri == null || imageLoader == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kvp in computedStyles)
+                {
+                    var style = kvp.Value;
+                    if (style == null || string.IsNullOrWhiteSpace(style.BackgroundImage))
+                    {
+                        continue;
+                    }
+
+                    var firstUrl = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+                    if (string.IsNullOrWhiteSpace(firstUrl))
+                    {
+                        continue;
+                    }
+
+                    var abs = ResolveUri(baseUri, firstUrl);
+                    if (abs == null)
+                    {
+                        continue;
+                    }
+
+                    urls.Add(abs.AbsoluteUri);
+                }
+
+                foreach (var url in urls)
+                {
+                    try
+                    {
+                        var uri = new Uri(url);
+                        var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri).ConfigureAwait(false);
+                        if (data != null && data.Length > 0)
+                        {
+                            using var memory = new MemoryStream(data, writable: false);
+                            await ImageLoader.PrewarmImageAsync(uri.AbsoluteUri, memory).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        using var stream = await imageLoader(uri).ConfigureAwait(false);
+                        if (stream != null)
+                        {
+                            await ImageLoader.PrewarmImageAsync(uri.AbsoluteUri, stream).ConfigureAwait(false);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[CustomHtmlEngine] CSS background prewarm failed for {url}: {ex.Message}", LogCategory.Rendering);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages failed: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
+        private static string ExtractFirstBackgroundImageUrl(string backgroundImage)
+        {
+            if (string.IsNullOrWhiteSpace(backgroundImage))
+            {
+                return null;
+            }
+
+            int urlIndex = backgroundImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+            if (urlIndex < 0)
+            {
+                return null;
+            }
+
+            int depth = 0;
+            int end = -1;
+            for (int i = urlIndex; i < backgroundImage.Length; i++)
+            {
+                char c = backgroundImage[i];
+                if (c == '(')
+                {
+                    depth++;
+                }
+                else if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        end = i;
+                        break;
+                    }
+                }
+            }
+
+            if (end <= urlIndex)
+            {
+                return null;
+            }
+
+            int valueStart = urlIndex + 4;
+            int valueLength = end - valueStart;
+            if (valueLength <= 0)
+            {
+                return null;
+            }
+
+            return backgroundImage.Substring(valueStart, valueLength).Trim(' ', '\'', '"');
+        }
+
         private static int VisualChildCount(object node)
         {
             try
@@ -2601,6 +2716,7 @@ public void Dispose()
                 // 4. Prewarm Images
                 EngineLogCompat.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
                 try { await PrewarmImagesAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
+                try { await PrewarmCssBackgroundImagesAsync(LastComputedStyles, baseUri, imageLoader).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages invocation failed: {ex.Message}", LogCategory.Rendering); }
 
                 // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded

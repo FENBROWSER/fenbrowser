@@ -365,11 +365,13 @@ namespace FenBrowser.FenEngine.Rendering
                 if (familyMatch.Success)
                     descriptor.Family = familyMatch.Groups[2].Value.Trim();
 
-                // Parse src
-                var srcMatch = Regex.Match(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (srcMatch.Success)
+                // Parse src. Keep the last declaration so fallback lists that override
+                // an earlier legacy src (for example EOT) are honored.
+                var srcMatches = Regex.Matches(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
+                if (srcMatches.Count > 0)
                 {
-                    descriptor.Source = srcMatch.Groups[1].Value.Trim();
+                    var lastSrc = srcMatches[srcMatches.Count - 1];
+                    descriptor.Source = lastSrc.Groups[1].Value.Trim();
                     // We let LoadFontFaceAsync handle the url()/local() parsing details
                 }
 

@@ -1639,10 +1639,41 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (style == null) return null;
             bool hasBg = style.BackgroundColor.HasValue && style.BackgroundColor.Value.Alpha > 0;
+            bool hasBgImage = !string.IsNullOrWhiteSpace(style.BackgroundImage) &&
+                              style.BackgroundImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0;
             var bt = style.BorderThickness;
             bool hasBorder = (bt.Left > 0 || bt.Right > 0 || bt.Top > 0 || bt.Bottom > 0);
             
-            if (!hasBg && !hasBorder) return null;
+            if (!hasBg && !hasBorder && !hasBgImage) return null;
+
+            SKBitmap inlineBackgroundBitmap = null;
+            SKShaderTileMode inlineTileModeX = SKShaderTileMode.Repeat;
+            SKShaderTileMode inlineTileModeY = SKShaderTileMode.Repeat;
+            if (hasBgImage)
+            {
+                string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+                if (!string.IsNullOrWhiteSpace(url) &&
+                    !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                    !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(_baseUri))
+                {
+                    try
+                    {
+                        url = new Uri(new Uri(_baseUri), url).ToString();
+                    }
+                    catch (Exception ex)
+                    {
+                        global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed resolving inline background image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    inlineBackgroundBitmap = ImageLoader.GetImage(url);
+                }
+
+                (inlineTileModeX, inlineTileModeY) = ResolveBackgroundTileModes(style?.BackgroundRepeat);
+            }
 
             // 1. Collect all content bounds
             var rects = new List<SKRect>();
@@ -1721,6 +1752,28 @@ namespace FenBrowser.FenEngine.Rendering
                         BorderRadius = sliceRadius,
                         IsFocused = isFocused,
                         IsHovered = isHovered
+                    });
+                }
+
+                if (inlineBackgroundBitmap != null)
+                {
+                    var origin = box != null
+                        ? ResolveBackgroundOriginPoint(box, style)
+                        : new SKPoint(finalRect.Left, finalRect.Top);
+                    var position = ResolveBackgroundPosition(style?.BackgroundPosition, finalRect, inlineBackgroundBitmap, origin);
+                    resultNodes.Add(new ImagePaintNode
+                    {
+                        Bounds = finalRect,
+                        SourceNode = node,
+                        Bitmap = inlineBackgroundBitmap,
+                        ObjectFit = "none",
+                        IsBackgroundImage = true,
+                        TileModeX = inlineTileModeX,
+                        TileModeY = inlineTileModeY,
+                        BackgroundOrigin = origin,
+                        BackgroundPosition = position,
+                        BackgroundAttachmentFixed = false,
+                        FixedViewportOrigin = new SKPoint(0, 0)
                     });
                 }
                 
@@ -2195,15 +2248,54 @@ namespace FenBrowser.FenEngine.Rendering
 
         private ImagePaintNode BuildBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
         {
+            if (node is Element preDebugElem)
+            {
+                var classAttr = preDebugElem.GetAttribute("class") ?? string.Empty;
+                if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
+                    classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
+                {
+                    string mapBackground = null;
+                    string mapBackgroundImage = null;
+                    string mapBackgroundSize = null;
+                    string mapDisplay = null;
+                    style?.Map?.TryGetValue("background", out mapBackground);
+                    style?.Map?.TryGetValue("background-image", out mapBackgroundImage);
+                    style?.Map?.TryGetValue("background-size", out mapBackgroundSize);
+                    style?.Map?.TryGetValue("display", out mapDisplay);
+                    global::FenBrowser.Core.EngineLogCompat.Info(
+                        $"[BG-TRACE] precheck class='{classAttr}' display='{style?.Display ?? "<null>"}' mapDisplay='{mapDisplay ?? "<null>"}' backgroundImage='{style?.BackgroundImage ?? "<null>"}' mapBackgroundImage='{mapBackgroundImage ?? "<null>"}' mapBackground='{mapBackground ?? "<null>"}' mapBackgroundSize='{mapBackgroundSize ?? "<null>"}'",
+                        FenBrowser.Core.Logging.LogCategory.Rendering);
+                }
+            }
+
             if (string.IsNullOrEmpty(style?.BackgroundImage) || style.BackgroundImage == "none") return null;
 
-            string url = style.BackgroundImage.Trim();
-            if (url.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+            if (node is Element debugElem)
             {
-                url = url.Substring(4, url.Length - 5).Trim('\'', '\"', ' ');
+                var classAttr = debugElem.GetAttribute("class") ?? string.Empty;
+                if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
+                    classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
+                {
+                    global::FenBrowser.Core.EngineLogCompat.Info(
+                        $"[BG-TRACE] class='{classAttr}' backgroundImage='{style.BackgroundImage}'",
+                        FenBrowser.Core.Logging.LogCategory.Rendering);
+                }
             }
-            else
+
+            string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+            if (string.IsNullOrWhiteSpace(url))
             {
+                if (node is Element debugElemNoUrl)
+                {
+                    var classAttr = debugElemNoUrl.GetAttribute("class") ?? string.Empty;
+                    if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
+                        classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
+                    {
+                        global::FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[BG-TRACE] class='{classAttr}' did not yield URL from backgroundImage='{style.BackgroundImage}'",
+                            FenBrowser.Core.Logging.LogCategory.Rendering);
+                    }
+                }
                 // Might be a gradient or other value we don't support yet as image
                 return null;
             }
@@ -2313,6 +2405,54 @@ namespace FenBrowser.FenEngine.Rendering
                 BackgroundAttachmentFixed = string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase),
                 FixedViewportOrigin = new SKPoint(fixedOriginX, fixedOriginY)
             };
+        }
+
+        private static string ExtractFirstBackgroundImageUrl(string backgroundImage)
+        {
+            if (string.IsNullOrWhiteSpace(backgroundImage))
+            {
+                return null;
+            }
+
+            int urlIndex = backgroundImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+            if (urlIndex < 0)
+            {
+                return null;
+            }
+
+            int depth = 0;
+            int end = -1;
+            for (int i = urlIndex; i < backgroundImage.Length; i++)
+            {
+                char c = backgroundImage[i];
+                if (c == '(')
+                {
+                    depth++;
+                }
+                else if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        end = i;
+                        break;
+                    }
+                }
+            }
+
+            if (end <= urlIndex)
+            {
+                return null;
+            }
+
+            int valueStart = urlIndex + 4;
+            int valueLength = end - valueStart;
+            if (valueLength <= 0)
+            {
+                return null;
+            }
+
+            return backgroundImage.Substring(valueStart, valueLength).Trim(' ', '\'', '"');
         }
         
         private BorderPaintNode BuildBorderNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
