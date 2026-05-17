@@ -434,10 +434,3 @@ jobs:
           
           Write-Host "All pipeline hardening files present ✓"
         shell: pwsh
-
-# Notification
-notifications:
-  email:
-    - recipient: pipeline-team@fenbrowser.dev
-      on_success: change
-      on_failure: always
