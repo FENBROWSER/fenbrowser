@@ -28,8 +28,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     {
         private const int MaxMicrotaskCheckpointPasses = 1024;
         private static EventLoopCoordinator s_sharedInstance;
+        private static readonly ThreadLocal<EventLoopCoordinator> s_threadDefault = new ThreadLocal<EventLoopCoordinator>(() => new EventLoopCoordinator());
         private static readonly AsyncLocal<EventLoopCoordinator> s_boundInstance = new AsyncLocal<EventLoopCoordinator>();
-        public static EventLoopCoordinator Instance => s_boundInstance.Value ?? (s_sharedInstance ??= new EventLoopCoordinator());
+        public static EventLoopCoordinator Instance => s_boundInstance.Value ?? s_threadDefault.Value;
         public static EventLoopCoordinator ThreadDefault => s_sharedInstance ??= new EventLoopCoordinator();
 
         private sealed class DelayedTaskEntry

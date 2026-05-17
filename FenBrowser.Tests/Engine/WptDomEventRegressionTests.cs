@@ -6,6 +6,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Engine;
 
+[Collection("Engine Tests")]
 public class WptDomEventRegressionTests
 {
     [Fact]
