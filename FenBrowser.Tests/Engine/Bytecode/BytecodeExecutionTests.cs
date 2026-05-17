@@ -582,8 +582,11 @@ namespace FenBrowser.Tests.Engine.Bytecode
         public void Bytecode_ClosureCapturedVarLocal_LogsCapturedParentSlot()
         {
             // Compiler emit-resolve logging is off by default for perf; enable for this test.
+            // Both gates need to be on: the per-subsystem toggle and the global file-append toggle.
             var prevToggle = FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled;
+            var prevAppend = FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled;
             FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = true;
+            FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled = true;
             try
             {
                 var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
@@ -604,6 +607,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             finally
             {
                 FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = prevToggle;
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled = prevAppend;
             }
         }
 
@@ -905,8 +909,11 @@ namespace FenBrowser.Tests.Engine.Bytecode
         public void Bytecode_MissingVariableResolution_LogsScopeDiagnostics()
         {
             // Compiler emit-resolve logging is off by default for perf; enable for this test.
+            // Both gates need to be on: the per-subsystem toggle and the global file-append toggle.
             var prevToggle = FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled;
+            var prevAppend = FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled;
             FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = true;
+            FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled = true;
             try
             {
             var logPath = FenBrowser.Core.Logging.DiagnosticPaths.GetRootArtifactPath("js_debug.log");
@@ -932,6 +939,7 @@ namespace FenBrowser.Tests.Engine.Bytecode
             finally
             {
                 FenBrowser.FenEngine.Core.Bytecode.Compiler.BytecodeCompiler.CompilerEmitLogEnabled = prevToggle;
+                FenBrowser.Core.Logging.DiagnosticPaths.AppendEnabled = prevAppend;
             }
         }
 

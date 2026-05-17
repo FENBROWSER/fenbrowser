@@ -12,6 +12,20 @@ namespace FenBrowser.Core.Logging
     {
         private const string DiagnosticsRootEnv = "FEN_DIAGNOSTICS_DIR";
 
+        /// <summary>
+        /// Global on/off switch for the synchronous-file-write Append* helpers.
+        /// OFF by default — the engine has ~30 hot-path AppendRootText callsites
+        /// (per-script, per-paint, per-fetch, per-VM-throw, per-console-log, ...)
+        /// that turn into a disk-I/O storm on real pages. Opt back in with
+        /// FEN_DIAGNOSTIC_APPENDS=1 when investigating, or flip AppendEnabled.
+        ///
+        /// Individual subsystems may still have their own per-category gates
+        /// (LayoutDebugLogEnabled, CompilerEmitLogEnabled) layered above this one.
+        /// </summary>
+        public static bool AppendEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("FEN_DIAGNOSTIC_APPENDS"), "1",
+                StringComparison.Ordinal);
+
         public static string GetWorkspaceRoot()
         {
             var envRoot = Environment.GetEnvironmentVariable(DiagnosticsRootEnv);
@@ -80,11 +94,13 @@ namespace FenBrowser.Core.Logging
 
         public static void AppendRootText(string fileName, string text)
         {
+            if (!AppendEnabled) return;
             ResilientFileWriter.AppendAllText(GetRootArtifactPath(fileName), text);
         }
 
         public static void AppendLogText(string fileName, string text)
         {
+            if (!AppendEnabled) return;
             ResilientFileWriter.AppendAllText(GetLogArtifactPath(fileName), text);
         }
 
