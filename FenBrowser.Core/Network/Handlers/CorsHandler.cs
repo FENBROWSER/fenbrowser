@@ -26,6 +26,7 @@ namespace FenBrowser.Core.Network.Handlers
         private static readonly HashSet<string> BrowserManagedHeaders = new(StringComparer.OrdinalIgnoreCase)
         {
             "User-Agent",
+            "Accept-Encoding",
             "Sec-Fetch-Dest",
             "Sec-Fetch-Mode",
             "Sec-Fetch-Site",
