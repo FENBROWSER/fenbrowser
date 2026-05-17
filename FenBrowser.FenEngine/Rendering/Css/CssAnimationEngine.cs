@@ -48,6 +48,22 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         #endregion
+
+        #region Clock injection
+        /// <summary>
+        /// Wall-clock source for transition/animation progress. Defaults to DateTime.UtcNow.
+        /// Tests and headless deterministic-rendering paths can override to make output
+        /// independent of how long the surrounding render pipeline takes.
+        ///
+        /// This exists because removing synchronous file-I/O from layout exposed a real
+        /// race: tests that toggled a class and immediately re-rendered used to see a
+        /// "transition complete" pixel only because the file writes inflated the render
+        /// time past the transition duration. Engine output should not depend on logging.
+        /// </summary>
+        public static Func<DateTime> NowProvider = () => DateTime.UtcNow;
+
+        internal static DateTime Now() => NowProvider();
+        #endregion
         
         #region Animation State
         
@@ -521,7 +537,7 @@ namespace FenBrowser.FenEngine.Rendering
                 DurationMs = durationMs,
                 DelayMs = delayMs,
                 TimingFunction = timingFunction,
-                StartTime = DateTime.UtcNow
+                StartTime = Now()
             };
             
             lock (_activeTransitions)
@@ -549,7 +565,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (_activeTransitions.TryGetValue(element, out var list))
                 {
-                    var now = DateTime.UtcNow;
+                    var now = Now();
                     foreach (var trans in list)
                     {
                         if (trans.IsComplete) continue;
@@ -661,7 +677,7 @@ namespace FenBrowser.FenEngine.Rendering
                     FillMode = GetAnimationProperty(style, "animation-fill-mode", i) ?? "none",
                     TimingFunction = GetAnimationProperty(style, "animation-timing-function", i) ?? "ease",
                     PlayState = GetAnimationProperty(style, "animation-play-state", i) ?? "running",
-                    StartTime = DateTime.UtcNow
+                    StartTime = Now()
                 };
 
                 EngineLogCompat.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
@@ -827,13 +843,13 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         if (state == "paused" && anim.PlayState != "paused")
                         {
-                            anim.PauseTime = DateTime.UtcNow;
+                            anim.PauseTime = Now();
                             anim.ElapsedBeforePause = (anim.PauseTime.Value - anim.StartTime).TotalMilliseconds;
                         }
                         else if (state == "running" && anim.PlayState == "paused")
                         {
                             // Adjust start time to account for pause
-                            anim.StartTime = DateTime.UtcNow.AddMilliseconds(-anim.ElapsedBeforePause);
+                            anim.StartTime = Now().AddMilliseconds(-anim.ElapsedBeforePause);
                             anim.PauseTime = null;
                         }
                         anim.PlayState = state;
@@ -954,7 +970,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (!_isRunning) return;
             
-            var now = DateTime.UtcNow;
+            var now = Now();
             var toRemove = new List<(Element element, ActiveAnimation anim)>();
             var toNotify = new HashSet<Element>();
             var staleAnimationElements = new HashSet<Element>();
