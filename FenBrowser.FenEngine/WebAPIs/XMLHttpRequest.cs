@@ -184,10 +184,10 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             _readyState = state;
             base.Set("readyState", FenValue.FromNumber(_readyState));
-            DispatchHandler("onreadystatechange", scheduleCallbacks);
+            DispatchHandler("onreadystatechange", scheduleCallbacks, CreateProgressEvent("readystatechange"));
         }
 
-        private void DispatchHandler(string propertyName, bool scheduleCallback)
+        private void DispatchHandler(string propertyName, bool scheduleCallback, FenValue eventArg)
         {
             var handler = Get(propertyName);
             if (!handler.IsFunction)
@@ -195,13 +195,16 @@ namespace FenBrowser.FenEngine.WebAPIs
                 return;
             }
 
+            var thisArg = FenValue.FromObject(this);
+            var callbackArgs = eventArg.IsUndefined ? Array.Empty<FenValue>() : new[] { eventArg };
+
             if (scheduleCallback)
             {
                 _context.ScheduleCallback(() =>
                 {
                     try
                     {
-                        handler.AsFunction().Invoke(Array.Empty<FenValue>(), _context);
+                        handler.AsFunction().Invoke(callbackArgs, _context, thisArg);
                     }
                     catch (Exception ex)
                     {
@@ -214,7 +217,7 @@ namespace FenBrowser.FenEngine.WebAPIs
 
             try
             {
-                handler.AsFunction().Invoke(Array.Empty<FenValue>(), _context);
+                handler.AsFunction().Invoke(callbackArgs, _context, thisArg);
             }
             catch (Exception ex)
             {
@@ -222,9 +225,24 @@ namespace FenBrowser.FenEngine.WebAPIs
             }
         }
 
-        private void DispatchLifecycle(string propertyName, bool scheduleCallbacks)
+        private void DispatchLifecycle(string propertyName, bool scheduleCallbacks, long loaded = 0, long total = 0, bool lengthComputable = false)
         {
-            DispatchHandler(propertyName, scheduleCallbacks);
+            var eventType = propertyName.StartsWith("on", StringComparison.OrdinalIgnoreCase) && propertyName.Length > 2
+                ? propertyName.Substring(2)
+                : propertyName;
+            DispatchHandler(propertyName, scheduleCallbacks, CreateProgressEvent(eventType, loaded, total, lengthComputable));
+        }
+
+        private FenValue CreateProgressEvent(string eventType, long loaded = 0, long total = 0, bool lengthComputable = false)
+        {
+            var evt = new FenObject();
+            evt.Set("type", FenValue.FromString(eventType ?? string.Empty));
+            evt.Set("target", FenValue.FromObject(this));
+            evt.Set("currentTarget", FenValue.FromObject(this));
+            evt.Set("lengthComputable", FenValue.FromBoolean(lengthComputable));
+            evt.Set("loaded", FenValue.FromNumber(loaded));
+            evt.Set("total", FenValue.FromNumber(total));
+            return FenValue.FromObject(evt);
         }
 
         private FenValue Open(FenValue[] args, FenValue thisVal)
@@ -392,7 +410,8 @@ namespace FenBrowser.FenEngine.WebAPIs
 
                     SetReadyState(LOADING, scheduleCallbacks);
                     ApplyResponsePayload(bytes);
-                    DispatchLifecycle("onprogress", scheduleCallbacks);
+                    var totalBytes = bytes?.LongLength ?? 0;
+                    DispatchLifecycle("onprogress", scheduleCallbacks, loaded: totalBytes, total: totalBytes, lengthComputable: totalBytes > 0);
 
                     _sendFlag = false;
                     _uploadComplete = true;
@@ -422,6 +441,7 @@ namespace FenBrowser.FenEngine.WebAPIs
             {
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
+            CorsHandler.SetAuthorRequestHeaders(request, _requestHeaders.Keys);
 
             if (body != null && !string.Equals(_method, "GET", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(_method, "HEAD", StringComparison.OrdinalIgnoreCase))
