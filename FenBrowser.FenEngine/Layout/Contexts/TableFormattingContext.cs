@@ -26,21 +26,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             LayoutBoxOps.ResetSubtreeToOrigin(box);
 
-            string display = box.ComputedStyle?.Display?.Trim().ToLowerInvariant() ?? "table";
-            switch (display)
+            string display = box.ComputedStyle?.Display;
+            if (!string.IsNullOrEmpty(display))
             {
-                case "table-row-group":
-                case "table-header-group":
-                case "table-footer-group":
+                if (display.Equals("table-row-group", StringComparison.OrdinalIgnoreCase) ||
+                    display.Equals("table-header-group", StringComparison.OrdinalIgnoreCase) ||
+                    display.Equals("table-footer-group", StringComparison.OrdinalIgnoreCase))
+                {
                     LayoutRowGroup(box, state);
                     return;
-                case "table-row":
+                }
+                if (display.Equals("table-row", StringComparison.OrdinalIgnoreCase))
+                {
                     LayoutRow(box, state);
                     return;
-                default:
-                    LayoutTable(box, state);
-                    return;
+                }
             }
+            LayoutTable(box, state);
         }
 
         private void LayoutTable(LayoutBox tableBox, LayoutState state)
@@ -80,7 +82,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
                     float spannedRowHeight = SumRowHeights(rowHeights, rowIdx, slot.RowSpan);
-                    LayoutCell(slot.Cell, cellWidth, spannedRowHeight, state);
+
+                    // PERF: MeasureRowHeights already laid out single-row cells with the
+                    // final cellWidth — re-laying them out here would do the same work twice.
+                    // For rowspanning cells, the spannedRowHeight may differ from the probe
+                    // height so we re-run layout. Either way, position the subtree at the
+                    // final (cellX, currentY) and let StretchBorderHeight handle vertical
+                    // stretching to match the spanned row height.
+                    if (slot.RowSpan > 1)
+                    {
+                        LayoutCell(slot.Cell, cellWidth, spannedRowHeight, state);
+                    }
                     float cellX = contentLeft + SumColumnWidths(columnWidths, 0, slot.ColumnIndex);
                     LayoutBoxOps.PositionSubtree(slot.Cell, cellX, currentY, CreateChildState(cellWidth, spannedRowHeight, state));
 
@@ -508,17 +520,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static bool IsRowGroup(LayoutBox box)
         {
-            string display = box?.ComputedStyle?.Display?.Trim().ToLowerInvariant();
-            if (display == "table-row-group" ||
-                display == "table-header-group" ||
-                display == "table-footer-group")
+            string display = box?.ComputedStyle?.Display;
+            if (!string.IsNullOrEmpty(display))
             {
-                return true;
+                // Strings from the CSS pipeline are already trimmed lowercase; fall
+                // back to OrdinalIgnoreCase rather than allocating Trim+ToLowerInvariant.
+                if (display.Equals("table-row-group", StringComparison.OrdinalIgnoreCase) ||
+                    display.Equals("table-header-group", StringComparison.OrdinalIgnoreCase) ||
+                    display.Equals("table-footer-group", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
-            // Recognize tbody/thead/tfoot by tag name when the UA stylesheet
-            // hasn't supplied the table-row-group display value.
-            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
-            return tag == "TBODY" || tag == "THEAD" || tag == "TFOOT";
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName;
+            return string.Equals(tag, "TBODY", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "THEAD", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "TFOOT", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsTableRow(LayoutBox box)
@@ -527,8 +544,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 return true;
             }
-            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
-            return tag == "TR";
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName;
+            return string.Equals(tag, "TR", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsTableCell(LayoutBox box)
@@ -537,8 +554,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 return true;
             }
-            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
-            return tag == "TD" || tag == "TH";
+            string tag = (box?.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName;
+            return string.Equals(tag, "TD", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tag, "TH", StringComparison.OrdinalIgnoreCase);
         }
 
         private sealed record TableRowModel(LayoutBox RowBox, List<LayoutBox> Cells);
