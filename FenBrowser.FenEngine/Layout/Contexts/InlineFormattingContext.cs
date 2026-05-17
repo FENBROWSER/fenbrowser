@@ -51,6 +51,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private readonly record struct InlineTextMetrics(float Width, float LineHeight, float Baseline, float Descent);
 
+        // Per-style font metrics cache. lineHeight/baseline/descent depend only on
+        // the computed style, not on the measured text, so we avoid the LRU lookup
+        // + string-keyed dictionary in SkiaFontService for every text box. Holding
+        // weak refs prevents the cache from outliving the styles themselves.
+        private sealed class StyleFontInfo
+        {
+            public string FontFamily;
+            public float FontSize;
+            public int FontWeight;
+            public float LineHeight;
+            public float Baseline;
+            public float Descent;
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CssComputed, StyleFontInfo> s_styleFontCache = new();
+
         // Flatten inline tree to get all text boxes and atomic inlines in document order
         private void FlattenInlineChildren(LayoutBox box, List<LayoutBox> result)
         {
@@ -159,11 +175,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (!textBoxLines.ContainsKey(textBox))
                         textBoxLines[textBox] = new List<TextLineInfo>();
 
-                    // Measure once for height/baseline
-                    var metrics = MeasureTextMetrics("Hg", textBox.ComputedStyle);
-                    float lineHeight = metrics.LineHeight;
-                    float baseline = metrics.Baseline;
-                    float descent = metrics.Descent;
+                    // Per-style metrics (lineHeight/baseline/descent) only — no probe
+                    // text needed; resolved+cached on first sight of the style.
+                    var info = GetStyleFontInfo(textBox.ComputedStyle);
+                    float lineHeight = info.LineHeight;
+                    float baseline = info.Baseline;
+                    float descent = info.Descent;
 
                     if (suppressSoftWrap)
                     {
@@ -830,7 +847,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (h <= 0f)
                 {
-                    h = MeasureString("Hg", inlineBox.ComputedStyle).Height;
+                    h = GetStyleFontInfo(inlineBox.ComputedStyle).LineHeight;
                 }
 
                 return AddNonContentSpacing(new SKSize(Math.Max(0f, w), h), inlineBox.ComputedStyle);
@@ -969,7 +986,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             var labelSize = MeasureString(label, box.ComputedStyle);
-            float lineHeight = Math.Max(0f, MeasureTextMetrics("Hg", box.ComputedStyle).LineHeight);
+            float lineHeight = Math.Max(0f, GetStyleFontInfo(box.ComputedStyle).LineHeight);
             contentWidth = Math.Max(0f, labelSize.Width);
             contentHeight = Math.Max(lineHeight, Math.Max(0f, labelSize.Height));
             return contentWidth > 0f || contentHeight > 0f;
@@ -1571,27 +1588,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return new SKSize(metrics.Width, metrics.LineHeight);
         }
 
-        private InlineTextMetrics MeasureTextMetrics(string text, CssComputed style)
+        // Resolve and cache the per-style font metrics (lineHeight, baseline, descent,
+        // resolved fontFamily/Size/Weight). All InlineTextMetrics callers reuse these
+        // to avoid the LRU lookup in SkiaFontService for every measurement.
+        private StyleFontInfo GetStyleFontInfo(CssComputed style)
         {
+            if (style != null && s_styleFontCache.TryGetValue(style, out var cached))
+            {
+                return cached;
+            }
+
             float fontSize = 16f;
             if (style?.FontSize != null) fontSize = (float)style.FontSize.Value;
             fontSize = Math.Max(fontSize, 10f);
 
             int fontWeight = style?.FontWeight ?? 400;
             string fontFamily = style?.FontFamilyName ?? "sans-serif";
-
-            if (string.IsNullOrEmpty(text))
-            {
-                var emptyLineHeight = fontSize * 1.2f;
-                var emptyBaseline = emptyLineHeight * 0.8f;
-                return new InlineTextMetrics(fontSize * 0.35f, emptyLineHeight, emptyBaseline, Math.Max(0f, emptyLineHeight - emptyBaseline));
-            }
-
-            float width = _fontService.MeasureTextWidth(text, fontFamily, fontSize, fontWeight);
-            if (width <= 0)
-            {
-                width = Math.Max(fontSize * Math.Max(1, text.Length) * 0.35f, fontSize * 0.4f);
-            }
 
             float? lineHeightOverride = style?.LineHeight.HasValue == true ? (float)style.LineHeight.Value : null;
             var metrics = _fontService.GetMetrics(fontFamily, fontSize, fontWeight, lineHeightOverride);
@@ -1609,7 +1621,40 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             baseline = Math.Min(lineHeight, baseline);
             float descent = Math.Max(0f, lineHeight - baseline);
-            return new InlineTextMetrics(width, lineHeight, baseline, descent);
+
+            var info = new StyleFontInfo
+            {
+                FontFamily = fontFamily,
+                FontSize = fontSize,
+                FontWeight = fontWeight,
+                LineHeight = lineHeight,
+                Baseline = baseline,
+                Descent = descent,
+            };
+
+            if (style != null)
+            {
+                s_styleFontCache.AddOrUpdate(style, info);
+            }
+            return info;
+        }
+
+        private InlineTextMetrics MeasureTextMetrics(string text, CssComputed style)
+        {
+            var info = GetStyleFontInfo(style);
+
+            if (string.IsNullOrEmpty(text))
+            {
+                // Width estimate for empty/whitespace probes — historic behavior.
+                return new InlineTextMetrics(info.FontSize * 0.35f, info.LineHeight, info.Baseline, info.Descent);
+            }
+
+            float width = _fontService.MeasureTextWidth(text, info.FontFamily, info.FontSize, info.FontWeight);
+            if (width <= 0)
+            {
+                width = Math.Max(info.FontSize * Math.Max(1, text.Length) * 0.35f, info.FontSize * 0.4f);
+            }
+            return new InlineTextMetrics(width, info.LineHeight, info.Baseline, info.Descent);
         }
 
 
