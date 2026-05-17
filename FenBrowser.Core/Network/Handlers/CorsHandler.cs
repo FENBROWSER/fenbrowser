@@ -13,6 +13,9 @@ namespace FenBrowser.Core.Network.Handlers
     /// </summary>
     public sealed class CorsHandler : INetworkHandler
     {
+        public const string AuthorRequestHeadersOptionKey = "FenBrowser.Cors.AuthorRequestHeaders";
+        private static readonly HttpRequestOptionsKey<string[]> s_authorRequestHeadersKey = new HttpRequestOptionsKey<string[]>(AuthorRequestHeadersOptionKey);
+
         private static readonly HashSet<string> SafelistedMethods = new(StringComparer.OrdinalIgnoreCase)
         {
             "GET", "HEAD", "POST"
@@ -27,6 +30,8 @@ namespace FenBrowser.Core.Network.Handlers
         {
             "User-Agent",
             "Accept-Encoding",
+            "Accept-Charset",
+            "Priority",
             "Sec-Fetch-Dest",
             "Sec-Fetch-Mode",
             "Sec-Fetch-Site",
@@ -41,6 +46,27 @@ namespace FenBrowser.Core.Network.Handlers
             "Sec-CH-UA-Bitness",
             "Sec-CH-UA-Model",
             "DNT"
+        };
+
+        private static readonly HashSet<string> ForbiddenOrSyntheticHeaders = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Access-Control-Request-Headers",
+            "Access-Control-Request-Method",
+            "Connection",
+            "Content-Length",
+            "Cookie",
+            "Cookie2",
+            "Date",
+            "Expect",
+            "Host",
+            "Keep-Alive",
+            "Origin",
+            "Referer",
+            "TE",
+            "Trailer",
+            "Transfer-Encoding",
+            "Upgrade",
+            "Via"
         };
 
         /// <summary>
@@ -145,6 +171,37 @@ namespace FenBrowser.Core.Network.Handlers
             var headerNames = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             if (request == null)
             {
+                return headerNames.ToArray();
+            }
+
+            if (request.Options.TryGetValue(s_authorRequestHeadersKey, out var authorHeaders) && authorHeaders != null)
+            {
+                foreach (var headerName in authorHeaders)
+                {
+                    if (string.IsNullOrWhiteSpace(headerName))
+                    {
+                        continue;
+                    }
+
+                    if (request.Headers.TryGetValues(headerName, out var requestHeaderValues))
+                    {
+                        if (IsUnsafeRequestHeader(headerName, requestHeaderValues))
+                        {
+                            headerNames.Add(headerName.ToLowerInvariant());
+                        }
+
+                        continue;
+                    }
+
+                    if (request.Content != null && request.Content.Headers.TryGetValues(headerName, out var contentHeaderValues))
+                    {
+                        if (IsUnsafeRequestHeader(headerName, contentHeaderValues))
+                        {
+                            headerNames.Add(headerName.ToLowerInvariant());
+                        }
+                    }
+                }
+
                 return headerNames.ToArray();
             }
 
@@ -284,8 +341,7 @@ namespace FenBrowser.Core.Network.Handlers
                 return false;
             }
 
-            if (string.Equals(name, "Origin", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, "Referer", StringComparison.OrdinalIgnoreCase) ||
+            if (ForbiddenOrSyntheticHeaders.Contains(name) ||
                 BrowserManagedHeaders.Contains(name))
             {
                 return false;
@@ -303,6 +359,31 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return false;
+        }
+
+        public static void SetAuthorRequestHeaders(HttpRequestMessage request, IEnumerable<string> headerNames)
+        {
+            if (request == null)
+            {
+                return;
+            }
+
+            if (headerNames == null)
+            {
+                request.Options.Set(s_authorRequestHeadersKey, Array.Empty<string>());
+                return;
+            }
+
+            var unique = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var headerName in headerNames)
+            {
+                if (!string.IsNullOrWhiteSpace(headerName))
+                {
+                    unique.Add(headerName.Trim());
+                }
+            }
+
+            request.Options.Set(s_authorRequestHeadersKey, unique.ToArray());
         }
 
         private static bool IsSafelistedContentType(string value)
