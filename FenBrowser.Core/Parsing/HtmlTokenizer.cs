@@ -308,9 +308,15 @@ namespace FenBrowser.Core.Parsing
                 var token = NextToken();
                 if (token == null) continue; // Internal state transition produced no token yet
 
+                // Batched character tokens cover an arbitrary run of chars; count each char
+                // toward the emission limit so the safety semantic matches the pre-batch
+                // behavior (an input of N consecutive chars cannot bypass a limit of N).
+                int weight = (token is CharacterToken ct && ct.Data != null && ct.Data.Length > 1)
+                    ? ct.Data.Length : 1;
+
                 if (!_emissionLimitReached &&
                     token.Type != HtmlTokenType.EndOfFile &&
-                    _emittedTokenCount >= MaxTokenEmissions)
+                    _emittedTokenCount + weight > MaxTokenEmissions)
                 {
                     _emissionLimitReached = true;
                     LastReasonCode = HtmlParsingReasonCode.TokenEmissionLimitExceeded;
@@ -322,7 +328,7 @@ namespace FenBrowser.Core.Parsing
 
                 if (token.Type != HtmlTokenType.EndOfFile)
                 {
-                    _emittedTokenCount++;
+                    _emittedTokenCount += weight;
                 }
                 
                 yield return token;
@@ -364,8 +370,19 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            Consume();
-                            return EmitCharacter(c);
+                            // Batch run of regular text up to the next '<', '&', or EOF.
+                            // Same speedup pattern as ScriptData; helps any large text run.
+                            int runStart = _position;
+                            int p = _position;
+                            int len = _length;
+                            while (p < len)
+                            {
+                                char ch = _input[p];
+                                if (ch == '<' || ch == '&') break;
+                                p++;
+                            }
+                            _position = p;
+                            return new CharacterToken(_input.Substring(runStart, p - runStart));
                         }
                         break;
 
@@ -639,8 +656,18 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            Consume();
-                            return EmitCharacter(c);
+                            // Batch <style>/<title>/<textarea> raw text up to next '<' or EOF.
+                            int runStart = _position;
+                            int p = _position;
+                            int len = _length;
+                            while (p < len)
+                            {
+                                char ch = _input[p];
+                                if (ch == '<') break;
+                                p++;
+                            }
+                            _position = p;
+                            return new CharacterToken(_input.Substring(runStart, p - runStart));
                         }
                         break;
                         
@@ -711,8 +738,10 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.ScriptData:
-                        // Similar to RawText but handles <!--
-                         if (c == '<')
+                        // Fast path: batch all run-of-script-data characters into a single
+                        // CharacterToken instead of one round-trip per char. x.com has 237 KB
+                        // of inline script content; per-char emission was ~57% of total page load.
+                        if (c == '<')
                         {
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataLessThanSign);
@@ -723,8 +752,21 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            Consume();
-                            return EmitCharacter(c);
+                            int runStart = _position;
+                            int p = _position;
+                            int len = _length;
+                            // Scan forward to the next '<' or EOF. Inner loop is just an
+                            // index advance + char compare — JIT optimizes to a tight scan.
+                            while (p < len)
+                            {
+                                char ch = _input[p];
+                                if (ch == '<') break;
+                                p++;
+                            }
+                            _position = p;
+                            // Emit the whole run as a single token. CharacterToken supports
+                            // multi-char Data; tree builder handles it via AppendToText.
+                            return new CharacterToken(_input.Substring(runStart, p - runStart));
                         }
                         break;
 
