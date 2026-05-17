@@ -62,6 +62,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         ConstructFromArray = 0x55,
         CallMethod = 0x56,
         CallMethodFromArray = 0x57,
+        // Operands: argCount (int32), selfLocalSlot (int32).
+        // Calls a recursive function through its own local binding without loading callee onto the operand stack.
+        CallSelf = 0x58,
 
         // 0x60 - 0x6F: Objects & Arrays
         MakeArray = 0x60,
@@ -142,6 +145,9 @@ namespace FenBrowser.FenEngine.Core.Bytecode
         // Operands: nameConstIndex (int32), constIndex (int32). Pushes var[name] < const as boolean.
         // Global/script-scope counterpart to LocalLessThanConst.
         VarLessThanConst = 0x97,
+        // Operands: object already on stack, localSlot (int32), keyConstIndex (int32 string).
+        // Performs object[constKey] = local[slot], leaving assigned value on stack.
+        StorePropLocalConst = 0x98,
 
         // 0xFF: End of program
         Halt = 0xFF

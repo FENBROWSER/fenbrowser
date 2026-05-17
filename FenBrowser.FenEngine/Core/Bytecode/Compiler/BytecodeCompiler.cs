@@ -897,17 +897,18 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 {
                     Visit(assignMember.Object);
                     int idx = AddConstant(FenValue.FromString(assignMember.Property));
-                    Emit(OpCode.LoadConst);
-                    EmitInt32(idx);
                     if (assign.Right is Identifier rhsIdentifier && TryGetLocalSlot(rhsIdentifier.Value, out int rhsLocalSlot))
                     {
                         // Superinstruction peephole: obj.prop = localVar
-                        // -> StorePropLocal (reuses StoreProp semantics while fusing value-load dispatch).
-                        Emit(OpCode.StorePropLocal);
+                        // -> StorePropLocalConst (fuses const-key + local value load + store dispatch).
+                        Emit(OpCode.StorePropLocalConst);
                         EmitInt32(rhsLocalSlot);
+                        EmitInt32(idx);
                     }
                     else
                     {
+                        Emit(OpCode.LoadConst);
+                        EmitInt32(idx);
                         VisitFunctionWithInferredName(assign.Right, inferredName);
                         Emit(OpCode.StoreProp);
                     }
@@ -1317,6 +1318,8 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
             {
                 // Detect method calls (obj.method() or obj[key]()) so we can pass the receiver as 'this'.
                 bool isMethodCall = false;
+                bool canEmitCallSelf = false;
+                int callSelfLocalSlot = -1;
                 if (callExpr.Function is MemberExpression memberCallTarget)
                 {
                     isMethodCall = true;
@@ -1337,7 +1340,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 }
                 else
                 {
-                    Visit(callExpr.Function);
+                    if (callExpr.Function is Identifier callIdent &&
+                        !string.IsNullOrEmpty(_functionName) &&
+                        string.Equals(callIdent.Value, _functionName, StringComparison.Ordinal) &&
+                        TryGetLocalSlot(callIdent.Value, out callSelfLocalSlot))
+                    {
+                        canEmitCallSelf = true;
+                    }
+                    else
+                    {
+                        Visit(callExpr.Function);
+                    }
                 }
 
                 if (ContainsSpread(callExpr.Arguments))
@@ -1351,8 +1364,17 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                     {
                         Visit(arg);
                     }
-                    Emit(isMethodCall ? OpCode.CallMethod : OpCode.Call);
-                    EmitInt32(callExpr.Arguments.Count);
+                    if (!isMethodCall && canEmitCallSelf)
+                    {
+                        Emit(OpCode.CallSelf);
+                        EmitInt32(callExpr.Arguments.Count);
+                        EmitInt32(callSelfLocalSlot);
+                    }
+                    else
+                    {
+                        Emit(isMethodCall ? OpCode.CallMethod : OpCode.Call);
+                        EmitInt32(callExpr.Arguments.Count);
+                    }
                 }
             }
             else if (node is DirectEvalExpression directEvalExpr)
@@ -5689,6 +5711,7 @@ namespace FenBrowser.FenEngine.Core.Bytecode.Compiler
                 if (opcode != (byte)OpCode.LoadLocal &&
                     opcode != (byte)OpCode.StoreLocal &&
                     opcode != (byte)OpCode.StorePropLocal &&
+                    opcode != (byte)OpCode.StorePropLocalConst &&
                     opcode != (byte)OpCode.IncrementLocalByConst &&
                     opcode != (byte)OpCode.LocalSubtractByConst &&
                     opcode != (byte)OpCode.LocalLessThanConst)

@@ -108,6 +108,19 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             public bool Megamorphic; // true ? too many shapes, skip caching
         }
 
+        /// <summary>
+        /// LoadVar inline cache entry. Stores the resolved binding env and fast-slot for a
+        /// LoadVar instruction so subsequent visits skip ResolveVariable's env-chain walk.
+        /// Verified on hit by walking frame.Environment outers to confirm the env is reachable
+        /// (handles closure polymorphism: same code, different captured outer envs).
+        /// </summary>
+        private sealed class LoadVarCacheEntry
+        {
+            public FenEnvironment Env;
+            public int SlotIndex; // -1 when value lives in the dictionary store
+            public string Name;
+        }
+
         // Preserve original JS thrown values when crossing host/native frames.
         private sealed class JsUncaughtException : Exception
         {
@@ -2498,12 +2511,76 @@ run_loop_restart:
                             {
                                 int nameIndex = ReadInt32(instructions, ref frame);
                                 string varName = GetStringConstant(frame.Block, constants, nameIndex);
+
+                                // Variable Inline Cache hit path: if a previous LoadVar at this
+                                // instruction offset resolved to an env that is still reachable
+                                // through the current frame's outer chain, reuse the cached slot.
+                                // Skips ResolveVariable's full walk + HashSet allocation on every
+                                // free-variable read. Hot for recursive calls like fib(n-1)+fib(n-2).
+                                var varCache = (Dictionary<int, LoadVarCacheEntry>)frame.Block.LoadVarInlineCacheStorage;
+                                if (varCache != null &&
+                                    varCache.TryGetValue(instructionOffset, out var varEntry))
+                                {
+                                    for (var probe = frame.Environment; probe != null; probe = probe.Outer)
+                                    {
+                                        if (probe == varEntry.Env)
+                                        {
+                                            FenValue cachedVar;
+                                            if (varEntry.SlotIndex >= 0 &&
+                                                probe.FastStore != null &&
+                                                (uint)varEntry.SlotIndex < (uint)probe.FastStore.Length)
+                                            {
+                                                cachedVar = probe.FastStore[varEntry.SlotIndex];
+                                            }
+                                            else if (probe.TryGetLocal(varName, out var dictVar))
+                                            {
+                                                cachedVar = dictVar;
+                                            }
+                                            else
+                                            {
+                                                cachedVar = FenValue.Undefined;
+                                                varCache.Remove(instructionOffset); // stale entry
+                                                goto loadVarSlowPath;
+                                            }
+                                            _stack[_sp++] = cachedVar;
+                                            goto loadVarDone;
+                                        }
+                                    }
+                                }
+
+                            loadVarSlowPath:
                                 var value = ResolveVariable(frame, varName);
                                 if (value.Type == JsValueType.Error)
                                 {
                                     throw new FenInternalError(value.ToString());
                                 }
                                 _stack[_sp++] = value;
+
+                                // Populate cache from the env we resolved against. ResolveVariable's
+                                // ResolveBindingEnvironment is the canonical answer; re-derive it here
+                                // (cheap since it's the same walk that just succeeded in cache for any
+                                // future call). Skip caching if no resolvable binding env.
+                                var resolvedEnv = frame.Environment.ResolveBindingEnvironment(varName);
+                                if (resolvedEnv != null)
+                                {
+                                    int resolvedSlot = -1;
+                                    if (resolvedEnv.TryGetFastSlotIndex(varName, out int s))
+                                    {
+                                        resolvedSlot = s;
+                                    }
+                                    if (varCache == null)
+                                    {
+                                        varCache = new Dictionary<int, LoadVarCacheEntry>();
+                                        frame.Block.LoadVarInlineCacheStorage = varCache;
+                                    }
+                                    varCache[instructionOffset] = new LoadVarCacheEntry
+                                    {
+                                        Env = resolvedEnv,
+                                        SlotIndex = resolvedSlot,
+                                        Name = varName
+                                    };
+                                }
+                            loadVarDone:
                                 break;
                             }
                             case OpCode.LoadVarSafe:
@@ -2912,6 +2989,76 @@ run_loop_restart:
                                     newFrame.NewTarget = FenValue.Undefined;
                                     newFrame.IsAsyncFunction = func.IsAsync;
                                     goto fetch_frame; // Break out of inner loop to process new frame
+                                }
+                                break;
+                            }
+                            case OpCode.CallSelf:
+                            {
+                                int argCount = ReadInt32(instructions, ref frame);
+                                int selfLocalSlot = ReadInt32(instructions, ref frame);
+                                int argStart = _sp - argCount;
+                                var callee = frame.Environment.GetFast(selfLocalSlot);
+                                var func = (callee.IsFunction || callee.IsObject) ? callee.AsObject() as FenFunction : null;
+                                if (func == null)
+                                {
+                                    ThrowTypeError("Self call target is not a function");
+                                }
+
+                                if (func.IsNative)
+                                {
+                                    var args = new FenValue[argCount];
+                                    if (argCount > 0)
+                                    {
+                                        Array.Copy(_stack.Items, argStart, args, 0, argCount);
+                                    }
+
+                                    _sp = argStart; // Pop args
+                                    var callResult = InvokeNativeFunction(func, args, FenValue.Undefined);
+                                    ThrowIfNativeError(callResult);
+                                    _stack[_sp++] = callResult;
+                                }
+                                else if (func.BytecodeBlock != null)
+                                {
+                                    if (func.IsGenerator)
+                                    {
+                                        var genArgs = new FenValue[argCount];
+                                        if (argCount > 0) Array.Copy(_stack.Items, argStart, genArgs, 0, argCount);
+                                        _sp = argStart;
+                                        _stack[_sp++] = FenValue.FromObject(new GeneratorObject(func, genArgs));
+                                        break;
+                                    }
+
+                                    var newEnv = new FenEnvironment(func.Env);
+                                    if (func.BytecodeBlock != null && func.BytecodeBlock.IsStrict)
+                                    {
+                                        newEnv.StrictMode = true;
+                                    }
+                                    InitializeFunctionFastStore(func, newEnv);
+                                    if (func.HasOwnNameBinding && !string.IsNullOrEmpty(func.Name))
+                                    {
+                                        SetFunctionBinding(func, newEnv, func.Name, FenValue.FromFunction(func));
+                                    }
+                                    if (!func.IsArrowFunction)
+                                    {
+                                        var thisValue = func.BytecodeBlock != null && func.BytecodeBlock.IsStrict ? FenValue.Undefined : ResolveNonStrictThisBinding(frame);
+                                        SetFunctionBinding(func, newEnv, "this", thisValue);
+                                        BindSuperReference(func, newEnv, thisValue);
+                                        BindSuperConstructorIfPresent(func, newEnv);
+                                    }
+                                    if (CanUseSimplePositionalBinding(func))
+                                    {
+                                        BindSimplePositionalArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
+                                    else
+                                    {
+                                        BindFunctionArgumentsFromStack(func, newEnv, argCount, argStart);
+                                    }
+
+                                    _sp = argStart; // Pop args
+                                    var newFrame = PushFrame(func.BytecodeBlock, newEnv, _sp);
+                                    newFrame.NewTarget = FenValue.Undefined;
+                                    newFrame.IsAsyncFunction = func.IsAsync;
+                                    goto fetch_frame;
                                 }
                                 break;
                             }
@@ -3484,6 +3631,35 @@ run_loop_restart:
                                 int localSlot = ReadInt32(instructions, ref frame);
                                 _stack[_sp++] = frame.Environment.GetFast(localSlot);
                                 goto case OpCode.StoreProp;
+                            }
+                            case OpCode.StorePropLocalConst:
+                            {
+                                int localSlot = ReadInt32(instructions, ref frame);
+                                int keyConstIndex = ReadInt32(instructions, ref frame);
+                                var obj = _stack[--_sp];
+                                var value = frame.Environment.GetFast(localSlot);
+                                RequireObjectCoercible(obj, "StorePropLocalConst");
+                                var objectRef = obj.AsObject();
+                                if (objectRef != null)
+                                {
+                                    var key = GetStringConstant(frame.Block, constants, keyConstIndex);
+                                    if (objectRef is FenObject fenObj && !string.Equals(key, "__proto__", StringComparison.Ordinal))
+                                    {
+                                        bool strictMode = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                        fenObj.Set(key, value, strictMode);
+                                    }
+                                    else if (objectRef is HTMLCollectionWrapper htmlCollection)
+                                    {
+                                        bool strictMode = (frame.Block != null && frame.Block.IsStrict) || frame.Environment.StrictMode;
+                                        htmlCollection.SetFromVm(key, value, strictMode);
+                                    }
+                                    else
+                                    {
+                                        objectRef.Set(key, value);
+                                    }
+                                }
+                                _stack[_sp++] = value;
+                                break;
                             }
                             case OpCode.ArrayAppend:
                             {
