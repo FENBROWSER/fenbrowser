@@ -84,3 +84,6 @@ FenBrowser.FenEngine/Core/graphify-out/
 
 # AI agent configuration.agents/
 .opencode/
+.css_cache/
+real_site_render*
+multi_page_profile*.log
