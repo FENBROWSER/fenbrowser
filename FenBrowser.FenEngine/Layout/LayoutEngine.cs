@@ -15,6 +15,14 @@ namespace FenBrowser.FenEngine.Layout
     /// </summary>
     public sealed class LayoutEngine
     {
+        /// <summary>
+        /// Per-call layout diagnostic logging is OFF by default. Opt in with
+        /// FEN_LAYOUT_DEBUG_LOG=1 when investigating box-tree or positioning issues.
+        /// </summary>
+        internal static bool LayoutDebugLogEnabled =
+            string.Equals(System.Environment.GetEnvironmentVariable("FEN_LAYOUT_DEBUG_LOG"), "1",
+                System.StringComparison.Ordinal);
+
         private readonly LayoutContext _context;
         private readonly ILayoutComputer _computer;
         private readonly FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore _boxStore = new FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore();
@@ -77,7 +85,8 @@ namespace FenBrowser.FenEngine.Layout
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             // New Pipeline Entry Point (Active)
-            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] ComputeLayout Called for {node?.GetType().Name}\n");
+            if (LayoutDebugLogEnabled)
+                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] ComputeLayout Called for {node?.GetType().Name}\n");
 
             Node layoutRoot = node;
             if (layoutRoot is Document doc)
@@ -97,10 +106,12 @@ namespace FenBrowser.FenEngine.Layout
             
             if (rootBox == null)
             {
-                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] WARN: RootBox is null. Layout aborted.\n");
-                return null; 
+                if (LayoutDebugLogEnabled)
+                    DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] WARN: RootBox is null. Layout aborted.\n");
+                return null;
             }
-            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] RootBox built: {rootBox}\n");
+            if (LayoutDebugLogEnabled)
+                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] RootBox built: {rootBox}\n");
 
             // Check deadline before starting heavy layout pass
             deadline?.Check();
@@ -120,9 +131,11 @@ namespace FenBrowser.FenEngine.Layout
 
             // 3. Layout!
             var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
-            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
+            if (LayoutDebugLogEnabled)
+                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
             context.Layout(rootBox, initialState);
-            DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
+            if (LayoutDebugLogEnabled)
+                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
 
             // 4. Materialize renderer-facing layout artifacts from the box tree.
             var elementRects = new Dictionary<Element, ElementGeometry>();
@@ -137,9 +150,12 @@ namespace FenBrowser.FenEngine.Layout
             _generatedBoxes = accumulatedBoxes;
 
             
-            // DUMP TREE FOR DEBUGGING
+            // DUMP TREE FOR DEBUGGING — per-box file write, gated for perf.
             EngineLogCompat.Debug("--- NEW PIPELINE LAYOUT DUMP ---", LogCategory.Rendering);
-            DumpBoxTree(rootBox, 0);
+            if (LayoutDebugLogEnabled)
+            {
+                DumpBoxTree(rootBox, 0);
+            }
             EngineLogCompat.Debug("--- END NEW PIPELINE DUMP ---", LogCategory.Rendering);
 
             float contentHeight = ComputeDocumentContentHeight(rootBox, availableHeight);

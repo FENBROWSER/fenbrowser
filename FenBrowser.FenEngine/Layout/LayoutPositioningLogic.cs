@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Layout
 
             var solved = SolvePositioned(box, style, cb, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize, state);
 
-            if (isFixed && box.SourceNode is Element element)
+            if (isFixed && box.SourceNode is Element element && LayoutEngine.LayoutDebugLogEnabled)
             {
                 DiagnosticPaths.AppendRootText(
                     "layout_engine_debug.txt",
