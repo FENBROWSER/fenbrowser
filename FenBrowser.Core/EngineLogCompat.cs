@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core.Logging;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core;
 
 public static class EngineLogCompat

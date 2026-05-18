@@ -7,6 +7,8 @@ using System.Text;
 using FenBrowser.Core.Platform;
 using FenBrowser.Core.Logging;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core.Security.Sandbox.Posix;
 
 /// <summary>

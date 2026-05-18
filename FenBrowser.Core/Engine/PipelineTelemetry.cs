@@ -25,6 +25,8 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using FenBrowser.Core.Logging;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core.Engine
 {
     /// <summary>

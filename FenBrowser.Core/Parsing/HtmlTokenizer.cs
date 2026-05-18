@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Net;
 using System.Text;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core.Parsing
 {
     /// <summary>

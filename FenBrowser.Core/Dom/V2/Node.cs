@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using SkiaSharp;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>

@@ -5,6 +5,8 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 
+#pragma warning disable CS8632
+
 namespace FenBrowser.Core.Compat
 {
     /// <summary>
