@@ -139,6 +139,11 @@ namespace FenBrowser.Core.Accessibility
                     if (rootNode != null)
                     {
                         var rootProvider = GetOrCreateProvider(rootNode);
+                        if (rootProvider.NativeProvider == IntPtr.Zero)
+                        {
+                            return;
+                        }
+
                         NativeWindowsUia.UiaReturnRawElementProvider(_hwnd, IntPtr.Zero, IntPtr.Zero, rootProvider.NativeProvider);
                     }
                 }
@@ -159,6 +164,11 @@ namespace FenBrowser.Core.Accessibility
             try
             {
                 var provider = GetOrCreateProvider(node);
+                if (provider.NativeProvider == IntPtr.Zero)
+                {
+                    return;
+                }
+
                 NativeWindowsUia.UiaRaiseAutomationEvent(provider.NativeProvider, uiaEventId);
             }
             catch (Exception ex)
@@ -177,6 +187,11 @@ namespace FenBrowser.Core.Accessibility
             try
             {
                 var provider = GetOrCreateProvider(node);
+                if (provider.NativeProvider == IntPtr.Zero)
+                {
+                    return;
+                }
+
                 NativeWindowsUia.UiaRaisePropertyChangedEvent(provider.NativeProvider, propId,
                     oldValue ?? NativeWindowsUia.EmptyVariant,
                     newValue ?? NativeWindowsUia.EmptyVariant);
@@ -195,6 +210,11 @@ namespace FenBrowser.Core.Accessibility
                 try
                 {
                     var rootProvider = GetOrCreateProvider(_tree.Root);
+                    if (rootProvider.NativeProvider == IntPtr.Zero)
+                    {
+                        return;
+                    }
+
                     NativeWindowsUia.UiaReturnRawElementProvider(hwnd, IntPtr.Zero, IntPtr.Zero, rootProvider.NativeProvider);
                 }
                 catch (Exception ex)

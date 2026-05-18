@@ -9,6 +9,13 @@ using System.Text.RegularExpressions;
 
 namespace FenBrowser.Core.WebIDL
 {
+    public sealed class WebIdlParseException : Exception
+    {
+        public WebIdlParseException(string message) : base(message)
+        {
+        }
+    }
+
     // ── WebIDL Parser ────────────────────────────────────────────────────────
     // Spec: https://webidl.spec.whatwg.org/
     // Parses a subset of WebIDL sufficient to drive binding generation:
@@ -199,7 +206,7 @@ namespace FenBrowser.Core.WebIDL
                     var def = ParseDefinition();
                     if (def != null) result.Definitions.Add(def);
                 }
-                catch (Exception ex)
+                catch (WebIdlParseException ex)
                 {
                     _errors.Add($"Parse error at token '{Current().Value}': {ex.Message}");
                     SkipToNextDefinition();
@@ -406,7 +413,7 @@ namespace FenBrowser.Core.WebIDL
                     var member = ParseInterfaceMember();
                     if (member != null) iface.Members.Add(member);
                 }
-                catch (Exception ex)
+                catch (WebIdlParseException ex)
                 {
                     _errors.Add($"Error in interface '{iface.Name}': {ex.Message}");
                     SkipToSemicolon();
@@ -656,7 +663,7 @@ namespace FenBrowser.Core.WebIDL
                     var m = ParseInterfaceMember();
                     if (m != null) ns.Members.Add(m);
                 }
-                catch
+                catch (WebIdlParseException)
                 {
                     SkipToSemicolon();
                 }
@@ -848,7 +855,7 @@ namespace FenBrowser.Core.WebIDL
         private void Consume(string value)
         {
             if (Current().Value != value)
-                throw new Exception($"Expected '{value}' but got '{Current().Value}'");
+                throw new WebIdlParseException($"Expected '{value}' but got '{Current().Value}'");
             Advance();
         }
 
@@ -863,7 +870,7 @@ namespace FenBrowser.Core.WebIDL
                     Advance();
                     return kw;
                 }
-                throw new Exception($"Expected identifier but got '{Current().Value}'");
+                throw new WebIdlParseException($"Expected identifier but got '{Current().Value}'");
             }
             var v = Current().Value;
             Advance();
@@ -881,7 +888,7 @@ namespace FenBrowser.Core.WebIDL
         private string ConsumeString()
         {
             if (Current().Type != Token.Kind.String)
-                throw new Exception($"Expected string literal but got '{Current().Value}'");
+                throw new WebIdlParseException($"Expected string literal but got '{Current().Value}'");
             var v = Current().Value;
             Advance();
             return v;
