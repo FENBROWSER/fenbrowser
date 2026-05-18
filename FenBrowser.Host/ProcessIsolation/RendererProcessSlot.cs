@@ -294,10 +294,7 @@ namespace FenBrowser.Host.ProcessIsolation
         
         private static ISandbox CreateSandbox(IOsSandboxFactory sandboxFactory, string assignmentKey)
         {
-            var allowUnsandboxedFallback = string.Equals(
-                Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
-                "1",
-                StringComparison.OrdinalIgnoreCase);
+            var allowUnsandboxedFallback = ProcessIsolationEnvPolicy.IsUnsandboxedFallbackEnabled("FEN_RENDERER_ALLOW_UNSANDBOXED");
 
             if (!SandboxLaunchPolicy.TryAcquire(
                 $"renderer pool slot assignment={assignmentKey}",
@@ -320,10 +317,7 @@ namespace FenBrowser.Host.ProcessIsolation
             string assignmentKey,
             ISandbox sandbox)
         {
-            var allowUnsandboxedFallback = string.Equals(
-                Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
-                "1",
-                StringComparison.OrdinalIgnoreCase);
+            var allowUnsandboxedFallback = ProcessIsolationEnvPolicy.IsUnsandboxedFallbackEnabled("FEN_RENDERER_ALLOW_UNSANDBOXED");
             var parentPid = Environment.ProcessId;
 
             var exePath = Environment.ProcessPath;
@@ -367,8 +361,11 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (Exception ex)
                 {
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
-                        $"[RendererProcessSlot] Sandbox.SpawnProcess failed for assignment {assignmentKey}: {ex.Message}");
+                    EngineLog.Write(
+                        LogSubsystem.ProcessIsolation,
+                        allowUnsandboxedFallback ? LogSeverity.Warn : LogSeverity.Error,
+                        $"[RendererProcessSlot] Sandbox.SpawnProcess failed for assignment {assignmentKey}: {ex.Message}" +
+                        (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty));
                     if (!allowUnsandboxedFallback)
                     {
                         return null;

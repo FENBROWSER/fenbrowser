@@ -191,14 +191,14 @@ namespace FenBrowser.Host.ProcessIsolation
             }
         }
 
-        public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight)
+        public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0f)
         {
             if (tab == null)
                 return;
 
             if (_tabStates.TryGetValue(tab.Id, out var state))
             {
-                state.Session?.SendFrameRequest(viewportWidth, viewportHeight);
+                state.Session?.SendFrameRequest(viewportWidth, viewportHeight, scrollY);
             }
         }
 
@@ -471,10 +471,7 @@ namespace FenBrowser.Host.ProcessIsolation
             sandbox = null;
             try
             {
-                var allowUnsandboxedFallback = string.Equals(
-                    Environment.GetEnvironmentVariable("FEN_RENDERER_ALLOW_UNSANDBOXED"),
-                    "1",
-                    StringComparison.OrdinalIgnoreCase);
+                var allowUnsandboxedFallback = ProcessIsolationEnvPolicy.IsUnsandboxedFallbackEnabled("FEN_RENDERER_ALLOW_UNSANDBOXED");
                 using var launchScope = EngineLog.BeginScope(
                     LogSubsystem.ProcessIsolation,
                     "RendererProcessLauncher",
@@ -539,8 +536,11 @@ namespace FenBrowser.Host.ProcessIsolation
                     }
                     catch (Exception ex)
                     {
-                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
-                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}");
+                        EngineLog.Write(
+                            LogSubsystem.ProcessIsolation,
+                            allowUnsandboxedFallback ? LogSeverity.Warn : LogSeverity.Error,
+                            $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}" +
+                            (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty));
                         rendererSandbox.Dispose();
                         rendererSandbox = null;
                         if (!allowUnsandboxedFallback)

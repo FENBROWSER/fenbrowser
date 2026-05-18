@@ -53,6 +53,11 @@ namespace FenBrowser.Host.ProcessIsolation
     {
         public float ViewportWidth { get; set; }
         public float ViewportHeight { get; set; }
+        /// <summary>
+        /// Outer document scroll offset (top of viewport in document coordinates).
+        /// The renderer translates the paint canvas by -ScrollY before rasterising.
+        /// </summary>
+        public float ScrollY { get; set; }
     }
 
     public sealed class RendererFrameReadyPayload
@@ -87,6 +92,11 @@ namespace FenBrowser.Host.ProcessIsolation
         public int DomNodeCount { get; set; }
         public int BoxCount { get; set; }
         public int PaintNodeCount { get; set; }
+        /// <summary>
+        /// Total document content height in CSS pixels (from LayoutResult). Allows the host
+        /// to size the viewport scrollbar without re-running layout.
+        /// </summary>
+        public float ContentHeight { get; set; }
     }
 
     internal static class RendererIpc
@@ -330,19 +340,31 @@ namespace FenBrowser.Host.ProcessIsolation
             });
         }
 
-        public void SendFrameRequest(float viewportWidth, float viewportHeight)
+        private float _lastFrameRequestScrollY;
+        private float _lastFrameRequestViewportWidth;
+        private float _lastFrameRequestViewportHeight;
+
+        public void SendFrameRequest(float viewportWidth, float viewportHeight, float scrollY = 0f)
         {
             var now = DateTime.UtcNow;
-            if ((now - _lastFrameRequestUtc).TotalMilliseconds < 66)
+            bool scrollChanged = Math.Abs(scrollY - _lastFrameRequestScrollY) > 0.5f;
+            // Rate limit only when neither viewport nor scroll changed.
+            bool viewportChanged = Math.Abs(viewportWidth - _lastFrameRequestViewportWidth) > 0.5f ||
+                                   Math.Abs(viewportHeight - _lastFrameRequestViewportHeight) > 0.5f;
+            if (!scrollChanged && !viewportChanged && (now - _lastFrameRequestUtc).TotalMilliseconds < 33)
             {
                 return;
             }
             _lastFrameRequestUtc = now;
+            _lastFrameRequestScrollY = scrollY;
+            _lastFrameRequestViewportWidth = viewportWidth;
+            _lastFrameRequestViewportHeight = viewportHeight;
 
             var payload = new RendererFrameRequestPayload
             {
                 ViewportWidth = viewportWidth,
-                ViewportHeight = viewportHeight
+                ViewportHeight = viewportHeight,
+                ScrollY = scrollY
             };
 
             Send(new RendererIpcEnvelope

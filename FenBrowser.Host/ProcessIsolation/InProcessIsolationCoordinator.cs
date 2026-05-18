@@ -33,7 +33,7 @@ namespace FenBrowser.Host.ProcessIsolation
         {
         }
 
-        public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight)
+        public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0f)
         {
         }
 

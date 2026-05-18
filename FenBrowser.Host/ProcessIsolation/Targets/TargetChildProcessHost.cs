@@ -44,10 +44,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 return true;
             }
 
-            var allowUnsandboxedFallback = string.Equals(
-                Environment.GetEnvironmentVariable(_contract.AllowUnsandboxedEnvKey),
-                "1",
-                StringComparison.OrdinalIgnoreCase);
+            var allowUnsandboxedFallback = ProcessIsolationEnvPolicy.IsUnsandboxedFallbackEnabled(_contract.AllowUnsandboxedEnvKey);
             using var launchScope = EngineLogBridge.BeginScope(
                 component: $"{_targetKind}ProcessLauncher",
                 data: new System.Collections.Generic.Dictionary<string, object>
@@ -109,7 +106,24 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 Process child;
                 if (sandbox != null && sandbox.RequiresCustomSpawn)
                 {
-                    child = sandbox.SpawnProcess(startInfo);
+                    try
+                    {
+                        child = sandbox.SpawnProcess(startInfo);
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogBridge.Warn(
+                            $"[{_targetKind}Process] Sandbox.SpawnProcess failed: {ex.Message}" +
+                            (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty),
+                            LogCategory.ProcessIsolation);
+
+                        if (!allowUnsandboxedFallback)
+                        {
+                            throw;
+                        }
+
+                        child = Process.Start(startInfo);
+                    }
                 }
                 else
                 {
