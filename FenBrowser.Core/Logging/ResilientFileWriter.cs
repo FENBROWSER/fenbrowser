@@ -12,6 +12,8 @@ namespace FenBrowser.Core.Logging
     internal static class ResilientFileWriter
     {
         private const int MaxAttempts = 4;
+        private const int RetryBaseDelayMs = 4;
+        private const int RetryMaxDelayMs = 64;
         private static readonly object WarningLock = new object();
         private static DateTime _lastWarningUtc = DateTime.MinValue;
 
@@ -86,7 +88,7 @@ namespace FenBrowser.Core.Logging
                         return false;
                     }
 
-                    Thread.Sleep(attempt * 3);
+                    Thread.Sleep(ComputeRetryDelayMilliseconds(attempt));
                 }
                 catch (Exception ex)
                 {
@@ -96,6 +98,22 @@ namespace FenBrowser.Core.Logging
             }
 
             return false;
+        }
+
+        internal static int ComputeRetryDelayMilliseconds(int attempt)
+        {
+            if (attempt < 1)
+            {
+                attempt = 1;
+            }
+
+            var shift = Math.Min(attempt - 1, 4);
+            var raw = RetryBaseDelayMs << shift;
+            var capped = Math.Min(raw, RetryMaxDelayMs);
+
+            // Add small jitter to reduce synchronized retries under lock contention.
+            var jitter = Random.Shared.Next(0, 4);
+            return capped + jitter;
         }
 
         private static bool IsTransient(Exception ex)
