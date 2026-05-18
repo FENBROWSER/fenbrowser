@@ -22,7 +22,6 @@ namespace FenBrowser.Core.Security.Sandbox;
 public sealed class NullSandbox : ISandbox
 {
     private readonly OsSandboxProfile _profile;
-    private bool _disposed;
 
     /// <summary>
     /// Initialises a new <see cref="NullSandbox"/> for the given profile.
@@ -125,6 +124,6 @@ public sealed class NullSandbox : ISandbox
     /// <inheritdoc/>
     public void Dispose()
     {
-        _disposed = true;
+        // Intentionally no-op: NullSandbox owns no native resources.
     }
 }

@@ -52,7 +52,6 @@ namespace FenBrowser.Core.Engine
         private static long _successfulFrames = 0;
         private static long _failedFrames = 0;
         private static readonly Stopwatch _uptimeStopwatch = Stopwatch.StartNew();
-        private static long _lastHealthCheckErrors = 0;
         private static readonly Queue<(DateTime Timestamp, double Value)> _recentFrameTimes = new();
         private static readonly Queue<(DateTime Timestamp, bool Success)> _recentFrameSuccess = new();
         private static readonly object _telemetryLock = new();
@@ -393,7 +392,6 @@ namespace FenBrowser.Core.Engine
                 _recentFrameTimes.Clear();
                 _recentFrameSuccess.Clear();
                 _recentErrors.Clear();
-                _lastHealthCheckErrors = 0;
             }
         }
 

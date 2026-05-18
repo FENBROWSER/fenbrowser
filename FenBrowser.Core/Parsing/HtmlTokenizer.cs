@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
@@ -756,7 +756,7 @@ namespace FenBrowser.Core.Parsing
                             int p = _position;
                             int len = _length;
                             // Scan forward to the next '<' or EOF. Inner loop is just an
-                            // index advance + char compare — JIT optimizes to a tight scan.
+                            // index advance + char compare â€” JIT optimizes to a tight scan.
                             while (p < len)
                             {
                                 char ch = _input[p];
@@ -780,7 +780,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataEscapeStart);
-                            // Emit '<' and '!' characters — the caller will get '<',
+                            // Emit '<' and '!' characters â€” the caller will get '<',
                             // then on next call we continue in ScriptDataEscapeStart.
                             // We need to queue the '!' for emission too.
                             _pendingChars.Enqueue('!');
@@ -845,7 +845,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.17 – Script data escape start state
+                    // HTML5 Â§13.2.5.17 â€“ Script data escape start state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapeStart:
                         if (c == '-')
@@ -862,7 +862,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.18 – Script data escape start dash state
+                    // HTML5 Â§13.2.5.18 â€“ Script data escape start dash state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapeStartDash:
                         if (c == '-')
@@ -873,13 +873,13 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            // Only one dash — not `<!--`; reconsume in script data
+                            // Only one dash â€” not `<!--`; reconsume in script data
                             SwitchTo(TokenizerState.ScriptData);
                         }
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.19 – Script data escaped state
+                    // HTML5 Â§13.2.5.19 â€“ Script data escaped state
                     // ================================================================
                     case TokenizerState.ScriptDataEscaped:
                         if (c == '-')
@@ -906,7 +906,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.20 – Script data escaped dash state
+                    // HTML5 Â§13.2.5.20 â€“ Script data escaped dash state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedDash:
                         if (c == '-')
@@ -934,7 +934,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.21 – Script data escaped dash dash state
+                    // HTML5 Â§13.2.5.21 â€“ Script data escaped dash dash state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedDashDash:
                         if (c == '-')
@@ -968,7 +968,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.22 – Script data escaped less-than sign state
+                    // HTML5 Â§13.2.5.22 â€“ Script data escaped less-than sign state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedLessThanSign:
                         if (c == '/')
@@ -980,7 +980,7 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             _scriptEscapeBuffer.Clear();
-                            // Don't consume — reconsume in double escape start
+                            // Don't consume â€” reconsume in double escape start
                             _pendingChars.Enqueue('<');
                             SwitchTo(TokenizerState.ScriptDataDoubleEscapeStart);
                         }
@@ -992,7 +992,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.23 – Script data escaped end tag open state
+                    // HTML5 Â§13.2.5.23 â€“ Script data escaped end tag open state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedEndTagOpen:
                         if (char.IsLetter(c))
@@ -1011,7 +1011,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.24 – Script data escaped end tag name state
+                    // HTML5 Â§13.2.5.24 â€“ Script data escaped end tag name state
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedEndTagName:
                     {
@@ -1039,7 +1039,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            // Not appropriate — emit buffered chars and reconsume
+                            // Not appropriate â€” emit buffered chars and reconsume
                             _pendingChars.Enqueue('/');
                             foreach (char ch in _currentTag.TagName)
                                 _pendingChars.Enqueue(ch);
@@ -1050,7 +1050,7 @@ namespace FenBrowser.Core.Parsing
                     }
 
                     // ================================================================
-                    // HTML5 §13.2.5.25 – Script data double escape start state
+                    // HTML5 Â§13.2.5.25 â€“ Script data double escape start state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscapeStart:
                         if (c == '\t' || c == '\n' || c == '\f' || c == ' ' || c == '/' || c == '>')
@@ -1076,7 +1076,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.26 – Script data double escaped state
+                    // HTML5 Â§13.2.5.26 â€“ Script data double escaped state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscaped:
                         if (c == '-')
@@ -1101,10 +1101,10 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             return EmitCharacter(c);
                         }
-                        break;
+
 
                     // ================================================================
-                    // HTML5 §13.2.5.27 – Script data double escaped dash state
+                    // HTML5 Â§13.2.5.27 â€“ Script data double escaped dash state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscapedDash:
                         if (c == '-')
@@ -1130,10 +1130,10 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
                             return EmitCharacter(c);
                         }
-                        break;
+
 
                     // ================================================================
-                    // HTML5 §13.2.5.28 – Script data double escaped dash dash state
+                    // HTML5 Â§13.2.5.28 â€“ Script data double escaped dash dash state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscapedDashDash:
                         if (c == '-')
@@ -1164,10 +1164,10 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
                             return EmitCharacter(c);
                         }
-                        break;
+
 
                     // ================================================================
-                    // HTML5 §13.2.5.29 – Script data double escaped less-than sign state
+                    // HTML5 Â§13.2.5.29 â€“ Script data double escaped less-than sign state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscapedLessThanSign:
                         if (c == '/')
@@ -1185,7 +1185,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     // ================================================================
-                    // HTML5 §13.2.5.30 – Script data double escape end state
+                    // HTML5 Â§13.2.5.30 â€“ Script data double escape end state
                     // ================================================================
                     case TokenizerState.ScriptDataDoubleEscapeEnd:
                         if (c == '\t' || c == '\n' || c == '\f' || c == ' ' || c == '/' || c == '>')
@@ -1534,7 +1534,7 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.BeforeAttributeName);
                             continue;
                         }
-                        break;
+
                         
                     case TokenizerState.MarkupDeclarationOpen:
                         if (Matches("--"))
@@ -2109,3 +2109,4 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
+

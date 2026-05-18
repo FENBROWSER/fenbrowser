@@ -101,10 +101,16 @@ namespace FenBrowser.Core.Storage
                     out var cookie,
                     out var partitionKey))
             {
+                CookieDiagnostics.LogIngressRejected(
+                    documentUri,
+                    cookieString,
+                    "parse-failed-or-policy-blocked",
+                    fromScript: true);
                 return;
             }
 
             _storage.Cookies.Set(cookie, partitionKey);
+            CookieDiagnostics.LogIngress(documentUri, cookie, topLevelDocumentUri, fromScript: true);
         }
 
         public void StoreResponseCookies(
@@ -126,6 +132,14 @@ namespace FenBrowser.Core.Storage
             var context = BuildContext(responseUri, topLevelDocumentUri);
             if (blockThirdPartyCookies && context.IsThirdParty)
             {
+                foreach (var blockedHeader in setCookieValues)
+                {
+                    CookieDiagnostics.LogIngressRejected(
+                        responseUri,
+                        blockedHeader,
+                        "third-party-blocked",
+                        fromScript: false);
+                }
                 return;
             }
 
@@ -139,10 +153,16 @@ namespace FenBrowser.Core.Storage
                         out var cookie,
                         out var partitionKey))
                 {
+                    CookieDiagnostics.LogIngressRejected(
+                        responseUri,
+                        headerValue,
+                        "parse-failed-or-policy-blocked",
+                        fromScript: false);
                     continue;
                 }
 
                 _storage.Cookies.Set(cookie, partitionKey);
+                CookieDiagnostics.LogIngress(responseUri, cookie, topLevelDocumentUri, fromScript: false);
             }
         }
 
@@ -170,15 +190,31 @@ namespace FenBrowser.Core.Storage
                 return string.Empty;
             }
 
+            var matched = GetCookies(
+                requestUri,
+                topLevelDocumentUri,
+                includeHttpOnly,
+                isTopLevelNavigation,
+                requestMethod);
+
+            // Egress diagnostics: only emitted when the request is an HTTP fetch
+            // (includeHttpOnly == true). document.cookie reads (HttpOnly excluded)
+            // are extremely chatty and would drown the log; their egress is captured
+            // implicitly by the next HTTP request.
+            if (includeHttpOnly && matched is { Count: > 0 })
+            {
+                CookieDiagnostics.LogEgress(
+                    requestUri,
+                    matched,
+                    topLevelDocumentUri,
+                    isTopLevelNavigation,
+                    requestMethod);
+            }
+
             var sb = new StringBuilder();
             bool first = true;
 
-            foreach (var cookie in GetCookies(
-                         requestUri,
-                         topLevelDocumentUri,
-                         includeHttpOnly,
-                         isTopLevelNavigation,
-                         requestMethod))
+            foreach (var cookie in matched)
             {
                 if (!first)
                 {

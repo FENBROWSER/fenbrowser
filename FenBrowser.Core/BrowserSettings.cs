@@ -50,6 +50,21 @@ namespace FenBrowser.Core
         public string LoggingPreset { get; set; } = "developer";
 
         /// <summary>
+        /// Enables structured cookie ingress/egress diagnostics (PII-safe: names,
+        /// lengths, value hash prefixes; never plaintext values). Also honored via
+        /// FEN_LOG_COOKIES=1 env var. Default off to avoid log volume in normal use.
+        /// </summary>
+        public bool LogCookies { get; set; }
+
+        /// <summary>
+        /// Captures an end-of-navigation snapshot of well-known challenge / page
+        /// globals (window.sgs, ussv, sp, prs, google.c, etc.) plus the cookie-name
+        /// set, written to logs/nav_globals_*.json. Also honored via
+        /// FEN_NAV_GLOBALS_SNAPSHOT=1 env var. Default off.
+        /// </summary>
+        public bool LogNavigationGlobals { get; set; }
+
+        /// <summary>
         /// Path for log files. Defaults to "logs" folder in the current execution directory.
         /// </summary>
         public string LogPath { get; set; } = GetDefaultLogPath();

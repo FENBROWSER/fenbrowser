@@ -29,7 +29,9 @@ namespace FenBrowser.Core
         /// <summary>
         /// Event fired when an element is fully parsed
         /// </summary>
+#pragma warning disable CS0067 // Reserved callback surface; currently not raised on this parser path.
         public event Action<Element> OnElementParsed;
+#pragma warning restore CS0067
 
         /// <summary>
         /// Event fired when a text node is parsed
@@ -296,9 +298,12 @@ namespace FenBrowser.Core
         private static int CountElements(Node root)
         {
             int count = 1;
-            foreach (var child in root.Children)
+            if (root is ContainerNode container)
             {
-                count += CountElements(child);
+                foreach (var child in container.ChildNodes)
+                {
+                    count += CountElements(child);
+                }
             }
             return count;
         }

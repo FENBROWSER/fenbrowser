@@ -1351,7 +1351,6 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "input")
                 {
                     // Special case: if hidden, append to table. Else foster parent.
-                    bool hidden = false;
                     var type = st.Attributes.FirstOrDefault(a => a.Name.Equals("type", StringComparison.OrdinalIgnoreCase))?.Value;
                     if (string.Equals(type, "hidden", StringComparison.OrdinalIgnoreCase))
                     {
@@ -1595,7 +1594,7 @@ namespace FenBrowser.Core.Parsing
             }
             if (table == null) return HandleInBody(token); // Should not happen in InTable mode
 
-            Node parent = table.Parent;
+            Node parent = table.ParentNode;
             Node nextSibling = table; // We insert before table
             
             if (parent == null)
@@ -1618,14 +1617,22 @@ namespace FenBrowser.Core.Parsing
             {
                 // Attempt to coalesce with previous text node
                 Node prev = null;
-                if (nextSibling != null)
+                if (parent is ContainerNode parentContainer && nextSibling != null)
                 {
-                    var idx = parent.Children.IndexOf(nextSibling);
-                    if (idx > 0) prev = parent.Children[idx - 1];
+                    var idx = -1;
+                    for (int i = 0; i < parentContainer.ChildNodes.Length; i++)
+                    {
+                        if (ReferenceEquals(parentContainer.ChildNodes[i], nextSibling))
+                        {
+                            idx = i;
+                            break;
+                        }
+                    }
+                    if (idx > 0) prev = parentContainer.ChildNodes[idx - 1];
                 }
-                else
+                else if (parent is ContainerNode appendContainer)
                 {
-                    prev = parent.Children.LastOrDefault();
+                    prev = appendContainer.ChildNodes.LastOrDefault();
                 }
 
                 if (prev is Text txt)

@@ -1246,3 +1246,12 @@ _End of Volume II_
 
 - Net effect:
   - Core process-isolation policy now supports production migration from strict per-origin reassignment to site-per-process-lite behavior while preserving deterministic fail-closed assignment for opaque and local schemes.
+
+### 1.61 Cookie Ingress/Egress Diagnostics Toggle (2026-05-18)
+- `FenBrowser.Core/Storage/CookieDiagnostics.cs` (new)
+- `FenBrowser.Core/Storage/BrowserCookieJar.cs`
+- `FenBrowser.Core/BrowserSettings.cs`
+  - Added opt-in structured cookie diagnostics for accepted/rejected `Set-Cookie` ingress and outbound `Cookie` header egress.
+  - Added `BrowserSettings.Logging.LogCookies` and env override `FEN_LOG_COOKIES=1`.
+  - Diagnostics are PII-safe by construction: no plaintext cookie values, only cookie name, value length, and short hash tag for correlation.
+  - Diagnostics are fail-safe: all logging paths swallow exceptions and cannot break cookie/network flow.
