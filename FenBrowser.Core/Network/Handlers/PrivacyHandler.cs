@@ -6,6 +6,8 @@ namespace FenBrowser.Core.Network.Handlers
 {
     public class PrivacyHandler : INetworkHandler
     {
+        private static readonly StringComparison HostComparison = StringComparison.OrdinalIgnoreCase;
+
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
             var req = context.Request;
@@ -29,10 +31,7 @@ namespace FenBrowser.Core.Network.Handlers
             // If Referer is present and cross-origin, trim to origin only.
             if (req.Headers.Referrer != null && req.RequestUri != null)
             {
-                var refHost = req.Headers.Referrer.Host;
-                var reqHost = req.RequestUri.Host;
-
-                if (!string.Equals(refHost, reqHost, StringComparison.OrdinalIgnoreCase))
+                if (!IsSameOrigin(req.Headers.Referrer, req.RequestUri))
                 {
                     // Cross-origin: strip path/query
                     var trimmed = new Uri(req.Headers.Referrer.GetLeftPart(UriPartial.Authority));
@@ -51,18 +50,34 @@ namespace FenBrowser.Core.Network.Handlers
                 bool isThirdParty = false;
                 if (req.Headers.TryGetValues("Sec-Fetch-Site", out var values))
                 {
-                    foreach(var v in values) { if (v == "cross-site") isThirdParty = true; }
-                }
-                else if (req.Headers.Referrer != null)
-                {
-                    var refHost = req.Headers.Referrer.Host;
-                    var reqHost = req.RequestUri.Host;
-                    // Simple domain check (not effective TLD compliant but sufficient for now)
-                    if (!refHost.EndsWith(reqHost, StringComparison.OrdinalIgnoreCase) && 
-                        !reqHost.EndsWith(refHost, StringComparison.OrdinalIgnoreCase))
+                    foreach (var raw in values)
                     {
-                        isThirdParty = true;
+                        if (string.IsNullOrWhiteSpace(raw))
+                        {
+                            continue;
+                        }
+
+                        var parts = raw.Split(',');
+                        foreach (var part in parts)
+                        {
+                            var token = part.Trim();
+                            if (token.Equals("cross-site", StringComparison.OrdinalIgnoreCase) ||
+                                token.Equals("cross-origin", StringComparison.OrdinalIgnoreCase))
+                            {
+                                isThirdParty = true;
+                                break;
+                            }
+                        }
+
+                        if (isThirdParty)
+                        {
+                            break;
+                        }
                     }
+                }
+                else if (req.Headers.Referrer != null && req.RequestUri != null)
+                {
+                    isThirdParty = !IsSameSite(req.Headers.Referrer, req.RequestUri);
                 }
 
                 if (isThirdParty)
@@ -72,6 +87,57 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             await next();
+        }
+
+        private static bool IsSameOrigin(Uri left, Uri right)
+        {
+            if (left is null || right is null)
+            {
+                return false;
+            }
+
+            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(left.Host, right.Host, HostComparison)
+                && left.Port == right.Port;
+        }
+
+        // Heuristic site comparison without PSL dependency:
+        // equal hosts, sibling subdomains under the same registrable suffix, or exact IP match.
+        private static bool IsSameSite(Uri left, Uri right)
+        {
+            if (left is null || right is null)
+            {
+                return false;
+            }
+
+            var leftHost = left.Host;
+            var rightHost = right.Host;
+            if (string.IsNullOrWhiteSpace(leftHost) || string.IsNullOrWhiteSpace(rightHost))
+            {
+                return false;
+            }
+
+            if (string.Equals(leftHost, rightHost, HostComparison))
+            {
+                return true;
+            }
+
+            var leftHostType = Uri.CheckHostName(leftHost);
+            var rightHostType = Uri.CheckHostName(rightHost);
+            if (leftHostType == UriHostNameType.IPv4 || leftHostType == UriHostNameType.IPv6 ||
+                rightHostType == UriHostNameType.IPv4 || rightHostType == UriHostNameType.IPv6)
+            {
+                return false;
+            }
+
+            return IsSubdomainOrSame(leftHost, rightHost) || IsSubdomainOrSame(rightHost, leftHost);
+        }
+
+        private static bool IsSubdomainOrSame(string host, string root)
+        {
+            return host.Length > root.Length
+                && host.EndsWith(root, HostComparison)
+                && host[host.Length - root.Length - 1] == '.';
         }
     }
 }

@@ -159,9 +159,15 @@ namespace FenBrowser.Core.Network
                 if (!headers.TryGetValues("Link", out linkValues))
                     return;
 
+                var queueTasks = new List<Task>();
                 foreach (var linkValue in linkValues)
                 {
-                    ParseLinkHeader(linkValue, baseUri);
+                    ParseLinkHeader(linkValue, baseUri, queueTasks);
+                }
+
+                if (queueTasks.Count > 0)
+                {
+                    await Task.WhenAll(queueTasks).ConfigureAwait(false);
                 }
 
                 // Start processing queue
@@ -376,7 +382,7 @@ namespace FenBrowser.Core.Network
         /// <summary>
         /// Parse Link header value
         /// </summary>
-        private void ParseLinkHeader(string linkValue, Uri baseUri)
+        private void ParseLinkHeader(string linkValue, Uri baseUri, List<Task> queueTasks)
         {
             // Format: </path>; rel=preload; as=style, </other>; rel=prefetch
             var parts = linkValue.Split(',');
@@ -402,7 +408,7 @@ namespace FenBrowser.Core.Network
                     var asMatch = Regex.Match(part, @"\bas\s*=\s*[""']?(\w+)[""']?", RegexOptions.IgnoreCase);
                     var asType = asMatch.Success ? ParseAsType(asMatch.Groups[1].Value) : PreloadAs.Unknown;
 
-                    _ = QueueHintAsync(url, hint.Value, asType);
+                    queueTasks.Add(QueueHintAsync(url, hint.Value, asType));
                 }
                 catch (Exception ex)
                 {

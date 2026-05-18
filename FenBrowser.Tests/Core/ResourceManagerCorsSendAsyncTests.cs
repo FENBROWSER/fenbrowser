@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
 using Xunit;
@@ -55,12 +56,14 @@ namespace FenBrowser.Tests.Core
         public async Task SendAsync_CorsModeCrossOriginWithMatchingAcao_IsAllowed()
         {
             ConfigureEngineLogForTest();
+            string secFetchSite = null;
             using var handler = new RecordingHandler(_ =>
             {
                 var response = new HttpResponseMessage(HttpStatusCode.OK);
                 response.Headers.TryAddWithoutValidation("Access-Control-Allow-Origin", "https://app.example.test");
                 return response;
             });
+            handler.OnRequest = request => secFetchSite = GetHeader(request, "Sec-Fetch-Site");
             using var client = new HttpClient(handler);
             var manager = new ResourceManager(client, isPrivate: true);
             using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/data");
@@ -70,6 +73,49 @@ namespace FenBrowser.Tests.Core
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal(1, handler.CallCount);
+            Assert.Equal("same-site", secFetchSite);
+        }
+
+        [Fact]
+        public async Task SendAsync_CorsModeSameOrigin_SetsSecFetchSiteSameOrigin()
+        {
+            ConfigureEngineLogForTest();
+            string secFetchSite = null;
+            using var handler = new RecordingHandler(_ =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK);
+                response.Headers.TryAddWithoutValidation("Access-Control-Allow-Origin", "https://api.example.test");
+                return response;
+            });
+            handler.OnRequest = request => secFetchSite = GetHeader(request, "Sec-Fetch-Site");
+            using var client = new HttpClient(handler);
+            var manager = new ResourceManager(client, isPrivate: true);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/data");
+            request.Headers.Referrer = new Uri("https://api.example.test/page");
+
+            using var response = await manager.SendAsync(request, policy: null);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("same-origin", secFetchSite);
+        }
+
+        [Fact]
+        public async Task SendAsync_CorsModeNoReferrer_SetsSecFetchSiteNoneAndBlocksBeforeSend()
+        {
+            ConfigureEngineLogForTest();
+            string secFetchSite = null;
+            using var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+            handler.OnRequest = request => secFetchSite = GetHeader(request, "Sec-Fetch-Site");
+            using var client = new HttpClient(handler);
+            var manager = new ResourceManager(client, isPrivate: true);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/data");
+
+            var ex = await Assert.ThrowsAsync<HttpRequestException>(() => manager.SendAsync(request, policy: null));
+
+            Assert.Contains("missing origin context", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("none", GetHeader(request, "Sec-Fetch-Site"));
+            Assert.Null(secFetchSite);
+            Assert.Equal(0, handler.CallCount);
         }
 
         [Fact]
@@ -82,7 +128,7 @@ namespace FenBrowser.Tests.Core
             using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/data");
             var blockingPolicy = CspPolicy.Parse("connect-src 'none'");
 
-            var ex = await Assert.ThrowsAsync<Exception>(() => manager.SendAsync(request, blockingPolicy));
+            var ex = await Assert.ThrowsAsync<HttpRequestException>(() => manager.SendAsync(request, blockingPolicy));
 
             Assert.Contains("Content Security Policy", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(0, handler.CallCount);
@@ -90,6 +136,54 @@ namespace FenBrowser.Tests.Core
                 reasonCode: FailClosedReasonCodes.CspConnectSrcBlocked,
                 capabilityId: "SECURITY-CSP-ENFORCEMENT-01",
                 stage: "fetch.csp");
+        }
+
+        [Fact]
+        public async Task SendAsync_PreflightSameSite_UsesSameSiteFetchMetadata()
+        {
+            ConfigureEngineLogForTest();
+            string preflightSite = null;
+            string preflightMode = null;
+            string preflightDest = null;
+            var optionsCount = 0;
+            var putCount = 0;
+
+            using var handler = new RecordingHandler(request =>
+            {
+                if (request.Method == HttpMethod.Options)
+                {
+                    optionsCount++;
+                    preflightSite = GetHeader(request, "Sec-Fetch-Site");
+                    preflightMode = GetHeader(request, "Sec-Fetch-Mode");
+                    preflightDest = GetHeader(request, "Sec-Fetch-Dest");
+
+                    var preflightResponse = new HttpResponseMessage(HttpStatusCode.NoContent);
+                    preflightResponse.Headers.TryAddWithoutValidation("Access-Control-Allow-Origin", "https://app.example.test");
+                    preflightResponse.Headers.TryAddWithoutValidation("Access-Control-Allow-Methods", "PUT");
+                    preflightResponse.Headers.TryAddWithoutValidation("Access-Control-Allow-Headers", "x-test");
+                    return preflightResponse;
+                }
+
+                putCount++;
+                var response = new HttpResponseMessage(HttpStatusCode.OK);
+                response.Headers.TryAddWithoutValidation("Access-Control-Allow-Origin", "https://app.example.test");
+                return response;
+            });
+            using var client = new HttpClient(handler);
+            var manager = new ResourceManager(client, isPrivate: true);
+            using var request = new HttpRequestMessage(HttpMethod.Put, "https://api.example.test/data");
+            request.Headers.Referrer = new Uri("https://app.example.test/page");
+            request.Headers.TryAddWithoutValidation("X-Test", "1");
+            CorsHandler.SetAuthorRequestHeaders(request, new[] { "X-Test" });
+
+            using var response = await manager.SendAsync(request, policy: null);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(1, optionsCount);
+            Assert.Equal(1, putCount);
+            Assert.Equal("same-site", preflightSite);
+            Assert.Equal("cors", preflightMode);
+            Assert.Equal("empty", preflightDest);
         }
 
         private static void ConfigureEngineLogForTest()
@@ -131,6 +225,21 @@ namespace FenBrowser.Tests.Core
             Assert.True(matching.Data.ContainsKey("schemaVersion"));
         }
 
+        private static string GetHeader(HttpRequestMessage request, string name)
+        {
+            if (request?.Headers != null && request.Headers.TryGetValues(name, out var values))
+            {
+                return string.Join(" ", values);
+            }
+
+            if (request?.Content != null && request.Content.Headers.TryGetValues(name, out values))
+            {
+                return string.Join(" ", values);
+            }
+
+            return null;
+        }
+
         private sealed class RecordingHandler : HttpMessageHandler
         {
             private readonly Func<HttpRequestMessage, HttpResponseMessage> _factory;
@@ -141,10 +250,12 @@ namespace FenBrowser.Tests.Core
             }
 
             public int CallCount { get; private set; }
+            public Action<HttpRequestMessage> OnRequest { get; set; }
 
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 CallCount++;
+                OnRequest?.Invoke(request);
                 return Task.FromResult(_factory(request));
             }
         }

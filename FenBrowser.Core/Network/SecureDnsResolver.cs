@@ -29,6 +29,8 @@ namespace FenBrowser.Core.Network
 
         public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
+
             if (string.IsNullOrWhiteSpace(host))
             {
                 return null;
@@ -80,6 +82,11 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
+                if (ex is OperationCanceledException && ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+
                 EngineLogCompat.Warn($"[SecureDNS] DoH resolution failed for '{host}': {ex.Message}", LogCategory.Network);
                 return null;
             }

@@ -324,7 +324,38 @@ namespace FenBrowser.Core
             if (string.IsNullOrEmpty(hostA) || string.IsNullOrEmpty(hostB)) return false;
             if (hostA.EndsWith("." + hostB, StringComparison.OrdinalIgnoreCase)) return true;
             if (hostB.EndsWith("." + hostA, StringComparison.OrdinalIgnoreCase)) return true;
-            return false;
+            var siteA = GetApproximateSiteKey(hostA);
+            var siteB = GetApproximateSiteKey(hostB);
+            return !string.IsNullOrEmpty(siteA) &&
+                   !string.IsNullOrEmpty(siteB) &&
+                   string.Equals(siteA, siteB, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetApproximateSiteKey(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return null;
+            }
+
+            var trimmed = host.Trim().TrimEnd('.').ToLowerInvariant();
+            if (trimmed.Length == 0)
+            {
+                return null;
+            }
+
+            if (System.Net.IPAddress.TryParse(trimmed, out _))
+            {
+                return trimmed;
+            }
+
+            var labels = trimmed.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (labels.Length < 2)
+            {
+                return trimmed;
+            }
+
+            return labels[labels.Length - 2] + "." + labels[labels.Length - 1];
         }
 
         private static bool IsSameOrigin(Uri left, Uri right)
@@ -2031,7 +2062,7 @@ namespace FenBrowser.Core
                             ["requestMethod"] = request.Method.Method,
                             ["requestUri"] = requestUrl
                         });
-                    throw new Exception($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
+                    throw new HttpRequestException($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
                 }
             }
 
@@ -2041,10 +2072,13 @@ namespace FenBrowser.Core
                 request.Headers.Add("User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
             }
 
-            // Sec-Fetch headers (basic)
+            // Sec-Fetch defaults for generic fetch requests.
             if (!request.Headers.Contains("Sec-Fetch-Dest")) request.Headers.Add("Sec-Fetch-Dest", "empty");
             if (!request.Headers.Contains("Sec-Fetch-Mode")) request.Headers.Add("Sec-Fetch-Mode", "cors");
-            if (!request.Headers.Contains("Sec-Fetch-Site")) request.Headers.Add("Sec-Fetch-Site", "cross-site");
+            if (!request.Headers.Contains("Sec-Fetch-Site"))
+            {
+                request.Headers.Add("Sec-Fetch-Site", DetermineSecFetchSite(request.Headers.Referrer, request.RequestUri));
+            }
 
             // Accept-* defaults. Bot-detection systems (Akamai/PerimeterX/Cloudflare)
             // routinely flag clients that send no Accept-Language or send only Accept: */*
@@ -2179,7 +2213,7 @@ namespace FenBrowser.Core
             }
 
             preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Site", DetermineSecFetchSite(originUri, request.RequestUri));
             preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
 
             using var preflightResponse = await SendRequestTrackedAsync(preflight, token).ConfigureAwait(false);

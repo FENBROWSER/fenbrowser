@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -101,6 +102,40 @@ namespace FenBrowser.Tests.Engine
 
             Assert.True(false,
                 $"Prefetch did not warm cache within 3s. Hits={handler.Hits}");
+        }
+
+        [Fact]
+        public async Task ProcessLinkHeadersAsync_QueuesPreloadAndWarmsCache()
+        {
+            var handler = new CountingHandler("h1{color:red}", "text/css");
+            var http = new HttpClient(handler);
+            var rm = new ResourceManager(http, isPrivate: true);
+            using var prefetcher = new ResourcePrefetcher(rm);
+
+            var headers = new HttpResponseMessage(HttpStatusCode.OK).Headers;
+            headers.TryAddWithoutValidation("Link", "</main.css>; rel=preload; as=style");
+            var baseUri = new Uri("https://example.test/page");
+            var target = new Uri("https://example.test/main.css");
+
+            await prefetcher.ProcessLinkHeadersAsync(headers, baseUri);
+
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (handler.Hits >= 1)
+                {
+                    var hitsBefore = handler.Hits;
+                    var body = await rm.FetchTextAsync(target, secFetchDest: "style");
+                    if (body == "h1{color:red}" && handler.Hits == hitsBefore)
+                    {
+                        return;
+                    }
+                }
+
+                await Task.Delay(20);
+            }
+
+            Assert.True(false, $"Link-header preload did not warm cache within 3s. Hits={handler.Hits}");
         }
     }
 }
