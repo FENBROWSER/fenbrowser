@@ -136,8 +136,11 @@ namespace FenBrowser.FenEngine.Scripting
 
                 WarnOnLargeScript(kind, normalizedSourceName, script);
 
-                var rawResult = _fenRuntime.ExecuteSimple(script ?? string.Empty, normalizedSourceName, allowReturn);
-                normalizedValue = NormalizeExecutionResult(rawResult);
+                lock (_runtimeExecutionLock)
+                {
+                    var rawResult = _fenRuntime.ExecuteSimple(script ?? string.Empty, normalizedSourceName, allowReturn);
+                    normalizedValue = NormalizeExecutionResult(rawResult);
+                }
 
                 if (normalizedValue.Type == JsValueType.Throw)
                 {

@@ -1106,6 +1106,7 @@ namespace FenBrowser.FenEngine.Scripting
             ApplyBrowserSurfaceToRuntime();
             InstallWimbCapabilities(winObj);
             InstallClipboardJsStub(winObj);
+            InstallGlobalExceptionCompatibility(winObj);
             
             var notificationGlobal = _fenRuntime.GetGlobal("Notification");
             if (notificationGlobal is FenValue notificationGlobalValue &&
@@ -1243,6 +1244,82 @@ namespace FenBrowser.FenEngine.Scripting
             var clipboardValue = FenValue.FromFunction(clipboardCtor);
             winObj.Set("ClipboardJS", clipboardValue);
             _fenRuntime.SetGlobal("ClipboardJS", clipboardValue);
+        }
+
+        private void InstallGlobalExceptionCompatibility(FenObject winObj)
+        {
+            if (winObj == null || _fenRuntime == null)
+            {
+                return;
+            }
+
+            var existing = _fenRuntime.GetGlobal("_DumpException");
+            if (existing.IsFunction)
+            {
+                if (existing is FenValue existingFen &&
+                    (!(winObj.Get("_DumpException") is FenValue winExisting) || !winExisting.IsFunction))
+                {
+                    winObj.Set("_DumpException", existingFen);
+                }
+
+                return;
+            }
+
+            var dumpException = FenValue.FromFunction(new FenFunction("_DumpException", (args, ctx) =>
+            {
+                // Compatibility helper used by third-party bootstrap bundles.
+                // Returning the incoming error payload preserves debuggability
+                // while avoiding fatal startup throws on missing helper.
+                if (args != null && args.Length > 0)
+                {
+                    return args[0];
+                }
+
+                return FenValue.Undefined;
+            }));
+
+            _fenRuntime.SetGlobal("_DumpException", dumpException);
+            winObj.Set("_DumpException", dumpException);
+
+            // Some third-party bootstraps call `_DumpException` through transient
+            // namespace objects before helper wiring completes.
+            var objectCtor = _fenRuntime.GetGlobal("Object");
+            if (objectCtor is FenValue objectFen && (objectFen.IsFunction || objectFen.IsObject))
+            {
+                var objectValue = objectFen.IsFunction
+                    ? objectFen.AsFunction()?.Get("prototype", _fenRuntime.Context)
+                    : objectFen.AsObject()?.Get("prototype", _fenRuntime.Context);
+
+                if (objectValue is FenValue objectProtoFen &&
+                    objectProtoFen.IsObject &&
+                    objectProtoFen.AsObject() is FenObject objectPrototype)
+                {
+                    var existingProto = objectPrototype.Get("_DumpException");
+                    if (!(existingProto is FenValue protoFn) || !protoFn.IsFunction)
+                    {
+                        objectPrototype.Set("_DumpException", dumpException);
+                    }
+                }
+            }
+        }
+
+        private void EnsureGlobalExceptionCompatibility()
+        {
+            if (_fenRuntime == null)
+            {
+                return;
+            }
+
+            var windowValue = _fenRuntime.GetGlobal("window");
+            if (windowValue is FenValue winFen && winFen.IsObject && winFen.AsObject() is FenObject winObj)
+            {
+                InstallGlobalExceptionCompatibility(winObj);
+                return;
+            }
+
+            var fallbackWindow = new FenObject();
+            _fenRuntime.SetGlobal("window", FenValue.FromObject(fallbackWindow));
+            InstallGlobalExceptionCompatibility(fallbackWindow);
         }
 
         private void MergeBrowserCapabilitiesSnapshot(FenObject capabilities)
@@ -2010,6 +2087,8 @@ namespace FenBrowser.FenEngine.Scripting
         private Node _domRoot;
 
         private readonly object _sandboxLogLock = new object();
+        // FenRuntime and its object graph are not thread-safe; serialize script entry.
+        private readonly object _runtimeExecutionLock = new object();
         private readonly Queue<SandboxBlockRecord> _sandboxBlocks = new Queue<SandboxBlockRecord>();
         private const int SandboxBlockCapacity = 32;
 
@@ -4359,6 +4438,7 @@ window.onunhandledrejection = function(ev) {
             }
 
             DiagnosticPaths.AppendRootText("js_debug.log", $"[ScriptRun] Executing script: Length={code.Length}, Info={srcInfo}\n");
+            EnsureGlobalExceptionCompatibility();
             ResetExecutionBudgetForHostBookkeeping();
             var previousCurrentScript = GetCurrentScriptValue();
             SetCurrentScriptElement(el);

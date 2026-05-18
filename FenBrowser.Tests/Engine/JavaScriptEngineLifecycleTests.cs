@@ -129,6 +129,16 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void DumpException_GlobalCompatibilityHelper_IsAvailable()
+        {
+            var engine = new JavaScriptEngine(CreateHost());
+
+            Assert.Equal("function", engine.Evaluate("typeof _DumpException")?.ToString());
+            Assert.Equal("function", engine.Evaluate("typeof window._DumpException")?.ToString());
+            Assert.Equal("boom", engine.Evaluate("_DumpException('boom')")?.ToString());
+        }
+
+        [Fact]
         public async Task NavigatorUserAgentData_ExposesLowAndHighEntropyValues()
         {
             var baseUri = new Uri("https://example.com/index.html");
