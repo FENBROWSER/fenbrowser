@@ -553,6 +553,7 @@ namespace FenBrowser.Host
                         var frameRequest = RendererIpc.DeserializePayload<RendererFrameRequestPayload>(envelope);
                         float vpWidth = frameRequest?.ViewportWidth ?? 1280f;
                         float vpHeight = frameRequest?.ViewportHeight ?? 720f;
+                        float scrollY = Math.Max(0f, frameRequest?.ScrollY ?? 0f);
 
                         // Clamp to sane range.
                         vpWidth = Math.Max(1f, Math.Min(vpWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
@@ -585,7 +586,14 @@ namespace FenBrowser.Host
                                     using var canvas = new SkiaSharp.SKCanvas(bitmap);
                                     canvas.Clear(SkiaSharp.SKColors.White);
 
-                                    var viewport = new SkiaSharp.SKRect(0, 0, vpWidth, vpHeight);
+                                    // Document-space viewport (top advances with scroll); the canvas is
+                                    // translated by -scrollY so the visible band rasterises at (0,0).
+                                    var viewport = new SkiaSharp.SKRect(0, scrollY, vpWidth, scrollY + vpHeight);
+                                    canvas.Save();
+                                    if (scrollY > 0f)
+                                    {
+                                        canvas.Translate(0, -scrollY);
+                                    }
                                     var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
                                     frameResult = childRenderer.RenderFrame(new FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
                                     {
@@ -600,6 +608,7 @@ namespace FenBrowser.Host
                                         RequestedBy = "RendererChild.FrameRequest",
                                         EmitVerificationReport = false
                                     });
+                                    canvas.Restore();
                                     canvas.Flush();
 
                                     // GetPixelSpan() is a ref struct; copy to byte[] to avoid
@@ -645,7 +654,8 @@ namespace FenBrowser.Host
                             TotalDurationMs = frameResult?.Telemetry?.TotalDurationMs ?? 0d,
                             DomNodeCount = frameResult?.Telemetry?.DomNodeCount ?? 0,
                             BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
-                            PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0
+                            PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0,
+                            ContentHeight = frameResult?.Layout?.ContentHeight ?? 0f
                         };
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope

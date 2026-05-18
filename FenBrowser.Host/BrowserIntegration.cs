@@ -496,6 +496,15 @@ public class BrowserIntegration
     {
         if (OwnerTab != null && OwnerTab.Id != tabId) return;
 
+        // Track the renderer-reported content height so the host can draw a viewport
+        // scrollbar and clamp wheel scrolling without re-running layout in-process.
+        if (payload != null && payload.ContentHeight > 0f &&
+            Math.Abs(_contentHeight - payload.ContentHeight) > 0.5f)
+        {
+            _contentHeight = payload.ContentHeight;
+            ScrollChanged?.Invoke(_scrollY, _contentHeight);
+        }
+
         // If the payload carries raw BGRA pixels (from shared memory), decode into an SKBitmap
         // so Render() can composite it directly.
         if (payload?.PixelData != null && payload.PixelData.Length > 0 &&
@@ -1800,22 +1809,46 @@ public class BrowserIntegration
     }
     
     /// <summary>
+    /// Scroll the content to an absolute Y position in document coordinates.
+    /// Drives scrollbar-thumb drag operations where the host computes the target
+    /// position directly rather than accumulating deltas.
+    /// </summary>
+    public void ScrollToY(float targetScrollY)
+    {
+        float clamped = ClampScrollPosition(targetScrollY);
+
+        // Apply immediately so EffectiveScrollY and downstream frame requests pick
+        // up the new offset on the next paint. Posting through the engine loop
+        // would leave _scrollY at the stale value until the worker thread drains,
+        // which produces the visible "scrollbar moves, content stays" symptom.
+        _scrollY = clamped;
+        _scrollPhysics.SetPosition(_scrollY);
+        lock (_frameLock)
+        {
+            _compositorPreviewScrollY = clamped;
+            _hasCompositorScrollPreview = true;
+        }
+
+        ScrollChanged?.Invoke(_scrollY, _contentHeight);
+        RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.ScrollToY");
+        NeedsRepaint?.Invoke();
+    }
+
+    /// <summary>
     /// Scroll the content by the given delta.
     /// </summary>
     public void Scroll(float deltaY)
     {
         ApplyCompositorScrollPreview(deltaY);
 
-        PostToEngine(() => 
-        {
-            EngineLogBridge.Debug($"[Scroll] DeltaY={deltaY}, OldY={_scrollY}, ContentHeight={_contentHeight}, Viewport={_lastViewportSize.Height}", LogCategory.Rendering);
-            _scrollY = ClampScrollPosition(_scrollY - (deltaY * 40f));
+        // Apply scroll synchronously on the calling thread. Posting through the
+        // engine loop left _scrollY stale long enough for paints to alternate
+        // between the new and old scroll positions (visible as the content not
+        // following the scrollbar). _scrollY is a single float read; we accept
+        // the relaxed ordering rather than queue the mutation.
+        _scrollY = ClampScrollPosition(_scrollY - (deltaY * 40f));
+        RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
 
-            EngineLogBridge.Debug($"[Scroll] NewY={_scrollY}, MaxScroll={Math.Max(0, _contentHeight - _lastViewportSize.Height)}", LogCategory.Rendering);
-            
-            RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
-        });
-        
         // Immediate UI feedback (optional, we wait for engine to re-record)
         NeedsRepaint?.Invoke();
     }
@@ -1938,6 +1971,14 @@ public class BrowserIntegration
     /// Get the current scroll position.
     /// </summary>
     public float ScrollY => _scrollY;
+
+    /// <summary>
+    /// Scroll position as observed by the compositor, including the latest
+    /// preview offset applied synchronously before the engine task lands.
+    /// Use this for paint-time decisions (scrollbar thumb, brokered frame request)
+    /// to avoid one-frame lag against fast wheel input.
+    /// </summary>
+    public float EffectiveScrollY => _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
     
     /// <summary>
     /// Get the content height for scroll calculation.
