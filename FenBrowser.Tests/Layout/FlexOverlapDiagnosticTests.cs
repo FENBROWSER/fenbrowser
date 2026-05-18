@@ -707,6 +707,98 @@ namespace FenBrowser.Tests.Layout
             AssertNoHorizontalOverlap(containerBox, "TextChildren");
         }
 
+        [Fact]
+        public void FlexRow_GoogleTopRightCluster_NoOverlapBetweenAppsAndSignIn()
+        {
+            var container = new Element("div");
+
+            var gmail = new Element("a");
+            gmail.SetAttribute("data-label", "Gmail");
+            gmail.AppendChild(new Text("Gmail"));
+
+            var images = new Element("a");
+            images.SetAttribute("data-label", "Images");
+            images.AppendChild(new Text("Images"));
+
+            var apps = new Element("a");
+            apps.SetAttribute("data-label", "Apps");
+
+            var signIn = new Element("a");
+            signIn.SetAttribute("data-label", "SignIn");
+            signIn.AppendChild(new Text("Sign in"));
+
+            container.AppendChild(gmail);
+            container.AppendChild(images);
+            container.AppendChild(apps);
+            container.AppendChild(signIn);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [container] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    JustifyContent = "flex-end",
+                    AlignItems = "center",
+                    Width = 1200,
+                    Height = 48
+                },
+                [gmail] = new CssComputed
+                {
+                    Display = "block",
+                    Padding = new Thickness(8, 10, 8, 10),
+                    Margin = new Thickness(0, 0, 8, 0),
+                    FontSize = 14
+                },
+                [images] = new CssComputed
+                {
+                    Display = "block",
+                    Padding = new Thickness(8, 10, 8, 10),
+                    Margin = new Thickness(0, 0, 8, 0),
+                    FontSize = 14
+                },
+                [apps] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 40,
+                    Height = 40,
+                    Margin = new Thickness(0, 0, 8, 0)
+                },
+                [signIn] = new CssComputed
+                {
+                    Display = "inline-block",
+                    BoxSizing = "border-box",
+                    MinWidth = 85,
+                    MinHeight = 40,
+                    Padding = new Thickness(10, 12, 10, 12),
+                    Margin = new Thickness(0, 0, 8, 0),
+                    FontSize = 14
+                }
+            };
+
+            foreach (var link in new[] { gmail, images, signIn })
+            {
+                foreach (var child in link.ChildNodes)
+                {
+                    if (child is Text)
+                    {
+                        styles[child] = new CssComputed { FontSize = 14 };
+                    }
+                }
+            }
+
+            var rootBox = LayoutRoot(container, styles);
+            var containerBox = FindBox(rootBox, container);
+
+            AssertNoHorizontalOverlap(containerBox, "GoogleTopRightCluster");
+
+            var appsBox = FindBox(containerBox, apps);
+            var signInBox = FindBox(containerBox, signIn);
+            Assert.True(
+                appsBox.Geometry.MarginBox.Right <= signInBox.Geometry.MarginBox.Left + 0.5f,
+                $"Expected Apps and Sign in not to overlap. apps={appsBox.Geometry.MarginBox} signIn={signInBox.Geometry.MarginBox}");
+        }
+
         // ======================== EDGE CASES ========================
 
         [Fact]

@@ -146,34 +146,64 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (child is TextLayoutBox textBox)
                 {
-                    string fullText = (textBox.SourceNode as Text)?.Data ?? "";
-                    fullText = CollapseWhitespace(fullText);
+                    string rawText = (textBox.SourceNode as Text)?.Data ?? "";
+                    string wsMode = (textBox.ComputedStyle?.WhiteSpace ?? box.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
+                    bool wsPreservesNewlines = wsMode == "pre" || wsMode == "pre-wrap" || wsMode == "pre-line";
+                    bool wsPreservesSpaces = wsMode == "pre" || wsMode == "pre-wrap";
+
+                    // CSS white-space: when newlines are preserved, treat each '\n'
+                    // as a forced line break and lay out each segment independently.
+                    var textSegments = wsPreservesNewlines
+                        ? rawText.Replace("\r\n", "\n").Split('\n')
+                        : new[] { rawText };
+
+                    if (!textBoxLines.ContainsKey(textBox))
+                        textBoxLines[textBox] = new List<TextLineInfo>();
+
+                    for (int segIdx = 0; segIdx < textSegments.Length; segIdx++)
+                    {
+                        if (segIdx > 0)
+                        {
+                            // Forced line break from the preceding '\n'.
+                            var segInfo = GetStyleFontInfo(textBox.ComputedStyle);
+                            currentLine.Height = Math.Max(currentLine.Height, segInfo.LineHeight);
+                            currentLine.IncludeMetrics(segInfo.Baseline, segInfo.Descent);
+                            currentLine = new LineBox();
+                            lines.Add(currentLine);
+                            curX = 0;
+                            previousEndedWithSpace = true;
+                        }
+
+                    string fullText = textSegments[segIdx];
+                    fullText = wsPreservesSpaces ? fullText : CollapseWhitespace(fullText);
                     if (fullText.Length == 0)
                     {
-                        ResetTextBoxGeometry(textBox);
+                        if (!wsPreservesNewlines)
+                        {
+                            ResetTextBoxGeometry(textBox);
+                        }
                         continue;
                     }
 
                     // Collapse adjacent whitespace across inline text nodes and
-                    // suppress leading line whitespace.
-                    if (previousEndedWithSpace && fullText[0] == ' ')
+                    // suppress leading line whitespace (skipped when CSS preserves spaces).
+                    if (!wsPreservesSpaces)
                     {
-                        fullText = fullText.Substring(1);
-                    }
-                    if (curX <= 0f && fullText.Length > 0 && fullText[0] == ' ')
-                    {
-                        fullText = fullText.TrimStart(' ');
-                    }
-                    if (fullText.Length == 0)
-                    {
-                        ResetTextBoxGeometry(textBox);
-                        continue;
+                        if (previousEndedWithSpace && fullText[0] == ' ')
+                        {
+                            fullText = fullText.Substring(1);
+                        }
+                        if (curX <= 0f && fullText.Length > 0 && fullText[0] == ' ')
+                        {
+                            fullText = fullText.TrimStart(' ');
+                        }
+                        if (fullText.Length == 0)
+                        {
+                            continue;
+                        }
                     }
 
                     bool suppressSoftWrap = UsesNoWrapWhiteSpace(textBox.ComputedStyle ?? box.ComputedStyle);
-
-                    if (!textBoxLines.ContainsKey(textBox))
-                        textBoxLines[textBox] = new List<TextLineInfo>();
 
                     // Per-style metrics (lineHeight/baseline/descent) only — no probe
                     // text needed; resolved+cached on first sight of the style.
@@ -296,6 +326,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     previousEndedWithSpace = fullText.EndsWith(" ", StringComparison.Ordinal);
+                    } // end for textSegments
+
+                    if (textBoxLines[textBox].Count == 0)
+                    {
+                        ResetTextBoxGeometry(textBox);
+                    }
                 }
                 else
                 {
@@ -389,6 +425,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 float minX = float.MaxValue, minY = float.MaxValue;
                 float maxX = float.MinValue, maxY = float.MinValue;
+                float maxSegmentWidth = 0f;
+                int firstLineIndex = segments[0].LineIndex;
+                bool singleLineSegmentSet = true;
 
                 foreach (var seg in segments)
                 {
@@ -404,6 +443,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     minY = Math.Min(minY, segY);
                     maxX = Math.Max(maxX, segX + seg.Width);
                     maxY = Math.Max(maxY, segY + seg.Height);
+                    maxSegmentWidth = Math.Max(maxSegmentWidth, seg.Width);
+                    if (seg.LineIndex != firstLineIndex)
+                    {
+                        singleLineSegmentSet = false;
+                    }
+
+                    var segParent = (textBox.SourceNode as Text)?.ParentElement;
+                    string segParentClass = segParent?.ClassName ?? string.Empty;
+                    string segGrandParentClass = segParent?.ParentElement?.ClassName ?? string.Empty;
+                    bool isGoogleSignInSegment =
+                        segParentClass.IndexOf("gb_0", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        segGrandParentClass.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (isGoogleSignInSegment)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Info(
+                            $"[GOOGLE-SIGNIN-INLINE] phase=extents pcls={segParentClass} gpcls={segGrandParentClass} text='{seg.Text}' segX={segX:F1} segY={segY:F1} segW={seg.Width:F1} lineXOffset={lineXOffset:F1} minX={minX:F1} maxX={maxX:F1} contentLimit={contentLimit:F1}",
+                            FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
+                }
+
+                float sideBearingSlack = ComputeInlineTextSideBearingSlack(textBox, segments, singleLineSegmentSet, minX, maxX, maxSegmentWidth);
+                if (sideBearingSlack > 0f)
+                {
+                    minX -= sideBearingSlack;
+                    maxX += sideBearingSlack;
                 }
 
                 // TextLayoutBox doesn't have margin/padding/border, so content dimensions = box dimensions
@@ -440,6 +504,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         Height = seg.Height,
                         Baseline = seg.Baseline
                     });
+
+                    var lineParent = (textBox.SourceNode as Text)?.ParentElement;
+                    string lineParentClass = lineParent?.ClassName ?? string.Empty;
+                    string lineGrandParentClass = lineParent?.ParentElement?.ClassName ?? string.Empty;
+                    bool isGoogleSignInLineSegment =
+                        lineParentClass.IndexOf("gb_0", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        lineGrandParentClass.IndexOf("gb_A", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (isGoogleSignInLineSegment)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Info(
+                            $"[GOOGLE-SIGNIN-INLINE] phase=lines pcls={lineParentClass} gpcls={lineGrandParentClass} text='{seg.Text}' relX={relX:F1} relY={relY:F1} segX={seg.X:F1} lineXOffset={lineXOffset:F1} boxW={boxWidth:F1} minX={minX:F1}",
+                            FenBrowser.Core.Logging.LogCategory.Layout);
+                    }
                 }
 
                 var firstLine = textBox.Geometry.Lines[0];
@@ -615,7 +692,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             if (box.ComputedStyle != null && box.ComputedStyle.Height.HasValue)
+            {
                 finalContentHeight = (float)box.ComputedStyle.Height.Value;
+                if (string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    float verticalExtras =
+                        (float)box.Geometry.Padding.Top +
+                        (float)box.Geometry.Padding.Bottom +
+                        (float)box.Geometry.Border.Top +
+                        (float)box.Geometry.Border.Bottom;
+                    finalContentHeight = Math.Max(0f, finalContentHeight - verticalExtras);
+                }
+            }
 
             ApplyMinMaxConstraints(box.ComputedStyle, state, ref finalContentWidth, ref finalContentHeight);
 
@@ -1655,6 +1743,67 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 width = Math.Max(info.FontSize * Math.Max(1, text.Length) * 0.35f, info.FontSize * 0.4f);
             }
             return new InlineTextMetrics(width, info.LineHeight, info.Baseline, info.Descent);
+        }
+
+        // Preserve a small side-bearing budget for very tight single-line runs.
+        // Some fonts have negative/positive glyph overhang relative to advance width.
+        // Without this, the first/last glyph can get clipped by a near-equal inline box.
+        private static float ComputeInlineTextSideBearingSlack(
+            TextLayoutBox textBox,
+            List<TextLineInfo> segments,
+            bool singleLineSegmentSet,
+            float minX,
+            float maxX,
+            float maxSegmentWidth)
+        {
+            if (!singleLineSegmentSet || segments.Count == 0)
+            {
+                return 0f;
+            }
+
+            int totalChars = 0;
+            foreach (var seg in segments)
+            {
+                totalChars += seg.Text?.Length ?? 0;
+            }
+
+            if (totalChars <= 0 || totalChars > 32)
+            {
+                return 0f;
+            }
+
+            float boxWidth = Math.Max(0f, maxX - minX);
+            if (boxWidth <= 0f || maxSegmentWidth <= 0f)
+            {
+                return 0f;
+            }
+
+            // Trigger only for tight width envelopes where clipping risk is real.
+            if (boxWidth > maxSegmentWidth + 0.75f)
+            {
+                return 0f;
+            }
+
+            float fontSize = (float)(textBox.ComputedStyle?.FontSize ?? 16.0);
+            float slack;
+            if (totalChars <= 12 && boxWidth <= 56f)
+            {
+                // Extra guard for short action labels where shaping/font fallback
+                // can paint wider than the measured advance.
+                slack = fontSize * 0.24f;
+            }
+            else
+            {
+                slack = fontSize * 0.09f;
+            }
+            if (!float.IsFinite(slack) || slack <= 0f)
+            {
+                return 0f;
+            }
+
+            return totalChars <= 12
+                ? Math.Clamp(slack, 2f, 6f)
+                : Math.Clamp(slack, 1f, 2f);
         }
 
 

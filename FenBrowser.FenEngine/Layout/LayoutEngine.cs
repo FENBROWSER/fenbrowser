@@ -1,6 +1,7 @@
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
+using FenBrowser.Core.Memory;
 using SkiaSharp;
 using System;
 using System.Collections.Generic;
@@ -100,10 +101,17 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             _boxStore.Reset();
-            // 1. Build Box Tree
-            var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles, _boxStore);
-            var rootBox = builder.Build(layoutRoot);
-            
+            // 1. Build Box Tree. Tracked separately from the layout pass so we
+            // can tell whether perf cost lives in DOM→Box construction or in
+            // the formatting-context Layout() pass — historically the
+            // unscoped RenderFrame.Layout span hid this.
+            FenBrowser.FenEngine.Layout.Tree.LayoutBox rootBox;
+            using (TimelineTracer.Instance.Begin("LayoutEngine.BoxTreeBuild", "layout"))
+            {
+                var builder = new FenBrowser.FenEngine.Layout.Tree.BoxTreeBuilder(_context.Styles, _boxStore);
+                rootBox = builder.Build(layoutRoot);
+            }
+
             if (rootBox == null)
             {
                 if (LayoutDebugLogEnabled)
@@ -119,7 +127,7 @@ namespace FenBrowser.FenEngine.Layout
             // 2. Prepare Root Layout State
             availableWidth = Math.Max(availableWidth, _context.ViewportWidth);
             availableHeight = Math.Max(availableHeight, _context.ViewportHeight);
-            
+
             var initialState = new FenBrowser.FenEngine.Layout.Contexts.LayoutState(
                 new SKSize(availableWidth, availableHeight),
                 availableWidth,
@@ -129,24 +137,33 @@ namespace FenBrowser.FenEngine.Layout
                 deadline
             );
 
-            // 3. Layout!
-            var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
-            if (LayoutDebugLogEnabled)
-                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
-            context.Layout(rootBox, initialState);
-            if (LayoutDebugLogEnabled)
-                DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
+            // 3. Layout pass — the formatting-context recursion. This is the
+            // arm where Block/Flex/Inline/Grid contexts run, and where any
+            // O(N²) or unbounded recursive cost would show up.
+            using (TimelineTracer.Instance.Begin("LayoutEngine.FormattingContextLayout", "layout"))
+            {
+                var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
+                if (LayoutDebugLogEnabled)
+                    DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
+                context.Layout(rootBox, initialState);
+                if (LayoutDebugLogEnabled)
+                    DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
+            }
 
             // 4. Materialize renderer-facing layout artifacts from the box tree.
+            // Tracked separately so a slow flatten/collect step doesn't get
+            // misattributed to the formatting-context Layout() pass above.
             var elementRects = new Dictionary<Element, ElementGeometry>();
-            
-            // PASS 1: Flatten for Legacy API (Absolute Coordinates)
-            FlattenBoxTreeAbsolute(rootBox, elementRects, _context, 0, 0); 
-            
-            // PASS 2: Collect All Boxes for Renderer (Absolute Coordinates)
             var accumulatedBoxes = new Dictionary<Node, BoxModel>();
-            CollectBoxesAbsolute(rootBox, accumulatedBoxes, 0, 0);
-            
+            using (TimelineTracer.Instance.Begin("LayoutEngine.Materialize", "layout"))
+            {
+                // PASS 1: Flatten for Legacy API (Absolute Coordinates)
+                FlattenBoxTreeAbsolute(rootBox, elementRects, _context, 0, 0);
+
+                // PASS 2: Collect All Boxes for Renderer (Absolute Coordinates)
+                CollectBoxesAbsolute(rootBox, accumulatedBoxes, 0, 0);
+            }
+
             _generatedBoxes = accumulatedBoxes;
 
             

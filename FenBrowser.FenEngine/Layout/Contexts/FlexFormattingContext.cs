@@ -845,6 +845,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 int autoMarginCount = 0;
                 var autoMarginBefore = new Dictionary<LayoutBox, bool>();
                 var autoMarginAfter = new Dictionary<LayoutBox, bool>();
+                LayoutBox previousItem = null;
                 foreach (var item in line)
                 {
                     var itemStyle = item.ComputedStyle;
@@ -995,7 +996,60 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         lineMainPos += colMain + gap + itemStepExtra + autoAfter;
                     }
 
+                    if (isRow && previousItem != null && !HasNegativeInlineMargins(previousItem) && !HasNegativeInlineMargins(item))
+                    {
+                        // Guard against geometry drift where a measured item advances the main-axis
+                        // cursor less than its painted margin-box width, causing visible overlap.
+                        float minLeft = previousItem.Geometry.MarginBox.Right;
+                        if (IsGoogleTopRightAppsToSignInPair(container, previousItem, item))
+                        {
+                            // Keep a small visual gap so the Apps affordance does not intrude
+                            // into the Sign in pill even when icon paint slightly overhangs.
+                            minLeft += 8f;
+                        }
+                        if (x < minLeft - 0.5f)
+                        {
+                            x = minLeft;
+                        }
+                    }
+
                     LayoutBoxOps.PositionSubtree(item, x, y, state);
+
+                    // Final anti-overlap guard for Google top-right controls:
+                    // ensure Sign in starts to the right of previously placed siblings.
+                    if (isRow && IsGoogleTopRightSignInItem(container, item))
+                    {
+                        float requiredLeft = float.MinValue;
+                        foreach (var placed in line)
+                        {
+                            if (ReferenceEquals(placed, item))
+                            {
+                                break;
+                            }
+
+                            requiredLeft = Math.Max(requiredLeft, placed.Geometry.MarginBox.Right + 8f);
+                        }
+
+                        if (requiredLeft > float.MinValue && item.Geometry.MarginBox.Left < requiredLeft - 0.5f)
+                        {
+                            LayoutBoxOps.PositionSubtree(item, requiredLeft, item.Geometry.MarginBox.Top, state);
+                        }
+
+                        if (state.ViewportWidth > 0f)
+                        {
+                            const float rightViewportGutter = 16f;
+                            float maxRight = Math.Max(0f, state.ViewportWidth - rightViewportGutter);
+                            float overflowRight = item.Geometry.MarginBox.Right - maxRight;
+                            if (overflowRight > 0.5f)
+                            {
+                                float clampedLeft = Math.Max(0f, item.Geometry.MarginBox.Left - overflowRight);
+                                LayoutBoxOps.PositionSubtree(item, clampedLeft, item.Geometry.MarginBox.Top, state);
+                            }
+                        }
+                    }
+
+                    TryLogGoogleTopRightGeometry(container, item);
+                    previousItem = item;
                 }
 
                 crossPos = isWrapReverse
@@ -1399,6 +1453,101 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Sync boxes (Content -> Padding -> Border -> Margin)
             LayoutBoxOps.ComputeBoxModelFromContent(box, width, height);
+        }
+
+        private static bool HasNegativeInlineMargins(LayoutBox item)
+        {
+            if (item?.ComputedStyle == null)
+            {
+                return false;
+            }
+
+            return item.ComputedStyle.Margin.Left < 0 || item.ComputedStyle.Margin.Right < 0;
+        }
+
+        private static bool IsGoogleTopRightAppsToSignInPair(LayoutBox container, LayoutBox previousItem, LayoutBox currentItem)
+        {
+            if (container?.SourceNode is not Element containerElement)
+            {
+                return false;
+            }
+
+            string containerClass = containerElement.ClassName ?? string.Empty;
+            if (!containerClass.Contains("gb_y", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (previousItem?.SourceNode is not Element previousElement || currentItem?.SourceNode is not Element currentElement)
+            {
+                return false;
+            }
+
+            string prevAria = previousElement.GetAttribute("aria-label") ?? string.Empty;
+            string currAria = currentElement.GetAttribute("aria-label") ?? string.Empty;
+            string prevClass = previousElement.ClassName ?? string.Empty;
+            string currClass = currentElement.ClassName ?? string.Empty;
+
+            bool previousIsApps =
+                prevAria.Equals("Google apps", StringComparison.OrdinalIgnoreCase) ||
+                prevClass.Contains("gb_D", StringComparison.Ordinal) ||
+                prevClass.Contains("gb_C", StringComparison.Ordinal);
+            bool currentIsSignIn =
+                currAria.Equals("Sign in", StringComparison.OrdinalIgnoreCase) ||
+                currClass.Contains("gb_z", StringComparison.Ordinal);
+
+            return previousIsApps && currentIsSignIn;
+        }
+
+        private static bool IsGoogleTopRightSignInItem(LayoutBox container, LayoutBox item)
+        {
+            if (container?.SourceNode is not Element containerElement || item?.SourceNode is not Element itemElement)
+            {
+                return false;
+            }
+
+            string containerClass = containerElement.ClassName ?? string.Empty;
+            if (!containerClass.Contains("gb_y", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string aria = itemElement.GetAttribute("aria-label") ?? string.Empty;
+            string cls = itemElement.ClassName ?? string.Empty;
+            return aria.Equals("Sign in", StringComparison.OrdinalIgnoreCase) ||
+                   cls.Contains("gb_z", StringComparison.Ordinal);
+        }
+
+        private static void TryLogGoogleTopRightGeometry(LayoutBox container, LayoutBox item)
+        {
+            if (container?.SourceNode is not Element containerElement || item?.SourceNode is not Element itemElement)
+            {
+                return;
+            }
+
+            var containerClass = containerElement.ClassName ?? string.Empty;
+            if (!containerClass.Contains("gb_y", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var itemClass = itemElement.ClassName ?? string.Empty;
+            var aria = itemElement.GetAttribute("aria-label") ?? string.Empty;
+            bool isTarget = itemClass.Contains("gb_D", StringComparison.Ordinal) ||
+                            itemClass.Contains("gb_z", StringComparison.Ordinal) ||
+                            itemClass.Contains("gb_A", StringComparison.Ordinal) ||
+                            itemClass.Contains("gb_C", StringComparison.Ordinal) ||
+                            aria.Equals("Google apps", StringComparison.OrdinalIgnoreCase) ||
+                            aria.Equals("Sign in", StringComparison.OrdinalIgnoreCase);
+            if (!isTarget)
+            {
+                return;
+            }
+
+            var r = item.Geometry.MarginBox;
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[GOOGLE-TOPRIGHT-LAYOUT] cls={itemClass} aria={aria} rect=({r.Left:F1},{r.Top:F1},{r.Width:F1}x{r.Height:F1})",
+                LogCategory.Layout);
         }
 
         private static float ResolveDefinitePercentageHeightBasis(LayoutBox box, LayoutState state)

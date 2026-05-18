@@ -595,6 +595,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
 
+            // box-sizing: border-box means the declared height includes padding+border,
+            // so subtract them to get the content-box height the layout pipeline stores.
+            bool heightIsBorderBox = string.Equals(blockBox.ComputedStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+            if (explicitHeight.HasValue && heightIsBorderBox)
+            {
+                float verticalExtras =
+                    (float)blockBox.Geometry.Padding.Top +
+                    (float)blockBox.Geometry.Padding.Bottom +
+                    (float)blockBox.Geometry.Border.Top +
+                    (float)blockBox.Geometry.Border.Bottom;
+                explicitHeight = Math.Max(0f, explicitHeight.Value - verticalExtras);
+            }
+
             float resolvedContentHeight;
             if (explicitHeight.HasValue)
             {
