@@ -2805,9 +2805,29 @@ public void Dispose()
                 EngineLogCompat.Debug($"[PERF] Visual Tree 1: {elapsed}ms", LogCategory.Rendering);
 
                 // 6. Run Scripts
-                object element = control; 
+                object element = control;
                 if (_activeJs != null)
                 {
+                    // CSSOM: getBoundingClientRect / offsetWidth / etc. must observe an
+                    // up-to-date layout. Flush layout into the renderer's box cache before
+                    // executing inline scripts so they don't see zeroed rects.
+                    if (control is SkiaDomRenderer activeRenderer && (dom as Element) != null)
+                    {
+                        try
+                        {
+                            activeRenderer.EnsureLayout(
+                                dom as Element,
+                                LastComputedStyles,
+                                (float)(viewportWidth ?? _activeViewportWidth ?? 1920),
+                                (float)vh,
+                                baseUri?.AbsoluteUri);
+                        }
+                        catch (Exception ex)
+                        {
+                            EngineLogCompat.Warn($"[RenderAsync] Pre-script layout flush failed: {ex.Message}", LogCategory.Rendering);
+                        }
+                    }
+
                     javascriptExecuted = true;
                     try
                     {

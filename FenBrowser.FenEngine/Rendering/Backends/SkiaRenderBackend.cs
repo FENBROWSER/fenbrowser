@@ -1,4 +1,6 @@
 using System;
+using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Typography;
 using SkiaSharp;
 
@@ -289,6 +291,14 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 SubpixelText = true,
                 LcdRenderText = false
             };
+
+            if (text.Equals("Sign in", StringComparison.Ordinal))
+            {
+                SKRect clip = _canvas.LocalClipBounds;
+                EngineLogCompat.Log(
+                    $"[GOOGLE-SIGNIN-CLIP] origin=({origin.X:F1},{origin.Y:F1}) clip=({clip.Left:F1},{clip.Top:F1},{clip.Width:F1}x{clip.Height:F1})",
+                    LogCategory.Paint);
+            }
 
             _canvas.DrawText(text, origin.X, origin.Y, paint);
         }

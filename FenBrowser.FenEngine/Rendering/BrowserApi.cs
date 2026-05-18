@@ -1468,8 +1468,10 @@ pre {{
                 TryInvokeNavigated(uri);
                 await MarkNavigationCompleteWhenSettledAsync(navigationId, "document-complete").ConfigureAwait(false);
                 
-                // Fetch Favicon
-                _ = FetchFaviconAsync(uri);
+                // Fetch favicon immediately, then re-check once after a short delay for
+                // pages that install/update <link rel="icon"> after initial load.
+                _ = FetchFaviconAsync(uri, navigationId);
+                _ = FetchFaviconDelayedAsync(uri, navigationId, delayMs: 1200);
                 
                 return true;
             }
@@ -2136,10 +2138,27 @@ pre {{
             return null;
         }
 
-        private async Task FetchFaviconAsync(Uri pageUrl)
+        private async Task FetchFaviconDelayedAsync(Uri pageUrl, long navigationId, int delayMs)
         {
             try
             {
+                await Task.Delay(Math.Max(0, delayMs)).ConfigureAwait(false);
+                await FetchFaviconAsync(pageUrl, navigationId).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task FetchFaviconAsync(Uri pageUrl, long navigationId)
+        {
+            try
+            {
+                if (!IsLatestNavigation(navigationId))
+                {
+                    return;
+                }
+
                 string iconUrl = null;
                 var dom = _engine.GetActiveDom();
                 
@@ -2147,12 +2166,17 @@ pre {{
                 if (dom != null)
                 {
                     // Find <link rel="icon" ...>
-                    var links = dom.Descendants().OfType<Element>().Where(x => x.TagName == "link" && x.Attr != null && x.Attr.ContainsKey("rel"));
-                    var iconLink = links.FirstOrDefault(x => x.Attr["rel"].IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
+                    var links = dom
+                        .Descendants()
+                        .OfType<Element>()
+                        .Where(x => string.Equals(x.TagName, "link", StringComparison.OrdinalIgnoreCase) &&
+                                    x.Attr != null &&
+                                    x.Attr.ContainsKey("rel"));
+                    var iconLink = links.LastOrDefault(x => x.Attr["rel"].IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
                     
                     if (iconLink != null && iconLink.Attr.ContainsKey("href"))
                     {
-                        iconUrl = iconLink.Attr["href"];
+                        iconUrl = iconLink.Attr["href"]?.Trim();
                     }
                 }
                 
@@ -2166,6 +2190,11 @@ pre {{
                 Uri absoluteIconUri = null;
                 if (Uri.TryCreate(pageUrl, iconUrl, out absoluteIconUri))
                 {
+                    if (!IsLatestNavigation(navigationId))
+                    {
+                        return;
+                    }
+
                     // 3. Fetch Image
                     using var stream = await _resources.FetchImageAsync(absoluteIconUri, pageUrl);
                     if (stream != null)
@@ -2179,6 +2208,12 @@ pre {{
                         var bitmap = SKBitmap.Decode(ms);
                         if (bitmap != null)
                         {
+                            if (!IsLatestNavigation(navigationId))
+                            {
+                                bitmap.Dispose();
+                                return;
+                            }
+
                             // Resize if too large? Tab is small (16px), but keep quality High.
                             // Set property and fire event
                             Favicon = bitmap;
@@ -2338,7 +2373,23 @@ pre {{
             var detail = string.IsNullOrWhiteSpace(baseDetail)
                 ? settleDetail
                 : $"{baseDetail};{settleDetail}";
+
+            // Mark navigation complete BEFORE the diagnostic probe so the UI
+            // (loading spinner, favicon swap, navigation-state observers) is
+            // never gated on diagnostic work. The probe is internally bounded
+            // by a timeout, but ordering this way makes the user-visible
+            // lifecycle insensitive to probe behavior at any cost.
             _navigationLifecycle.MarkComplete(navigationId, detail);
+
+            // Diagnostic probe: capture the shape of well-known challenge / page
+            // globals and cookie-name set at the point of navigation completion.
+            // No-ops unless FEN_NAV_GLOBALS_SNAPSHOT=1 or LogNavigationGlobals is
+            // set; bounded by ProbeTimeoutMs; failures are swallowed.
+            FenBrowser.FenEngine.Scripting.NavigationGlobalsProbe.Capture(
+                _engine?.JsEngine,
+                _current,
+                navigationId);
+
             EngineLog.EmitSuppressedSummary();
             var (unsupportedHtml, unsupportedCss, unsupportedJs) = EngineCapabilities.GetUnsupportedCounts();
             EngineLog.WriteRateLimited(
@@ -7275,7 +7326,29 @@ pre {{
             bool allowDefaultActivation = ConsumeClickDefaultActivationDecision(element);
             var suppressDomClickDispatch = _suppressNextDomClickDispatchInHandleElementClick;
             _suppressNextDomClickDispatchInHandleElementClick = false;
-            if (element == null) 
+
+            // Info-level audit trail for click activation. Cheap (one line per
+            // click) and indispensable when chasing "click did nothing" bugs:
+            // without it we can't tell whether the click reached
+            // HandleElementClick at all, what element it landed on, what type
+            // attribute it carries, and whether default activation is allowed
+            // before any branch decides what to do.
+            try
+            {
+                var initialTag = element?.NodeName ?? "<null>";
+                var initialType = element?.GetAttribute("type");
+                var initialId = element?.GetAttribute("id");
+                var initialName = element?.GetAttribute("name");
+                TryLogInfo(
+                    $"[CLICK-AUDIT] target={initialTag} type={initialType ?? "-"} id={initialId ?? "-"} name={initialName ?? "-"} allowDefault={allowDefaultActivation} suppressDispatch={suppressDomClickDispatch}",
+                    LogCategory.Events);
+            }
+            catch
+            {
+                // Audit must never throw.
+            }
+
+            if (element == null)
             {
                 SetFocusedElementState(null);
                 TryInvokeRepaintReady(_engine.GetActiveDom());
@@ -7337,14 +7410,44 @@ pre {{
                 allowDefaultActivation = false;
             }
 
-            // Wrapper-first DOMs (e.g. Google search box) often receive click on a container.
-            // Promote to a descendant editable so focus/typing remains stable.
-            if (tag != "input" &&
-                tag != "textarea" &&
-                tag != "button" &&
-                tag != "a" &&
-                tag != "select" &&
-                !string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
+            // SpecRef: WHATWG HTML — click activation algorithm.
+            // The DOM `click` event always dispatches on the deepest hit
+            // descendant (already done above). For activation behavior (form
+            // submit, anchor navigation, label-for focus, etc.) the spec walks
+            // ANCESTORS from the event target to find the closest element whose
+            // activation behavior is defined. Without this walk, clicking on
+            // any descendant of a <button type=submit> (e.g. an inner <span> or
+            // <svg>) silently does nothing — which is exactly the Google
+            // Search button regression observed in the field, since Google
+            // wraps its submit button content in nested non-activation nodes.
+            //
+            // For wrapper containers that have NO activation-capable ancestor
+            // (e.g. a styled <div> wrapping a search input), we still keep the
+            // legacy "promote to descendant editable" behavior so focus/typing
+            // remains stable when the user clicks a decorative wrapper.
+            var activationAncestor = FindActivationAncestor(element);
+            try
+            {
+                var ancTag = activationAncestor?.NodeName ?? "<none>";
+                var ancType = activationAncestor?.GetAttribute("type");
+                var same = activationAncestor != null && ReferenceEquals(activationAncestor, element);
+                TryLogInfo(
+                    $"[CLICK-AUDIT] activationAncestor={ancTag} type={ancType ?? "-"} sameAsTarget={same}",
+                    LogCategory.Events);
+            }
+            catch { /* audit must never throw */ }
+
+            if (activationAncestor != null && !ReferenceEquals(activationAncestor, element))
+            {
+                element = activationAncestor;
+                tag = element.NodeName?.ToLowerInvariant();
+            }
+            else if (tag != "input" &&
+                     tag != "textarea" &&
+                     tag != "button" &&
+                     tag != "a" &&
+                     tag != "select" &&
+                     !string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
             {
                 var descendantSubmit = element
                     .Descendants()
@@ -7435,12 +7538,19 @@ pre {{
                 }
             }
             // Handle button clicks
-            else if (tag == "button" || (tag == "input" && 
+            else if (tag == "button" || (tag == "input" &&
                 (element.GetAttribute("type")?.ToLowerInvariant() == "submit" ||
                  element.GetAttribute("type")?.ToLowerInvariant() == "button")))
             {
                  // Verify if this is a search button (simplified check)
                  TryLogDebug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General);
+                 try
+                 {
+                     TryLogInfo(
+                         $"[CLICK-AUDIT] branch=BUTTON tag={element.NodeName} type={element.GetAttribute("type") ?? "-"} willSubmit={(allowDefaultActivation && IsSubmitActivationControl(element, tag))}",
+                         LogCategory.Events);
+                 }
+                 catch { }
 
                  // Popover target activation: if the button has popovertarget,
                  // toggle/show/hide the referenced popover element.
@@ -7510,6 +7620,13 @@ pre {{
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
             {
+                try
+                {
+                    TryLogInfo(
+                        $"[CLICK-AUDIT] branch=INPUT-FOCUS tag={element.NodeName} type={element.GetAttribute("type") ?? "-"} (note: button/submit branch did NOT match)",
+                        LogCategory.Events);
+                }
+                catch { }
                 SetFocusedElementState(element);
                 
                 // Set cursor to end on focus
@@ -8081,6 +8198,92 @@ pre {{
             }
 
             await NavigateAsync(bootstrapUrl).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Walk ancestors (inclusive) from <paramref name="start"/> looking for the
+        /// closest element whose HTML activation behavior is defined. Implements
+        /// the ancestor-walk portion of the WHATWG HTML "run activation behavior"
+        /// algorithm: when a click event lands on a descendant of a button, anchor
+        /// or labelled control, activation runs on the ancestor, not the leaf.
+        ///
+        /// Bounded at <see cref="MaxActivationAncestorWalk"/> hops to keep the
+        /// path O(1) for deep DOMs.
+        /// </summary>
+        private const int MaxActivationAncestorWalk = 32;
+
+        private static Element FindActivationAncestor(Element start)
+        {
+            if (start == null)
+            {
+                return null;
+            }
+
+            var cursor = start;
+            int hops = 0;
+            while (cursor != null && hops < MaxActivationAncestorWalk)
+            {
+                if (HasActivationBehavior(cursor))
+                {
+                    return cursor;
+                }
+                cursor = cursor.ParentElement;
+                hops++;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// True when <paramref name="element"/> has HTML activation behavior we
+        /// honor in <see cref="HandleElementClick"/>. The set tracks the spec's
+        /// activation-capable elements that this engine implements:
+        ///   - <c>&lt;a&gt;</c> with non-empty <c>href</c>
+        ///   - <c>&lt;area&gt;</c> with non-empty <c>href</c>
+        ///   - <c>&lt;button&gt;</c> (default type=submit)
+        ///   - <c>&lt;input&gt;</c> with type submit/reset/button/checkbox/radio/image
+        ///   - <c>&lt;select&gt;</c>, <c>&lt;textarea&gt;</c> (focus activation)
+        ///   - <c>&lt;summary&gt;</c> (details toggle)
+        ///   - <c>&lt;label&gt;</c> (control redirection — handled by caller)
+        /// Disabled controls are excluded so a disabled submit button does not
+        /// hijack clicks landing on its decorative children.
+        /// </summary>
+        private static bool HasActivationBehavior(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+            if (IsDisabledControl(element))
+            {
+                return false;
+            }
+
+            var tag = element.NodeName?.ToLowerInvariant();
+            switch (tag)
+            {
+                case "a":
+                case "area":
+                    return !string.IsNullOrEmpty(element.GetAttribute("href"));
+                case "button":
+                case "select":
+                case "textarea":
+                case "summary":
+                case "label":
+                    return true;
+                case "input":
+                    var type = element.GetAttribute("type")?.ToLowerInvariant();
+                    // Default input type is "text"; that is NOT activation-capable
+                    // (clicks just focus it, which is handled by the input branch
+                    // below). Activation types are explicitly enumerated.
+                    return type == "submit"
+                        || type == "reset"
+                        || type == "button"
+                        || type == "checkbox"
+                        || type == "radio"
+                        || type == "image";
+                default:
+                    return false;
+            }
         }
 
         private static bool IsSubmitActivationControl(Element element, string loweredTag)

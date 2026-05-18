@@ -950,6 +950,7 @@ namespace FenBrowser.FenEngine.Rendering
             string cleanText = string.IsNullOrEmpty(node.FallbackText)
                 ? string.Empty
                 : node.FallbackText.Replace("\r", "").Replace("\n", "").Replace("\t", " ");
+            SKPoint drawOrigin = node.TextOrigin;
             
             float textWidth = 0;
 
@@ -958,14 +959,16 @@ namespace FenBrowser.FenEngine.Rendering
             // so preserving the source text at the render backend is more reliable for browser content.
             if (!string.IsNullOrWhiteSpace(cleanText))
             {
+                drawOrigin = ComputeTightClipSafeTextOrigin(node, cleanText, fontSize, typeface);
+
                 // DEBUG: Log text rendering
                 if (cleanText.IndexOf("centered", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     cleanText.Contains("This text"))
                 {
-                    FenBrowser.Core.EngineLogCompat.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({node.TextOrigin.X:F2}, {node.TextOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
+                    FenBrowser.Core.EngineLogCompat.Info($"[DRAW-TEXT-DEBUG] Drawing '{cleanText}' at Origin=({drawOrigin.X:F2}, {drawOrigin.Y:F2}) Color={node.Color}", FenBrowser.Core.Logging.LogCategory.Layout);
                 }
 
-                backend.DrawText(cleanText, node.TextOrigin, node.Color, fontSize, typeface);
+                backend.DrawText(cleanText, drawOrigin, node.Color, fontSize, typeface);
                 textWidth = MeasureRenderedTextWidth(cleanText, fontSize, typeface);
             }
             else if (node.Glyphs != null && node.Glyphs.Count > 0)
@@ -1030,6 +1033,39 @@ namespace FenBrowser.FenEngine.Rendering
             };
 
             return paint.MeasureText(text);
+        }
+
+        private static SKPoint ComputeTightClipSafeTextOrigin(TextPaintNode node, string text, float fontSize, SKTypeface typeface)
+        {
+            if (string.IsNullOrEmpty(text) || fontSize <= 0f)
+            {
+                return node.TextOrigin;
+            }
+
+            using var paint = new SKPaint
+            {
+                Typeface = typeface ?? SKTypeface.Default,
+                TextSize = fontSize,
+                IsAntialias = true,
+                SubpixelText = true,
+                LcdRenderText = false
+            };
+
+            SKRect ink = SKRect.Empty;
+            paint.MeasureText(text, ref ink);
+
+            // Keep first painted glyph inside the node bounds when clips are tight.
+            // This protects short CTA labels ("Sign in") from left-edge clipping
+            // when font overhang differs slightly across shaping/render paths.
+            float absoluteInkLeft = node.TextOrigin.X + ink.Left;
+            float minVisibleLeft = node.Bounds.Left + 0.25f;
+            if (absoluteInkLeft < minVisibleLeft)
+            {
+                float shift = minVisibleLeft - absoluteInkLeft;
+                return new SKPoint(node.TextOrigin.X + shift, node.TextOrigin.Y);
+            }
+
+            return node.TextOrigin;
         }
         
         private void DrawTextDecorations(IRenderBackend backend, TextPaintNode node, float textWidth, float fontSize, SKColor color)

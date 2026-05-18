@@ -67,6 +67,12 @@ namespace FenBrowser.FenEngine.Rendering
             return string.Equals(overflow, "hidden", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(overflow, "clip", StringComparison.OrdinalIgnoreCase);
         }
+
+        private static bool IsOverflowScrollMode(string overflow)
+        {
+            return string.Equals(overflow, "scroll", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(overflow, "auto", StringComparison.OrdinalIgnoreCase);
+        }
         
         private NewPaintTreeBuilder(
             IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
@@ -456,12 +462,15 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                string containerDisplay = style?.Display?.ToLowerInvariant() ?? "inline";
+
                 // Check for overflow/scroll
                 bool isScrollable = (style?.OverflowX == "scroll" || style?.OverflowX == "auto" || 
                                      style?.OverflowY == "scroll" || style?.OverflowY == "auto");
-                bool isClipped = IsOverflowClipMode(style?.Overflow) ||
-                                 IsOverflowClipMode(style?.OverflowX) ||
-                                 IsOverflowClipMode(style?.OverflowY);
+                bool isClipped = AllowsOverflowClipping(node, style, containerDisplay) &&
+                                 (IsOverflowClipMode(style?.Overflow) ||
+                                  IsOverflowClipMode(style?.OverflowX) ||
+                                  IsOverflowClipMode(style?.OverflowY));
 
                 if (isScrollable || isClipped)
                 {
@@ -536,8 +545,15 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // 2. Process Children (Clipped or Normal)
-                bool isClipped = (IsOverflowClipMode(style?.Overflow) || IsOverflowClipMode(style?.OverflowX) || IsOverflowClipMode(style?.OverflowY) ||
-                                  style?.Overflow == "scroll" || style?.OverflowX == "scroll" || style?.OverflowY == "scroll");
+                string overflow = style?.Overflow;
+                string overflowX = style?.OverflowX;
+                string overflowY = style?.OverflowY;
+                if (string.IsNullOrEmpty(overflowX)) overflowX = overflow;
+                if (string.IsNullOrEmpty(overflowY)) overflowY = overflow;
+
+                bool clipX = IsOverflowClipMode(overflowX) || IsOverflowScrollMode(overflowX);
+                bool clipY = IsOverflowClipMode(overflowY) || IsOverflowScrollMode(overflowY);
+                bool isClipped = AllowsOverflowClipping(node, style, display) && (clipX || clipY);
 
                 if (isClipped)
                 {
@@ -552,8 +568,22 @@ namespace FenBrowser.FenEngine.Rendering
                     SKPath clipPath = null;
                     SKRect clipRect = paddingBox;
 
+                    // Clip only on axes that require clipping; visible overflow on one axis
+                    // must not be truncated by a full-rect clip.
+                    const float clipExtent = 1_000_000f;
+                    if (!clipX)
+                    {
+                        clipRect.Left = -clipExtent;
+                        clipRect.Right = clipExtent;
+                    }
+                    if (!clipY)
+                    {
+                        clipRect.Top = -clipExtent;
+                        clipRect.Bottom = clipExtent;
+                    }
+
                     // Calculate rounded clip if needed
-                    if (radius != null && (radius[0].X > 0 || radius[0].Y > 0 || radius[1].X > 0 || radius[1].Y > 0 || 
+                    if (clipX && clipY && radius != null && (radius[0].X > 0 || radius[0].Y > 0 || radius[1].X > 0 || radius[1].Y > 0 || 
                                            radius[2].X > 0 || radius[2].Y > 0 || radius[3].X > 0 || radius[3].Y > 0))
                     {
                          float topW = (float)style.BorderThickness.Top;
@@ -590,7 +620,10 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     if (clippedChildren.Count > 0)
                     {
-                        clipRect = NormalizeRectForPaint(clipRect, paddingBox, clampToContainer: true);
+                        if (clipX && clipY)
+                        {
+                            clipRect = NormalizeRectForPaint(clipRect, paddingBox, clampToContainer: true);
+                        }
                         var clipNode = new ClipPaintNode
                         {
                             Bounds = paddingBox,
@@ -615,6 +648,23 @@ namespace FenBrowser.FenEngine.Rendering
                     ProcessChildren(node, currentContext, depth + 1, escapeContext, nodeVisibilityHidden);
                 }
             }
+        }
+
+        private static bool AllowsOverflowClipping(Node node, CssComputed style, string display)
+        {
+            // CSS overflow clipping does not apply to non-replaced inline boxes.
+            if (!string.Equals(display, "inline", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (node is not Element element)
+            {
+                return false;
+            }
+
+            string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+            return tag is "IMG" or "SVG" or "CANVAS" or "VIDEO" or "IFRAME" or "EMBED" or "OBJECT" or "INPUT" or "TEXTAREA" or "BUTTON" or "SELECT";
         }
 
         private bool TryResolvePaintBox(Node node, CssComputed style, out Layout.BoxModel box)
@@ -2768,7 +2818,8 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     // Calculate absolute bounds for this line
-                    float absX = box.ContentBox.Left + line.Origin.X;
+                    float lineOriginX = line.Origin.X;
+                    float absX = box.ContentBox.Left + lineOriginX;
                     float absY = box.ContentBox.Top + line.Origin.Y + verticalCenterOffset;
                     float resolvedLineWidth = line.Width;
                     if (resolvedLineWidth <= 0 && !string.IsNullOrEmpty(line.Text))
@@ -2783,6 +2834,16 @@ namespace FenBrowser.FenEngine.Rendering
                     if (resolvedLineWidth <= 0.01f || line.Height <= 0.01f)
                     {
                         continue;
+                    }
+
+                    // Guard against negative inline origins drifting text outside its own content box
+                    // when the line actually fits the available width.
+                    if (lineOriginX < 0f &&
+                        box.ContentBox.Width > 0f &&
+                        resolvedLineWidth <= box.ContentBox.Width + 0.5f)
+                    {
+                        lineOriginX = 0f;
+                        absX = box.ContentBox.Left;
                     }
 
                     // Apply text-overflow: ellipsis if needed
@@ -2814,11 +2875,114 @@ namespace FenBrowser.FenEngine.Rendering
                         resolvedLineWidth = containerWidth;
                     }
 
+                    // Some layout width estimates can under-measure shaped glyph runs for the
+                    // resolved typeface. Expand to measured glyph width and re-center so text
+                    // does not drift/clamp inside rounded controls.
+                    using (var exactMeasurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true })
+                    {
+                        float measuredGlyphWidth = exactMeasurePaint.MeasureText(lineDisplayText);
+                        SKRect inkBounds = SKRect.Empty;
+                        exactMeasurePaint.MeasureText(lineDisplayText, ref inkBounds);
+                        if (measuredGlyphWidth > resolvedLineWidth + 0.5f)
+                        {
+                            float delta = measuredGlyphWidth - resolvedLineWidth;
+                            absX -= delta * 0.5f;
+                            resolvedLineWidth = measuredGlyphWidth;
+                        }
+
+                        // Position text by ink bounds rather than pure advance width so
+                        // left-side glyph overhang (e.g. initial "S") is not clipped.
+                        if (inkBounds.Left < 0f)
+                        {
+                            absX += (-inkBounds.Left + 0.25f);
+                        }
+
+                        float inkWidth = inkBounds.Width;
+                        if (inkWidth > resolvedLineWidth + 0.5f)
+                        {
+                            resolvedLineWidth = inkWidth;
+                        }
+                    }
+
+                    // Final containment correction: if the fitted line falls outside its parent
+                    // content box after all adjustments, align it back using the parent's
+                    // effective text alignment.
+                    if (textNode.ParentNode != null &&
+                        _boxes.TryGetValue(textNode.ParentNode, out var directParentBox) &&
+                        directParentBox != null)
+                    {
+                        var parentContent = directParentBox.ContentBox;
+                        float parentWidth = Math.Max(0f, parentContent.Width);
+                        if (parentWidth > 0f &&
+                            resolvedLineWidth <= parentWidth + 0.5f &&
+                            (absX < parentContent.Left - 0.5f || absX + resolvedLineWidth > parentContent.Right + 0.5f))
+                        {
+                            SKTextAlign align = parentStyle?.TextAlign ?? SKTextAlign.Left;
+                            if (align == SKTextAlign.Center)
+                            {
+                                absX = parentContent.Left + (parentWidth - resolvedLineWidth) * 0.5f;
+                            }
+                            else if (align == SKTextAlign.Right)
+                            {
+                                absX = parentContent.Right - resolvedLineWidth;
+                            }
+                            else
+                            {
+                                float minAbsX = parentContent.Left;
+                                float maxAbsX = parentContent.Right - resolvedLineWidth;
+                                if (maxAbsX >= minAbsX)
+                                {
+                                    if (absX < minAbsX) absX = minAbsX;
+                                    else if (absX > maxAbsX) absX = maxAbsX;
+                                }
+                            }
+                        }
+
+                        // Tight-fit guard: when container width is nearly equal to text advance,
+                        // preserve a tiny inset for glyph side-bearing so the first/last glyph
+                        // does not get clipped by overflow clips.
+                        float fitSlack = parentWidth - resolvedLineWidth;
+                        if (fitSlack >= 0f && fitSlack <= 3f)
+                        {
+                            float inset = 3.5f;
+                            float minAbsX = parentContent.Left + inset;
+                            float maxAbsX = parentContent.Right - resolvedLineWidth - inset;
+                            if (maxAbsX >= minAbsX)
+                            {
+                                if (absX < minAbsX) absX = minAbsX;
+                                else if (absX > maxAbsX) absX = maxAbsX;
+                            }
+                            else if (absX < minAbsX)
+                            {
+                                // If the container is too tight to honor both-side insets,
+                                // prioritize left-side inset to avoid clipping the first glyph.
+                                absX = minAbsX;
+                            }
+                        }
+                    }
+
                     var lineBounds = new SKRect(absX, absY, absX + resolvedLineWidth, absY + line.Height);
 
                     // Origin for text drawing (Baseline)
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
                     var glyphs = BuildPaintGlyphs(lineDisplayText, fontFamily, fontSize, weight, textOrigin);
+
+                    if (string.Equals(lineDisplayText, "Sign in", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string parentTag = textNode.ParentElement?.TagName ?? "null";
+                        string parentClass = textNode.ParentElement?.ClassName ?? string.Empty;
+                        string grandParentClass = textNode.ParentElement?.ParentElement?.ClassName ?? string.Empty;
+                        string parentBoxSummary = "pbox=null";
+                        if (textNode.ParentNode != null &&
+                            _boxes.TryGetValue(textNode.ParentNode, out var debugParentBox) &&
+                            debugParentBox != null)
+                        {
+                            parentBoxSummary = $"pbox=({debugParentBox.ContentBox.Left:F1},{debugParentBox.ContentBox.Top:F1},{debugParentBox.ContentBox.Width:F1}x{debugParentBox.ContentBox.Height:F1})";
+                        }
+                        FenBrowser.Core.EngineLogCompat.Info(
+                            $"[GOOGLE-SIGNIN-TEXT] parent=<{parentTag}> pcls={parentClass} gpcls={grandParentClass} lineBounds=({lineBounds.Left:F1},{lineBounds.Top:F1},{lineBounds.Width:F1}x{lineBounds.Height:F1}) origin=({textOrigin.X:F1},{textOrigin.Y:F1}) tbox=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1}) {parentBoxSummary} color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2}",
+                            LogCategory.Paint);
+                    }
 
                     if (ShouldTraceWhatIsMyBrowserText(lineDisplayText))
                     {

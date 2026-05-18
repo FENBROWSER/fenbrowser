@@ -171,6 +171,44 @@ namespace FenBrowser.FenEngine.Rendering
     }
 
     /// <summary>
+    /// Runs the layout phase only and populates the element-box cache.
+    /// Required so script-blocking inline scripts that call getBoundingClientRect()
+    /// observe geometry rather than zeroed rects; the HTML/CSSOM spec mandates that
+    /// such accessors force any pending layout to flush before returning.
+    /// </summary>
+    public void EnsureLayout(
+        Node root,
+        IReadOnlyDictionary<Node, CssComputed> styles,
+        float viewportWidth,
+        float viewportHeight,
+        string baseUrl = null)
+    {
+        if (root == null) return;
+        if (viewportWidth <= 0) viewportWidth = DefaultViewportWidth;
+        if (viewportHeight <= 0) viewportHeight = DefaultViewportHeight;
+
+        lock (_stateLock)
+        {
+            _viewportWidth = viewportWidth;
+            _viewportHeight = viewportHeight;
+            CssParser.MediaViewportWidth = _viewportWidth;
+            CssParser.MediaViewportHeight = _viewportHeight;
+
+            var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
+            var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
+            _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, _viewportHeight);
+            _boxes.Clear();
+            foreach (var box in layoutEngine.AllBoxes)
+            {
+                _boxes[box.Key] = box.Value;
+            }
+            _lastRoot = root;
+            _lastViewportWidth = _viewportWidth;
+            _lastViewportHeight = _viewportHeight;
+        }
+    }
+
+    /// <summary>
     /// Host integration hook for GPU tile rasterization.
     /// The context is optional: null falls back to CPU tile surfaces.
     /// </summary>
