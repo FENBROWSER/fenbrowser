@@ -35,6 +35,7 @@ namespace FenBrowser.Core.Compat
         {
             var key = CacheKey(req);
             if (key == null) return null;
+            if (BypassesCache(req)) return null;
 
             if (!_cache.TryGetValue(key, out var entry)) return null;
 
@@ -62,6 +63,7 @@ namespace FenBrowser.Core.Compat
         {
             var key = CacheKey(req);
             if (key == null) return null;
+            if (BypassesCache(req)) return null;
 
             if (!_cache.TryGetValue(key, out var entry)) return null;
 
@@ -126,6 +128,8 @@ namespace FenBrowser.Core.Compat
 
             // no-store means do not cache at all
             if (cc?.NoStore == true) return null;
+            // RFC 9111: Vary: * indicates representation is not reusable.
+            if (HasVaryWildcard(resp)) return null;
 
             DateTimeOffset? expires = null;
             int maxAgeSeconds = 0;
@@ -177,30 +181,23 @@ namespace FenBrowser.Core.Compat
 
         private void EvictOldest()
         {
-            // Remove the 10% oldest entries by last access time
-            var toEvict = new List<string>();
-            DateTimeOffset cutoff = DateTimeOffset.UtcNow;
-            string? oldest = null;
-            DateTimeOffset oldestTime = DateTimeOffset.MaxValue;
+            // Remove at least 10% oldest entries by last access time.
+            var removeCount = Math.Max(1, MaxEntries / 10);
+            var oldest = new List<KeyValuePair<string, CachedEntry>>(_cache);
+            oldest.Sort((a, b) => a.Value.LastAccess.CompareTo(b.Value.LastAccess));
 
-            foreach (var kv in _cache)
+            var capped = Math.Min(removeCount, oldest.Count);
+            for (var i = 0; i < capped; i++)
             {
-                if (kv.Value.LastAccess < oldestTime)
-                {
-                    oldestTime = kv.Value.LastAccess;
-                    oldest = kv.Key;
-                }
+                _cache.TryRemove(oldest[i].Key, out _);
             }
-
-            if (oldest != null)
-                _cache.TryRemove(oldest, out _);
         }
 
         private async Task<string?> RevalidateStringAsync(HttpClient client, HttpRequestMessage original, CachedEntry entry)
         {
             try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, original.RequestUri);
+                using var req = new HttpRequestMessage(original.Method, original.RequestUri);
                 if (!string.IsNullOrEmpty(entry.ETag))
                     req.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(entry.ETag));
                 if (entry.LastModified.HasValue)
@@ -237,7 +234,7 @@ namespace FenBrowser.Core.Compat
         {
             try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, original.RequestUri);
+                using var req = new HttpRequestMessage(original.Method, original.RequestUri);
                 if (!string.IsNullOrEmpty(entry.ETag))
                     req.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(entry.ETag));
                 if (entry.LastModified.HasValue)
@@ -283,6 +280,45 @@ namespace FenBrowser.Core.Compat
 
             if (resp.Headers.ETag != null)
                 entry.ETag = resp.Headers.ETag.Tag;
+        }
+
+        private static bool BypassesCache(HttpRequestMessage req)
+        {
+            var cc = req?.Headers?.CacheControl;
+            if (cc == null)
+            {
+                return false;
+            }
+
+            if (cc.NoStore || cc.NoCache)
+            {
+                return true;
+            }
+
+            if (cc.MaxAge.HasValue && cc.MaxAge.Value <= TimeSpan.Zero)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasVaryWildcard(HttpResponseMessage resp)
+        {
+            if (resp?.Headers?.Vary == null)
+            {
+                return false;
+            }
+
+            foreach (var vary in resp.Headers.Vary)
+            {
+                if (string.Equals(vary?.Trim(), "*", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         // ------------------------------------------------------------------ entry model

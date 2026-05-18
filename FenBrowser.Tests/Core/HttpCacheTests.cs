@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using FenBrowser.Core.Compat;
 using Xunit;
@@ -160,6 +161,42 @@ namespace FenBrowser.Tests.Core
             using var req2 = new HttpRequestMessage(HttpMethod.Get, uri);
             var result = await cache.GetStringAsync(null, req2);
 
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public async Task HttpCache_RequestNoCache_BypassesStoredEntry()
+        {
+            var cache = NewCache();
+            var uri = new Uri($"https://example.com/no-cache-{Guid.NewGuid():N}");
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var resp = new HttpResponseMessage(HttpStatusCode.OK);
+            resp.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.FromMinutes(5) };
+            cache.StoreString(req, resp, "cached");
+
+            using var bypassReq = new HttpRequestMessage(HttpMethod.Get, uri);
+            bypassReq.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            var result = await cache.GetStringAsync(null, bypassReq);
+
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public async Task HttpCache_VaryWildcard_IsNotCached()
+        {
+            var cache = NewCache();
+            var uri = new Uri($"https://example.com/vary-star-{Guid.NewGuid():N}");
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            using var resp = new HttpResponseMessage(HttpStatusCode.OK);
+            resp.Headers.CacheControl = new CacheControlHeaderValue { MaxAge = TimeSpan.FromMinutes(5) };
+            resp.Headers.Vary.Add("*");
+
+            cache.StoreString(req, resp, "should-not-store");
+
+            using var req2 = new HttpRequestMessage(HttpMethod.Get, uri);
+            var result = await cache.GetStringAsync(null, req2);
             Assert.Null(result);
         }
     }

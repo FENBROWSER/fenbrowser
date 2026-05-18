@@ -192,13 +192,16 @@ namespace FenBrowser.Core
                 $"AllowFileSchemeNavigation={settings.AllowFileSchemeNavigation}",
                 $"AllowAutomationFileNavigation={settings.AllowAutomationFileNavigation}"
             });
-            var pending = string.Join(", ", new[]
-            {
-                "none"
-            });
+            var pending = Array.Empty<string>();
 
             EngineLogCompat.Info($"[PolicyBindings] Runtime-enforced toggles: {enforced}", LogCategory.Network);
-            EngineLogCompat.Warn($"[PolicyBindings] UI toggles pending full runtime wiring: {pending}", LogCategory.Network);
+            if (pending.Length == 0)
+            {
+                EngineLogCompat.Info("[PolicyBindings] UI toggles pending full runtime wiring: none", LogCategory.Network);
+                return;
+            }
+
+            EngineLogCompat.Warn($"[PolicyBindings] UI toggles pending full runtime wiring: {string.Join(", ", pending)}", LogCategory.Network);
         }
 
         public void ClearCache()
